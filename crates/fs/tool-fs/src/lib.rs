@@ -407,7 +407,7 @@ impl Service {
         let service = self.clone();
         ToolDefinition {
             name: "read_image".into(),
-            description: "Read a PNG/JPEG/WebP/GIF file and return the image itself. Extension-less paths are detected from file content.".into(),
+            description: "Read a PNG/JPEG/WebP/GIF file or an image attachment from the current conversation and return the image itself. file_path accepts the exact attachmentId (sha256:... or its bare digest) for uploaded images; never prepend the workspace to an attachment ID. Extension-less files are detected from content.".into(),
             parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"}},"required":["file_path"]}),
             output: output_object(
                 |_args, value| {
@@ -437,6 +437,19 @@ impl Service {
                 Box::pin(async move {
                     let path = args.get("file_path").and_then(serde_json::Value::as_str).ok_or_else(|| ToolBodyError::plain("file_path is required"))?;
                     if path.trim().is_empty() { return Err(ToolBodyError::plain("file_path must be a non-empty string")); }
+                    let reference = exec.agent.as_ref().and_then(|agent| agent.session().with_events(|events| {
+                        events.iter().find_map(|event| dsh_attachment::find_image_reference(&event.data, path))
+                    }));
+                    if let Some(reference) = reference {
+                        let store = service.ctx.get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
+                            .ok_or_else(|| ToolBodyError::plain("Attachment store unavailable"))?;
+                        let image = store.read_image(&reference, Some(&signal(&exec))).await
+                            .map_err(|error| ToolBodyError::coded(error.message, "AttachmentError", &error.code))?;
+                        return Ok(serde_json::json!({"path":path,"image":image.reference}));
+                    }
+                    if path.starts_with("sha256:") || (path.len() == 64 && path.bytes().all(|b| b.is_ascii_hexdigit())) {
+                        return Err(ToolBodyError::coded("Image attachment is not present in this session; use its exact attachmentId from the current conversation.", "AttachmentError", "ATTACHMENT_NOT_IN_SESSION"));
+                    }
                     let target = target(&service.fs, path, &exec).await?;
                     let info = service.fs.stat(&target, Some(signal(&exec))).await.map_err(body_error)?.ok_or_else(|| body_error(FsError::new(format!("cannot read \"{}\": not found", target.display_path), FsErrorCode::FsNotFound)))?;
                     if info.kind != FsInfoType::File { return Err(body_error(FsError::new(format!("cannot read \"{}\": not a regular file", target.display_path), FsErrorCode::FsNotRegularFile))); }

@@ -22,7 +22,9 @@ parentPort.on('message', (message) => {
   pending.delete(message.id);
   if (message.ok) entry.resolve(message.value);
   else {
-    const error = new entry.ErrorClass(message.name, message.message);
+    const error = entry.typedError
+      ? new entry.ErrorClass(entry.name, message.message)
+      : new Error(message.message);
     entry.reject(error);
   }
 });
@@ -50,7 +52,7 @@ function bindings(data) {
         enumerable: true,
         value: (args) => new Promise((resolve, reject) => {
           const id = nextId++;
-          pending.set(id, { resolve, reject, ErrorClass });
+          pending.set(id, { resolve, reject, ErrorClass, name, typedError: !!namespace.error_class });
           parentPort.postMessage({
             type: 'binding_call', id, global: namespace.global, name, args,
           });

@@ -12,11 +12,41 @@ use dsh_subprocess::{
     SubprocessStdinMode, SubprocessStdio,
 };
 use serde_json::{Value, json};
+use futures::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
 
 const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/runner.cjs");
 const RUNNER_SOURCE: &str = include_str!("../assets/runner.cjs");
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::*;
+    use dsh_code_runtime::CodeBindingNamespace;
+
+    #[tokio::test]
+    async fn binding_rejection_is_catchable_and_next_call_still_works() {
+        let ctx = Context::root();
+        let _subprocess = dsh_subprocess_local::LocalSubprocessRuntime::install(&ctx);
+        let runtime = NodeCodeRuntime::install(&ctx, Config::default()).unwrap();
+        let function: CodeBindingFunction = Arc::new(|args| Box::pin(async move {
+            if args["prompt"].as_str().is_none_or(|s| s.trim().is_empty()) {
+                panic!("agent input requires a non-empty prompt string");
+            }
+            json!({"accepted":args["prompt"]})
+        }));
+        let result = runtime.run(CodeRunRequest {
+            program: "let rejection; try { await agents.run({}); } catch (e) { rejection = e.message; } const next = await agents.run({prompt: 'valid'}); return {rejection, next};".into(),
+            bindings: vec![CodeBindingNamespace { global: "agents".into(), functions: vec![("run".into(), function)], error_class: None }],
+            signal: None,
+        }).await.unwrap();
+        runtime.dispose().await;
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let value = result.value.unwrap();
+        assert_eq!(value["rejection"], "agent input requires a non-empty prompt string");
+        assert_eq!(value["next"]["accepted"], "valid");
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -412,11 +442,23 @@ async fn run_one(
                 let args = frame.get("args").cloned().unwrap_or(Value::Null);
                 let output = output.clone();
                 binding_tasks.spawn(async move {
-                    let value = function(args).await;
+                    // Bindings use panic as their rejection channel. Let JavaScript
+                    // catch the rejection instead of terminating the whole worker.
+                    let result = std::panic::AssertUnwindSafe(async move { function(args).await })
+                        .catch_unwind().await;
+                    let frame = match result {
+                        Ok(value) => json!({ "type": "binding_result", "id": id, "ok": true, "value": value }),
+                        Err(payload) => {
+                            let message = payload.downcast_ref::<String>().cloned()
+                                .or_else(|| payload.downcast_ref::<&str>().map(|v| v.to_string()))
+                                .unwrap_or_else(|| "binding rejected".into());
+                            json!({ "type": "binding_result", "id": id, "ok": false, "name": "Error", "message": message })
+                        }
+                    };
                     let mut output = output.lock().await;
                     write_frame(
                         &mut **output,
-                        &json!({ "type": "binding_result", "id": id, "ok": true, "value": value }),
+                        &frame,
                     )
                     .await
                 });

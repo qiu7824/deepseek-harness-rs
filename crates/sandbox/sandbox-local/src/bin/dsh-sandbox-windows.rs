@@ -396,8 +396,9 @@ pub mod windows_runner {
     }
 
     // Windows PowerShell resolves every component of its startup directory.
-    // Give the ephemeral SID metadata/traverse access to ancestors only, with
-    // no listing, file reads, writes or inherited permission. Updating the
+    // Give the ephemeral SID metadata/traverse/list access to ancestor directories
+    // only. Windows path normalization used by Git needs to query parent entries.
+    // No file-content reads, writes or inherited permission are granted. Updating the
     // handle's security descriptor without propagation avoids walking an entire
     // drive's children, including when another process holds the directory open.
     struct AncestorAccess {
@@ -439,7 +440,7 @@ pub mod windows_runner {
                         let readable = unsafe {
                             CreateFileW(
                                 name.as_ptr(),
-                                0x001200a0, // metadata, traverse and synchronize
+                                0x001200a1, // list directory, metadata, traverse and synchronize
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 null(),
                                 OPEN_EXISTING,
@@ -488,7 +489,9 @@ pub mod windows_runner {
         }
     }
     fn update_ancestor_access(handle: HANDLE, sid: PSID, grant: bool) -> Result<(), String> {
-        update_access(handle, sid, grant, 0x001200a0, 0)
+        // FILE_LIST_DIRECTORY is needed by GetLongPathNameW/GetFinalPathNameByHandleW.
+        // This ACE applies only to this directory (inheritance = 0).
+        update_access(handle, sid, grant, 0x001200a1, 0)
     }
 
     #[test]

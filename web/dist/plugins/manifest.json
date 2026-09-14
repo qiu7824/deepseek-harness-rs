@@ -56,7 +56,7 @@
     {
       "id": "@deepseek-ai/dsh-client-runtime",
       "url": "/plugins/client-runtime.js",
-      "rev": "866e5f8ddb7fa89e",
+      "rev": "271966a7137305dd",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-typert-registry",
@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "7a65e6ba5ee240fa",
+      "rev": "4b9f505322fae94f",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -187,7 +187,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-tool",
       "url": "/plugins/ui-tool.js",
-      "rev": "087a19d44c6261b9",
+      "rev": "dd5c7163f6ae9a0b",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
@@ -452,7 +452,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-productivity",
       "url": "/plugins/ui-productivity.js",
-      "rev": "77730b67e7f066c5",
+      "rev": "17d21b1f66b0f8d6",
       "inject": [
         "slots",
         "settingsScope",

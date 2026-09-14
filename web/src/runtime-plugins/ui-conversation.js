@@ -3149,10 +3149,12 @@ window.__ModuleLoader__.load({
 		}
 		function userFacingPromptError(error, t) {
 			const text = String(error?.message ?? error ?? "");
-			if (/not a git repository|Unable to read current working directory/i.test(text)) return "当前目录不是 Git 仓库，已跳过 Git 检查。";
-			if (/sandbox denied|SANDBOX_DENIED/i.test(text)) return "沙箱拒绝了此文件操作，请选择授权的工作区目录。";
-			if (/尚未提供 OpenAI 原生工具接口|native tool interface/i.test(text)) return "当前连接不支持此工具，请切换到支持工具调用的连接或模型。";
-			if (/agent input requires prompt/i.test(text)) return "Agent 输入缺少任务提示，已阻止无效调用。";
+			if (/not a git repository/i.test(text)) return t("error.notGit");
+			if (/Unable to read current working directory/i.test(text)) return t("error.workdir");
+			if (/SANDBOX_UNAVAILABLE/i.test(text)) return t("error.sandboxUnavailable");
+			if (/sandbox denied|SANDBOX_DENIED/i.test(text)) return t("error.sandboxDenied");
+			if (/NATIVE_TOOL_UNSUPPORTED|尚未提供 OpenAI 原生工具接口/i.test(text)) return t("error.nativeUnsupported");
+			if (/agent input requires.*prompt/i.test(text)) return t("error.agentPrompt");
 			return text;
 		}
 		function cacheUsageLabel(usage, t) {
@@ -4087,7 +4089,14 @@ window.__ModuleLoader__.load({
 				t
 			}, sessionId);
 			const deco = input === void 0 ? INERT_DECORATIONS : deriveDecorations(input, lexicon);
-			const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t("placeholder.default"));
+            const decoratedInput = deco.token !== null || deco.chips.length > 0 || deco.textRefs.length > 0 || deco.hint !== null;
+            const [tipIndex, setTipIndex] = react.useState(0);
+            const hadDraft = react.useRef(false);
+            react.useEffect(() => {
+                if (draft === "" && hadDraft.current) setTipIndex(index => (index + 1) % 3);
+                hadDraft.current = draft !== "";
+            }, [draft]);
+			const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t(["placeholder.default", "placeholder.tipNewline", "placeholder.tipImage"][tipIndex]));
 			const backdrop = [];
 			{
 				let cursor = 0;
@@ -4217,11 +4226,13 @@ window.__ModuleLoader__.load({
 											"aria-hidden": true,
 											className: InputBar_module_css_default.backdrop,
 											"data-input-backdrop": true,
+                                            style: decoratedInput ? void 0 : { visibility: "hidden" },
 											children: backdrop
 										}),
 										(0, react_jsx_runtime.jsx)("textarea", {
 											ref: inputRef,
 											className: InputBar_module_css_default.input,
+                                            style: { color: decoratedInput ? "transparent" : "var(--dsw-alias-label-primary)" },
 											value: draft,
 											disabled: textareaDisabled,
 											readOnly: machineBusy || workspaceTrigger,
@@ -4229,7 +4240,7 @@ window.__ModuleLoader__.load({
 											"aria-haspopup": workspaceTrigger ? "menu" : void 0,
 											"aria-expanded": workspaceTrigger ? workspacePickerOpen : void 0,
 											"data-phase": input?.phase ?? "inert",
-											placeholder: attachments.length === 0 && input?.claim == null ? placeholderText : "",
+											placeholder: input?.claim == null ? placeholderText : "",
 											rows: 2,
 											onChange,
 											onKeyDown,
@@ -5729,7 +5740,8 @@ window.__ModuleLoader__.load({
 				h("div",{role:"status","aria-live":"polite",style:{display:"flex",gap:8,alignItems:"center",fontSize:14,color:root.isError?"var(--dsw-alias-state-error-primary)":"var(--dsw-alias-label-secondary)"}},
 					h("svg",{viewBox:"0 0 24 24",width:20,height:20,fill:"none",stroke:"currentColor",strokeWidth:1.6,"aria-hidden":true,style:{flexShrink:0}},h("rect",{x:3,y:3,width:18,height:18,rx:4}),h("circle",{cx:9,cy:9,r:2}),h("path",{d:"M3 17l5-5 4 4 3-3 6 5"})),h("span",{className:running?"R15qIq_turnStatus":undefined},status)),
 				prompt&&h("details",{style:{fontSize:12,color:"var(--dsw-alias-label-tertiary)",marginTop:6}},h("summary",{style:{cursor:"pointer"}},t("image.description")),h("p",{style:{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},prompt)),
-				root.isError&&h("p",{role:"alert",style:{fontSize:13,color:"var(--dsw-alias-state-error-primary)",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},message||status),
+				root.isError&&h("p",{role:"alert",style:{fontSize:13,color:"var(--dsw-alias-state-error-primary)",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},userFacingPromptError({message},t)||status),
+                root.isError&&message&&h("details",null,h("summary",null,t("error.details")),h("pre",{style:{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},message)),
 				!running&&!root.isError&&Array.isArray(root.meta?.images)&&root.meta.images.slice(0,4).map((block,index)=>block.type==="image"&&block.attachment?.attachmentId?h(GeneratedImageCard,{key:`${block.attachment.attachmentId}:${index}`,attachment:block.attachment,loadImage,sessionId,onEditSubmitted,t}):null));
 		}
 		function GeneratedImageCard({attachment,loadImage,sessionId,onEditSubmitted,t}) {
@@ -6526,6 +6538,15 @@ window.__ModuleLoader__.load({
 			"hint.goal.active": "当前目标进行中。可输入 edit 修改 / pause 暂停 / resume 继续 / clear 清除",
 			"placeholder.plan": PLAN_NEXT_ACTION_ZH,
 			"placeholder.default": "给智能体发消息（Ctrl+Enter 可自动续写序号）",
+            "placeholder.tipNewline": "Shift+Enter 换行，Enter 发送",
+            "placeholder.tipImage": "粘贴或拖入图片，再输入你想修改的内容",
+            "error.notGit": "当前目录不是 Git 仓库，Git 命令未执行成功。",
+            "error.workdir": "当前工作目录无法读取，请检查目录路径和访问权限。",
+            "error.sandboxUnavailable": "Windows 沙箱运行器不可用，请检查安装包的核心程序。",
+            "error.sandboxDenied": "文件操作被沙箱拒绝，请检查目标目录的授权。",
+            "error.nativeUnsupported": "当前连接不支持此图像或搜索接口，请在任务分工中选择支持该功能的连接。",
+            "error.agentPrompt": "Agent 调用缺少有效的任务提示，请补全 prompt。",
+            "error.details": "查看错误详情",
 			"placeholder.unavailable": "会话不可用",
 			"placeholder.parentOffline": "父会话已离线，无法继续发送；仍可停止当前运行",
 			"placeholder.hero": "描述你想要构建的内容",
@@ -6813,6 +6834,15 @@ window.__ModuleLoader__.load({
 			"hint.goal.active": "goal active — edit / pause / resume / clear",
 			"placeholder.plan": PLAN_NEXT_ACTION_EN,
 			"placeholder.default": "Message the agent (Ctrl+Enter continues numbered lists)",
+            "placeholder.tipNewline": "Shift+Enter for a new line; Enter to send",
+            "placeholder.tipImage": "Paste or drop an image, then describe your changes",
+            "error.notGit": "This directory is not a Git repository; the Git command failed.",
+            "error.workdir": "The working directory cannot be read. Check its path and access permissions.",
+            "error.sandboxUnavailable": "The Windows sandbox runner is unavailable. Check the installed core executable.",
+            "error.sandboxDenied": "The sandbox denied the file operation. Check authorization for the target directory.",
+            "error.nativeUnsupported": "This connection does not support the image or search interface. Assign a compatible connection in task models.",
+            "error.agentPrompt": "The Agent call requires a non-empty prompt.",
+            "error.details": "Error details",
 			"placeholder.unavailable": "Session unavailable",
 			"placeholder.parentOffline": "Parent session offline; sending is unavailable but you can still stop the run",
 			"placeholder.hero": "Describe what you want to build",
@@ -10773,6 +10803,7 @@ window.__ModuleLoader__.load({
 					/* v8 ignore next -- unreachable: list registration validates id at load. */
 					if (entry.options.id === void 0) continue;
                     if (["trajectory","artifacts","code-graph","context"].includes(entry.options.id)&&miniMenus.getSnapshot().value?.[entry.options.id]===false) continue;
+                    if (entry.options.id === "project-tasks" && miniMenus.getSnapshot().value?.tasks === false) continue;
 					tabs.push({
 						id: entry.options.id,
 						label: (0, _deepseek_ai_dsh_client_ui_slots.resolveSlotLabel)(entry.options.label) ?? entry.options.id

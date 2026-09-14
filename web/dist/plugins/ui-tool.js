@@ -168,6 +168,12 @@ window.__ModuleLoader__.load({
 		* @param cwd - session workspace root; workspace-rooted path summaries display relative to it.
 		* @returns the row model.
 		*/
+        function toolFailureSummary(message, t) {
+            if (!message) return message;
+            const mappings = [[/not a git repository/i,"error.notGit"],[/Unable to read current working directory/i,"error.workdir"],[/SANDBOX_UNAVAILABLE/i,"error.sandboxUnavailable"],[/sandbox denied|SANDBOX_DENIED/i,"error.sandboxDenied"],[/NATIVE_TOOL_UNSUPPORTED|尚未提供 OpenAI 原生工具接口/i,"error.nativeUnsupported"],[/agent input requires.*prompt/i,"error.agentPrompt"]];
+            const match = mappings.find(([pattern]) => pattern.test(message));
+            return match ? t(match[1]) : message;
+        }
 		function toolRowModel(toolName, block, cwd) {
 			const variant = classifyTool(toolName);
 			const done = "kind" in block;
@@ -696,7 +702,7 @@ window.__ModuleLoader__.load({
 			const expandable = body !== null || outputText !== null || (terminalBody ?? diffBody ?? readBody ?? searchBody ?? webBody ?? imageBody) !== null;
 			const open = expanded && expandable;
 			const status = stateStatus$1(state, t);
-			const failureLine = state === "error" ? errorSummary ?? null : null;
+			const failureLine = state === "error" ? toolFailureSummary(errorSummary, t) ?? null : null;
 			const summaryText = failureLine ?? toolDisplaySummary(toolName, summary, t);
 			const diffStat = (0, react.useMemo)(() => {
 				if (diffBody === null) return null;
@@ -1221,7 +1227,7 @@ window.__ModuleLoader__.load({
 			const genericError = terminal === null && model.state === "error" && (model.body !== null || model.output !== null);
 			const expandable = terminal !== null || genericError;
 			const open = expanded && expandable;
-			const failureLine = model.state === "error" ? model.errorSummary : null;
+			const failureLine = model.state === "error" ? toolFailureSummary(model.errorSummary, t) : null;
 			const toggleExpand = () => {
 				setExpanded((v) => !v);
 			};

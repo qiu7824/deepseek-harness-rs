@@ -7266,6 +7266,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			liveBufferBytes = 0;
 			liveBufferDroppedThrough = -1;
 			tailRepairNeeded = false;
+            gapRetryTimer = null;
+            gapRetryAttempt = 0;
+            disposed = false;
 			/** Gap repair in flight; live events detour to the buffer until the tail page lands. */
 			stitching = false;
 			/** subscribed.lastSeq baseline (gap detection; null when no subscribed frame arrived — degrade to the liveBuffer dedup path). */
@@ -7563,6 +7566,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.notifier.markDirty();
 			}
 			beginHistoryNavigation(reason = "around") {
+                if (this.gapRetryTimer != null) clearTimeout(this.gapRetryTimer);
+                this.gapRetryTimer = null; this.gapRetryAttempt = 0;
 				this.cancelHistoryPaging();
 				this.historyNavigationRevision = (this.historyNavigationRevision ?? 0) + 1;
 				this.historyNavigationReason = reason;
@@ -7931,7 +7936,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.notifier.markDirty();
 			}
 			/** No-op because session instances remain resident. */
-			dispose() {}
+			dispose() {
+                this.disposed = true;
+                if (this.gapRetryTimer != null) clearTimeout(this.gapRetryTimer);
+                this.gapRetryTimer = null;
+            }
 			/** Rebuild the current window after a low-frequency Definition or view registration change. */
 			rebuildConversationRegistry() {
 				this.scheduleConversation(this.conversation.rebuildRegistry());
@@ -8083,7 +8092,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			*  installWindow path. No openState transition — the UI keeps the current window (no loading
 			*  flash); events arriving meanwhile detour to liveBuffer via the stitching flag. */
 			async repairGap() {
-                if (this.stitching || this.historyTargetSeq !== null || this.openState !== "open") return;
+                if (this.disposed || this.stitching || this.historyTargetSeq !== null || this.openState !== "open") return;
+                if (this.gapRetryTimer != null) clearTimeout(this.gapRetryTimer);
+                this.gapRetryTimer = null;
                 const request = { generation: this.openGeneration, revision: this.historyNavigationRevision ?? 0 };
                 this.gapRequest = request; this.stitching = true; this.tailRepairNeeded = false;
                 try {
@@ -8095,7 +8106,17 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
                 } catch (error) {
                     if (this.currentHistoryRequest(request, "gapRequest")) { this.tailRepairNeeded = true; console.error("[web-runtime] gap repair failed:", error); }
                 } finally {
-                    if (this.gapRequest === request) { this.gapRequest = null; this.stitching = false; this.notifier.markDirty(); }
+                    if (this.gapRequest === request) {
+                        this.gapRequest = null; this.stitching = false; this.notifier.markDirty();
+                        if (this.tailRepairNeeded && !this.disposed && this.historyTargetSeq === null && this.openState === "open") {
+                            const delay = Math.min(10000, 500 * 2 ** Math.min(this.gapRetryAttempt ?? 0, 5));
+                            this.gapRetryAttempt = (this.gapRetryAttempt ?? 0) + 1;
+                            this.gapRetryTimer = setTimeout(() => {
+                                this.gapRetryTimer = null;
+                                if (this.openGeneration === request.generation && this.historyNavigationRevision === request.revision) void this.repairGap();
+                            }, delay);
+                        } else this.gapRetryAttempt = 0;
+                    }
                 }
             }
 

@@ -563,7 +563,7 @@ fn read_agent_input(input: Value) -> AgentInput {
         .cloned()
         .unwrap_or(input);
     match input {
-        Value::String(prompt) => AgentInput {
+        Value::String(prompt) if !prompt.trim().is_empty() => AgentInput {
             prompt,
             label: None,
             schema: None,
@@ -572,10 +572,8 @@ fn read_agent_input(input: Value) -> AgentInput {
             prompt: input
                 .remove("prompt")
                 .and_then(|value| value.as_str().map(str::to_string))
-                // Malformed tool payloads must not panic the workflow task. Keep an
-                // empty prompt so the child runtime can report a normal validation
-                // error and the parent workflow remains recoverable.
-                .unwrap_or_default(),
+                .filter(|prompt| !prompt.trim().is_empty())
+                .unwrap_or_else(|| panic!("agent input requires a non-empty prompt string")),
             label: input
                 .remove("label")
                 .and_then(|value| value.as_str().map(str::to_string)),

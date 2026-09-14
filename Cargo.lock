@@ -1624,6 +1624,7 @@ dependencies = [
  "dsh-brand",
  "dsh-invariants",
  "serde",
+ "serde_json",
  "sha2",
  "tokio",
 ]

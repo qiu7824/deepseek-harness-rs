@@ -120,7 +120,7 @@ impl AccountAuth {
         let profile = self.model_profile(route)?;
         let key = if let Some(auth) = profile.get("authProvider").and_then(Value::as_str) {
             if auth != "openai-codex" {
-                return Err("此订阅连接尚未提供 OpenAI 原生工具接口".into());
+                return Err(format!("NATIVE_TOOL_UNSUPPORTED: 连接 {route} 不支持此 OpenAI 图像/搜索接口；这不影响普通工具调用。请在设置→模型→任务分工中为该任务选择支持对应接口的连接。相同连接和参数重试不会恢复此能力。"));
             }
             self.resolve_token_locked(auth, false, true).await?
         } else if profile.get("keyless") == Some(&Value::Bool(true)) {

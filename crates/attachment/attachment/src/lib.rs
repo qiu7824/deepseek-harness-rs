@@ -3,6 +3,8 @@
 //! `brand.ts` + `error.ts` + `types.ts`.
 
 pub mod invariant;
+mod references;
+pub use references::find_image_reference;
 
 use dsh_brand::Branded;
 use serde::{Deserialize, Serialize};

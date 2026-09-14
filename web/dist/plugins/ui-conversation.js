@@ -3147,6 +3147,16 @@ window.__ModuleLoader__.load({
 			const denominator = statistics.reportedInputTokens;
 			return !Number.isFinite(denominator) || denominator <= 0 ? null : Math.round(usage.cacheReadTokens / denominator * 100);
 		}
+		function userFacingPromptError(error, t) {
+			const text = String(error?.message ?? error ?? "");
+			if (/not a git repository/i.test(text)) return t("error.notGit");
+			if (/Unable to read current working directory/i.test(text)) return t("error.workdir");
+			if (/SANDBOX_UNAVAILABLE/i.test(text)) return t("error.sandboxUnavailable");
+			if (/sandbox denied|SANDBOX_DENIED/i.test(text)) return t("error.sandboxDenied");
+			if (/NATIVE_TOOL_UNSUPPORTED|尚未提供 OpenAI 原生工具接口/i.test(text)) return t("error.nativeUnsupported");
+			if (/agent input requires.*prompt/i.test(text)) return t("error.agentPrompt");
+			return text;
+		}
 		function cacheUsageLabel(usage, t) {
 			const percent = cacheHitPercent(usage);
 			if (percent === null) return t("stats.cacheUnavailable");
@@ -3621,7 +3631,8 @@ window.__ModuleLoader__.load({
 					},
 					children: [
 						(0, react_jsx_runtime.jsx)("span", {
-							className: PermissionSelect_module_css_default.triggerIcon,
+							className: PermissionSelect_module_css_default.triggerIcon + (currentValue === FULL_ACCESS ? " dshPermissionFullAccess" : ""),
+							style: currentValue === FULL_ACCESS ? { color: "#f97316" } : void 0,
 							"aria-hidden": true,
 							children: permissionGlyph(currentValue) ?? permissionGlyph("workspace-write")
 						}),
@@ -3652,7 +3663,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\skeleton\InputBar.module.css.mjs
-		const css$17 = "@font-face{font-family:DshChipCell;src:url(data:font/ttf;base64,AAEAAAAKAIAAAwAgT1MvMkT8SmIAAAEoAAAAYGNtYXAADQBPAAABkAAAADRnbHlmAAAAAAAAAcwAAAABaGVhZCwtPGoAAACsAAAANmhoZWEDIg7bAAAA5AAAACRobXR4EZQAAAAAAYgAAAAIbG9jYQAAAAAAAAHEAAAABm1heHAAAwACAAABCAAAACBuYW1lvljk2gAAAdAAAABscG9zdNNweNQAAAI8AAAALQABAAAAAQAAdia1tV8PPPUAAwPoAAAAAOaLfcUAAAAA5ot9xQAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAA+gAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwjKAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAPz8/PwAA//z//AMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAD6AAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAD//P//AAD//P//AAUAAQAAAAAAAAAAAAAAAAAAAAAAAAAEADYAAQAAAAAAAQALAAAAAQAAAAAAAgAHAAsAAwABBAkAAQAWABIAAwABBAkAAgAOAChEc2hDaGlwQ2VsbFJlZ3VsYXIARABzAGgAQwBoAGkAcABDAGUAbABsAFIAZQBnAHUAbABhAHIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAABAgZvYmpyZXAAAAA=)format(\"truetype\")}.Uzx--a_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.Uzx--a_hero{padding:0 var(--dsh-composer-side-clearance)}.Uzx--a_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.Uzx--a_noticeError{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.Uzx--a_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.Uzx--a_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.Uzx--a_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.Uzx--a_cardWorkspaceTrigger :disabled{pointer-events:none}.Uzx--a_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.Uzx--a_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.Uzx--a_attachments{min-width:0;padding:4px 12px 0}.Uzx--a_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.Uzx--a_scroll{max-height:var(--dsh-composer-text-max-height);margin-right:4px;overflow-y:auto}.Uzx--a_scroll::-webkit-scrollbar-track{margin-top:8px}.Uzx--a_grow{position:relative}.Uzx--a_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.Uzx--a_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.Uzx--a_hint{color:var(--dsw-alias-label-caption)}.Uzx--a_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate Uzx--a_input-pending}@keyframes Uzx--a_input-pending{0%{opacity:.35}to{opacity:1}}.Uzx--a_input{resize:none;color:#0000;width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_input,.Uzx--a_mirror,.Uzx--a_backdrop{box-sizing:border-box;font-family:\"DshChipCell\", var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.Uzx--a_input::placeholder{color:var(--dsw-alias-label-caption);user-select:none}.Uzx--a_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.Uzx--a_input[aria-haspopup=menu]{cursor:pointer}.Uzx--a_mirror{visibility:hidden;pointer-events:none}.Uzx--a_hero .Uzx--a_mirror{min-height:52px}.Uzx--a_row{justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.Uzx--a_tools,.Uzx--a_modes,.Uzx--a_trailing{align-items:center;min-width:0;display:flex}.Uzx--a_tools{gap:16px}.Uzx--a_modes{gap:12px}.Uzx--a_trailing{flex:none;gap:12px}.Uzx--a_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.Uzx--a_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.Uzx--a_add:disabled{opacity:.5;cursor:default}.Uzx--a_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.Uzx--a_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.Uzx--a_select:disabled{opacity:.5;cursor:default}.Uzx--a_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.Uzx--a_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.Uzx--a_primary:disabled{opacity:.4;cursor:default}.Uzx--a_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.Uzx--a_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.Uzx--a_textRef:after{display:none}.Uzx--a_chip{background:#6187d838;border-radius:6px;position:relative}.Uzx--a_chip:before{content:\"￼\";color:#0000}.Uzx--a_chipLabel{width:calc(138.889% - 10px);color:var(--dsw-alias-label-primary);white-space:nowrap;justify-content:center;align-items:center;display:flex;position:absolute;top:50%;left:50%;overflow:hidden;transform:translate(-50%,-50%)scale(.72)}.Uzx--a_chipInvalid{opacity:.7;background:#d8616133;text-decoration:line-through}";
+		const css$17 = "@font-face{font-family:DshChipCell;src:url(data:font/ttf;base64,AAEAAAAKAIAAAwAgT1MvMkT8SmIAAAEoAAAAYGNtYXAADQBPAAABkAAAADRnbHlmAAAAAAAAAcwAAAABaGVhZCwtPGoAAACsAAAANmhoZWEDIg7bAAAA5AAAACRobXR4EZQAAAAAAYgAAAAIbG9jYQAAAAAAAAHEAAAABm1heHAAAwACAAABCAAAACBuYW1lvljk2gAAAdAAAABscG9zdNNweNQAAAI8AAAALQABAAAAAQAAdia1tV8PPPUAAwPoAAAAAOaLfcUAAAAA5ot9xQAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAA+gAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwjKAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAPz8/PwAA//z//AMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAD6AAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAD//P//AAD//P//AAUAAQAAAAAAAAAAAAAAAAAAAAAAAAAEADYAAQAAAAAAAQALAAAAAQAAAAAAAgAHAAsAAwABBAkAAQAWABIAAwABBAkAAgAOAChEc2hDaGlwQ2VsbFJlZ3VsYXIARABzAGgAQwBoAGkAcABDAGUAbABsAFIAZQBnAHUAbABhAHIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAABAgZvYmpyZXAAAAA=)format(\"truetype\")}.Uzx--a_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.Uzx--a_hero{padding:0 var(--dsh-composer-side-clearance)}.Uzx--a_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.Uzx--a_noticeError{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.Uzx--a_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.Uzx--a_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.Uzx--a_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.Uzx--a_cardWorkspaceTrigger :disabled{pointer-events:none}.Uzx--a_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.Uzx--a_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.Uzx--a_attachments{min-width:0;padding:4px 12px 0}.Uzx--a_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.Uzx--a_scroll{max-height:var(--dsh-composer-text-max-height);margin-right:4px;overflow-y:auto}.Uzx--a_scroll::-webkit-scrollbar-track{margin-top:8px}.Uzx--a_grow{position:relative}.Uzx--a_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.Uzx--a_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.Uzx--a_hint{color:var(--dsw-alias-label-caption)}.Uzx--a_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate Uzx--a_input-pending}@keyframes Uzx--a_input-pending{0%{opacity:.35}to{opacity:1}}.Uzx--a_input{resize:none;color:var(--dsw-alias-label-primary);width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_input,.Uzx--a_mirror,.Uzx--a_backdrop{box-sizing:border-box;font-family:\"DshChipCell\", var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.Uzx--a_input::placeholder{color:var(--dsw-alias-label-caption);user-select:none}.Uzx--a_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.Uzx--a_input[aria-haspopup=menu]{cursor:pointer}.Uzx--a_mirror{visibility:hidden;pointer-events:none}.Uzx--a_hero .Uzx--a_mirror{min-height:52px}.Uzx--a_row{justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.Uzx--a_tools,.Uzx--a_modes,.Uzx--a_trailing{align-items:center;min-width:0;display:flex}.Uzx--a_tools{gap:16px}.Uzx--a_modes{gap:12px}.Uzx--a_trailing{flex:none;gap:12px}.Uzx--a_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.Uzx--a_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.Uzx--a_add:disabled{opacity:.5;cursor:default}.Uzx--a_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.Uzx--a_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.Uzx--a_select:disabled{opacity:.5;cursor:default}.Uzx--a_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.Uzx--a_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.Uzx--a_primary:disabled{opacity:.4;cursor:default}.Uzx--a_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.Uzx--a_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.Uzx--a_textRef:after{display:none}.Uzx--a_chip{background:#6187d838;border-radius:6px;position:relative}.Uzx--a_chip:before{content:\"￼\";color:#0000}.Uzx--a_chipLabel{width:calc(138.889% - 10px);color:var(--dsw-alias-label-primary);white-space:nowrap;justify-content:center;align-items:center;display:flex;position:absolute;top:50%;left:50%;overflow:hidden;transform:translate(-50%,-50%)scale(.72)}.Uzx--a_chipInvalid{opacity:.7;background:#d8616133;text-decoration:line-through}";
 		const tagId$17 = "@deepseek-ai/dsh-client-ui-conversation/InputBar.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$17) + "]") === null) {
 			const tag = document.createElement("style");
@@ -3763,7 +3774,7 @@ window.__ModuleLoader__.load({
 			const imageLimits = useProjection("imageLimits");
 			(0, react.useEffect)(() => {
 				if (promptError === null) return;
-				showToast(promptError.error.code === "attachment-error" ? attachmentErrorText(t, promptError.error.details.reason, imageLimits) : `${promptError.error.message} (${promptError.error.code})`);
+				showToast(promptError.error.code === "attachment-error" ? attachmentErrorText(t, promptError.error.details.reason, imageLimits) : userFacingPromptError(promptError.error, t));
 			}, [
 				promptError,
 				showToast,
@@ -4078,7 +4089,14 @@ window.__ModuleLoader__.load({
 				t
 			}, sessionId);
 			const deco = input === void 0 ? INERT_DECORATIONS : deriveDecorations(input, lexicon);
-			const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t("placeholder.default"));
+            const decoratedInput = deco.token !== null || deco.chips.length > 0 || deco.textRefs.length > 0 || deco.hint !== null;
+            const [tipIndex, setTipIndex] = react.useState(0);
+            const hadDraft = react.useRef(false);
+            react.useEffect(() => {
+                if (draft === "" && hadDraft.current) setTipIndex(index => (index + 1) % 3);
+                hadDraft.current = draft !== "";
+            }, [draft]);
+			const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t(["placeholder.default", "placeholder.tipNewline", "placeholder.tipImage"][tipIndex]));
 			const backdrop = [];
 			{
 				let cursor = 0;
@@ -4208,11 +4226,13 @@ window.__ModuleLoader__.load({
 											"aria-hidden": true,
 											className: InputBar_module_css_default.backdrop,
 											"data-input-backdrop": true,
+                                            style: decoratedInput ? void 0 : { visibility: "hidden" },
 											children: backdrop
 										}),
 										(0, react_jsx_runtime.jsx)("textarea", {
 											ref: inputRef,
 											className: InputBar_module_css_default.input,
+                                            style: { color: decoratedInput ? "transparent" : "var(--dsw-alias-label-primary)" },
 											value: draft,
 											disabled: textareaDisabled,
 											readOnly: machineBusy || workspaceTrigger,
@@ -4220,7 +4240,7 @@ window.__ModuleLoader__.load({
 											"aria-haspopup": workspaceTrigger ? "menu" : void 0,
 											"aria-expanded": workspaceTrigger ? workspacePickerOpen : void 0,
 											"data-phase": input?.phase ?? "inert",
-											placeholder: attachments.length === 0 && input?.claim == null ? placeholderText : "",
+											placeholder: input?.claim == null ? placeholderText : "",
 											rows: 2,
 											onChange,
 											onKeyDown,
@@ -5720,7 +5740,8 @@ window.__ModuleLoader__.load({
 				h("div",{role:"status","aria-live":"polite",style:{display:"flex",gap:8,alignItems:"center",fontSize:14,color:root.isError?"var(--dsw-alias-state-error-primary)":"var(--dsw-alias-label-secondary)"}},
 					h("svg",{viewBox:"0 0 24 24",width:20,height:20,fill:"none",stroke:"currentColor",strokeWidth:1.6,"aria-hidden":true,style:{flexShrink:0}},h("rect",{x:3,y:3,width:18,height:18,rx:4}),h("circle",{cx:9,cy:9,r:2}),h("path",{d:"M3 17l5-5 4 4 3-3 6 5"})),h("span",{className:running?"R15qIq_turnStatus":undefined},status)),
 				prompt&&h("details",{style:{fontSize:12,color:"var(--dsw-alias-label-tertiary)",marginTop:6}},h("summary",{style:{cursor:"pointer"}},t("image.description")),h("p",{style:{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},prompt)),
-				root.isError&&h("p",{role:"alert",style:{fontSize:13,color:"var(--dsw-alias-state-error-primary)",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},message||status),
+				root.isError&&h("p",{role:"alert",style:{fontSize:13,color:"var(--dsw-alias-state-error-primary)",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},userFacingPromptError({message},t)||status),
+                root.isError&&message&&h("details",null,h("summary",null,t("error.details")),h("pre",{style:{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}},message)),
 				!running&&!root.isError&&Array.isArray(root.meta?.images)&&root.meta.images.slice(0,4).map((block,index)=>block.type==="image"&&block.attachment?.attachmentId?h(GeneratedImageCard,{key:`${block.attachment.attachmentId}:${index}`,attachment:block.attachment,loadImage,sessionId,onEditSubmitted,t}):null));
 		}
 		function GeneratedImageCard({attachment,loadImage,sessionId,onEditSubmitted,t}) {
@@ -6516,7 +6537,16 @@ window.__ModuleLoader__.load({
 			"hint.goal": "输入目标，智能体将持续执行",
 			"hint.goal.active": "当前目标进行中。可输入 edit 修改 / pause 暂停 / resume 继续 / clear 清除",
 			"placeholder.plan": PLAN_NEXT_ACTION_ZH,
-			"placeholder.default": "给智能体发消息",
+			"placeholder.default": "给智能体发消息（Ctrl+Enter 可自动续写序号）",
+            "placeholder.tipNewline": "Shift+Enter 换行，Enter 发送",
+            "placeholder.tipImage": "粘贴或拖入图片，再输入你想修改的内容",
+            "error.notGit": "当前目录不是 Git 仓库，Git 命令未执行成功。",
+            "error.workdir": "当前工作目录无法读取，请检查目录路径和访问权限。",
+            "error.sandboxUnavailable": "Windows 沙箱运行器不可用，请检查安装包的核心程序。",
+            "error.sandboxDenied": "文件操作被沙箱拒绝，请检查目标目录的授权。",
+            "error.nativeUnsupported": "当前连接不支持此图像或搜索接口，请在任务分工中选择支持该功能的连接。",
+            "error.agentPrompt": "Agent 调用缺少有效的任务提示，请补全 prompt。",
+            "error.details": "查看错误详情",
 			"placeholder.unavailable": "会话不可用",
 			"placeholder.parentOffline": "父会话已离线，无法继续发送；仍可停止当前运行",
 			"placeholder.hero": "描述你想要构建的内容",
@@ -6803,7 +6833,16 @@ window.__ModuleLoader__.load({
 			"hint.goal": "describe the objective for a long-running task",
 			"hint.goal.active": "goal active — edit / pause / resume / clear",
 			"placeholder.plan": PLAN_NEXT_ACTION_EN,
-			"placeholder.default": "Message the agent",
+			"placeholder.default": "Message the agent (Ctrl+Enter continues numbered lists)",
+            "placeholder.tipNewline": "Shift+Enter for a new line; Enter to send",
+            "placeholder.tipImage": "Paste or drop an image, then describe your changes",
+            "error.notGit": "This directory is not a Git repository; the Git command failed.",
+            "error.workdir": "The working directory cannot be read. Check its path and access permissions.",
+            "error.sandboxUnavailable": "The Windows sandbox runner is unavailable. Check the installed core executable.",
+            "error.sandboxDenied": "The sandbox denied the file operation. Check authorization for the target directory.",
+            "error.nativeUnsupported": "This connection does not support the image or search interface. Assign a compatible connection in task models.",
+            "error.agentPrompt": "The Agent call requires a non-empty prompt.",
+            "error.details": "Error details",
 			"placeholder.unavailable": "Session unavailable",
 			"placeholder.parentOffline": "Parent session offline; sending is unavailable but you can still stop the run",
 			"placeholder.hero": "Describe what you want to build",
@@ -10764,6 +10803,7 @@ window.__ModuleLoader__.load({
 					/* v8 ignore next -- unreachable: list registration validates id at load. */
 					if (entry.options.id === void 0) continue;
                     if (["trajectory","artifacts","code-graph","context"].includes(entry.options.id)&&miniMenus.getSnapshot().value?.[entry.options.id]===false) continue;
+                    if (entry.options.id === "project-tasks" && miniMenus.getSnapshot().value?.tasks === false) continue;
 					tabs.push({
 						id: entry.options.id,
 						label: (0, _deepseek_ai_dsh_client_ui_slots.resolveSlotLabel)(entry.options.label) ?? entry.options.id

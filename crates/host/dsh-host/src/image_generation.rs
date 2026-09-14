@@ -12,29 +12,18 @@ use std::{sync::Arc, time::Duration};
 
 const MAX_BODY: usize = 64 * 1024 * 1024;
 fn failure(message: impl Into<String>) -> ToolBodyError {
+    let message = message.into();
+    let code = if message.starts_with("NATIVE_TOOL_UNSUPPORTED:") {
+        "NATIVE_TOOL_UNSUPPORTED"
+    } else { "IMAGE_GENERATION_FAILED" };
     ToolBodyError::coded(
-        message.into(),
+        message,
         "ImageGenerationError",
-        "IMAGE_GENERATION_FAILED",
+        code,
     )
 }
 fn image_ref(value: &Value, id: &str) -> Option<ImageAttachmentRef> {
-    match value {
-        Value::Object(map) => {
-            if map.get("type") == Some(&json!("image"))
-                && map.get("attachment").is_some_and(|v| {
-                    v["attachmentId"] == id || (id.starts_with("generated-") && v["name"] == id)
-                })
-            {
-                if let Ok(reference) = serde_json::from_value(map["attachment"].clone()) {
-                    return Some(reference);
-                }
-            }
-            map.values().find_map(|v| image_ref(v, id))
-        }
-        Value::Array(values) => values.iter().find_map(|v| image_ref(v, id)),
-        _ => None,
-    }
+    dsh_attachment::find_image_reference(value, id)
 }
 fn sniff(bytes: &[u8]) -> Result<ImageMediaType, String> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {

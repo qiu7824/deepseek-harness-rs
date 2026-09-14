@@ -17,7 +17,7 @@ pub fn install(
         ctx,
         settings_namespace("mini-menu")?,
         Schema::object(
-            ["trajectory", "artifacts", "code-graph", "context"]
+            ["trajectory", "artifacts", "code-graph", "context", "tasks"]
                 .into_iter()
                 .map(|key| {
                     (

@@ -1,4 +1,6 @@
-//! The runnable DeepSeek Harness Host binary.
+//! The runnable DeepSeek Harness Host binary (M6 skeleton): compose the
+//! core spine, mount the invariant companions, print a boot report, and
+//! exit.
 
 use cordis::Context;
 
@@ -9,24 +11,12 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Context::root();
-    let port = std::env::args()
-        .skip_while(|arg| arg != "--port")
-        .nth(1)
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(58080);
-    let home = std::env::var_os("DSH_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(dsh_home_paths::default_dsh_home);
-    let spine = dsh_host::compose_persistent_host_at_port(&ctx, home, Some("default"), port)?;
+    let spine = dsh_host::compose_persistent_host(&ctx, Some("default"))?;
     dsh_host::mount_companions(&spine)?;
     // Allow the optional-service fibers to settle before the report.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let report = dsh_host::boot_report(&spine).await?;
     println!("{}", serde_json::to_string_pretty(&report)?);
-    // Launcher-owned process: remain alive until the launcher terminates us.
-    // The launcher owns shutdown and sends a process termination signal; waiting
-    // on ctrl_c alone is unreliable for a hidden Windows child process.
-    std::future::pending::<()>().await;
     spine.shutdown().await?;
     Ok(())
 }
