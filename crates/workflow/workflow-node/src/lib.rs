@@ -572,7 +572,10 @@ fn read_agent_input(input: Value) -> AgentInput {
             prompt: input
                 .remove("prompt")
                 .and_then(|value| value.as_str().map(str::to_string))
-                .unwrap_or_else(|| panic!("agent input requires prompt")),
+                // Malformed tool payloads must not panic the workflow task. Keep an
+                // empty prompt so the child runtime can report a normal validation
+                // error and the parent workflow remains recoverable.
+                .unwrap_or_default(),
             label: input
                 .remove("label")
                 .and_then(|value| value.as_str().map(str::to_string)),

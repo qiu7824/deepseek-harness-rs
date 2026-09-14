@@ -347,6 +347,18 @@ impl ToolPwshService {
                                 return Err(ToolBodyError::coded(format!("The sandbox denied a file operation. Check the authorized workspace and permissions before retrying.\n{output}"), "SandboxError", "SANDBOX_DENIED"));
                             }
                         }
+                        // Repository inspection is often run from arbitrary folders. A
+                        // missing .git directory is a normal state, so surface it as
+                        // diagnostic output instead of turning the whole turn into an error.
+                        let git_outside_repo = output.contains("fatal: not a git repository")
+                            || output.contains("fatal: Unable to read current working directory");
+                        if git_outside_repo && result.exit_code.is_some_and(|code| code != 0) {
+                            return Ok(serde_json::json!({
+                                "kind": "foreground",
+                                "exitCode": result.exit_code,
+                                "stdout": format!("[diagnostic: repository unavailable]\n{output}"),
+                            }));
+                        }
                         if (result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some()) && !allow_nonzero {
                             let hint = if output.contains("NativeCommandError") {
                                 "\nPowerShell interrupted native stderr handling. For optional dependency checks, use Invoke-DshNativeProbe and inspect its ExitCode and complete Output; allow_nonzero alone cannot resume an interrupted script."
