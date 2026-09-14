@@ -1,6 +1,4 @@
-//! The runnable DeepSeek Harness Host binary (M6 skeleton): compose the
-//! core spine, mount the invariant companions, print a boot report, and
-//! exit.
+//! The runnable DeepSeek Harness Host binary.
 
 use cordis::Context;
 
@@ -11,12 +9,19 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Context::root();
-    let spine = dsh_host::compose_persistent_host(&ctx, Some("default"))?;
+    let port = std::env::args()
+        .skip_while(|arg| arg != "--port")
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(58080);
+    let spine = dsh_host::compose_persistent_host_at_port(&ctx, std::env::current_dir()?, Some("default"), port)?;
     dsh_host::mount_companions(&spine)?;
     // Allow the optional-service fibers to settle before the report.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let report = dsh_host::boot_report(&spine).await?;
     println!("{}", serde_json::to_string_pretty(&report)?);
+    // Launcher-owned process: keep the web service alive until termination.
+    tokio::signal::ctrl_c().await?;
     spine.shutdown().await?;
     Ok(())
 }
