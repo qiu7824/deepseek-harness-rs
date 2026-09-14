@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "e407321f407b8379",
+      "rev": "7a65e6ba5ee240fa",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
