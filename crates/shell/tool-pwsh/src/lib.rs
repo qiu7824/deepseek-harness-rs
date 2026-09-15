@@ -34,6 +34,9 @@ fn escalation_mode_for_permissions(
     if justification.is_some() && permissions.is_none() {
         return Err("`justification` requires an explicit `sandbox_permissions`".into());
     }
+    if permissions.is_some() && justification.is_none() {
+        return Err("`sandbox_permissions` requires a non-empty `justification`".into());
+    }
     match permissions {
         None | Some("use_default") => Ok(None),
         Some("with_additional_permissions") => Ok(Some(dsh_sandbox::SandboxMode::WorkspaceWrite)),
@@ -492,6 +495,7 @@ mod tests {
             "danger-full-access"
         );
         assert!(escalation_mode_for_permissions(None, Some("missing mode")).is_err());
+        assert!(escalation_mode_for_permissions(Some("require_escalated"), None).is_err());
         assert!(escalation_mode_for_permissions(Some("unknown"), Some("bad mode")).is_err());
     }
 }
