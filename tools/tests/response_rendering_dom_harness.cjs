@@ -155,7 +155,7 @@ async function main() {
   const commands = [];
   for (const [dictionary, expected] of [[conversation.zh, '可在工作区'], [conversation.en, 'Write inside the workspace']]) {
     await act(() => root.render(React.createElement(conversation.PermissionSelect, { value: permission, locked: false, command: async value => { commands.push(value); }, t: translate(dictionary) })));
-    assert.ok(document.querySelector('button').title.startsWith(expected), 'the actual composer permission tooltip follows the current locale');
+    assert.ok(document.querySelector('button').title.includes(expected), 'the actual composer permission tooltip follows the current locale while retaining the access-mode label');
   }
   await act(() => document.querySelector('button').click()); await act(() => [...document.querySelectorAll('[role=menuitem]')].find(node => node.textContent === 'CUSTOM_PRESET').click());
   assert.equal(commands[0], '/permission custom-preset');

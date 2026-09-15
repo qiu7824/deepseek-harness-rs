@@ -3649,11 +3649,15 @@ window.__ModuleLoader__.load({
 			return formatDurationMs(Math.max(0, metrics.firstTokenTime - metrics.stepStartTime));
 		}
 		function generationTime(metrics) {
+            if (metrics.firstTokenTime === null && !metrics.requestMeasurement) return "First token unavailable";
+            if (metrics.completedTime === null) return "Pending";
             const measurement=metrics.requestMeasurement;
             if(!measurement||!Number.isSafeInteger(measurement.networkElapsedMs)||measurement.networkElapsedMs<=0)return "Not recorded";
             return formatDurationMs(measurement.networkElapsedMs);
 		}
 		function throughput(metrics) {
+            if (metrics.firstTokenTime === null && !metrics.requestMeasurement) return "First token unavailable";
+            if (metrics.completedTime === null) return "Pending";
             const m=metrics.requestMeasurement;
             if(m?.phase!=="completed"||m.measurement!=="request-average"||!m.attemptId||!m.executionInstanceId||!Number.isSafeInteger(m.networkElapsedMs)||m.networkElapsedMs<=0||!Number.isSafeInteger(m.outputTokens)||m.outputTokens<0)return "Request rate unavailable";
             return `${(m.outputTokens/(m.networkElapsedMs/1000)).toFixed(1)} tok/s`;

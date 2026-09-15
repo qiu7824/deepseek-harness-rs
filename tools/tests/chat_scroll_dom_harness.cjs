@@ -45,7 +45,7 @@ async function fixture({ rows, viewport = 200, heights = {}, before = false, aft
   const root = Client.createRoot(port.firstChild);
   const render = () => root.render(React.createElement(context.ChatView, props));
   const load = direction => { calls[direction]++; state[direction === 'older' ? 'loadingOlder' : 'loadingNewer'] = true; render(); return new Promise(resolve => pending.push({ direction, resolve, cancelled: false })); };
-  const props = { sessionId: 'fixture', useSession: select => select(state), useSessions: select => select({ byId: { fixture: { cwd: 'fixture' } } }), useStore: select => select({}),
+  const props = { sessionId: 'fixture', useSession: select => select(state), useSessions: select => select({ byId: { fixture: { cwd: 'fixture' } } }), useStore: select => select({}), useProjection: (_name, select) => select ? select({}) : {},
     chatScroll: { read: () => saved, save: value => saves.push(value) }, renderSlot: () => null, t: translate,
     loadOlder: () => load('older'), loadNewer: () => load('newer'), returnLatest: () => load('latest'),
     cancelHistoryPaging: () => { calls.cancelled++; for (const request of pending) if (request.direction !== 'latest') request.cancelled = true; state.loadingOlder = state.loadingNewer = false; render(); } };
