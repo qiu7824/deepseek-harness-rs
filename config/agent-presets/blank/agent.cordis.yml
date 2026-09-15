@@ -1,0 +1,12 @@
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+- id: tool-present
+  name: '@deepseek-ai/dsh-tool-present'
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'

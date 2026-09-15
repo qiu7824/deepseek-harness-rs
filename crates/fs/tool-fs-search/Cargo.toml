@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 regex = { workspace = true }
 globset = "0.4"
 walkdir = "2"
+tokio = { workspace = true }
 
 [dev-dependencies]
 dsh-llm = { path = "../../core/llm" }

@@ -4002,7 +4002,7 @@ fn compose_host_in_fiber(
     let agent_presets = dsh_agent_presets::AgentPresets::install(
         ctx,
         dsh_agent_presets::Config {
-            default: "standard".to_string(),
+            default: "blank".to_string(),
             roots: vec![dsh_agent_presets::PresetRoot {
                 path: shipped_preset_root,
                 trust: dsh_agent_presets::PresetTrust::System,

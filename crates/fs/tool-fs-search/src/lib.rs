@@ -109,132 +109,35 @@ fn display(path: &str, workdir: &str) -> String {
     path.to_string()
 }
 
-fn vcs_component(path: &Path) -> bool {
-    path.components()
-        .any(|part| VCS.contains(&part.as_os_str().to_string_lossy().as_ref()))
-}
-
-fn fallback_glob(
-    workdir: &str,
-    root: Option<&str>,
-    pattern: &str,
-) -> Result<Vec<String>, ToolBodyError> {
-    let matcher = globset::GlobBuilder::new(pattern)
-        .literal_separator(false)
-        .build()
-        .map_err(|error| {
-            err(
-                format!("glob pattern rejected: {error}"),
-                "SEARCH_INVALID_PATTERN",
-            )
-        })?
-        .compile_matcher();
-    let base = root
-        .map(|value| Path::new(workdir).join(value))
-        .unwrap_or_else(|| PathBuf::from(workdir));
-    if !base.exists() {
-        return Err(err(
-            format!(
-                "glob search failed: target {} does not exist",
-                base.display()
-            ),
-            "SEARCH_FAILED",
-        ));
-    }
-    let mut found = Vec::new();
-    for entry in walkdir::WalkDir::new(&base)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| !vcs_component(entry.path()))
-    {
-        let entry =
-            entry.map_err(|error| err(format!("glob search failed: {error}"), "SEARCH_FAILED"))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let relative_to_base = entry.path().strip_prefix(&base).unwrap_or(entry.path());
-        if matcher.is_match(relative_to_base) || matcher.is_match(entry.file_name()) {
-            let modified = entry.metadata().ok().and_then(|meta| meta.modified().ok());
-            found.push((modified, display(&entry.path().to_string_lossy(), workdir)));
-        }
-    }
-    found.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    Ok(found.into_iter().map(|(_, path)| path).collect())
-}
-
-fn fallback_grep(
-    workdir: &str,
-    root: Option<&str>,
-    include: Option<&str>,
-    pattern: &str,
-) -> Result<Vec<serde_json::Value>, ToolBodyError> {
-    let regex = regex::Regex::new(pattern).map_err(|error| {
-        err(
-            format!("grep pattern rejected: {error}"),
-            "SEARCH_INVALID_PATTERN",
-        )
-    })?;
-    let include = include
-        .map(|value| {
-            globset::GlobBuilder::new(value)
-                .literal_separator(false)
-                .build()
-                .map(|glob| glob.compile_matcher())
-                .map_err(|error| {
-                    err(
-                        format!("grep include rejected: {error}"),
-                        "SEARCH_INVALID_PATTERN",
-                    )
-                })
-        })
-        .transpose()?;
-    let base = root
-        .map(|value| Path::new(workdir).join(value))
-        .unwrap_or_else(|| PathBuf::from(workdir));
-    if !base.exists() {
-        return Err(err(
-            format!(
-                "grep search failed: target {} does not exist",
-                base.display()
-            ),
-            "SEARCH_FAILED",
-        ));
-    }
-    let mut matches = Vec::new();
-    let entries: Box<dyn Iterator<Item = Result<walkdir::DirEntry, walkdir::Error>>> =
-        if base.is_file() {
-            Box::new(walkdir::WalkDir::new(&base).max_depth(0).into_iter())
-        } else {
-            Box::new(walkdir::WalkDir::new(&base).follow_links(false).into_iter())
-        };
-    for entry in entries {
-        let entry =
-            entry.map_err(|error| err(format!("grep search failed: {error}"), "SEARCH_FAILED"))?;
-        if !entry.file_type().is_file() || vcs_component(entry.path()) {
-            continue;
-        }
-        let rel = entry.path().strip_prefix(&base).unwrap_or(entry.path());
-        if include
-            .as_ref()
-            .is_some_and(|matcher| !matcher.is_match(rel) && !matcher.is_match(entry.file_name()))
-        {
-            continue;
-        }
-        let bytes = std::fs::read(entry.path())
-            .map_err(|error| err(format!("grep search failed: {error}"), "SEARCH_FAILED"))?;
-        let Ok(text) = std::str::from_utf8(&bytes) else {
-            continue;
-        };
-        for (index, line) in text.lines().enumerate() {
-            if regex.is_match(line) {
-                matches.push(serde_json::json!({"path":display(&entry.path().to_string_lossy(),workdir),"lineNumber":index+1,"line":line}));
-            }
-        }
-    }
-    Ok(matches)
-}
-
 async fn run(
+    runtime: &Arc<dyn SubprocessRuntime>,
+    tool: &str,
+    args: Vec<String>,
+    workdir: String,
+    signal: SubprocessAbort,
+    cfg: &Config,
+) -> Result<(String, bool), ToolBodyError> {
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_millis(cfg.timeout_ms);
+    let external = signal.clone();
+    let bounded: SubprocessAbort = Arc::new(move || external() || started.elapsed() >= budget);
+    let operation = run_command(runtime, tool, args, workdir, bounded, cfg);
+    tokio::pin!(operation);
+    loop {
+        if signal() {
+            return Err(err(format!("{tool} search cancelled"), "CANCELLED"));
+        }
+        if started.elapsed() >= budget {
+            return Err(err(format!("{tool} search exceeded {} ms", cfg.timeout_ms), "SEARCH_TIMEOUT"));
+        }
+        tokio::select! {
+            result = &mut operation => return result,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+    }
+}
+
+async fn run_command(
     runtime: &Arc<dyn SubprocessRuntime>,
     tool: &str,
     args: Vec<String>,
@@ -490,15 +393,6 @@ impl Service {
                                     .collect()
                             }
                         }
-                        Err(error)
-                            if error
-                                .info
-                                .as_ref()
-                                .is_some_and(|info| info.code == "SEARCH_FAILED")
-                                && error.message.contains("could not start") =>
-                        {
-                            fallback_glob(&workdir, path, pattern)?
-                        }
                         Err(error) => return Err(error),
                     };
                     Ok(serde_json::json!({"root":path.unwrap_or("."),"paths":paths}))
@@ -624,17 +518,8 @@ impl Service {
                         &s.cfg,
                     )
                     .await;
-                    let mut matches = match run_result {
+                    let matches = match run_result {
                         Ok((_, true)) => Vec::new(),
-                        Err(error)
-                            if error
-                                .info
-                                .as_ref()
-                                .is_some_and(|info| info.code == "SEARCH_FAILED")
-                                && error.message.contains("could not start") =>
-                        {
-                            fallback_grep(&workdir, path, include, pattern)?
-                        }
                         Err(error) => return Err(error),
                         Ok((out, false)) => {
                             let mut parsed = Vec::new();
@@ -674,6 +559,38 @@ impl Service {
 }
 
 pub struct ToolFsSearchPlugin;
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::{future::Future, pin::Pin, sync::atomic::{AtomicBool, Ordering}, time::{Duration, Instant}};
+    type Fut<T> = Pin<Box<dyn Future<Output=T> + Send + 'static>>;
+    struct HungResolver;
+    impl SubprocessRuntime for HungResolver {
+        fn resolve_executable(&self, _: &str, _: Option<&[(String,String)]>, _: Option<SubprocessAbort>) -> Fut<Result<String,String>> {
+            Box::pin(std::future::pending())
+        }
+        fn spawn(&self, _: SubprocessSpawnSpec) -> Result<Arc<dyn dsh_subprocess::SubprocessHandle>,String> { panic!("cancelled resolution must not spawn") }
+        fn spawn_terminal(&self, _: dsh_subprocess::SubprocessTerminalSpawnSpec) -> Fut<Result<Arc<dyn dsh_subprocess::SubprocessTerminalHandle>,String>> { panic!("search never opens a terminal") }
+    }
+    fn config(timeout_ms:u64)->Config { Config { sample:false, glob_max:100, grep_max:100, line_max:2000, raw_max:10000, grace_ms:100, stderr_max:10000, timeout_ms } }
+    #[tokio::test]
+    async fn hung_executable_resolution_is_cancelled_promptly() {
+        let runtime:Arc<dyn SubprocessRuntime>=Arc::new(HungResolver);
+        let flag=Arc::new(AtomicBool::new(false));let setter=flag.clone();
+        tokio::spawn(async move { tokio::time::sleep(Duration::from_millis(25)).await;setter.store(true,Ordering::SeqCst); });
+        let started=Instant::now();
+        let error=run(&runtime,"grep",vec![],".".into(),Arc::new(move||flag.load(Ordering::SeqCst)),&config(5000)).await.unwrap_err();
+        assert_eq!(error.info.unwrap().code,"CANCELLED");
+        assert!(started.elapsed()<Duration::from_secs(1));
+    }
+    #[tokio::test]
+    async fn hung_executable_resolution_has_a_total_deadline() {
+        let runtime:Arc<dyn SubprocessRuntime>=Arc::new(HungResolver);
+        let error=run(&runtime,"glob",vec![],".".into(),Arc::new(||false),&config(30)).await.unwrap_err();
+        assert_eq!(error.info.unwrap().code,"SEARCH_TIMEOUT");
+    }
+}
 #[async_trait::async_trait]
 impl Plugin for ToolFsSearchPlugin {
     fn name(&self) -> Option<&'static str> {

@@ -347,6 +347,9 @@ impl ToolPwshService {
                                 return Err(ToolBodyError::coded(format!("The sandbox denied a file operation. Check the authorized workspace and permissions before retrying.\n{output}"), "SandboxError", "SANDBOX_DENIED"));
                             }
                         }
+                        if dsh_shell::ShellSandboxInfo::com_access_denied(&result.stderr.text) {
+                            return Err(ToolBodyError::coded(format!("COM activation was denied by the desktop or process permissions. This does not establish that Office is missing or that a workspace file is unauthorized. Use the configured desktop automation channel; do not repeat the same COM call in the sandbox.\n{output}"), "ComError", "COM_ACCESS_DENIED"));
+                        }
                         if (result.exit_code.is_some_and(|code| code != 0) || result.signal.is_some()) && !allow_nonzero {
                             let hint = if output.contains("fatal: not a git repository") {
                                 "\nThis directory is not a Git repository. For optional inspection, first use Invoke-DshNativeProbe -FilePath git -ArgumentList @('rev-parse','--is-inside-work-tree'); run Git status/log only if ExitCode is 0. Continue ordinary file inspection without Git."

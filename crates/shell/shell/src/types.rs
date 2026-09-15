@@ -38,6 +38,12 @@ pub struct ShellSandboxInfo {
 }
 
 impl ShellSandboxInfo {
+    /// COM activation is a desktop/registry permission failure, not evidence of a file denial.
+    pub fn com_access_denied(stderr: &str) -> bool {
+        let text = stderr.to_ascii_lowercase();
+        (text.contains("80070005") || text.contains("e_accessdenied"))
+            && (text.contains("clsid") || text.contains("class factory") || text.contains("comobject"))
+    }
     pub fn observe(
         mode: SandboxMode,
         confined: &dsh_sandbox::ConfinedArgv,
@@ -66,6 +72,7 @@ impl ShellSandboxInfo {
             });
         let denied = failed
             && !runner_failed
+            && !Self::com_access_denied(stderr)
             && confined.denial_signatures.iter().any(|signature| {
                 lines
                     .iter()
@@ -77,6 +84,20 @@ impl ShellSandboxInfo {
             enforcement: Some(confined.enforcement),
             runner_failed: Some(runner_failed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellSandboxInfo;
+    #[test]
+    fn com_activation_is_not_classified_as_file_sandbox_denial() {
+        let stderr = "CLSID ... 80070005 E_ACCESSDENIED ... COMObject";
+        assert!(ShellSandboxInfo::com_access_denied(stderr));
+    }
+    #[test]
+    fn ordinary_access_denial_remains_sandbox_signal() {
+        assert!(!ShellSandboxInfo::com_access_denied("Access is denied reading file"));
     }
 }
 
