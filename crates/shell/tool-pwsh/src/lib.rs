@@ -9,6 +9,7 @@ use dsh_tools::{
     PreToolDecision, ToolBodyError, ToolDefinition, ToolExecution, ToolOutputDefinition,
     ToolRunContext, ToolRuntime,
 };
+use dsh_user_approval::{ApprovalOutcome, ApprovalRequest, ApprovalService};
 use futures::future::BoxFuture;
 
 fn shell_runtime_failure(message: String) -> ToolBodyError {
@@ -24,6 +25,21 @@ fn shell_runtime_failure(message: String) -> ToolBodyError {
         }
     }
     ToolBodyError::coded(message, "ShellRuntimeError", "SHELL_STARTUP_FAILED")
+}
+
+fn escalation_mode_for_permissions(
+    permissions: Option<&str>,
+    justification: Option<&str>,
+) -> Result<Option<dsh_sandbox::SandboxMode>, String> {
+    if justification.is_some() && permissions.is_none() {
+        return Err("`justification` requires an explicit `sandbox_permissions`".into());
+    }
+    match permissions {
+        None | Some("use_default") => Ok(None),
+        Some("with_additional_permissions") => Ok(Some(dsh_sandbox::SandboxMode::WorkspaceWrite)),
+        Some("require_escalated") => Ok(Some(dsh_sandbox::SandboxMode::DangerFullAccess)),
+        Some(other) => Err(format!("unsupported sandbox_permissions: {other}")),
+    }
 }
 
 struct PwshJobHooks {
@@ -138,6 +154,9 @@ impl ToolPwshService {
         let sandbox_policy = ctx
             .get_typed::<Arc<SandboxPolicyService>>("sandboxPolicy", false)
             .map(|slot| slot.as_ref().clone());
+        let approval = ctx
+            .get_typed::<Arc<ApprovalService>>("approval", false)
+            .map(|slot| slot.as_ref().clone());
 
         let approval_listener: Arc<Listener> = Arc::new(|_ctx, args| {
             let execution = args
@@ -185,6 +204,7 @@ impl ToolPwshService {
         let execute_shell = shell.clone();
         let execute_jobs = jobs.clone();
         let execute_policy = sandbox_policy.clone();
+        let execute_approval = approval.clone();
         let execute_workspaces = ctx
             .get_typed::<Arc<dyn dsh_workspace_resources::ManagedWorkspaces>>(
                 "managedWorkspaces",
@@ -202,9 +222,11 @@ impl ToolPwshService {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "command": { "type": "string" },
-                        "workdir": { "type": "string", "description": "Working directory; managed execution copies preserve the source project as read-only." },
-                        "description": { "type": "string" },
+                            "command": { "type": "string" },
+                            "workdir": { "type": "string", "description": "Working directory; managed execution copies preserve the source project as read-only." },
+                            "description": { "type": "string" },
+                            "sandbox_permissions": { "type": "string", "enum": ["use_default", "with_additional_permissions", "require_escalated"], "description": "Request a wider sandbox for this exact command; requires justification and user approval." },
+                            "justification": { "type": "string", "description": "Why this command needs the requested wider sandbox." },
                         "timeout_ms": { "type": "integer", "description": "Foreground execution budget in milliseconds, from 1 to 600000; use a short budget for simple probes and background jobs for long work." },
                         "run_in_background": { "type": "boolean" },
                         "allow_nonzero": { "type": "boolean", "description": "Return read-only diagnostic output even when a probe exits nonzero; the exitCode remains visible." }
@@ -242,10 +264,12 @@ impl ToolPwshService {
                     let shell = execute_shell.clone();
                     let jobs = execute_jobs.clone();
                     let sandbox_policy = execute_policy.clone();
+                    let approval = execute_approval.clone();
                     let workspaces=execute_workspaces.clone();
                     let args = args.clone();
                     let signal = run.execution.signal.lock().clone();
                     let owner = run.execution.agent.clone();
+                    let call_id = run.execution.call_id.to_string();
                     Box::pin(async move {
                         let command = args
                             .get("command")
@@ -259,6 +283,69 @@ impl ToolPwshService {
                             Some(value) => Some(value.as_u64().filter(|value| (1..=600_000).contains(value))
                                 .ok_or_else(|| ToolBodyError::coded("timeout_ms must be an integer from 1 to 600000", "ToolInputError", "TOOL_INPUT_INVALID"))?),
                         };
+                        let requested_permissions = args
+                            .get("sandbox_permissions")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|value| *value != "use_default");
+                        let justification = args
+                            .get("justification")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        if justification.is_some() && requested_permissions.is_none() {
+                            return Err(ToolBodyError::coded(
+                                "`justification` requires an explicit `sandbox_permissions`",
+                                "ToolInputError",
+                                "TOOL_INPUT_INVALID",
+                            ));
+                        }
+                        let escalation_mode = escalation_mode_for_permissions(
+                            requested_permissions,
+                            justification,
+                        )
+                        .map_err(|message| {
+                            ToolBodyError::coded(message, "ToolInputError", "TOOL_INPUT_INVALID")
+                        })?;
+                        if let Some(mode) = escalation_mode {
+                            let agent = owner.clone().ok_or_else(|| {
+                                ToolBodyError::plain(
+                                    "sandbox escalation requires an initiating agent",
+                                )
+                            })?;
+                            let approval = approval.clone().ok_or_else(|| {
+                                ToolBodyError::coded(
+                                    "sandbox escalation requires an approval service",
+                                    "ApprovalError",
+                                    "APPROVAL_UNAVAILABLE",
+                                )
+                            })?;
+                            let outcome = approval
+                                .request(&ApprovalRequest {
+                                    agent,
+                                    tool_name: "pwsh".into(),
+                                    call_id: Some(call_id.clone()),
+                                    reason: Some(format!(
+                                        "PowerShell requests sandbox mode {}: {}",
+                                        mode.as_str(),
+                                        justification.unwrap_or("explicit model request"),
+                                    )),
+                                    grant_key: None,
+                                    rememberable: false,
+                                    signal: Some(signal.clone()),
+                                })
+                                .await
+                                .map_err(ToolBodyError::plain)?;
+                            if !matches!(
+                                outcome,
+                                ApprovalOutcome::AllowedOnce | ApprovalOutcome::AllowedAlways
+                            ) {
+                                return Err(ToolBodyError::coded(
+                                    format!("sandbox escalation was not approved: {}", outcome.as_str()),
+                                    "ApprovalError",
+                                    "APPROVAL_REJECTED",
+                                ));
+                            }
+                        }
                         if args.get("run_in_background") == Some(&serde_json::Value::Bool(true)) {
                             let description = args
                                 .get("description")
@@ -282,7 +369,7 @@ impl ToolPwshService {
                                     })?
                                     .resolve(&SandboxPolicyRequest {
                                         session: Some(Arc::new(owner.session().clone())),
-                                        mode: None,
+                                        mode: escalation_mode,
                                     });
                                 request.sandbox_policy = Some(policy);
                             }
@@ -320,7 +407,7 @@ impl ToolPwshService {
                                 })?
                                 .resolve(&SandboxPolicyRequest {
                                     session: Some(Arc::new(owner.session().clone())),
-                                    mode: None,
+                                    mode: escalation_mode,
                                 });
                             request.sandbox_policy = Some(policy);
                         }
@@ -344,7 +431,7 @@ impl ToolPwshService {
                                 return Err(ToolBodyError::coded(format!("Sandbox startup or cleanup failed; inspect the runtime before retrying the command.\n{output}"), "SandboxError", "SANDBOX_RUNNER_FAILED"));
                             }
                             if sandbox.denied {
-                                return Err(ToolBodyError::coded(format!("The sandbox denied a file operation. Check the authorized workspace and permissions before retrying.\n{output}"), "SandboxError", "SANDBOX_DENIED"));
+                                return Err(ToolBodyError::coded(format!("The sandbox denied a file operation. Check the authorized workspace and permissions before retrying.\n{output}\n[sandbox: escalation available — retry this exact command once with sandbox_permissions: \"require_escalated\" plus a justification; the approval prompt asks the user]"), "SandboxError", "SANDBOX_DENIED"));
                             }
                         }
                         if dsh_shell::ShellSandboxInfo::com_access_denied(&result.stderr.text) {
@@ -373,5 +460,38 @@ impl ToolPwshService {
             },
         )?;
         Ok(Arc::new(Self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escalation_mode_for_permissions;
+
+    #[test]
+    fn explicit_escalation_modes_are_fail_closed_and_justified() {
+        assert!(
+            escalation_mode_for_permissions(None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            escalation_mode_for_permissions(
+                Some("with_additional_permissions"),
+                Some("read tests")
+            )
+            .unwrap()
+            .unwrap()
+            .as_str(),
+            "workspace-write"
+        );
+        assert_eq!(
+            escalation_mode_for_permissions(Some("require_escalated"), Some("run external test"))
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "danger-full-access"
+        );
+        assert!(escalation_mode_for_permissions(None, Some("missing mode")).is_err());
+        assert!(escalation_mode_for_permissions(Some("unknown"), Some("bad mode")).is_err());
     }
 }

@@ -12,6 +12,8 @@ cordis = { path = "../../vendor/cordis" }
 dsh-jobs = { path = "../../jobs/jobs" }
 dsh-llm = { path = "../../core/llm" }
 dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-user-approval = { path = "../../interaction/user-approval" }
 dsh-shell = { path = "../shell" }
 dsh-tools = { path = "../../core/tools" }
 serde_json = { workspace = true }
