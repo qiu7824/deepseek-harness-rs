@@ -116,18 +116,28 @@ window.__ModuleLoader__.load({
 		* header button, a mask click, and document-level Escape (mounted only while
 		* open, so the listener lifetime is the panel's).
 		*/
-		function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }) {
-			const active = rows.find((r) => r.id === activeId)?.id ?? rows[0]?.id;
-			const titleId = (0, react.useId)();
-			(0, react.useEffect)(() => {
-				const onKeyDown = (e) => {
-					if (e.key === "Escape") onClose();
-				};
-				document.addEventListener("keydown", onKeyDown);
-				return () => {
-					document.removeEventListener("keydown", onKeyDown);
-				};
-			}, [onClose]);
+        function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose, t }) {
+            const active = rows.find((r) => r.id === activeId)?.id ?? rows[0]?.id;
+            const titleId = (0, react.useId)();
+            const [confirmClose,setConfirmClose]=(0,react.useState)(false);
+            const panelRef=(0,react.useRef)(null);
+            const requestClose=()=>{if(window.__DSH_SETTINGS_DIRTY__){setConfirmClose(true);return;}onClose()};
+            (0, react.useEffect)(() => {
+                const onKeyDown = (e) => {
+                    if (e.key === "Escape") {e.preventDefault();if(confirmClose)setConfirmClose(false);else requestClose();return;}
+                    if(e.key!=="Tab")return;
+                    const panel=panelRef.current;if(!panel)return;
+                    const focusable=[...panel.querySelectorAll("button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]")].filter(node=>node.offsetParent!==null);
+                    if(!focusable.length)return;
+                    const first=focusable[0],last=focusable[focusable.length-1];
+                    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+                    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+                };
+                document.addEventListener("keydown", onKeyDown);
+                return () => {
+                    document.removeEventListener("keydown", onKeyDown);
+                };
+            }, [onClose,confirmClose]);
 			const closeButton = (0, react.useRef)(null);
 			(0, react.useEffect)(() => {
 				closeButton.current?.focus();
@@ -138,8 +148,9 @@ window.__ModuleLoader__.load({
 				children: [(0, react_jsx_runtime.jsx)("div", {
 					className: SettingsRoot_module_css_default.mask,
 					"aria-hidden": "true",
-					onClick: onClose
-				}), (0, react_jsx_runtime.jsxs)("div", {
+                    onClick: requestClose
+                }), (0, react_jsx_runtime.jsxs)("div", {
+                    ref: panelRef,
 					className: SettingsRoot_module_css_default.panel,
 					role: "dialog",
 					"aria-modal": "true",
@@ -157,6 +168,7 @@ window.__ModuleLoader__.load({
 								className: clsx(SettingsRoot_module_css_default.navCell, row.id === active && SettingsRoot_module_css_default.active),
 								"aria-current": row.id === active ? "true" : void 0,
 								onClick: () => {
+									if(window.__DSH_SETTINGS_DIRTY__){setConfirmClose(true);return;}
 									onSelect(row.id);
 								},
 								children: [navIcon(row.id), (0, react_jsx_runtime.jsx)("span", {
@@ -176,7 +188,7 @@ window.__ModuleLoader__.load({
 								ref: closeButton,
 								type: "button",
 								className: SettingsRoot_module_css_default.close,
-								onClick: onClose,
+                                onClick: requestClose,
 								children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCloseOutline16, { size: 14 }), (0, react_jsx_runtime.jsx)("span", {
 									className: SettingsRoot_module_css_default.hiddenLabel,
 									children: renderSlot("settings.close", {})
@@ -184,8 +196,16 @@ window.__ModuleLoader__.load({
 							})]
 						}), (0, react_jsx_runtime.jsx)("div", {
 							className: SettingsRoot_module_css_default.options,
-							children: active !== void 0 && renderSlot("settings.section", { close: onClose }, { only: active })
-						})]
+                            children: active !== void 0 && renderSlot("settings.section", { close: requestClose }, { only: active })
+                        }),
+                        confirmClose&&(0,react_jsx_runtime.jsxs)("div",{className:"dshUnsavedDialog",role:"alertdialog","aria-modal":"true","aria-labelledby":`${titleId}-unsaved`,children:[
+                            (0,react_jsx_runtime.jsx)("strong",{id:`${titleId}-unsaved`,children:t?.("unsaved.title")??"未保存的修改"}),
+                            (0,react_jsx_runtime.jsx)("p",{children:t?.("unsaved.description")??"当前页面有未保存的修改。"}),
+                            (0,react_jsx_runtime.jsxs)("div",{className:"dshUnsavedActions",children:[
+                                (0,react_jsx_runtime.jsx)("button",{type:"button",onClick:()=>setConfirmClose(false),children:t?.("unsaved.continue")??"继续编辑"}),
+                                (0,react_jsx_runtime.jsx)("button",{type:"button",className:"dshUnsavedDiscard",onClick:()=>{setConfirmClose(false);onClose()},children:t?.("unsaved.discard")??"放弃修改并关闭"})
+                            ]})
+                        ]})]
 					})]
 				})]
 			}), document.body);
@@ -219,14 +239,13 @@ window.__ModuleLoader__.load({
 		function SettingsRoot(props) {
 			const { wide, reconnect, useConnectionState, useSections, useOnboardingSteps, useSessions, renderSlot, t } = props;
 			const [open, setOpen] = (0, react.useState)(false);
-			const [activeId, setActiveId] = (0, react.useState)(void 0);
+			const [activeId, setActiveId] = (0, react.useState)(() => { try { return window.sessionStorage.getItem("dsh-settings-section") || void 0; } catch { return void 0; } });
 			const [completedOnboarding, setCompletedOnboarding] = (0, react.useState)(() => /* @__PURE__ */ new Set());
 			const [showRecovery, setShowRecovery] = (0, react.useState)(false);
 			const triggerButton = (0, react.useRef)(null);
 			const wasOpen = (0, react.useRef)(open);
 			const close = (0, react.useCallback)(() => {
 				setOpen(false);
-				setActiveId(void 0);
 			}, []);
 			(0, react.useEffect)(() => {
 				if (wasOpen.current && !open) triggerButton.current?.focus();
@@ -234,8 +253,10 @@ window.__ModuleLoader__.load({
 			}, [open]);
 			const openSection = (0, react.useCallback)((id) => {
 				setActiveId(id);
+				try { window.sessionStorage.setItem("dsh-settings-section", id); } catch {}
 				setOpen(true);
 			}, []);
+			const selectSection=(0,react.useCallback)(id=>{setActiveId(id);try{window.sessionStorage.setItem("dsh-settings-section",id)}catch{}},[]);
 			const rows = useSections((s) => s);
             (0,react.useEffect)(()=>{const open=event=>{if(rows.some(row=>row.id===event.detail?.section))openSection(event.detail.section)};window.addEventListener("dsh-open-settings",open);return()=>window.removeEventListener("dsh-open-settings",open)},[rows,openSection]);
 			const connectionState = useConnectionState((state) => state);
@@ -296,8 +317,9 @@ window.__ModuleLoader__.load({
 					rows,
 					renderSlot,
 					activeId,
-					onSelect: setActiveId,
-					onClose: close
+					onSelect: selectSection,
+					onClose: close,
+                    t
 				}),
 				onboardingStep !== void 0 && renderSlot("settings.onboarding", {
 					stepId: onboardingStep.id,
@@ -782,6 +804,10 @@ window.__ModuleLoader__.load({
 			"trigger": "设置",
 			"title": "设置",
 			"close": "关闭",
+			"unsaved.title": "未保存的修改",
+			"unsaved.description": "当前页面有未保存的修改，关闭后这些修改会丢失。",
+			"unsaved.continue": "继续编辑",
+			"unsaved.discard": "放弃修改并关闭",
 			"openDocument": "打开配置文件",
 			"openDocument.error": "无法打开配置文件",
 			"general.nav": "通用设置",
@@ -802,6 +828,10 @@ window.__ModuleLoader__.load({
 			"trigger": "Settings",
 			"title": "Settings",
 			"close": "Close",
+			"unsaved.title": "Unsaved changes",
+			"unsaved.description": "This page has unsaved changes. Closing it will discard them.",
+			"unsaved.continue": "Continue editing",
+			"unsaved.discard": "Discard and close",
 			"openDocument": "Open configuration file",
 			"openDocument.error": "Could not open configuration file",
 			"general.nav": "General",
@@ -837,6 +867,7 @@ window.__ModuleLoader__.load({
 		* @param ctx - client root context.
 		*/
 		function apply(ctx) {
+			if(typeof document!=="undefined"&&!document.querySelector("style[data-dsh-unsaved-dialog]")){const style=document.createElement("style");style.dataset.dshUnsavedDialog="";style.textContent=".dshUnsavedDialog{position:absolute;z-index:5;right:24px;bottom:24px;width:min(380px,calc(100% - 48px));box-sizing:border-box;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary)}.dshUnsavedDialog strong{display:block;font-size:14px}.dshUnsavedDialog p{margin:6px 0 14px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}.dshUnsavedActions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.dshUnsavedActions button{min-height:34px;padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}.dshUnsavedActions button:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshUnsavedActions .dshUnsavedDiscard{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}";document.head.appendChild(style)}
 			ctx.effect(() => ctx.locale.register(NS, {
 				zh,
 				en

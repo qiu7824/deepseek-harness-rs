@@ -323,33 +323,7 @@ API 连接和订阅账号使用的主要模型管理器，对已有模型提供�
 | 保存冲突和失败 | 保留草稿，明确冲突字段；任何修改使旧成功提示失效 |
 | 中英文界面 | 同一概念用词一致；面向用户的错误不直接混用原始英文内部异常 |
 
-## 9. 实现定位
-
-以下位置用于对照问题与实施范围；多个问题可以由同一基础组件修复。
-
-| 位置 | 相关内容 |
-| --- | --- |
-| `web/src/runtime-plugins/ui-settings-models.js:1951` | `ProviderModelManager`：模型草稿、筛选、100 条加载、显示偏好、保存 |
-| `web/src/runtime-plugins/ui-settings-models.js:2018` | 草稿移除及已有模型行操作缺口 |
-| `web/src/runtime-plugins/ui-settings-models.js:1785` | 连接编辑器采用 `modelsManagedSeparately` |
-| `web/src/runtime-plugins/ui-settings-models.js:1358` | 创建自定义连接使用另一套模型列表编辑器 |
-| `web/src/runtime-plugins/ui-model-selection.js:326` | 会话模型选择器的根菜单与模型页 |
-| `web/src/runtime-plugins/ui-model-selection.js:576` | 模型分组全量渲染 |
-| `web/src/runtime-plugins/ui-model-selection.js:99` | 模型选择成功后保存默认值、部分成功状态 |
-| `web/src/runtime-plugins/ui-model-selection.js:212` | `agent-default-model` 写入位置 |
-| `web/src/runtime-plugins/ui-settings-models.js:2449` | Codex 网络诊断插槽位于全部子标签之前 |
-| `web/src/runtime-plugins/ui-productivity.js` | `Network` 组件与 `settings.models.network` 注册 |
-| `web/src/runtime-plugins/ui-settings-models.js:2132` | 授权截图、轮询、外置输入框与按键按钮 |
-| `web/src/runtime-plugins/ui-settings-models.js:2259` | 订阅账号展开、登录、切换、退出及草稿保护 |
-| `crates/host/dsh-host/src/provider_auth.rs:778` | Devin 授权与内置浏览器分支 |
-| `web/src/runtime-plugins/ui-settings-general.js:119` | 设置模态容器、关闭和键盘行为 |
-| `web/src/runtime-plugins/ui-settings-general.js:227` | 关闭设置后清空活动分类 |
-| `web/src/runtime-plugins/ui-settings-general.js:620` | 子智能体字段即时保存 |
-| `web/src/runtime-plugins/ui-settings-models.js:2117` | 任务分工表单、模型输入和推理档位 |
-| `web/src/runtime-plugins/ui-settings-models.js:619` | 提供方可用性判定 |
-| `web/src/runtime-plugins/ui-settings-models.js:2427` | 连接搜索、已登录连接分流和隐藏面板 |
-
-## 10. 界面证据
+## 9. 界面证据
 
 ### 订阅账号总览
 

@@ -13,6 +13,9 @@ pub(crate) fn preferences_schema() -> dsh_schemastery::Schema {
     use dsh_schemastery::{Data, Schema};
     let fields = indexmap::IndexMap::from([
         ("enabled".into(), Schema::boolean()),
+        // Removal is a user-level preference, separate from visibility. The
+        // remote catalog remains available so the model can be restored.
+        ("removed".into(), Schema::boolean()),
         ("compat".into(), super::provider_compatibility::schema()),
         ("name".into(), Schema::string()),
         ("description".into(), Schema::string()),
@@ -209,6 +212,7 @@ impl CatalogStore {
 pub(crate) const OVERRIDE_FIELDS: &[&str] = &[
     "compat",
     "enabled",
+    "removed",
     "name",
     "description",
     "api",
@@ -381,6 +385,7 @@ pub(crate) fn merge_models(profile: &Value, catalog: &Catalog, native: bool) -> 
         }
         enrich_capabilities(row, profile);
     }
+    rows.retain(|_, row| row.get("removed").and_then(Value::as_bool) != Some(true));
     rows.into_values().collect()
 }
 
@@ -562,6 +567,31 @@ mod tests {
         let other = merge_models(&profile, &catalog("bob", json!([{"id":"gpt-6"}])), false);
         assert_eq!(other[0]["enabled"], true);
         assert!(other[0].get("name").is_none());
+    }
+    #[test]
+    fn removed_model_preference_hides_only_the_current_account_model() {
+        let profile = json!({
+            "modelPreferences": {
+                "alice": {"retired": {"removed": true}}
+            }
+        });
+        let rows = merge_models(
+            &profile,
+            &catalog("alice", json!([{"id":"retired"},{"id":"keep"}])),
+            false,
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["keep"]
+        );
+        let other = merge_models(
+            &profile,
+            &catalog("bob", json!([{"id":"retired"},{"id":"keep"}])),
+            false,
+        );
+        assert_eq!(other.len(), 2);
     }
     #[test]
     fn legacy_and_manual_models_do_not_cross_accounts() {

@@ -1900,8 +1900,8 @@ window.__ModuleLoader__.load({
             if (!value || typeof value.accountScope!=="string" || typeof value.settingsNs!=="string" || !Array.isArray(value.preferencePath) || !value.preferencePath.every(part=>typeof part==="string") || !Array.isArray(value.models)) throw new Error("This host does not expose model preferences");
             return {...value,models:value.models.filter(model=>model&&typeof model.id==="string"&&model.id.length>0),preferences:value.preferences??{},profileModels:Array.isArray(value.profileModels)?value.profileModels:[],namespaceRevision:value.namespaceRevision};
         }
-        function draftModelRows(catalog,changes,manual) {
-            const known=catalog?.models??[],ids=new Set(known.map(model=>model.id));
+        function draftModelRows(catalog,changes,manual,removed=new Set()) {
+            const known=(catalog?.models??[]).filter(model=>!removed.has(model.id)),ids=new Set(known.map(model=>model.id));
             const missing=Object.keys(changes).filter(id=>!ids.has(id)).map(id=>({id,availability:"missing"}));
             return [...known,...missing].map(model=>({...model,...Object.fromEntries(Object.entries(changes[model.id]??{}).map(([key,edit])=>[key,edit.value]))})).concat(manual.map(model=>({...model,source:"manual",enabled:model.enabled!==false})));
         }
@@ -1915,7 +1915,7 @@ window.__ModuleLoader__.load({
             }
             return null;
         }
-        function preferenceOps(catalog,changes,manual) {
+        function preferenceOps(catalog,changes,manual,removed=new Set()) {
             const ops=[];
             for (const [id,fields] of Object.entries(changes)) for (const [field,edit] of Object.entries(fields)) {
                 const current=catalog.preferences[id]?.[field];
@@ -1924,18 +1924,24 @@ window.__ModuleLoader__.load({
                 const path=[...catalog.preferencePath,id,field];
                 ops.push(edit.value===void 0?{op:"unset",path}:{op:"set",path,value:edit.value});
             }
-            if (manual.length) {
+            const remainingProfileModels=catalog.profileModels.filter(model=>!removed.has(model.id));
+            if (manual.length||remainingProfileModels.length!==catalog.profileModels.length) {
                 if(manualModelFailure(catalog,manual))throw new Error("modelManualIdConflict");
-                ops.push({op:"set",path:[...(catalog.settingsPath??catalog.preferencePath.slice(0,-2)),"models"],value:[...catalog.profileModels,...manual.map(model=>{const {_draftId,...entry}=model;if(typeof entry.name==="string"&&!entry.name.trim())delete entry.name;return{...entry,id:entry.id.trim(),source:"manual",accountScope:catalog.accountScope}})]});
+                ops.push({op:"set",path:[...(catalog.settingsPath??catalog.preferencePath.slice(0,-2)),"models"],value:[...remainingProfileModels,...manual.map(model=>{const {_draftId,...entry}=model;if(typeof entry.name==="string"&&!entry.name.trim())delete entry.name;return{...entry,id:entry.id.trim(),source:"manual",accountScope:catalog.accountScope}})]});
+            }
+            for (const id of removed) {
+                if (catalog.profileModels.some(model=>model.id===id)) continue;
+                const current=catalog.preferences[id]?.removed;
+                if(current!==true) ops.push({op:"set",path:[...catalog.preferencePath,id,"removed"],value:true});
             }
             return ops;
         }
-        async function savePreferenceDraft({provider,accountScope,changes,manual,read,write}) {
+        async function savePreferenceDraft({provider,accountScope,changes,manual,removed=new Set(),read,write}) {
             for (let attempt=0;attempt<2;attempt++) {
                 const latest=modelCatalog(await read(provider));
                 if (latest.accountScope!==accountScope) throw new Error("modelAccountChanged");
                 if (!Number.isSafeInteger(latest.namespaceRevision)) throw new Error("This host does not expose a model-preference revision");
-                const ops=preferenceOps(latest,changes,manual);
+                const ops=preferenceOps(latest,changes,manual,removed);
                 if (!ops.length) return latest;
                 const response=await write({ns:latest.settingsNs,ops,expectedRevision:latest.namespaceRevision});
                 if (response.result.ok) return latest;
@@ -1949,7 +1955,7 @@ window.__ModuleLoader__.load({
         }
         function validCapacityDraft(text) { const parsed=parseCapacity(text);return text.trim()===""||Number.isSafeInteger(parsed)&&parsed>0; }
         function ProviderModelManager({provider,api,t,disabled,revision,onSaved,onDirtyChange,initialModels=[],embedded=false}) {
-            const [catalog,setCatalog]=(0,react.useState)(null),[changes,setChanges]=(0,react.useState)({}),[manual,setManual]=(0,react.useState)([]);
+            const [catalog,setCatalog]=(0,react.useState)(null),[changes,setChanges]=(0,react.useState)({}),[manual,setManual]=(0,react.useState)([]),[removed,setRemoved]=(0,react.useState)(()=>new Set()),[removeTarget,setRemoveTarget]=(0,react.useState)(null);
             const [expanded,setExpanded]=(0,react.useState)(embedded),[query,setQuery]=(0,react.useState)(""),[loading,setLoading]=(0,react.useState)(false),[saving,setSaving]=(0,react.useState)(false),[error,setError]=(0,react.useState)(null),[saved,setSaved]=(0,react.useState)(false),[nextAccount,setNextAccount]=(0,react.useState)(null);
             const [capacityText,setCapacityText]=(0,react.useState)({});
             const [visibility,setVisibility]=react.useState("all"),[pageSize,setPageSize]=react.useState(100);
@@ -1957,8 +1963,8 @@ window.__ModuleLoader__.load({
             const capacityRef=(0,react.useRef)(capacityText);capacityRef.current=capacityText;
             const mounted=(0,react.useRef)(true),generation=(0,react.useRef)(0),savingRef=(0,react.useRef)(false),catalogRef=(0,react.useRef)(catalog),changesRef=(0,react.useRef)(changes),manualRef=(0,react.useRef)(manual);
             catalogRef.current=catalog;changesRef.current=changes;manualRef.current=manual;
-            const dirty=Object.keys(changes).length>0||manual.length>0||Object.keys(capacityText).length>0;
-            (0,react.useEffect)(()=>{onDirtyChange?.(dirty)},[dirty,onDirtyChange]);
+            const dirty=Object.keys(changes).length>0||manual.length>0||removed.size>0||Object.keys(capacityText).length>0;
+            (0,react.useEffect)(()=>{onDirtyChange?.(dirty);const sources=window.__DSH_DIRTY_SOURCES__??(window.__DSH_DIRTY_SOURCES__=new Set());if(dirty)sources.add(provider);else sources.delete(provider);window.__DSH_SETTINGS_DIRTY__=sources.size>0;return()=>{sources.delete(provider);window.__DSH_SETTINGS_DIRTY__=sources.size>0}},[dirty,onDirtyChange,provider]);
             const invalidCapacity=Object.values(capacityText).some(text=>!validCapacityDraft(text));
             const manualFailure=manualModelFailure(catalog,manual);
             const message=reason=>{const key=reason instanceof Error?reason.message:String(reason);return ["modelPreferenceConflict","modelManualIdConflict","modelAccountChanged"].includes(key)?t(key):key};
@@ -1985,7 +1991,7 @@ window.__ModuleLoader__.load({
                     if(Object.keys(fields).length)next[id]=fields;else delete next[id];return next;
                 });
             };
-            const rows=draftModelRows(catalog??{models:initialModels},changes,manual);
+            const rows=draftModelRows(catalog??{models:initialModels},changes,manual,removed);
             const filter=query.trim().toLocaleLowerCase();
             const visible=rows.filter(model=>model._draftId||((!filter||(model.id+" "+(model.name??"")).toLocaleLowerCase().includes(filter))&&(visibility==="all"||(model.enabled!==false)===(visibility==="shown"))));
             const shown=expanded?[...visible.filter(model=>!model._draftId).slice(0,pageSize),...visible.filter(model=>model._draftId)]:[...visible.filter(model=>!model._draftId).slice(0,6),...visible.filter(model=>model._draftId)];
@@ -1999,15 +2005,15 @@ window.__ModuleLoader__.load({
                 if(savingRef.current||!editable||!dirty||invalidCapacity||manualFailure)return;
                 savingRef.current=true;setSaving(true);setSaved(false);setError(null);++generation.current;
                 try{
-                    await savePreferenceDraft({provider,accountScope:catalog.accountScope,changes,manual,read:id=>accountRequest("models",{provider:id}),write:payload=>api.settings.mutate(payload)});
+                    await savePreferenceDraft({provider,accountScope:catalog.accountScope,changes,manual,removed,read:id=>accountRequest("models",{provider:id}),write:payload=>api.settings.mutate(payload)});
                     if(!mounted.current)return;
-                    setChanges({});changesRef.current={};setManual([]);manualRef.current=[];setCapacityText({});setSaved(true);
+                    setChanges({});changesRef.current={};setManual([]);manualRef.current=[];setRemoved(new Set());setCapacityText({});setSaved(true);
                     try{setCatalog(modelCatalog(await accountRequest("models",{provider})))}catch(reason){setError(message(reason))}
                     if(onSaved)await onSaved();
                 }catch(reason){if(mounted.current)setError(message(reason));}
                 finally{savingRef.current=false;if(mounted.current)setSaving(false);}
             };
-            const cancel=()=>{setChanges({});changesRef.current={};setManual([]);manualRef.current=[];setCapacityText({});setError(null);setSaved(false);if(nextAccount){setCatalog(nextAccount);setNextAccount(null)}else load();};
+            const cancel=()=>{setChanges({});changesRef.current={};setManual([]);manualRef.current=[];setRemoved(new Set());setCapacityText({});setError(null);setSaved(false);if(nextAccount){setCatalog(nextAccount);setNextAccount(null)}else load();};
             const button=(label,action,extra={})=>(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:action,disabled:disabled||saving,...extra,children:label});
             const modelField=(model,index,field)=>{
                 const capacity=field==="contextWindow"||field==="maxTokens",key=`${model._draftId??model.id}:${field}`;
@@ -2015,7 +2021,9 @@ window.__ModuleLoader__.load({
                 const label=field==="id"?t("modelId"):field==="name"?t("modelName"):t(field==="contextWindow"?"modelContextWindow":"modelMaxTokens");
                 return (0,react_jsx_runtime.jsxs)("label",{children:[label,(0,react_jsx_runtime.jsx)("input",{type:"text",className:ModelsSection_module_css_default.input,value,disabled:!editable,required:field==="id",autoFocus:field==="id",placeholder:field==="name"?t("modelNamePlaceholder"):void 0,"aria-label":field==="id"||model._draftId&&field==="name"?`${label} ${index+1}`:`${model.id||index+1} ${field}`,"aria-invalid":capacity?!validCapacityDraft(value):field==="id"&&manualFailure?.draftId===model._draftId,onChange:event=>{const text=event.target.value;if(capacity){setCapacityText(current=>({...current,[key]:text}));const parsed=parseCapacity(text);if(validCapacityDraft(text))update(model,field,parsed)}else update(model,field,field==="id"?text:text||void 0)}})]},field);
             };
-            const removeManual=model=>{setManual(current=>current.filter(row=>row._draftId!==model._draftId));setCapacityText(current=>Object.fromEntries(Object.entries(current).filter(([key])=>!key.startsWith(model._draftId+":"))));setSaved(false);setError(null);};
+             const removeManual=model=>{setManual(current=>current.filter(row=>row._draftId!==model._draftId));setCapacityText(current=>Object.fromEntries(Object.entries(current).filter(([key])=>!key.startsWith(model._draftId+":"))));setSaved(false);setError(null);};
+             const removeModelNow=model=>{setRemoved(current=>{const next=new Set(current);next.add(model.id);return next});setRemoveTarget(null);setSaved(false);setError(null);};
+             const removeModel=model=>setRemoveTarget(model);
             return (0,react_jsx_runtime.jsxs)("section",{className:"dshModelManager","data-model-manager":provider,"aria-label":t("models"),children:[
                 (0,react_jsx_runtime.jsxs)("div",{className:"dshModelManagerHead",children:[(0,react_jsx_runtime.jsx)("strong",{children:`${t("models")} · ${rows.filter(model=>model.enabled!==false).length} / ${rows.length} ${t("modelShown")}`}),!embedded&&button(t(expanded?"modelCollapse":"modelManage"),()=>setExpanded(value=>!value),{"aria-expanded":expanded}),button(t("modelRefresh"),()=>load("refresh"),{disabled:disabled||saving||loading})]}),
                 expanded&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelToolbar",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,value:query,"aria-label":t("modelSearch"),placeholder:t("modelSearch"),onChange:event=>{setQuery(event.target.value);setPageSize(100)}}),(0,react_jsx_runtime.jsx)("select",{className:ModelsSection_module_css_default.input,value:visibility,"aria-label":t("modelVisibilityFilter"),onChange:event=>{setVisibility(event.target.value);setPageSize(100)},children:["all","shown","hidden"].map(value=>(0,react_jsx_runtime.jsx)("option",{value,children:t(value==="all"?"modelAll":value==="shown"?"modelShown":"modelHidden")},value))}),button(t("modelShowFiltered"),()=>visible.forEach(model=>update(model,"enabled",true)),{disabled:!editable||visible.length===0}),button(t("modelHideFiltered"),()=>visible.forEach(model=>update(model,"enabled",false)),{disabled:!editable||visible.length===0})]}),
@@ -2024,7 +2032,8 @@ window.__ModuleLoader__.load({
                     (0,react_jsx_runtime.jsxs)("div",{className:"dshModelRow",children:[(0,react_jsx_runtime.jsxs)("div",{className:"dshModelIdentity",children:[(0,react_jsx_runtime.jsx)("span",{className:"dshModelName",children:model._draftId?t("modelManualNew"):model.name||model.id}), !model._draftId&&(0,react_jsx_runtime.jsx)("span",{className:"dshModelId",children:model.id})]}),(0,react_jsx_runtime.jsx)(ModelVisibility,{checked:model.enabled!==false,disabled:!editable,label:`${t("modelVisible")} ${model.name||model.id||t("modelManualNew")}`,t,onChange:value=>update(model,"enabled",value)})]}),
                     model._draftId&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelFields",children:[modelField(model,index,"id"),modelField(model,index,"name")]}),
                     expanded&&(0,react_jsx_runtime.jsxs)("details",{className:"dshModelDetails",children:[(0,react_jsx_runtime.jsx)("summary",{children:t("modelAdvanced")}), (0,react_jsx_runtime.jsx)("div",{className:"dshModelFields",children:[...(!model._draftId?["name"]:[]),"contextWindow","maxTokens"].map(field=>modelField(model,index,field))})]}),
-                    model._draftId&&button(t("modelManualRemove"),()=>removeManual(model),{"aria-label":`${t("modelManualRemove")} ${index+1}`,disabled:!editable})
+                     model._draftId&&button(t("modelManualRemove"),()=>removeManual(model),{"aria-label":`${t("modelManualRemove")} ${index+1}`,disabled:!editable}),
+                     !model._draftId&&button(t(model.source==="manual"?"modelDelete":"modelRemove"),()=>removeModel(model),{"aria-label":`${t(model.source==="manual"?"modelDelete":"modelRemove")} ${model.name||model.id}`,disabled:!editable,className:ModelsSection_module_css_default.dangerButton})
                 ]},model._draftId??model.id??`new-${index}`))}),
                 expanded&&visible.length>shown.length&&button(t("modelLoadMore"),()=>setPageSize(value=>value+100)),
                 !shown.length&&(0,react_jsx_runtime.jsx)("div",{className:"dshModelEmpty",children:t(catalog?"modelNoMatches":"modelCatalogUnavailable")}),
@@ -2034,7 +2043,8 @@ window.__ModuleLoader__.load({
                 error&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:error}),
                 invalidCapacity&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:t("modelCapacityDraftInvalid")}),
                 manualFailure&&(0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.error,role:"alert",children:t(manualFailure.key)}),
-                (dirty||saved)&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelFooter",children:[(0,react_jsx_runtime.jsx)("span",{role:"status",children:t(saved?"modelPreferencesSaved":"modelUnsaved")}),dirty&&button(t("cancel"),cancel),dirty&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.primaryButton,disabled:!editable||invalidCapacity||manualFailure!==null,onClick:save,children:t(saving?"applying":"apply")})]})
+                 (dirty||saved)&&(0,react_jsx_runtime.jsxs)("div",{className:"dshModelFooter",children:[(0,react_jsx_runtime.jsx)("span",{role:"status",children:t(saved?"modelPreferencesSaved":"modelUnsaved")}),dirty&&button(t("cancel"),cancel),dirty&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.primaryButton,disabled:!editable||invalidCapacity||manualFailure!==null,onClick:save,children:t(saving?"applying":"apply")})]}),
+                 (0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:removeTarget!==null,onClose:()=>setRemoveTarget(null),title:t("modelRemoveTitle"),closeLabel:t("cancel"),description:removeTarget?`${t(removeTarget.source==="manual"?"modelDeleteDescription":"modelRemoveDescription")} ${removeTarget.name||removeTarget.id}`:"",footer:(0,react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment,{children:[(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",autoFocus:true,onClick:()=>setRemoveTarget(null),children:t("cancel")}), (0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",className:ModelsSection_module_css_default.deleteConfirm,onClick:()=>removeModelNow(removeTarget),children:t(removeTarget?.source==="manual"?"modelDeleteConfirm":"modelRemoveConfirm")})]})})
             ]});
         }
 
@@ -2161,7 +2171,7 @@ window.__ModuleLoader__.load({
                 view?.state?.url&&h("div",{style:{overflowWrap:"anywhere",fontSize:12}},view.state.url),
                 imageUrl?h("img",{src:imageUrl,alt:t("accountEmbeddedTitle"),onClick:point,onWheel:event=>{if(!pending.current)void run("scroll",{deltaY:event.deltaY,x:550,y:380},true)},style:{display:"block",width:"100%",border:"1px solid #8885",borderRadius:6,cursor:working?"wait":"pointer"}}):h("p",{role:"status"},t("accountBrowserStarting")),
                 h("div",{style:{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}},
-                    h("input",{ref:input,type:"password",maxLength:2048,autoComplete:"off","aria-label":t("accountBrowserInput"),placeholder:t("accountBrowserInput"),value:text,onChange:e=>setText(e.target.value),onKeyDown:e=>{if(e.key==="Enter"){e.preventDefault();send()}},style:{flex:1,minWidth:120}}),
+                h("input",{ref:input,type:"password",maxLength:2048,autoComplete:"off","aria-label":t("accountBrowserInput"),placeholder:t("accountBrowserInput"),value:text,onChange:e=>setText(e.target.value),onKeyDown:e=>{if(e.key==="Enter"){e.preventDefault();send()}},style:{flex:1,minWidth:120}}),
                     h("button",{type:"button",disabled:working||!text,onClick:send},t("accountBrowserType")),
                     ...["Tab","Enter","Backspace"].map(key=>h("button",{key,type:"button",disabled:working,onClick:()=>void run("key",{key})},key)),
                     h("button",{type:"button",disabled:working,onClick:()=>void run(view?"capture":"start")},t("accountRefresh"))),
@@ -2174,7 +2184,7 @@ window.__ModuleLoader__.load({
                 h("p",null,t(attempt.embeddedBrowser?"accountEmbeddedVerify":attempt.flow==="browser"?"accountBrowserVerify":attempt.mode==="cli"?"accountCliVerify":"accountVerify")),
                 attempt.userCode&&h("code",null,attempt.userCode),
                 attempt.embeddedBrowser&&h(AccountAuthorizationBrowser,{attempt,t}),
-                attempt.verificationUri&&h("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer"},t("accountOpen")),
+                attempt.verificationUri&&h("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer"},t("accountOpenExternal")),
                 h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy,onClick:onCancel},t("cancel")));
         }
         function SidebarAccount({controller,t,wide}) {
@@ -2446,14 +2456,14 @@ window.__ModuleLoader__.load({
 					(0, react_jsx_runtime.jsx)("p", {
 						className: ModelsSection_module_css_default["intro"],
 						children: t("intro")
-					}),renderSlot?.("settings.models.network",{}),
+					}),
 					!state.writable && state.status === "ready" ? (0, react_jsx_runtime.jsx)("p", {
 						className: ModelsSection_module_css_default["notice"],
 						children: t("readOnly")
 					}) : null,
 					(0,react_jsx_runtime.jsx)("div",{className:"dshModelNav",role:"tablist","aria-label":t("modelWorkspace"),children:["api","accounts","tasks"].map((value,index)=>(0,react_jsx_runtime.jsx)("button",{type:"button",role:"tab",id:`dsh-model-tab-${value}`,"aria-controls":`dsh-model-panel-${value}`,"aria-selected":managementTab===value,tabIndex:managementTab===value?0:-1,onClick:()=>setManagementTab(value),onKeyDown:event=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?"api":event.key==="End"?"tasks":["api","accounts","tasks"][(index+(event.key==="ArrowLeft"?2:1))%3];setManagementTab(next);event.currentTarget.parentElement.querySelector(`#dsh-model-tab-${next}`)?.focus()}},children:t(value==="api"?"modelApiTab":value==="accounts"?"modelAccountTab":"taskModelsTab")},value))}),
                     managementTab==="tasks"&&(0,react_jsx_runtime.jsx)("div",{role:"tabpanel",id:"dsh-model-panel-tasks","aria-labelledby":"dsh-model-tab-tasks",children:(0,react_jsx_runtime.jsx)(TaskModelsPanel,{t})}),
-                    (0,react_jsx_runtime.jsx)("div",{role:"tabpanel",id:"dsh-model-panel-accounts","aria-labelledby":"dsh-model-tab-accounts",hidden:managementTab!=="accounts",children:(0,react_jsx_runtime.jsx)(AccountConnections,{controller,api,namespaces:state.namespaces,t,disabled:!state.writable,onManagedProvidersChange:setAccountManagedProviders,standalone:true})}),
+                     (0,react_jsx_runtime.jsxs)("div",{role:"tabpanel",id:"dsh-model-panel-accounts","aria-labelledby":"dsh-model-tab-accounts",hidden:managementTab!=="accounts",children:[(0,react_jsx_runtime.jsx)(AccountConnections,{controller,api,namespaces:state.namespaces,t,disabled:!state.writable,onManagedProvidersChange:setAccountManagedProviders,standalone:true}),renderSlot?.("settings.models.network",{})]}),
                     (0,react_jsx_runtime.jsxs)("div",{className:"dshProviderToolbar",hidden:managementTab!=="api",children:[(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelsSection_module_css_default.input,value:providerQuery,placeholder:t("modelProviderSearch"),"aria-label":t("modelProviderSearch"),onChange:event=>setProviderQuery(event.target.value)}),(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,"aria-pressed":needsAttention,onClick:()=>setNeedsAttention(value=>!value),children:t("modelNeedsAttention")})]}),
                     state.error&&(0,react_jsx_runtime.jsxs)("div",{role:"alert",className:ModelsSection_module_css_default.error,children:[state.error,(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,onClick:()=>controller.load(),children:t("retry")})]}),
 					savedIdentity === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
@@ -3055,7 +3065,14 @@ window.__ModuleLoader__.load({
             modelHidden: "Hidden",
             modelManualAdd: "Add manual model",
             modelManualNew: "New model",
-            modelManualRemove: "Remove draft",
+             modelManualRemove: "Remove draft",
+             modelRemove: "Remove from my models",
+             modelDelete: "Delete model",
+             modelRemoveTitle: "Remove model?",
+             modelRemoveDescription: "This removes the model from your model list. Existing sessions are preserved.",
+             modelDeleteDescription: "This deletes the manually configured model. Existing sessions are preserved.",
+             modelRemoveConfirm: "Remove model",
+             modelDeleteConfirm: "Delete model",
             modelNoMatches: "No matching models",
             modelCatalogUnavailable: "Model catalog is not loaded",
             modelMoreCount: "{count} more models",
@@ -3147,7 +3164,7 @@ window.__ModuleLoader__.load({
             accountEmbeddedVerify:"Complete sign-in in the page below. Enter the device code if one is shown; account status updates automatically.",
             accountSignedIn: "Connected", accountSignedOut: "Disconnected", accountReconnect: "Reconnect", accountLogin: "Sign in", accountLogout: "Sign out",
             accountAdd: "Sign in another account", accountSaved: "Accounts for this provider", accountCurrent: "Current account", accountSwitch: "Switch account", accountRemove: "Remove account", accountLabel: "Account", accountSavedLogin: "Saved login", accountNeedsLogin: "Sign in again", accountAddHint: "Existing accounts stay saved. On the authorization page, choose the other account you want to add.",
-            accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page",
+            accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page", accountOpenExternal: "Open in system browser",
 
 			fetching: "Asking the provider…",
 			fetchNeedsBaseUrl: "Enter the base URL first, then fetch.",
@@ -3200,7 +3217,14 @@ window.__ModuleLoader__.load({
             modelHidden: "隐藏",
             modelManualAdd: "添加手动模型",
             modelManualNew: "新模型",
-            modelManualRemove: "移除草稿",
+             modelManualRemove: "移除草稿",
+             modelRemove: "从我的模型移除",
+             modelDelete: "删除模型",
+             modelRemoveTitle: "移除模型？",
+             modelRemoveDescription: "模型会从你的模型列表中移除，已有会话不受影响。",
+             modelDeleteDescription: "这会删除手动配置的模型，已有会话不受影响。",
+             modelRemoveConfirm: "移除模型",
+             modelDeleteConfirm: "删除模型",
             modelNoMatches: "没有匹配的模型",
             modelCatalogUnavailable: "模型目录尚未载入",
             modelMoreCount: "另有 {count} 个模型",
@@ -3292,7 +3316,7 @@ window.__ModuleLoader__.load({
             accountEmbeddedVerify:"在下方授权页面完成登录；如有设备验证码，请在授权页面输入，账号状态会自动更新。",
             accountSignedIn: "已连接", accountSignedOut: "未连接", accountReconnect: "重新连接", accountLogin: "登录", accountLogout: "退出登录",
             accountAdd: "登录另一个账号", accountSaved: "同一登录方式的账号", accountCurrent: "当前账号", accountSwitch: "切换账号", accountRemove: "移除账号", accountLabel: "账号", accountSavedLogin: "已保存登录", accountNeedsLogin: "需要重新登录", accountAddHint: "现有账号会保留，请在授权页面选择要添加的另一个账号。",
-            accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面",
+            accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面", accountOpenExternal: "在系统浏览器中打开",
 
 			fetching: "正在询问提供方…",
 			fetchNeedsBaseUrl: "请先填写 API 地址，再获取。",
