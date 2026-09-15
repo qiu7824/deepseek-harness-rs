@@ -86,7 +86,7 @@ class ReleaseProductContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("python tools/verify_release_version.py --print-version", workflow)
-        self.assertIn('--version "${GITHUB_REF_NAME#v}"', workflow)
+        self.assertIn('--version "$VERSION" --tag "$GITHUB_REF_NAME"', workflow)
         self.assertIn("tools.tests.test_release_product_contract", workflow)
 
         for variant in VARIANTS:

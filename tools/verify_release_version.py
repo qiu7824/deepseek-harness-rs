@@ -59,6 +59,12 @@ def verify_manifest_version(manifest: dict, version: str) -> None:
         raise ValueError("frontend manifest version does not match workspace; rebuild runtime plugins")
 
 
+def verify_release_tag(tag: str, version: str) -> None:
+    # Revision tags retain the binary version; other suffixes are not aliases.
+    if re.fullmatch(r"v" + re.escape(version) + r"(?:-r[1-9][0-9]*)?", tag) is None:
+        raise ValueError(f"release tag {tag!r} does not match workspace {version}")
+
+
 def verify_build_identity(info: dict, version: str, revision: str) -> None:
     if (info.get("version") != version or info.get("revision") != revision
             or info.get("dirty") is not False):
@@ -70,6 +76,7 @@ def main() -> None:
     parser.add_argument("--version")
     parser.add_argument("--print-version", action="store_true")
     parser.add_argument("--binary", type=pathlib.Path)
+    parser.add_argument("--tag")
     args = parser.parse_args()
     if args.print_version:
         print(workspace_version())
@@ -77,6 +84,8 @@ def main() -> None:
     if args.version is None:
         parser.error("--version is required unless --print-version is used")
     verify(args.version, args.binary.resolve() if args.binary else None)
+    if args.tag is not None:
+        verify_release_tag(args.tag, args.version)
     print(args.version)
 
 

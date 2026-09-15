@@ -16,6 +16,7 @@ pub mod proxy;
 mod public_event;
 mod queue_projection;
 mod remote_payload;
+mod workspace_git;
 pub mod session_export;
 
 pub use agent_lookup::{

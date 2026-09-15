@@ -1,6 +1,17 @@
 import unittest
 
-from tools.verify_release_version import verify_build_identity, verify_manifest_version
+from tools.verify_release_version import verify_build_identity, verify_manifest_version, verify_release_tag
+
+
+class ReleaseTagTests(unittest.TestCase):
+    def test_exact_version_and_numeric_revisions_are_accepted(self):
+        for tag in ("v0.1.3-alpha.20", "v0.1.3-alpha.20-r3", "v0.1.3-alpha.20-r123"):
+            verify_release_tag(tag, "0.1.3-alpha.20")
+
+    def test_wrong_versions_and_malformed_revisions_are_rejected(self):
+        for tag in ("v0.1.3-alpha.21", "v0.1.3-alpha.20-r0", "v0.1.3-alpha.20-r3oops", "v0.1.3-alpha.20-r3-r4", "0.1.3-alpha.20"):
+            with self.assertRaises(ValueError):
+                verify_release_tag(tag, "0.1.3-alpha.20")
 
 
 class ReleaseBuildIdentityTests(unittest.TestCase):

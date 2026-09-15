@@ -886,7 +886,8 @@ window.__ModuleLoader__.load({
 			const [pickingFolder, setPickingFolder] = (0, react.useState)(false);
             const [workspacePath,setWorkspacePath]=(0,react.useState)(null),[scratchPath,setScratchPath]=(0,react.useState)(""),[pickingScratch,setPickingScratch]=(0,react.useState)(false);
 			const [advanced,setAdvanced]=(0,react.useState)(false);
-			const flowBusy = flowOpen || pickingFolder;
+			const [gitForm,setGitForm]=(0,react.useState)(null),[gitBusy,setGitBusy]=(0,react.useState)(false),[gitError,setGitError]=(0,react.useState)(null);
+			const flowBusy = flowOpen || pickingFolder || gitBusy;
 			const flowAvailable = useDirectoryFlow((occupied) => occupied);
 			(0, react.useEffect)(() => {
 				if (flowOpen && !flowAvailable) setFlowOpen(false);
@@ -896,7 +897,7 @@ window.__ModuleLoader__.load({
 				label: t("menu.addWorkspace"),
 				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutline16, { size: 16 }),
 				disabled: flowBusy
-			}, { id: ADD_GIT_WORKSPACE, label: "从 Git 克隆工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_CLOUD_WORKSPACE, label: "Cloud 工作目录（未连接）", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: true }, { id: ADD_SSH_WORKSPACE, label: "SSH 远程工作目录（未连接）", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: true }] : [];
+			}, { id: ADD_GIT_WORKSPACE, label: "从 Git 克隆工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_CLOUD_WORKSPACE, label: "Cloud · 云端 Git 仓库", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_SSH_WORKSPACE, label: "SSH 远程工作目录（未连接）", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: true }] : [];
 			const pinAdd = !addOnly && workspaces.length > 0;
 			const items = pinAdd ? workspaces.map((workspace) => ({
 				id: workspace.workspaceId,
@@ -965,17 +966,26 @@ window.__ModuleLoader__.load({
 					openDirectoryFlow();
 					return;
 				}
-				if (id === ADD_GIT_WORKSPACE) {
-					const source = window.prompt("Git 仓库地址或本地仓库路径");
-					if (!source?.trim()) return;
-					const path = window.prompt("克隆到本机目录", source.split(/[\\/]/).pop()?.replace(/\.git$/i, "") || "git-workspace");
-					if (!path?.trim()) return;
-					createWorkspace({ path: path.trim(), source: source.trim(), kind: "git" }).then((workspace) => onPick(workspace.workspaceId)).catch((reason) => { setModalError(reason instanceof Error ? reason.message : String(reason)); setErrorOpen(true); });
+				if (id === ADD_GIT_WORKSPACE || id === ADD_CLOUD_WORKSPACE) {
+					onClose(); setGitError(null); setGitForm({kind:id===ADD_CLOUD_WORKSPACE?"cloud":"git",source:"",path:"",branch:""});
 					return;
 				}
 				onPick(id);
 			};
 			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				gitForm && react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.Modal, {
+					open:true, title:gitForm.kind==="cloud"?"Cloud · 云端 Git 仓库":"克隆 Git 工作目录", closeLabel:t("close"), onClose:()=>{if(!gitBusy)setGitForm(null)},
+					children:react_jsx_runtime.jsxs("form",{className:"dshWorkspaceForm",onSubmit:async event=>{
+						event.preventDefault();if(gitBusy)return;setGitBusy(true);setGitError(null);
+						try{const result=await createWorkspace({kind:gitForm.kind,source:gitForm.source.trim(),path:gitForm.path.trim(),...(gitForm.branch.trim()?{branch:gitForm.branch.trim()}:{})});setGitForm(null);onPick(result.workspaceId)}catch(error){setGitError(error instanceof Error?error.message:String(error))}finally{setGitBusy(false)}
+					},children:[
+						react_jsx_runtime.jsx("p",{children:"仓库克隆到本机后，Agent 在本机目录运行。私有仓库使用已有 Git 凭据或 SSH 密钥。"}),
+						...[ ["source","仓库地址", "https://github.com/owner/repository.git"], ["path","本机目标目录", "填写尚不存在的绝对目录"], ["branch","分支（可选）","留空使用仓库默认分支"] ].map(([key,label,placeholder])=>react_jsx_runtime.jsxs("label",{style:{display:"grid",gap:6,marginBottom:12},children:[label,react_jsx_runtime.jsx("input",{name:key,value:gitForm[key],placeholder,required:key!=="branch",disabled:gitBusy,onChange:event=>setGitForm(form=>({...form,[key]:event.target.value}))})]},key)),
+						gitError&&react_jsx_runtime.jsx("p",{role:"alert",className:WorkspacePicker_module_css_default.modalError,children:gitError}),
+						react_jsx_runtime.jsx("button",{type:"submit",disabled:gitBusy||!gitForm.source.trim()||!gitForm.path.trim(),children:gitBusy?"正在克隆…":"克隆并添加工作区"}),
+						react_jsx_runtime.jsx("button",{type:"button",disabled:gitBusy,onClick:()=>setGitForm(null),children:t("cancel")})
+					]})
+				}),
 				(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
 					open: open && !addIsTheOnlyEntry && !menuIsEmpty,
 					anchor: null,

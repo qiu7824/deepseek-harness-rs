@@ -3160,23 +3160,16 @@ impl ApiProxyService {
             if !matches!(kind, "local" | "git" | "cloud" | "ssh") {
                 return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: format!("unsupported workspace kind: {kind}"), details: crate::api::rpc::PathDetails { path } }));
             }
-            if matches!(kind, "cloud" | "ssh") {
+            if kind == "ssh" {
                 return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: format!("workspace kind {kind} is not connected to an execution provider yet; choose local or git"), details: crate::api::rpc::PathDetails { path } }));
             }
         }
-        if request.payload.kind.as_deref() == Some("git") {
+        if matches!(request.payload.kind.as_deref(), Some("git" | "cloud")) {
             let Some(source) = request.payload.source.as_deref().filter(|s| !s.trim().is_empty()) else {
                 return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: "git workspace requires a repository URL or local repository path".into(), details: crate::api::rpc::PathDetails { path } }));
             };
-            let mut command = tokio::process::Command::new("git");
-            command.arg("clone");
-            if let Some(branch) = request.payload.branch.as_deref().filter(|s| !s.trim().is_empty()) { command.args(["--branch", branch]); }
-            command.args([source, &path]);
-            let output = command.output().await.map_err(|e| e.to_string());
-            match output {
-                Ok(result) if result.status.success() => {}
-                Ok(result) => return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: format!("git clone failed: {}", String::from_utf8_lossy(&result.stderr)), details: crate::api::rpc::PathDetails { path } })),
-                Err(e) => return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: format!("git clone could not start: {e}"), details: crate::api::rpc::PathDetails { path } })),
+            if let Err(message) = crate::workspace_git::clone_repository(source, &path, request.payload.branch.as_deref()).await {
+                return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message, details: crate::api::rpc::PathDetails { path } }));
             }
         }
         // The `created` bit: the registry reuses an existing path, and the
