@@ -394,7 +394,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-trajectory",
       "url": "/plugins/ui-trajectory.js",
-      "rev": "0809bb91b3b47dc3",
+      "rev": "37c67c4a99eb4351",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
