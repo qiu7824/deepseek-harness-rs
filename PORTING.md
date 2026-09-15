@@ -1,6 +1,6 @@
 # DeepSeek Harness Rust 实现与兼容状态
 
-> 目标行为基线：`dsh-v0.1.5-rc.2`；Rust 开发版本：`0.1.3-alpha.20`。
+> 目标行为基线：`dsh-v0.1.5-rc.2`；Rust 开发版本：`0.1.3-alpha.21`。
 
 ## 当前产品边界
 
