@@ -184,6 +184,14 @@ pub fn apply(ctx: &Context) {
     });
 
     let stop_session_start = futures::executor::block_on(ctx.on(
+        "agent/session-start",
+        session_start_listener.clone(),
+        EventOptions::default().global(true),
+    ));
+    // Older registry implementations publish agent/created before the
+    // session-start lifecycle event. Keep that compatibility edge while the
+    // session-start event remains the canonical schedule hook.
+    let stop_agent_created = futures::executor::block_on(ctx.on(
         "agent/created",
         session_start_listener,
         EventOptions::default().global(true),
@@ -205,6 +213,7 @@ pub fn apply(ctx: &Context) {
         Box::pin(async move {
             stopping.store(true, std::sync::atomic::Ordering::SeqCst);
             stop_session_start().await;
+            stop_agent_created().await;
             let cleanups: Vec<cordis::Disposer> =
                 runtimes.lock().drain().map(|(_, value)| value).collect();
             for cleanup in cleanups {
