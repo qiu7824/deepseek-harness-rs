@@ -346,7 +346,8 @@ pub async fn generate_session_title_with_llm(
         signal: Some(signal_predicate),
         session_id: Some(request.session.id().to_string()),
         purpose: Some("session-title".to_string()),
-        agent_loop_request: false, telemetry: None,
+        agent_loop_request: false,
+        telemetry: None,
     };
     request
         .session

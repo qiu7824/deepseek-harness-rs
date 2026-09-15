@@ -4,7 +4,7 @@ fn schedule_lifecycle_contract_is_composed_and_global() {
     assert!(host.contains("dsh_schedule::apply(ctx);"));
 
     let schedule = include_str!("../../../schedule/schedule/src/lib.rs");
-    assert!(schedule.contains("agent/session-start"));
+    assert!(schedule.contains("agent/created"));
     assert!(schedule.contains("EventOptions::default().global(true)"));
     assert!(schedule.contains("for root in registry.roots()"));
     assert!(schedule.contains("attach_root(root)"));

@@ -18,7 +18,8 @@ fn options() -> GenerateOptions {
         signal: None,
         session_id: Some("test-session".into()),
         purpose: None,
-        agent_loop_request: false, telemetry: None,
+        agent_loop_request: false,
+        telemetry: None,
     }
 }
 fn connection(base: String) -> ResolvedDeepSeekOptions {

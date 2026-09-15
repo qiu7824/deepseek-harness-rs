@@ -331,7 +331,9 @@ pub fn resolve_adapter_options(
                 .stream_idle_timeout_ms
                 .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
         ),
-        stream_progress_timeout: Duration::from_millis(config.stream_progress_timeout_ms.unwrap_or(180_000)),
+        stream_progress_timeout: Duration::from_millis(
+            config.stream_progress_timeout_ms.unwrap_or(180_000),
+        ),
         files_api_timeout: Duration::from_millis(
             config
                 .files_api_timeout_ms
@@ -509,23 +511,30 @@ fn upload_lock(
 
 impl DeepSeekAdapter {
     pub fn new(config: DeepSeekAdapterOptions) -> Self {
-        Self { config, cleanup:Arc::new(files_cleanup::CleanupWorker::default()) }
+        Self {
+            config,
+            cleanup: Arc::new(files_cleanup::CleanupWorker::default()),
+        }
     }
 
     pub fn frozen(&self) -> Result<Arc<dyn dsh_llm::LlmAdapter>, LlmError> {
         let options = (self.config.options)()?;
-        Ok(Arc::new(Self{config:DeepSeekAdapterOptions {
-            options: Arc::new(move || Ok(options.clone())),
-            resolve_api_key: Arc::clone(&self.config.resolve_api_key),
-            resolve_attachments: self.config.resolve_attachments.clone(),
-            provider_name: self.config.provider_name.clone(),
-            reasoning_wire_format: self.config.reasoning_wire_format,
-        },cleanup:self.cleanup.clone()}))
+        Ok(Arc::new(Self {
+            config: DeepSeekAdapterOptions {
+                options: Arc::new(move || Ok(options.clone())),
+                resolve_api_key: Arc::clone(&self.config.resolve_api_key),
+                resolve_attachments: self.config.resolve_attachments.clone(),
+                provider_name: self.config.provider_name.clone(),
+                reasoning_wire_format: self.config.reasoning_wire_format,
+            },
+            cleanup: self.cleanup.clone(),
+        }))
     }
 }
 
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
     LlmFailure {
+        offload_images: None,
         message: message.into(),
         code: code.to_string(),
         status: None,
@@ -589,6 +598,7 @@ fn http_failure(
         .filter(|value| !value.is_empty())
         .map(dsh_llm::provider_request_id);
     LlmFailure {
+        offload_images: None,
         message: detail
             .unwrap_or_else(|| format!("{provider_name} API error (HTTP {status_number})")),
         code: code.to_string(),
@@ -647,6 +657,33 @@ fn project_estimated_request(options: &GenerateOptions) -> GenerateOptions {
         },
     );
     projected
+}
+
+fn require_durable_image_offload(
+    original: &GenerateOptions,
+    projected: &GenerateOptions,
+) -> Result<(), LlmFailure> {
+    fn count(blocks: &[dsh_llm::ContentBlock]) -> usize {
+        blocks
+            .iter()
+            .map(|b| match b {
+                dsh_llm::ContentBlock::Image { .. } => 1,
+                dsh_llm::ContentBlock::ToolResult { content, .. } => count(content),
+                _ => 0,
+            })
+            .sum()
+    }
+    let before: usize = original.messages.iter().map(|m| count(&m.content)).sum();
+    let after: usize = projected.messages.iter().map(|m| count(&m.content)).sum();
+    if before > after && original.session_id.is_some() {
+        let mut error = failure(
+            "Oldest retained input images must be omitted before retry",
+            "IMAGE_OFFLOAD_REQUIRED",
+        );
+        error.offload_images = Some(before - after);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn request_image_dimensions(width: u64, height: u64, max_pixels: u64) -> (u64, u64) {
@@ -967,7 +1004,10 @@ fn project_exact_request(
     projected
 }
 
-async fn prepare_attachments<T>(future:impl std::future::Future<Output=Result<T,LlmFailure>>,signal:Option<Arc<dyn Fn()->bool+Send+Sync>>) -> Result<T,LlmFailure> {
+async fn prepare_attachments<T>(
+    future: impl std::future::Future<Output = Result<T, LlmFailure>>,
+    signal: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+) -> Result<T, LlmFailure> {
     tokio::select! {
         biased;
         _=transport::wait_for_cancel(signal.clone())=>Err(failure("[phase:attachment_prepare] request cancelled", "CANCELLED")),
@@ -978,27 +1018,53 @@ async fn prepare_attachments<T>(future:impl std::future::Future<Output=Result<T,
     }
 }
 
-fn files_can_fallback(error:&LlmFailure)->bool {
-    matches!(error.code.as_str(),"FILES_UNSUPPORTED"|"FILES_SERVER"|"FILES_TRANSPORT")
+fn files_can_fallback(error: &LlmFailure) -> bool {
+    matches!(
+        error.code.as_str(),
+        "FILES_UNSUPPORTED" | "FILES_SERVER" | "FILES_TRANSPORT"
+    )
 }
 
 #[cfg(test)]
 mod preparation_budget_tests {
     use super::*;
-    #[tokio::test(start_paused=true)]
+    #[tokio::test(start_paused = true)]
     async fn preparation_has_one_total_budget() {
-        let started=tokio::time::Instant::now();
-        let error=prepare_attachments(std::future::pending::<Result<(),LlmFailure>>(),None).await.unwrap_err();
-        assert_eq!(error.code,"TIMEOUT");assert!(error.message.contains("attachment_prepare"));
-        assert_eq!(started.elapsed(),Duration::from_secs(120));
+        let started = tokio::time::Instant::now();
+        let error = prepare_attachments(std::future::pending::<Result<(), LlmFailure>>(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "TIMEOUT");
+        assert!(error.message.contains("attachment_prepare"));
+        assert_eq!(started.elapsed(), Duration::from_secs(120));
     }
     #[tokio::test]
     async fn cancelled_preparation_does_not_start_fallback_work() {
-        let started=std::sync::atomic::AtomicBool::new(false);
-        let error=prepare_attachments(async {started.store(true,std::sync::atomic::Ordering::SeqCst);Ok(())},Some(Arc::new(||true))).await.unwrap_err();
-        assert_eq!(error.code,"CANCELLED");assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
-        for code in ["AUTH","RATE_LIMIT","CANCELLED","ATTACHMENT_ABORTED","FILES_API"] {assert!(!files_can_fallback(&failure("fixture",code)));}
-        assert!(files_can_fallback(&failure("unsupported","FILES_UNSUPPORTED")));
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let error = prepare_attachments(
+            async {
+                started.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+            Some(Arc::new(|| true)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "CANCELLED");
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+        for code in [
+            "AUTH",
+            "RATE_LIMIT",
+            "CANCELLED",
+            "ATTACHMENT_ABORTED",
+            "FILES_API",
+        ] {
+            assert!(!files_can_fallback(&failure("fixture", code)));
+        }
+        assert!(files_can_fallback(&failure(
+            "unsupported",
+            "FILES_UNSUPPORTED"
+        )));
     }
 }
 
@@ -1015,7 +1081,11 @@ async fn resolve_image_urls(
     use base64::Engine;
     let mut urls = std::collections::HashMap::new();
     let mut image_meta = std::collections::HashMap::new();
-    if !request_image_attachments(options).is_empty() {if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_prepare",None);}}
+    if !request_image_attachments(options).is_empty() {
+        if let Some(telemetry) = &options.telemetry {
+            telemetry.phase("attachment_prepare", None);
+        }
+    }
     for attachment in request_image_attachments(options) {
         let Some(store) = store else {
             return Err(failure(
@@ -1107,13 +1177,21 @@ async fn resolve_image_file_ids(
     connection: &ResolvedDeepSeekOptions,
     api_key: &str,
     store: Option<&Arc<dyn dsh_attachment::AttachmentStore>>,
-    cleanup:&files_cleanup::CleanupWorker,
+    cleanup: &files_cleanup::CleanupWorker,
 ) -> Result<Option<ResolvedRequestFiles>, LlmFailure> {
     // Anonymous routes have no Files API credential. Inline images do not
     // require inventing an Authorization header or probing a private upload API.
-    if connection.keyless {return Ok(None);}
-    if request_image_attachments(options).is_empty(){return Ok(None);}
-    if !request_image_attachments(options).is_empty() {if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_prepare",None);}}
+    if connection.keyless {
+        return Ok(None);
+    }
+    if request_image_attachments(options).is_empty() {
+        return Ok(None);
+    }
+    if !request_image_attachments(options).is_empty() {
+        if let Some(telemetry) = &options.telemetry {
+            telemetry.phase("attachment_prepare", None);
+        }
+    }
     let Some(store) = store else {
         return Ok(None);
     };
@@ -1126,7 +1204,7 @@ async fn resolve_image_file_ids(
     let scope = deepseek_file_scope(&connection.base_url, api_key);
     let files =
         DeepSeekFilesClient::new(&connection.base_url, api_key, connection.files_api_timeout);
-    cleanup.schedule(files.clone(),index.clone(),scope.clone());
+    cleanup.schedule(files.clone(), index.clone(), scope.clone());
     let policy = dsh_attachment::RequestImagePolicy {
         max_pixels: 640_000,
         max_bytes: 1024 * 1024,
@@ -1165,6 +1243,7 @@ async fn resolve_image_file_ids(
         &image_meta,
         dsh_llm::RequestImageRepresentation::Raw,
     );
+    require_durable_image_offload(options, &exact_options)?;
     let retained: std::collections::HashSet<_> = request_image_attachments(&exact_options)
         .into_iter()
         .map(|attachment| attachment.attachment_id.clone())
@@ -1176,7 +1255,9 @@ async fn resolve_image_file_ids(
             continue;
         }
         let variant_lock = upload_lock(&scope, &version.variant_id);
-        if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_upload_wait",None);}
+        if let Some(telemetry) = &options.telemetry {
+            telemetry.phase("attachment_upload_wait", None);
+        }
         let _variant_guard = variant_lock.lock().await;
         if let Some(record) = index
             .get(&scope, &version.variant_id, now, 86_400_000)
@@ -1185,10 +1266,14 @@ async fn resolve_image_file_ids(
         {
             used.push((record.variant_id.clone(), record.file_id.clone()));
             ids.insert(attachment_id.clone(), record.file_id.as_str().to_string());
-            if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_cache_hit",None);}
+            if let Some(telemetry) = &options.telemetry {
+                telemetry.phase("attachment_cache_hit", None);
+            }
             continue;
         }
-        if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_upload",None);}
+        if let Some(telemetry) = &options.telemetry {
+            telemetry.phase("attachment_upload", None);
+        }
         let uploaded = files
             .upload(
                 version.data,
@@ -1198,22 +1283,26 @@ async fn resolve_image_file_ids(
             )
             .await
             .map_err(|error| {
-                let code=match (error.code,error.status) {
-                    (_,Some(404|405|415|501))=>"FILES_UNSUPPORTED",
-                    (FilesErrorCode::Auth,_)=>"AUTH",
-                    (FilesErrorCode::RateLimit,_)=>"RATE_LIMIT",
-                    (FilesErrorCode::Server,_)=>"FILES_SERVER",
-                    (FilesErrorCode::Transport,_)=>"FILES_TRANSPORT",
-                    _=>"FILES_API",
+                let code = match (error.code, error.status) {
+                    (_, Some(404 | 405 | 415 | 501)) => "FILES_UNSUPPORTED",
+                    (FilesErrorCode::Auth, _) => "AUTH",
+                    (FilesErrorCode::RateLimit, _) => "RATE_LIMIT",
+                    (FilesErrorCode::Server, _) => "FILES_SERVER",
+                    (FilesErrorCode::Transport, _) => "FILES_TRANSPORT",
+                    _ => "FILES_API",
                 };
-                let mut result=failure(format!("[phase:attachment_upload] {}",error.message),code);
-                result.status=error.status.map(u64::from);result
+                let mut result =
+                    failure(format!("[phase:attachment_upload] {}", error.message), code);
+                result.status = error.status.map(u64::from);
+                result
             })?;
         let expires_at = uploaded
             .expires_at
             .ok_or_else(|| failure("DeepSeek Files upload omitted expiry", "FILES_API"))?
             * 1000;
-        if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_upload_complete",None);}
+        if let Some(telemetry) = &options.telemetry {
+            telemetry.phase("attachment_upload_complete", None);
+        }
         let committed = index
             .commit(
                 DeepSeekUploadRecord {
@@ -1230,7 +1319,7 @@ async fn resolve_image_file_ids(
             )
             .await
             .map_err(|error| failure(error, "FILES_API"))?;
-        cleanup.schedule(files.clone(),index.clone(),scope.clone());
+        cleanup.schedule(files.clone(), index.clone(), scope.clone());
         used.push((
             committed.record.variant_id.clone(),
             committed.record.file_id.clone(),
@@ -1357,7 +1446,9 @@ async fn request_chunks(
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
     cleanup: Arc<files_cleanup::CleanupWorker>,
 ) -> Result<(), LlmFailure> {
-    let mut options = project_estimated_request(&options);
+    let projected = project_estimated_request(&options);
+    require_durable_image_offload(&options, &projected)?;
+    let mut options = projected;
     if let Some(model) = connection
         .models
         .iter()
@@ -1387,12 +1478,16 @@ async fn request_chunks(
         "openai-responses" | "anthropic-messages" | "devin-agent"
     ) {
         let (image_urls, image_meta) = prepare_attachments(
-            resolve_image_urls(&options, attachment_store.as_ref()),cancelled.clone()).await?;
+            resolve_image_urls(&options, attachment_store.as_ref()),
+            cancelled.clone(),
+        )
+        .await?;
         let exact_options = project_exact_request(
             &options,
             &image_meta,
             dsh_llm::RequestImageRepresentation::Base64,
         );
+        require_durable_image_offload(&options, &exact_options)?;
         let chat_body = serialize::serialize_request_with_prepared_images(
             &exact_options,
             &connection.defaults,
@@ -1445,51 +1540,61 @@ async fn request_chunks(
     let mut file_attempt = 0_u8;
     let mut response = loop {
         let preparation = async {
-        let resolved_files =
-            resolve_image_file_ids(&options, &connection, &api_key, attachment_store.as_ref(),&cleanup)
-                .await;
-        let prepared = match resolved_files {
-            Ok(Some(files)) => {
-                let mut exact_options = options.clone();
-                exact_options.messages = files.messages.clone();
-                (
-                    serialize::serialize_request_with_prepared_images(
-                        &exact_options,
-                        &connection.defaults,
-                        reasoning_wire_format,
+            let resolved_files = resolve_image_file_ids(
+                &options,
+                &connection,
+                &api_key,
+                attachment_store.as_ref(),
+                &cleanup,
+            )
+            .await;
+            let prepared = match resolved_files {
+                Ok(Some(files)) => {
+                    let mut exact_options = options.clone();
+                    exact_options.messages = files.messages.clone();
+                    (
+                        serialize::serialize_request_with_prepared_images(
+                            &exact_options,
+                            &connection.defaults,
+                            reasoning_wire_format,
+                            None,
+                            Some(&files.ids),
+                            Some(&files.image_meta),
+                        )?,
+                        Some(files),
+                    )
+                }
+                Err(error) if !files_can_fallback(&error) => return Err(error),
+                fallback => {
+                    if let Err(error) = fallback {
+                        if let Some(telemetry) = &options.telemetry {
+                            telemetry.phase("attachment_fallback", Some(&error.code));
+                        }
+                    }
+                    let (image_urls, image_meta) =
+                        resolve_image_urls(&options, attachment_store.as_ref()).await?;
+                    let exact_options = project_exact_request(
+                        &options,
+                        &image_meta,
+                        dsh_llm::RequestImageRepresentation::Base64,
+                    );
+                    require_durable_image_offload(&options, &exact_options)?;
+                    (
+                        serialize::serialize_request_with_prepared_images(
+                            &exact_options,
+                            &connection.defaults,
+                            reasoning_wire_format,
+                            Some(&image_urls),
+                            None,
+                            Some(&image_meta),
+                        )?,
                         None,
-                        Some(&files.ids),
-                        Some(&files.image_meta),
-                    )?,
-                    Some(files),
-                )
-            }
-            Err(error) if !files_can_fallback(&error) => return Err(error),
-            fallback => {
-                if let Err(error)=fallback {if let Some(telemetry)=&options.telemetry {telemetry.phase("attachment_fallback",Some(&error.code));}}
-                let (image_urls, image_meta) =
-                    resolve_image_urls(&options, attachment_store.as_ref()).await?;
-                let exact_options = project_exact_request(
-                    &options,
-                    &image_meta,
-                    dsh_llm::RequestImageRepresentation::Base64,
-                );
-                (
-                    serialize::serialize_request_with_prepared_images(
-                        &exact_options,
-                        &connection.defaults,
-                        reasoning_wire_format,
-                        Some(&image_urls),
-                        None,
-                        Some(&image_meta),
-                    )?,
-                    None,
-                )
-            }
+                    )
+                }
+            };
+            Ok(prepared)
         };
-        Ok(prepared)
-        };
-        let (mut body, used_files) = prepare_attachments(preparation,cancelled.clone()).await?;
+        let (mut body, used_files) = prepare_attachments(preparation, cancelled.clone()).await?;
         compat::apply_chat(
             &mut body,
             &connection,
@@ -1525,11 +1630,17 @@ async fn request_chunks(
         }
         let status = response.status;
         let headers = response.headers.clone();
-        if let Some(telemetry)=&options.telemetry {telemetry.phase("error_body",None);}
+        if let Some(telemetry) = &options.telemetry {
+            telemetry.phase("error_body", None);
+        }
         let error_body = response
             .collect_limited(8 * 1024 * 1024)
             .await
-            .unwrap_or_else(|error|serde_json::json!({"error":{"message":error}}).to_string().into_bytes());
+            .unwrap_or_else(|error| {
+                serde_json::json!({"error":{"message":error}})
+                    .to_string()
+                    .into_bytes()
+            });
         let detail = String::from_utf8_lossy(&error_body);
         if let Some(files) = used_files.as_ref()
             && file_attempt == 0
@@ -1569,6 +1680,7 @@ async fn request_chunks(
                 &image_meta,
                 dsh_llm::RequestImageRepresentation::Base64,
             );
+            require_durable_image_offload(&options, &exact_options)?;
             let inline_body = serialize::serialize_request_with_prepared_images(
                 &exact_options,
                 &connection.defaults,
@@ -1652,7 +1764,10 @@ async fn request_chunks(
                 ));
             }
             for chunk in translated {
-                if dsh_llm::is_token_delta(&chunk) { progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout; }
+                if dsh_llm::is_token_delta(&chunk) {
+                    progress_deadline =
+                        tokio::time::Instant::now() + connection.stream_progress_timeout;
+                }
                 sender
                     .send(chunk)
                     .await
@@ -1796,13 +1911,19 @@ async fn request_responses_chunks(
         )
     })?;
     if !response.status.is_success() {
-        if let Some(telemetry)=&telemetry {telemetry.phase("error_body",None);}
+        if let Some(telemetry) = &telemetry {
+            telemetry.phase("error_body", None);
+        }
         let status = response.status;
         let headers = response.headers.clone();
         let body = response
             .collect_limited(8 * 1024 * 1024)
             .await
-            .unwrap_or_else(|error|serde_json::json!({"error":{"message":error}}).to_string().into_bytes());
+            .unwrap_or_else(|error| {
+                serde_json::json!({"error":{"message":error}})
+                    .to_string()
+                    .into_bytes()
+            });
         return Err(http_failure(status, &headers, &body, provider_name));
     }
     let mut parser = sse::SseParser::new();
@@ -1921,7 +2042,9 @@ async fn drive_owned_request(
     cleanup: Arc<files_cleanup::CleanupWorker>,
 ) {
     let cancelled = options.signal.clone();
-    if let Some(telemetry)=&options.telemetry {telemetry.phase("credentials",None);}
+    if let Some(telemetry) = &options.telemetry {
+        telemetry.phase("credentials", None);
+    }
     let connection = match options_resolver() {
         Ok(connection) => connection,
         Err(error) => {
@@ -2213,10 +2336,12 @@ impl LlmAdapter for DeepSeekAdapter {
     }
 
     fn stream(&self, options: &GenerateOptions) -> ChunkStream {
-        let cleanup=self.cleanup.clone();
+        let cleanup = self.cleanup.clone();
         let mut options = options.clone();
-        let telemetry=options.telemetry.as_ref().map(|telemetry|telemetry.for_attempt(options.provider.clone(),options.model.clone()));
-        options.telemetry=telemetry.clone();
+        let telemetry = options.telemetry.as_ref().map(|telemetry| {
+            telemetry.for_attempt(options.provider.clone(), options.model.clone())
+        });
+        options.telemetry = telemetry.clone();
         let options_resolver = Arc::clone(&self.config.options);
         let key_resolver = Arc::clone(&self.config.resolve_api_key);
         let attachment_resolver = self.config.resolve_attachments.clone();

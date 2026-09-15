@@ -49,20 +49,38 @@ fn invalid() -> String {
     "DeepSeek Files API returned an invalid file object".to_string()
 }
 
-async fn read_bounded_body(mut response:reqwest::Response)->Result<Vec<u8>,String>{
-    tokio::time::timeout(Duration::from_secs(15),async {
-        let mut bytes=Vec::new();
-        while let Some(chunk)=response.chunk().await.map_err(|e|e.without_url().to_string())? {
-            if bytes.len()+chunk.len()>65536{return Err("[phase:files_response_body] response exceeded 64 KiB".into());}
+async fn read_bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| e.without_url().to_string())?
+        {
+            if bytes.len() + chunk.len() > 65536 {
+                return Err("[phase:files_response_body] response exceeded 64 KiB".into());
+            }
             bytes.extend_from_slice(&chunk);
         }
         Ok(bytes)
-    }).await.map_err(|_|"[phase:files_response_body] response body deadline exceeded".to_string())?
+    })
+    .await
+    .map_err(|_| "[phase:files_response_body] response body deadline exceeded".to_string())?
 }
 
-async fn read_metadata(response:reqwest::Response)->Result<Value,DeepSeekFilesError>{
-    let bytes=read_bounded_body(response).await.map_err(|message|DeepSeekFilesError{code:FilesErrorCode::Transport,status:None,message})?;
-    serde_json::from_slice(&bytes).map_err(|_|DeepSeekFilesError{code:FilesErrorCode::Protocol,status:None,message:"Files API returned malformed metadata".into()})
+async fn read_metadata(response: reqwest::Response) -> Result<Value, DeepSeekFilesError> {
+    let bytes = read_bounded_body(response)
+        .await
+        .map_err(|message| DeepSeekFilesError {
+            code: FilesErrorCode::Transport,
+            status: None,
+            message,
+        })?;
+    serde_json::from_slice(&bytes).map_err(|_| DeepSeekFilesError {
+        code: FilesErrorCode::Protocol,
+        status: None,
+        message: "Files API returned malformed metadata".into(),
+    })
 }
 
 pub fn parse_file_object(value: &Value) -> Result<DeepSeekFileObject, String> {
@@ -148,8 +166,8 @@ impl DeepSeekFilesClient {
         }
         let status = response.status().as_u16();
         let body = match read_bounded_body(response).await {
-            Ok(bytes)=>String::from_utf8_lossy(&bytes).into_owned(),
-            Err(message)=>message,
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(message) => message,
         };
         Err(DeepSeekFilesError {
             code: classify_files_status(status),
@@ -174,7 +192,10 @@ impl DeepSeekFilesClient {
             .map_err(|error| DeepSeekFilesError {
                 code: FilesErrorCode::Transport,
                 status: None,
-                message: format!("DeepSeek Files API transport failed: {}",error.without_url()),
+                message: format!(
+                    "DeepSeek Files API transport failed: {}",
+                    error.without_url()
+                ),
             })?;
         self.accept(response).await
     }
@@ -197,7 +218,7 @@ impl DeepSeekFilesClient {
                     .get(format!("{}/files/{}", self.base_url, file_id.as_str())),
             )
             .await?;
-let value = read_metadata(response).await?;
+        let value = read_metadata(response).await?;
         Self::parse_response(&value)
     }
 
@@ -208,7 +229,7 @@ let value = read_metadata(response).await?;
                     .delete(format!("{}/files/{}", self.base_url, file_id.as_str())),
             )
             .await?;
-let value = read_metadata(response).await?;
+        let value = read_metadata(response).await?;
         if value.get("id").and_then(Value::as_str) == Some(file_id.as_str())
             && value.get("object").and_then(Value::as_str) == Some("file")
             && value.get("deleted").and_then(Value::as_bool) == Some(true)
@@ -259,7 +280,7 @@ let value = read_metadata(response).await?;
                     .multipart(form),
             )
             .await?;
-let value = read_metadata(response).await?;
+        let value = read_metadata(response).await?;
         let parsed = Self::parse_response(&value)?;
         if parsed.expires_at.is_none() {
             return Err(DeepSeekFilesError {

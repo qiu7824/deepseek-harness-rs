@@ -240,7 +240,13 @@ mod tests {
     async fn unused_authorization_offers_expire_without_launching_a_browser() {
         let pool = AccountBrowsers::new(PathBuf::new());
         pool.offer("unused", "https://example.com", 0).unwrap();
-        tokio::time::sleep(Duration::from_millis(15)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !pool.entries.lock().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("unused authorization offer must expire without browser startup");
         assert!(pool.entries.lock().is_empty());
     }
     #[test]

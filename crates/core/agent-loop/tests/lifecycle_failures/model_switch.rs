@@ -32,6 +32,7 @@ impl LlmAdapter for RecordingAdapter {
             reason: if fail_once {
                 FinishReason::Error {
                     failure: dsh_llm::LlmFailure {
+                        offload_images: None,
                         message: "transient stream failure".into(),
                         code: "TRANSPORT".into(),
                         status: None,

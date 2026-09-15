@@ -6,9 +6,7 @@ use dsh_llm::{
     BlockAssembler, ContentBlock, FinishReason, GenerateOptions, LlmRuntime, Message,
     MessageSource, create_user_message,
 };
-use dsh_session::{
-    Session, SessionStore, SurfaceIntent, SurfaceOp, derive_event_message, fold_request_header,
-};
+use dsh_session::{Session, SessionStore, SurfaceIntent, SurfaceOp, fold_request_header};
 use dsh_token_meter::TokenMeter;
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -397,7 +395,10 @@ impl BasicCompactionEngine {
             if index < start_index {
                 break;
             }
-            if let Some(message) = events.get(*seq as usize).and_then(derive_event_message) {
+            if let Some(message) = events
+                .get(*seq as usize)
+                .and_then(|event| session.derive_event_message(event))
+            {
                 if count >= protect && retained >= retain_tokens {
                     break;
                 }
@@ -445,7 +446,7 @@ impl BasicCompactionEngine {
             .and_then(|seq| events.get(*seq as usize))
             .filter(|event| event.type_ == "system/message")
         {
-            if let Some(message) = derive_event_message(head) {
+            if let Some(message) = session.derive_event_message(head) {
                 selected.push(message);
             }
         }
@@ -461,7 +462,7 @@ impl BasicCompactionEngine {
                         "the selected history changed before summarization",
                     )
                 })?;
-                if let Some(message) = derive_event_message(&event) {
+                if let Some(message) = session.derive_event_message(&event) {
                     selected.push(message);
                 }
             }
@@ -573,7 +574,7 @@ impl BasicCompactionEngine {
         } else {
             header.as_ref().and_then(|header| header.system.clone())
         };
-        let options = GenerateOptions {
+        let mut options = GenerateOptions {
             provider: provider.clone(),
             model: model.clone(),
             reasoning_effort: None,
@@ -586,18 +587,68 @@ impl BasicCompactionEngine {
             signal: signal.cloned(),
             session_id: Some(agent.session.id().to_string()),
             purpose: Some("compaction".to_string()),
-            agent_loop_request: false, telemetry: None,
+            agent_loop_request: false,
+            telemetry: None,
         };
-        let mut stream = self.llm.stream(options);
-        let mut assembler = BlockAssembler::new();
-        loop {
-            tokio::select! {
-                chunk = stream.next() => match chunk { Some(chunk) => assembler.push(&chunk), None => break },
-                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => if Self::cancelled(signal) {
-                    return Err(ManualCompactionError::new(ManualCompactionErrorCode::Cancelled, "compaction cancelled"));
+        let assembler = loop {
+            let mut stream = self.llm.stream(options.clone());
+            let mut assembler = BlockAssembler::new();
+            loop {
+                tokio::select! {
+                    chunk = stream.next() => match chunk { Some(chunk) => assembler.push(&chunk), None => break },
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => if Self::cancelled(signal) {
+                        return Err(ManualCompactionError::new(ManualCompactionErrorCode::Cancelled, "compaction cancelled"));
+                    }
                 }
             }
-        }
+            if let FinishReason::Error { failure } = assembler.finish() {
+                if failure.code == "IMAGE_OFFLOAD_REQUIRED" && failure.offload_images.is_some() {
+                    let ids: std::collections::HashSet<_> = options
+                        .messages
+                        .iter()
+                        .map(|message| message.id.clone())
+                        .collect();
+                    let events = agent.session.events();
+                    let selected: Vec<_> = agent
+                        .session
+                        .surface()
+                        .map_err(|e| {
+                            ManualCompactionError::new(ManualCompactionErrorCode::Summary, e)
+                        })?
+                        .nodes
+                        .into_iter()
+                        .filter(|seq| {
+                            events
+                                .get(*seq as usize)
+                                .and_then(|event| agent.session.derive_event_message(event))
+                                .is_some_and(|message| ids.contains(&message.id))
+                        })
+                        .collect();
+                    if agent
+                        .session
+                        .offload_images_in_nodes(
+                            failure.offload_images.unwrap_or(0),
+                            Some(&selected),
+                        )
+                        .map_err(|e| {
+                            ManualCompactionError::new(ManualCompactionErrorCode::Summary, e)
+                        })?
+                    {
+                        let projected = agent.session.derive_messages().map_err(|e| {
+                            ManualCompactionError::new(ManualCompactionErrorCode::Summary, e)
+                        })?;
+                        for message in &mut options.messages {
+                            if let Some(next) = projected.iter().find(|next| next.id == message.id)
+                            {
+                                *message = next.clone();
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            break assembler;
+        };
         match assembler.finish() {
             FinishReason::Stop | FinishReason::ToolCalls => {}
             FinishReason::MaxTokens => {

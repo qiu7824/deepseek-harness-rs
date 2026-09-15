@@ -84,6 +84,7 @@ impl LlmAdapter for Adapter {
                 return Box::pin(futures::stream::iter([StreamChunk::Finish {
                     reason: FinishReason::Error {
                         failure: dsh_llm::LlmFailure {
+                            offload_images: None,
                             code: dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE.into(),
                             message: "fixture overflow".into(),
                             status: Some(400),

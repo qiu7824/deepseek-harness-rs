@@ -107,11 +107,14 @@ pub struct SessionSurface {
 struct SurfaceFoldState {
     nodes: Vec<u64>,
     replace_generation: u64,
+    image_counts: std::collections::BTreeMap<u64, usize>,
+    omitted: std::collections::BTreeMap<u64, std::collections::BTreeSet<usize>>,
 }
 
 /// A validated replacement transition that has not mutated fold state yet.
 #[derive(Debug, Clone, PartialEq)]
 struct SurfaceReplacePlan {
+    image_count: Option<usize>,
     seq: u64,
     start: u64,
     end: u64,
@@ -123,8 +126,13 @@ struct SurfaceReplacePlan {
 /// One validated surface transition that has not mutated fold state yet.
 #[derive(Debug, Clone, PartialEq)]
 enum SurfacePlan {
-    Append { seq: u64, prepend: bool },
+    Append {
+        seq: u64,
+        prepend: bool,
+        image_count: Option<usize>,
+    },
     Replace(SurfaceReplacePlan),
+    Offload(crate::image_offload::Targets),
 }
 
 /// Validate event-local surface eligibility and return its operation.
@@ -294,12 +302,22 @@ fn plan_surface_event(
         ));
     }
     let Some(op) = surface_op_of(event)? else {
+        if event.type_ == "image/offload" {
+            return crate::image_offload::validate(
+                &event.data,
+                &state.nodes,
+                &state.image_counts,
+                &state.omitted,
+            )
+            .map(|targets| Some(SurfacePlan::Offload(targets)));
+        }
         return Ok(None);
     };
     match op {
         SurfaceOp::Append => {
             assert_provenance(event, &[])?;
             Ok(Some(SurfacePlan::Append {
+                image_count: crate::image_offload::input_count(event),
                 seq: event.seq.get(),
                 prepend: event.type_ == "system/message"
                     && event.data.get("prefix").and_then(JsonValue::as_bool) == Some(true),
@@ -314,6 +332,7 @@ fn plan_surface_event(
                 SurfaceOp::Append => unreachable!(),
             };
             Ok(Some(SurfacePlan::Replace(SurfaceReplacePlan {
+                image_count: crate::image_offload::input_count(event),
                 seq: event.seq.get(),
                 start,
                 end,
@@ -331,7 +350,14 @@ fn apply_surface_plan(
     plan: Option<SurfacePlan>,
 ) -> Option<SurfaceFoldReplacement> {
     match plan {
-        Some(SurfacePlan::Append { seq, prepend }) => {
+        Some(SurfacePlan::Append {
+            seq,
+            prepend,
+            image_count,
+        }) => {
+            if let Some(count) = image_count {
+                state.image_counts.insert(seq, count);
+            }
             if prepend && !state.nodes.is_empty() {
                 // Explicit prefixes can repair a shadowed system node. Old
                 // unmarked V3 appends retain their original positions so
@@ -345,6 +371,7 @@ fn apply_surface_plan(
         }
         Some(SurfacePlan::Replace(plan)) => {
             let SurfaceReplacePlan {
+                image_count,
                 seq,
                 start,
                 end,
@@ -352,6 +379,13 @@ fn apply_surface_plan(
                 end_idx,
                 shadowed_seqs,
             } = plan;
+            for seq in &shadowed_seqs {
+                state.image_counts.remove(seq);
+                state.omitted.remove(seq);
+            }
+            if let Some(count) = image_count {
+                state.image_counts.insert(seq, count);
+            }
             state
                 .nodes
                 .splice(start_idx..=end_idx, std::iter::once(seq));
@@ -362,6 +396,13 @@ fn apply_surface_plan(
                 end,
                 shadowed_seqs,
             })
+        }
+        Some(SurfacePlan::Offload(targets)) => {
+            for (seq, indexes) in targets {
+                state.omitted.entry(seq).or_default().extend(indexes);
+            }
+            state.replace_generation += 1;
+            None
         }
         None => None,
     }
@@ -438,12 +479,22 @@ impl StreamingSurfaceFold {
         }
         self.expected_seq += 1;
         let Some(op) = surface_op_of(event)? else {
+            if event.type_ == "image/offload" {
+                let targets = crate::image_offload::validate(
+                    &event.data,
+                    &self.state.nodes,
+                    &self.state.image_counts,
+                    &self.state.omitted,
+                )?;
+                apply_surface_plan(&mut self.state, Some(SurfacePlan::Offload(targets)));
+            }
             return Ok(());
         };
         let plan = match op {
             SurfaceOp::Append => {
                 assert_provenance(event, &[])?;
                 Some(SurfacePlan::Append {
+                    image_count: crate::image_offload::input_count(event),
                     seq: event.seq.get(),
                     prepend: event.type_ == "system/message"
                         && event.data.get("prefix").and_then(JsonValue::as_bool) == Some(true),
@@ -476,6 +527,7 @@ impl StreamingSurfaceFold {
                     }
                 }
                 Some(SurfacePlan::Replace(SurfaceReplacePlan {
+                    image_count: crate::image_offload::input_count(event),
                     seq: event.seq.get(),
                     start,
                     end,
@@ -586,6 +638,12 @@ mod streaming_tests {
 }
 
 impl SurfaceManager {
+    pub(crate) fn project_message(&self, seq: u64, message: Message) -> Message {
+        self.state.omitted.get(&seq).map_or_else(
+            || message.clone(),
+            |selected| crate::image_offload::project(message.clone(), selected),
+        )
+    }
     /// Create a manager for a contiguous complete log or loaded event
     /// window starting at `base_seq`.
     pub fn new(base_seq: u64) -> Self {

@@ -233,7 +233,9 @@ impl ComputerUseAdapter for ControlledAdapter {
     fn adapter_id_for(&self, arguments: &Value) -> Result<&'static str, AdapterError> {
         self.inner.adapter_id_for(arguments)
     }
-    fn targets(&self) -> Value { self.inner.targets() }
+    fn targets(&self) -> Value {
+        self.inner.targets()
+    }
     fn availability_for(&self, arguments: &Value) -> Result<(), AdapterError> {
         self.inner.availability_for(arguments)
     }

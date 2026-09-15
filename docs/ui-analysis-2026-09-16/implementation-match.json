@@ -1,0 +1,17 @@
+{
+  "ui-settings-models.js": {
+    "sourceMatchesServed": true
+  },
+  "ui-model-selection.js": {
+    "sourceMatchesServed": true
+  },
+  "ui-settings-general.js": {
+    "sourceMatchesServed": true
+  },
+  "ui-productivity.js": {
+    "sourceMatchesServed": true
+  },
+  "ui-settings.js": {
+    "sourceMatchesServed": true
+  }
+}

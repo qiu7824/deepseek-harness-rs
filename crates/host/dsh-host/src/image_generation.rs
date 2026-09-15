@@ -15,12 +15,10 @@ fn failure(message: impl Into<String>) -> ToolBodyError {
     let message = message.into();
     let code = if message.starts_with("NATIVE_TOOL_UNSUPPORTED:") {
         "NATIVE_TOOL_UNSUPPORTED"
-    } else { "IMAGE_GENERATION_FAILED" };
-    ToolBodyError::coded(
-        message,
-        "ImageGenerationError",
-        code,
-    )
+    } else {
+        "IMAGE_GENERATION_FAILED"
+    };
+    ToolBodyError::coded(message, "ImageGenerationError", code)
 }
 fn image_ref(value: &Value, id: &str) -> Option<ImageAttachmentRef> {
     dsh_attachment::find_image_reference(value, id)

@@ -19,7 +19,8 @@ fn request(effort: &str) -> GenerateOptions {
         signal: None,
         session_id: None,
         purpose: None,
-        agent_loop_request: false, telemetry: None,
+        agent_loop_request: false,
+        telemetry: None,
     }
 }
 

@@ -13,6 +13,7 @@ use crate::types::LlmFailure;
 /// `normalizeLlmFailure`).
 pub fn normalize_llm_failure(value: &str) -> LlmFailure {
     LlmFailure {
+        offload_images: None,
         message: if value.is_empty() {
             "LLM adapter failed".to_string()
         } else {
@@ -47,6 +48,7 @@ pub fn failure_snapshot(
         return None;
     }
     Some(LlmFailure {
+        offload_images: None,
         message,
         code,
         status,

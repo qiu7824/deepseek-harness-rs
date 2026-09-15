@@ -4,6 +4,7 @@ pub(crate) const DONE: &str = "[DONE]";
 
 fn malformed(message: impl Into<String>) -> LlmFailure {
     LlmFailure {
+        offload_images: None,
         message: message.into(),
         code: "MALFORMED_RESPONSE".to_string(),
         status: None,

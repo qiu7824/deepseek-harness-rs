@@ -72,6 +72,7 @@ pub fn after_checkpoint(
                 Err(error) => Box::pin(futures::stream::iter(vec![StreamChunk::Finish {
                     reason: FinishReason::Error {
                         failure: LlmFailure {
+                            offload_images: None,
                             message: format!("durability checkpoint failed: {error}"),
                             code: "CHECKPOINT_FAILED".to_string(),
                             status: None,

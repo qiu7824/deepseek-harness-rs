@@ -29,6 +29,9 @@ dsh-llm = { path = "../../core/llm" }
 dsh-message-feedback = { path = "../../feedback/message-feedback" }
 dsh-command-feedback = { path = "../../feedback/command-feedback" }
 dsh-native-command = { path = "../../util/native-command" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
+dsh-workspace-resources = { path = "../../workspace/workspace-resources" }
 dsh-session = { path = "../../core/session" }
 dsh-session-reference = { path = "../../context/session-reference" }
 dsh-session-persistence = { path = "../../session/session-persistence" }

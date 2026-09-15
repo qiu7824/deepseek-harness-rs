@@ -1,6 +1,7 @@
 """Exercise Git/Cloud adoption through a real Host and a local Git fixture."""
 from __future__ import annotations
-import argparse,json,pathlib,subprocess,uuid
+import argparse,json,pathlib,subprocess,uuid,threading,concurrent.futures
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import rpc,require_ok
 
@@ -37,7 +38,31 @@ def main():
             target=work/str(sequence)
             value=rpc(port,'workspace.create',{'kind':'git','source':source_value,'path':str(target)},sequence)['result']
             assert value['ok'] is False and not target.exists()
-    evidence={'passed':True,'gitClone':True,'cloudClone':True,'branchSelection':True,'existingDirectoryPreserved':True,'invalidSourceRejected':True,'work':str(work)}
+        cancelled_id=str(uuid.uuid4())
+        require_ok(rpc(port,'workspace.cancelCreate',{'operationId':cancelled_id},50),'pre-cancel')
+        cancelled=work/'cancel-before-start'
+        assert not rpc(port,'workspace.create',{'kind':'git','source':str(source),'path':str(cancelled),'operationId':cancelled_id},51)['result']['ok']
+        assert not cancelled.exists()
+        reached,release=threading.Event(),threading.Event()
+        class SlowGit(BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_GET(self):
+                reached.set();release.wait(15)
+                try:self.send_error(503)
+                except OSError:pass
+        server=ThreadingHTTPServer(('127.0.0.1',0),SlowGit)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                active_id=str(uuid.uuid4())
+                result=pool.submit(rpc,port,'workspace.create',{'kind':'git','source':f'http://127.0.0.1:{server.server_port}/repo','path':str(work/'cancel-active'),'operationId':active_id},52)
+                assert reached.wait(10),'Git did not reach the slow HTTP fixture'
+                require_ok(rpc(port,'workspace.cancelCreate',{'operationId':active_id},53),'cancel active clone')
+                assert not result.result(timeout=8)['result']['ok']
+        finally:
+            release.set();server.shutdown();server.server_close()
+        assert all('cancel-' not in item['path'] for item in require_ok(rpc(port,'workspace.list',{},54),'workspace list')['items'])
+    evidence={'passed':True,'gitClone':True,'cloudClone':True,'branchSelection':True,'existingDirectoryPreserved':True,'invalidSourceRejected':True,'preStartCancellation':True,'activeCloneCancellation':True,'work':str(work)}
     (work/'result.json').write_text(json.dumps(evidence,indent=2),encoding='utf-8')
     print(json.dumps(evidence))
 

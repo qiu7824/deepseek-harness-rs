@@ -128,7 +128,10 @@ async fn run(
             return Err(err(format!("{tool} search cancelled"), "CANCELLED"));
         }
         if started.elapsed() >= budget {
-            return Err(err(format!("{tool} search exceeded {} ms", cfg.timeout_ms), "SEARCH_TIMEOUT"));
+            return Err(err(
+                format!("{tool} search exceeded {} ms", cfg.timeout_ms),
+                "SEARCH_TIMEOUT",
+            ));
         }
         tokio::select! {
             result = &mut operation => return result,
@@ -563,32 +566,85 @@ pub struct ToolFsSearchPlugin;
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
-    use std::{future::Future, pin::Pin, sync::atomic::{AtomicBool, Ordering}, time::{Duration, Instant}};
-    type Fut<T> = Pin<Box<dyn Future<Output=T> + Send + 'static>>;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::atomic::{AtomicBool, Ordering},
+        time::{Duration, Instant},
+    };
+    type Fut<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
     struct HungResolver;
     impl SubprocessRuntime for HungResolver {
-        fn resolve_executable(&self, _: &str, _: Option<&[(String,String)]>, _: Option<SubprocessAbort>) -> Fut<Result<String,String>> {
+        fn resolve_executable(
+            &self,
+            _: &str,
+            _: Option<&[(String, String)]>,
+            _: Option<SubprocessAbort>,
+        ) -> Fut<Result<String, String>> {
             Box::pin(std::future::pending())
         }
-        fn spawn(&self, _: SubprocessSpawnSpec) -> Result<Arc<dyn dsh_subprocess::SubprocessHandle>,String> { panic!("cancelled resolution must not spawn") }
-        fn spawn_terminal(&self, _: dsh_subprocess::SubprocessTerminalSpawnSpec) -> Fut<Result<Arc<dyn dsh_subprocess::SubprocessTerminalHandle>,String>> { panic!("search never opens a terminal") }
+        fn spawn(
+            &self,
+            _: SubprocessSpawnSpec,
+        ) -> Result<Arc<dyn dsh_subprocess::SubprocessHandle>, String> {
+            panic!("cancelled resolution must not spawn")
+        }
+        fn spawn_terminal(
+            &self,
+            _: dsh_subprocess::SubprocessTerminalSpawnSpec,
+        ) -> Fut<Result<Arc<dyn dsh_subprocess::SubprocessTerminalHandle>, String>> {
+            panic!("search never opens a terminal")
+        }
     }
-    fn config(timeout_ms:u64)->Config { Config { sample:false, glob_max:100, grep_max:100, line_max:2000, raw_max:10000, grace_ms:100, stderr_max:10000, timeout_ms } }
+    fn config(timeout_ms: u64) -> Config {
+        Config {
+            sample: false,
+            glob_max: 100,
+            grep_max: 100,
+            line_max: 2000,
+            raw_max: 10000,
+            grace_ms: 100,
+            stderr_max: 10000,
+            timeout_ms,
+        }
+    }
     #[tokio::test]
     async fn hung_executable_resolution_is_cancelled_promptly() {
-        let runtime:Arc<dyn SubprocessRuntime>=Arc::new(HungResolver);
-        let flag=Arc::new(AtomicBool::new(false));let setter=flag.clone();
-        tokio::spawn(async move { tokio::time::sleep(Duration::from_millis(25)).await;setter.store(true,Ordering::SeqCst); });
-        let started=Instant::now();
-        let error=run(&runtime,"grep",vec![],".".into(),Arc::new(move||flag.load(Ordering::SeqCst)),&config(5000)).await.unwrap_err();
-        assert_eq!(error.info.unwrap().code,"CANCELLED");
-        assert!(started.elapsed()<Duration::from_secs(1));
+        let runtime: Arc<dyn SubprocessRuntime> = Arc::new(HungResolver);
+        let flag = Arc::new(AtomicBool::new(false));
+        let setter = flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            setter.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let error = run(
+            &runtime,
+            "grep",
+            vec![],
+            ".".into(),
+            Arc::new(move || flag.load(Ordering::SeqCst)),
+            &config(5000),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.info.unwrap().code, "CANCELLED");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
     #[tokio::test]
     async fn hung_executable_resolution_has_a_total_deadline() {
-        let runtime:Arc<dyn SubprocessRuntime>=Arc::new(HungResolver);
-        let error=run(&runtime,"glob",vec![],".".into(),Arc::new(||false),&config(30)).await.unwrap_err();
-        assert_eq!(error.info.unwrap().code,"SEARCH_TIMEOUT");
+        let runtime: Arc<dyn SubprocessRuntime> = Arc::new(HungResolver);
+        let error = run(
+            &runtime,
+            "glob",
+            vec![],
+            ".".into(),
+            Arc::new(|| false),
+            &config(30),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.info.unwrap().code, "SEARCH_TIMEOUT");
     }
 }
 #[async_trait::async_trait]

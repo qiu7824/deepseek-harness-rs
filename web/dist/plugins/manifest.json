@@ -222,7 +222,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-workspace",
       "url": "/plugins/ui-workspace.js",
-      "rev": "16674dcad995fcb4",
+      "rev": "cc8bb6edae910968",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",

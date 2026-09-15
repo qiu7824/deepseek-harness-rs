@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use cordis::{ArcValue, BoxFuture, Context, DispatchMode, Disposer, InjectSpec, Service, arc};
 use dsh_agent::{
-    Agent, AgentFactory, AgentHandle, AgentOptions, AgentSessionStartPayload, AgentSetup,
-    CreateAgentOptions, ResumeAgentOptions, SessionStartSource, emit_agent_event,
+    Agent, AgentFactory, AgentHandle, AgentOptions, AgentSetup, CreateAgentOptions,
+    ResumeAgentOptions, SessionStartSource,
 };
 use dsh_session::{Session, SessionId, SessionPreparation, SessionPreparationOptions, session_id};
 use dsh_settings::{install_settings_section, settings_namespace};
@@ -587,6 +587,7 @@ impl AgentLoop {
             return Err("agent loop is not active".to_string());
         }
         let agent = ReactLoopAgent::new(&self.ctx, id.clone(), options.clone(), session.clone())?;
+        agent.hold_publication();
         let (dispose_done, _) = tokio::sync::watch::channel(false);
         let prepared = Arc::new(PreparedAgent {
             agent,
@@ -607,7 +608,7 @@ impl AgentLoop {
 impl PreparedAgent {
     /// Enter registries, announce, notify session-start, and hand out the
     /// published handle.
-    async fn publish(self: &Arc<Self>, source: SessionStartSource) -> Result<AgentHandle, String> {
+    async fn publish(self: &Arc<Self>, _source: SessionStartSource) -> Result<AgentHandle, String> {
         let sessions = self
             .loop_ctx
             .get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
@@ -652,12 +653,11 @@ impl PreparedAgent {
             }
             return Err(error);
         }
-        emit_agent_event(&self.loop_ctx, &agent_dyn, "agent/session-start", |agent| {
-            arc(AgentSessionStartPayload {
-                agent: Arc::clone(agent),
-                source,
-            })
-        });
+        if let Err(error) = agents.announce(&agent_dyn).await {
+            self.dispose().await;
+            return Err(error);
+        }
+        self.agent.release_publication();
         let prepared = Arc::clone(self);
         Ok(AgentHandle {
             agent: Arc::clone(&agent_dyn),

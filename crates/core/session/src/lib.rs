@@ -6,6 +6,7 @@
 //! `session/flush`).
 
 pub mod chunk_rows;
+pub mod image_offload;
 pub mod invariant;
 pub mod json;
 pub mod known_event_types;

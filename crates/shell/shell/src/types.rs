@@ -42,7 +42,9 @@ impl ShellSandboxInfo {
     pub fn com_access_denied(stderr: &str) -> bool {
         let text = stderr.to_ascii_lowercase();
         (text.contains("80070005") || text.contains("e_accessdenied"))
-            && (text.contains("clsid") || text.contains("class factory") || text.contains("comobject"))
+            && (text.contains("clsid")
+                || text.contains("class factory")
+                || text.contains("comobject"))
     }
     pub fn observe(
         mode: SandboxMode,
@@ -97,7 +99,9 @@ mod tests {
     }
     #[test]
     fn ordinary_access_denial_remains_sandbox_signal() {
-        assert!(!ShellSandboxInfo::com_access_denied("Access is denied reading file"));
+        assert!(!ShellSandboxInfo::com_access_denied(
+            "Access is denied reading file"
+        ));
     }
 }
 

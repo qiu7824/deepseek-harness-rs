@@ -1,0 +1,103 @@
+{
+  "live": {
+    "url": "http://127.0.0.1:58080/",
+    "dialog": {
+      "width": 1040,
+      "height": 800
+    },
+    "nav": "设置\n通用设置\n模型\n插件\n目录与运行环境\n记忆与上下文\nAgent 预设\n子智能体\n安全盾\n技能与 MCP\n归档管理\n小菜单设置\n垃圾槽"
+  },
+  "draft": {
+    "original": true,
+    "dirty": "有未保存的模型更改\n取消\n保存",
+    "escCloses": true,
+    "reopenSelected": "通用设置",
+    "reopenChecked": true
+  },
+  "account": {
+    "loginBeforeExpand": 0,
+    "networkButtonVisible": true,
+    "devinButtons": [
+      "Devin / Windsurf",
+      "重新连接",
+      "登录另一个账号",
+      "退出登录",
+      "当前账号",
+      "移除账号",
+      "刷新目录",
+      "显示筛选结果",
+      "隐藏筛选结果",
+      "加载更多模型",
+      "添加手动模型"
+    ]
+  },
+  "tasks": {
+    "networkButtonVisible": true,
+    "text": "任务分工可选；留空时沿用当前对话的连接，仅在需要专用模型时指定。\n\n主对话\n跟随当前对话\nDeepSeek\nOpenCode 免费模型\nOpenCode Zen\ndoubao-seed-evolving\nChatGPT / Codex\nDevin / Windsurf\nOpenAI API\n自动\nlow\nmedium\nhigh\nxhigh\nmax\n保存默认主模型\n\n默认主模型用于新对话，已有对话保留当前选择。\n\n排错\n跟随当前对话\nDeepSeek\nOpenCode 免费模型\nOpenCode Zen\ndoubao-seed-evolving\nChatGPT / Codex\nDevin / Windsurf\nOpenAI API\n自动\nlow\nmedium\nhigh\nxhigh\nmax\n优化\n跟随当前对话\nDeepSeek\nOpenCode 免费模型\nOpenCode Zen\ndoubao-seed-evolving\nChatGPT / Codex\nDevin / Windsurf\nOpenAI API\n自动\nlow\nmedium\nhigh\nxhigh\nmax\n看图\n跟随当前对话\nDeepSeek\nOpenCode 免费模型\nOpenCode Zen\ndoubao-seed-evolving\nChatGPT / Codex\nDevin / Windsurf\nOpenAI API\n自动\nlow\nmedium\nhigh\nxhigh\nmax\n生图\n跟随当前对话\nDeepSeek\nOpenCode 免费模型\nOpenCode Zen\ndoubao-seed-evolving\nChatGPT / Codex\nDevin / Windsurf\nOpenAI API\n图像输出\n托管搜索\n跟随当前对话\nDeepSeek\nOpenCode 免费模型\nOpenCode Zen\ndoubao-seed-evolving\nChatGPT / Codex\nDevin / Windsurf\nOpenAI API\n自动\nlow\nmedium\nhigh\nxhigh\nmax\n\n主模型可调用排错、优化和看图模型获取分析建议，再由主模型执行修改。\n\n生图无需预先设置分工。连接和模型可分别留空：连接跟随当前对话，模型自动使用该连接的生图型号；账号仍需支持生图。\n\n保存任务分工"
+  },
+  "mobile": {
+    "width": 390,
+    "scrollWidth": 390,
+    "bodyWidth": 390,
+    "viewport": 390,
+    "overflows": [
+      "目录与运行环境",
+      "记忆与上下文",
+      "Agent 预设",
+      "子智能体",
+      "安全盾",
+      "技能与 MCP",
+      "归档管理",
+      "小菜单设置",
+      "垃圾槽"
+    ]
+  },
+  "largeManager": {
+    "rows": 100,
+    "search": true,
+    "savedManualDelete": [],
+    "height": 697,
+    "loadMore": true,
+    "batch": {
+      "renderedUnchecked": 100,
+      "footerY": 741,
+      "footerPosition": "sticky",
+      "title": "模型目录 · 0 / 150 显示\n刷新目录"
+    }
+  },
+  "manual": {
+    "beforeSaveButtons": [
+      "移除草稿"
+    ],
+    "afterSaveButtons": []
+  },
+  "picker": {
+    "rootMenu": "模型\n模型 001",
+    "large": {
+      "rows": 500,
+      "searchInputs": 0,
+      "size": {
+        "width": 248,
+        "height": 368
+      },
+      "groups": 10,
+      "scrollables": [
+        {
+          "height": 360,
+          "scrollHeight": 19296
+        }
+      ]
+    }
+  },
+  "loginFixture": {
+    "passwordInputs": 1,
+    "buttons": [
+      "发送输入",
+      "Tab",
+      "Enter",
+      "Backspace",
+      "刷新状态",
+      "取消"
+    ]
+  }
+}

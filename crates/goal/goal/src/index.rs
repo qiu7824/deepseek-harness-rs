@@ -248,9 +248,7 @@ impl GoalService {
                 Box::pin(async move {
                     let agent = args
                         .first()
-                        .and_then(|value| {
-                            value.downcast_ref::<dsh_agent::AgentSessionStartPayload>()
-                        })
+                        .and_then(|value| value.downcast_ref::<dsh_agent::AgentLifecyclePayload>())
                         .map(|payload| payload.agent.clone());
                     if let Some(agent) = agent {
                         let _ = service.disarm(&agent);
@@ -259,7 +257,7 @@ impl GoalService {
                 })
             });
         let _ = futures::executor::block_on(ctx.on(
-            "agent/session-start",
+            "agent/created",
             listener,
             EventOptions::default().global(true),
         ));

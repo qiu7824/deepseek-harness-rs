@@ -9,8 +9,10 @@ pub fn find_image_reference(value: &Value, id: &str) -> Option<ImageAttachmentRe
             if map.get("type").and_then(Value::as_str) == Some("image") {
                 if let Some(attachment) = map.get("attachment") {
                     let stored = attachment["attachmentId"].as_str().unwrap_or("");
-                    let matches = stored == id || stored.strip_prefix("sha256:") == Some(id)
-                        || (id.starts_with("generated-") && attachment["name"].as_str() == Some(id));
+                    let matches = stored == id
+                        || stored.strip_prefix("sha256:") == Some(id)
+                        || (id.starts_with("generated-")
+                            && attachment["name"].as_str() == Some(id));
                     if matches {
                         if let Ok(reference) = serde_json::from_value(attachment.clone()) {
                             return Some(reference);
@@ -18,9 +20,12 @@ pub fn find_image_reference(value: &Value, id: &str) -> Option<ImageAttachmentRe
                     }
                 }
             }
-            map.values().find_map(|value| find_image_reference(value, id))
+            map.values()
+                .find_map(|value| find_image_reference(value, id))
         }
-        Value::Array(values) => values.iter().find_map(|value| find_image_reference(value, id)),
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_image_reference(value, id)),
         _ => None,
     }
 }

@@ -74,10 +74,19 @@ impl RequestTelemetry {
     }
     /// Terminate live attempts when the caller drops a cancelled provider stream.
     pub fn cancel_pending(&self) {
-        let attempts: Vec<_> = self.active.lock().iter().filter_map(Weak::upgrade).collect();
+        let attempts: Vec<_> = self
+            .active
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
         for timing in attempts {
-            Self { sink: self.sink.clone(), timing, active: self.active.clone() }
-                .finish("cancelled", Some("CANCELLED"));
+            Self {
+                sink: self.sink.clone(),
+                timing,
+                active: self.active.clone(),
+            }
+            .finish("cancelled", Some("CANCELLED"));
         }
     }
     pub fn network_start(&self) {

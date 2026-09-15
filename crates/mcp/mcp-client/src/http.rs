@@ -42,6 +42,7 @@ pub struct StreamableHttpClient {
     close_timeout: Duration,
     registrations: parking_lot::Mutex<Vec<Disposer>>,
     closed: AtomicBool,
+    protocol: parking_lot::RwLock<String>,
 }
 
 impl StreamableHttpClient {
@@ -62,6 +63,7 @@ impl StreamableHttpClient {
             close_timeout: config.close_timeout,
             registrations: parking_lot::Mutex::new(Vec::new()),
             closed: AtomicBool::new(false),
+            protocol: parking_lot::RwLock::new(PROTOCOL_VERSION.into()),
         });
         let startup = async {
             let initialized = client
@@ -74,11 +76,9 @@ impl StreamableHttpClient {
                     }),
                 )
                 .await?;
-            if !initialized.is_object() {
-                return Err(error("MCP initialize response must be an object"));
-            }
+            *client.protocol.write() = crate::discovery::negotiated_version(&initialized)?;
             client.notify("notifications/initialized", None).await?;
-            let listed = client.request("tools/list", json!({})).await?;
+            let listed = crate::discovery::catalog(client.as_ref(), &initialized).await?;
             let transport: Arc<dyn McpTransport> = client.clone();
             let registrations = register_tools(ctx, transport, &config.server_name, listed).await?;
             *client.registrations.lock() = registrations;
@@ -178,8 +178,9 @@ impl StreamableHttpClient {
             .transpose()
             .map_err(|failure| error(format!("MCP JSON encode failed: {failure}")))?
             .unwrap_or_default();
+        let protocol = self.protocol.read().clone();
         let mut request = format!(
-            "{method} {} HTTP/1.1\r\nHost: {}\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {PROTOCOL_VERSION}\r\nConnection: close\r\n",
+            "{method} {} HTTP/1.1\r\nHost: {}\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {protocol}\r\nConnection: close\r\n",
             self.endpoint.target, self.endpoint.authority
         );
         if let Some(session) = session {

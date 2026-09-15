@@ -34,6 +34,7 @@ pub struct RemoteHttpClient {
     server_name: String,
     catalog: std::sync::OnceLock<Value>,
     lifecycle: tokio::sync::Mutex<()>,
+    protocol: parking_lot::RwLock<String>,
 }
 
 impl RemoteHttpClient {
@@ -114,7 +115,10 @@ impl RemoteHttpClient {
         for (key, value) in config.headers {
             let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
                 .map_err(|_| error("invalid MCP header name"))?;
-            if matches!(name.as_str(), "host" | "content-length" | "mcp-session-id") {
+            if matches!(
+                name.as_str(),
+                "host" | "content-length" | "mcp-session-id" | "mcp-protocol-version"
+            ) {
                 return Err(error("reserved MCP HTTP header"));
             }
             headers.insert(
@@ -143,22 +147,13 @@ impl RemoteHttpClient {
             closed: AtomicBool::new(false),
             registrations: parking_lot::Mutex::new(Vec::new()),
             tool_count: AtomicU64::new(0),
+            protocol: parking_lot::RwLock::new(PROTOCOL_VERSION.into()),
         });
         let startup = async {
             let init = transport.request("initialize", json!({"protocolVersion":PROTOCOL_VERSION,"capabilities":{},"clientInfo":{"name":"dsh","version":"0.1.0"}})).await?;
-            if !init.is_object() { return Err(error("MCP initialize returned invalid result")); }
+            *transport.protocol.write()=crate::discovery::negotiated_version(&init)?;
             transport.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}), None).await?;
-            let mut listed = json!({"tools":[]});
-            let mut cursor = None;
-            let mut seen = std::collections::HashSet::new();
-            loop {
-                let page = transport.request("tools/list", cursor.as_ref().map(|v|json!({"cursor":v})).unwrap_or(json!({}))).await?;
-                let rows = page.get("tools").and_then(Value::as_array).ok_or_else(|| error("MCP tools/list returned no tools array"))?;
-                listed["tools"].as_array_mut().unwrap().extend(rows.iter().cloned());
-                cursor = page.get("nextCursor").and_then(Value::as_str).map(str::to_string);
-                let Some(next) = &cursor else { break; };
-                if !seen.insert(next.clone()) || seen.len() > 100 { return Err(error("MCP tools pagination did not terminate")); }
-            }
+            let listed=crate::discovery::catalog(transport.as_ref(),&init).await?;
             crate::validate_catalog(&listed)?;
             transport.tool_count.store(listed["tools"].as_array().unwrap().len() as u64, Ordering::Relaxed);
             let _=transport.catalog.set(listed.clone());
@@ -219,7 +214,11 @@ impl RemoteHttpClient {
     }
 
     async fn send(&self, frame: Value, id: Option<u64>) -> Result<Value, McpClientError> {
-        let mut request = self.client.post(self.endpoint.clone()).json(&frame);
+        let mut request = self
+            .client
+            .post(self.endpoint.clone())
+            .header("mcp-protocol-version", self.protocol.read().as_str())
+            .json(&frame);
         if let Some(session) = self.session.lock().await.clone() {
             request = request.header("mcp-session-id", session);
         }
@@ -359,7 +358,7 @@ mod tests {
                     let request: Value = serde_json::from_slice(&body).unwrap();
                     let id = request.get("id").cloned().unwrap_or(Value::Null);
                     match request["method"].as_str().unwrap() {
-                        "initialize"=>(200,"application/json",json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":PROTOCOL_VERSION,"capabilities":{},"serverInfo":{"name":"test","version":"1"}}}).to_string()),
+                        "initialize"=>(200,"application/json",json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":PROTOCOL_VERSION,"capabilities":{"tools":{}},"serverInfo":{"name":"test","version":"1"}}}).to_string()),
                         "notifications/initialized"=>(202,"application/json",String::new()),
                         "tools/list"=>(200,"text/event-stream",format!(": heartbeat\r\n\r\ndata: {}\r\n\r\n",json!({"jsonrpc":"2.0","id":id,"result":{"tools":[{"name":"echo","description":"Echo input","inputSchema":{"type":"object","properties":{}}}]}}))),
                         "tools/call"=>(200,"application/json",json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"ok"}]}}).to_string()),

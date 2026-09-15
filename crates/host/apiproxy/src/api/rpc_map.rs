@@ -84,6 +84,7 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "subagent.list",
     "subagent.prompt",
     "workspace.archiveSession",
+    "workspace.cancelCreate",
     "workspace.create",
     "workspace.delete",
     "workspace.deleteArchivedSession",
@@ -106,7 +107,7 @@ mod tests {
 
     #[test]
     fn request_methods_are_sorted_unique_and_include_todo_updates() {
-        assert_eq!(CLIENT_REQUEST_METHODS.len(), 82);
+        assert_eq!(CLIENT_REQUEST_METHODS.len(), 83);
         for method in [
             "memory.learningList",
             "memory.learningConfigure",

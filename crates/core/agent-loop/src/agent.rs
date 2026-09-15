@@ -203,6 +203,7 @@ enum PreparedStep {
 
 /// Drives one session through turn and step boundaries.
 pub struct ReactLoopAgent {
+    published: AtomicBool,
     loop_ctx: Context,
     id: SessionId,
     options: AgentOptions,
@@ -289,6 +290,7 @@ impl ReactLoopAgent {
                 .unwrap_or(0);
             let runtime_context = RuntimeContextProjection::new(&scope_ctx, &session);
             Self {
+                published: AtomicBool::new(true),
                 loop_ctx: loop_ctx.clone(),
                 id,
                 options,
@@ -397,7 +399,21 @@ impl ReactLoopAgent {
         }
     }
 
+    pub(crate) fn hold_publication(&self) {
+        self.published.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn release_publication(&self) {
+        self.published.store(true, Ordering::Release);
+        if self.inbox.has_pending() {
+            self.wake_driver(false);
+        }
+    }
+
     fn wake_driver(&self, _wake_after_abort: bool) {
+        if !self.published.load(Ordering::Acquire) {
+            return;
+        }
         // Claim Idle and open its activity in one critical section. Two
         // concurrent wakeups can no longer both observe Idle and spawn
         // competing drivers for the same Session.
@@ -691,6 +707,7 @@ impl ReactLoopAgent {
                 // `UNKNOWN` code.
                 turn_ends = Some(TurnEndReason::Error {
                     error: error.failure.clone().unwrap_or_else(|| LlmFailure {
+                        offload_images: None,
                         message: error.to_string(),
                         code: "UNKNOWN".to_string(),
                         status: None,
@@ -826,11 +843,12 @@ impl ReactLoopAgent {
             let mut saw_tool_call = false;
             let mut chunk_seqs = Vec::new();
             let mut request_metrics = crate::request_metrics::RequestMetrics::new();
-            let (phase_sender,mut phase_receiver)=tokio::sync::mpsc::unbounded_channel::<dsh_llm::RequestPhase>();
-            let measurement=request_metrics.provider_measurement.clone();
-            request.telemetry=Some(dsh_llm::RequestTelemetry::new(Arc::new(move|phase|{
-                *measurement.lock()=Some(phase.clone());
-                let _=phase_sender.send(phase);
+            let (phase_sender, mut phase_receiver) =
+                tokio::sync::mpsc::unbounded_channel::<dsh_llm::RequestPhase>();
+            let measurement = request_metrics.provider_measurement.clone();
+            request.telemetry = Some(dsh_llm::RequestTelemetry::new(Arc::new(move |phase| {
+                *measurement.lock() = Some(phase.clone());
+                let _ = phase_sender.send(phase);
             })));
             let stream = match &prepared_call {
                 Some(prepared) => {
@@ -992,6 +1010,12 @@ impl ReactLoopAgent {
                     || failure.code == "CONTENT_FILTER";
                 let retry = if terminal_failure {
                     false
+                } else if failure.code == "IMAGE_OFFLOAD_REQUIRED"
+                    && failure.offload_images.is_some()
+                {
+                    self.session
+                        .offload_oldest_images(failure.offload_images.unwrap_or(0))
+                        .unwrap_or(false)
                 } else {
                     let fallback: BoxFuture<'static, ArcValue> =
                         Box::pin(async { arc(None::<RequestErrorAction>) });
@@ -1431,7 +1455,8 @@ impl ReactLoopAgent {
             signal: None,
             session_id: Some(self.session.id().as_str().to_string()),
             purpose: None,
-            agent_loop_request: false, telemetry: None,
+            agent_loop_request: false,
+            telemetry: None,
         };
         if let Some(notice) = notice {
             request.messages.push(notice.into());

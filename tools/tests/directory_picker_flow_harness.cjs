@@ -8,7 +8,7 @@ const root = require(path.join(modules, 'react-dom/client')).createRoot(document
 const primitives = new Proxy({
   Modal: ({ open, title, children, footer }) => open ? React.createElement('section', { role: 'dialog' }, title, children, footer) : null,
   Button: ({ children, onClick, disabled }) => React.createElement('button', { onClick, disabled }, children),
-  Menu: () => null,
+  Menu: ({open,items,onSelect}) => open ? React.createElement('nav',null,items.map(item=>React.createElement('button',{key:item.id,disabled:item.disabled,onClick:()=>onSelect(item.id)},item.label))) : null,
 }, { get: (target, name) => target[name] || (() => null) });
 const registrations = [], selected = [], created = [];
 let behavior = async () => 'E:\\工程\\项目', picks = 0, plugin;
@@ -61,6 +61,9 @@ function Owner() {
 (async () => {
   window.localStorage.setItem('dsh.directory-picker-mode', 'native');
   await act(() => root.render(React.createElement(Owner)));
+  const localChoice=[...document.querySelectorAll('button')].find(button=>button.textContent==='menu.addWorkspace');
+  assert.ok(localChoice,'local directory remains available alongside Git, Cloud and SSH');
+  await act(()=>localChoice.click());
   assert.ok(document.body.textContent.includes('E:\\工程\\项目'), 'native choice reaches the workspace form as a path');
   const add = [...document.querySelectorAll('button')].find(button => button.textContent === '添加');
   assert.ok(add); await act(() => add.click());

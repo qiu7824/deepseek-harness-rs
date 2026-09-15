@@ -10,7 +10,8 @@ pub(crate) struct RequestMetrics {
     first_token: Option<Duration>,
     last_token: Option<Duration>,
     chunks: u64,
-    pub(crate) provider_measurement: std::sync::Arc<parking_lot::Mutex<Option<dsh_llm::RequestPhase>>>,
+    pub(crate) provider_measurement:
+        std::sync::Arc<parking_lot::Mutex<Option<dsh_llm::RequestPhase>>>,
 }
 
 #[cfg(test)]

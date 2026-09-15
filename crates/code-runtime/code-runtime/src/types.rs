@@ -57,10 +57,11 @@ pub struct CodeBindingNamespace {
 }
 
 /// One run: the program source plus everything the runtime acts on (TS
-/// `CodeRunRequest`). Defaulting is the implementation's validated config —
-/// a request carries no optional tuning knobs.
+/// `CodeRunRequest`). Defaulting is the implementation's validated config.
 #[derive(Clone)]
 pub struct CodeRunRequest {
+    /// Elapsed budget including provider preparation and binding waits.
+    pub timeout_ms: Option<u64>,
     /// The program source, in the runtime's language. It runs as the body of
     /// an async function: top-level `await` and `return` are available, and
     /// the completion value becomes [`CodeRunResult::value`].

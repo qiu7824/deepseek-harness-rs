@@ -851,7 +851,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-workspace\src\client\WorkspacePicker.module.css.mjs
-		const css$2 = ".rfjl1G_modalAction{min-width:72px}.rfjl1G_modalError,.rfjl1G_menuStatus{margin-top:8px;font-size:12px;line-height:18px}.rfjl1G_modalError{color:var(--dsw-alias-state-error-primary)}.rfjl1G_menuStatus{color:var(--dsw-alias-label-secondary)}";
+		const css$2 = ".rfjl1G_modalAction{min-width:72px}.rfjl1G_modalError,.rfjl1G_menuStatus{margin-top:8px;font-size:12px;line-height:18px}.rfjl1G_modalError{color:var(--dsw-alias-state-error-primary)}.rfjl1G_menuStatus{color:var(--dsw-alias-label-secondary)}.dshSourceForm{max-height:70vh;max-height:70dvh;overflow-y:auto;padding:2px 4px 2px 1px;line-height:1.6}.dshSourceForm p{margin:0;color:var(--dsw-alias-label-secondary)}.dshSourceForm input{box-sizing:border-box;width:100%;min-width:0;height:38px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2-darkmode-thin,#d8dce2);border-radius:8px;background:var(--dsw-specific-input-major,#fff);color:var(--dsw-alias-label-primary,#18202c);font:inherit;font-size:14px}.dshSourceForm input:focus{outline:2px solid #4e83f0;outline-offset:1px}.dshSourceForm button{min-height:36px;padding:7px 12px;border:1px solid var(--dsw-alias-border-l2-darkmode-thin,#d8dce2);border-radius:8px;background:var(--dsw-specific-input-major,#fff);color:var(--dsw-alias-label-primary,#18202c);font:inherit;font-size:14px;cursor:pointer}.dshSourceForm button[type=submit]{width:100%;background:#2866df;border-color:#2866df;color:#fff}.dshSourceForm button:disabled{opacity:.5;cursor:default}.dshSourceForm button:not(:disabled):hover{filter:brightness(.96)}.dshSourceForm [role=alert]{color:var(--dsw-alias-state-error-primary,#b42318);padding:8px 10px;border-radius:8px;background:rgba(220,50,50,.07);overflow-wrap:anywhere}.dshSourceForm section{display:flex;flex-wrap:wrap;gap:8px}.dshSourceForm section p{width:100%;overflow-wrap:anywhere}.dshSourceForm a{color:#2866df;text-decoration:underline;padding:6px 0}";
 		const tagId$2 = "@deepseek-ai/dsh-client-ui-workspace/WorkspacePicker.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$2) + "]") === null) {
 			const tag = document.createElement("style");
@@ -871,6 +871,46 @@ window.__ModuleLoader__.load({
 		const ADD_GIT_WORKSPACE = "::add-git-workspace";
 		const ADD_CLOUD_WORKSPACE = "::add-cloud-workspace";
 		const ADD_SSH_WORKSPACE = "::add-ssh-workspace";
+		async function workspaceSourceRequest(path, payload) {
+			const response = await fetch(path, payload === undefined ? {cache:"no-store"} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+			const value = await response.json();
+			if (!response.ok || value.result?.ok === false) throw new Error(value.message || value.result?.error?.message || "工作目录操作失败");
+			return value;
+		}
+		function SshWorkspaceDialog({onClose}) {
+			const fresh=()=>({id:globalThis.crypto.randomUUID(),host:"",user:"",port:22,remotePort:58080,path:"",configFile:""});
+			const [form,setForm]=react.useState(fresh),[items,setItems]=react.useState([]),[busy,setBusy]=react.useState(false),[error,setError]=react.useState(null),[connected,setConnected]=react.useState(null);
+			const pending=react.useRef(null);
+			const errorBox=react.useRef(null);react.useEffect(()=>{if(error)errorBox.current?.scrollIntoView?.({block:"nearest"})},[error]);
+			const field=([key,label,placeholder])=>react_jsx_runtime.jsxs("label",{style:{display:"grid",gap:6,marginBottom:12},children:[label,react_jsx_runtime.jsx("input",{name:key,value:form[key]||"",placeholder,disabled:busy,required:key!=="user"&&key!=="configFile",type:key.toLowerCase().includes("port")?"number":"text",...(key.toLowerCase().includes("port")?{min:1,max:65535,step:1}:{}),onChange:event=>setForm({...form,[key]:event.target.value})})]},key);
+			const refresh=async()=>{const value=await workspaceSourceRequest("/__dsh-workspaces/ssh");setItems(value.items||[])};
+			react.useEffect(()=>{let active=true;const load=()=>workspaceSourceRequest("/__dsh-workspaces/ssh").then(value=>{if(active){setItems(value.items||[]);if(value.error)setError(value.error)}}).catch(error=>{if(active)setError(error.message)});load();const timer=setInterval(load,2500);return()=>{active=false;clearInterval(timer);if(pending.current)workspaceSourceRequest("/__dsh-workspaces/ssh/disconnect",{id:pending.current}).catch(()=>{})}},[]);
+			const action=async(name,id)=>{setError(null);try{await workspaceSourceRequest("/__dsh-workspaces/ssh/"+name,{id});if(connected?.id===id)setConnected(null);await refresh()}catch(error){setError(error.message)}};
+			return react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:true,title:"SSH 远程工作目录",closeLabel:"关闭",onClose:()=>{if(!busy)onClose()},children:react_jsx_runtime.jsxs("div",{className:"dshWorkspaceForm dshSourceForm",children:[
+				react_jsx_runtime.jsx("p",{children:"通过 SSH 隧道连接远端已运行的 Harness。Agent、文件、Shell 和 PTC 均在远端运行；本机模型凭据不会复制到远端。"}),
+				react_jsx_runtime.jsxs("details",{children:[react_jsx_runtime.jsx("summary",{style:{cursor:"pointer"},children:"连接准备"}),react_jsx_runtime.jsx("p",{children:"请先在远端启动 Harness 并监听回环地址，配置 SSH 密钥或 ssh-agent，核对并信任主机密钥；不支持交互密码登录。"})]}),
+				react_jsx_runtime.jsxs("form",{onSubmit:async event=>{event.preventDefault();if(busy)return;setBusy(true);setError(null);setConnected(null);pending.current=form.id;try{const value=await workspaceSourceRequest("/__dsh-workspaces/ssh/connect",{...form,host:form.host.trim(),user:form.user.trim(),path:form.path.trim(),port:Number(form.port),remotePort:Number(form.remotePort)});setConnected(value)}catch(error){setError(error.message)}finally{pending.current=null;setBusy(false);await refresh().catch(()=>{})}},children:[
+					...[["host","SSH 主机或配置别名","server.example.com"],["path","远端工作目录","/home/developer/project"]].map(field),
+					react_jsx_runtime.jsx("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12},children:[["port","SSH 端口","22"],["remotePort","远端 Harness 端口","58080"]].map(field)}),
+					react_jsx_runtime.jsxs("details",{style:{marginBottom:12},children:[react_jsx_runtime.jsx("summary",{style:{cursor:"pointer",marginBottom:8},children:"高级连接设置"}),...[["user","SSH 用户（可选）","留空使用 SSH 配置"],["configFile","本机 SSH 配置文件（可选）","留空使用默认 SSH 配置"]].map(field)]}),
+					react_jsx_runtime.jsx("button",{type:"submit",disabled:busy||!form.host.trim()||!form.path.trim(),children:busy?"正在连接…":"连接远端工作目录"}),
+					busy&&react_jsx_runtime.jsx("button",{type:"button",onClick:()=>action("disconnect",form.id),children:"取消连接"})
+				]}),
+				error&&react_jsx_runtime.jsx("p",{ref:errorBox,role:"alert",children:error}),
+				connected&&react_jsx_runtime.jsx("p",{role:"status",children:"远端工作目录已连接，可从下方打开。"}),
+				...items.map(item=>react_jsx_runtime.jsxs("section",{style:{borderTop:"1px solid var(--dsw-alias-border-l2-darkmode-thin)",paddingTop:12,marginTop:12},children:[
+					react_jsx_runtime.jsx("p",{children:`${item.connection.user?item.connection.user+"@":""}${item.connection.host}:${item.connection.port} · ${item.connection.path}`}),
+					react_jsx_runtime.jsx("p",{role:"status",children:item.state==="connected"?"已连接 · 远端执行":item.state==="connecting"?"连接中":"已断开"}),
+					item.error&&react_jsx_runtime.jsx("p",{children:item.error}),
+					item.state==="connected"&&/^http:\/\/127\.0\.0\.1:\d+$/.test(item.url||"")&&react_jsx_runtime.jsx("a",{href:item.url,target:"_blank",rel:"noopener noreferrer",children:"打开远端工作区"}),
+					item.state!=="disconnected"&&react_jsx_runtime.jsx("button",{type:"button",onClick:()=>action("disconnect",item.connection.id),children:"断开连接"}),
+					item.state==="disconnected"&&react_jsx_runtime.jsx("button",{type:"button",disabled:busy,onClick:()=>{setForm(item.connection);setError(null);setConnected(null)},children:"编辑／重连"}),
+					item.state==="disconnected"&&react_jsx_runtime.jsx("button",{type:"button",disabled:busy,onClick:()=>action("remove",item.connection.id),children:"移除连接"})
+				]},item.connection.id)),
+				react_jsx_runtime.jsx("p",{children:"关闭此窗口不会断开已连接的隧道；退出本机 Harness 会断开隧道，但不会停止远端任务。"}),
+				react_jsx_runtime.jsx("button",{type:"button",disabled:busy,onClick:onClose,children:"关闭"})
+			]})});
+		}
 		/**
 		* Render the pick menu plus the adoption error dialog.
 		* @param props - owner-controlled flow props.
@@ -887,6 +927,9 @@ window.__ModuleLoader__.load({
             const [workspacePath,setWorkspacePath]=(0,react.useState)(null),[scratchPath,setScratchPath]=(0,react.useState)(""),[pickingScratch,setPickingScratch]=(0,react.useState)(false);
 			const [advanced,setAdvanced]=(0,react.useState)(false);
 			const [gitForm,setGitForm]=(0,react.useState)(null),[gitBusy,setGitBusy]=(0,react.useState)(false),[gitError,setGitError]=(0,react.useState)(null);
+			const [sshOpen,setSshOpen]=react.useState(false),[gitCancelling,setGitCancelling]=react.useState(false),gitOperation=react.useRef(null);
+			const cancelGit=async()=>{if(!gitOperation.current)return;setGitCancelling(true);try{await workspaceSourceRequest("/api/workspace.cancelCreate",{type:"client-request",rpcId:globalThis.crypto.randomUUID(),method:"workspace.cancelCreate",payload:{operationId:gitOperation.current}})}catch(error){setGitError(error.message);setGitCancelling(false)}};
+			react.useEffect(()=>()=>{if(gitOperation.current)workspaceSourceRequest("/api/workspace.cancelCreate",{type:"client-request",rpcId:globalThis.crypto.randomUUID(),method:"workspace.cancelCreate",payload:{operationId:gitOperation.current}}).catch(()=>{})},[]);
 			const flowBusy = flowOpen || pickingFolder || gitBusy;
 			const flowAvailable = useDirectoryFlow((occupied) => occupied);
 			(0, react.useEffect)(() => {
@@ -897,7 +940,7 @@ window.__ModuleLoader__.load({
 				label: t("menu.addWorkspace"),
 				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutline16, { size: 16 }),
 				disabled: flowBusy
-			}, { id: ADD_GIT_WORKSPACE, label: "从 Git 克隆工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_CLOUD_WORKSPACE, label: "Cloud · 云端 Git 仓库", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_SSH_WORKSPACE, label: "SSH 远程工作目录（未连接）", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: true }] : [];
+			}, { id: ADD_GIT_WORKSPACE, label: "从 Git 克隆工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_CLOUD_WORKSPACE, label: "Cloud · 云端 Git 仓库", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_SSH_WORKSPACE, label: "SSH 远程工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }] : [];
 			const pinAdd = !addOnly && workspaces.length > 0;
 			const items = pinAdd ? workspaces.map((workspace) => ({
 				id: workspace.workspaceId,
@@ -962,6 +1005,7 @@ window.__ModuleLoader__.load({
 				}
 			};
 			const handleSelect = (id) => {
+				if (id === ADD_SSH_WORKSPACE) { onClose();setSshOpen(true);return; }
 				if (id === ADD_WORKSPACE) {
 					openDirectoryFlow();
 					return;
@@ -973,17 +1017,18 @@ window.__ModuleLoader__.load({
 				onPick(id);
 			};
 			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				sshOpen&&react_jsx_runtime.jsx(SshWorkspaceDialog,{onClose:()=>setSshOpen(false)}),
 				gitForm && react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.Modal, {
 					open:true, title:gitForm.kind==="cloud"?"Cloud · 云端 Git 仓库":"克隆 Git 工作目录", closeLabel:t("close"), onClose:()=>{if(!gitBusy)setGitForm(null)},
-					children:react_jsx_runtime.jsxs("form",{className:"dshWorkspaceForm",onSubmit:async event=>{
-						event.preventDefault();if(gitBusy)return;setGitBusy(true);setGitError(null);
-						try{const result=await createWorkspace({kind:gitForm.kind,source:gitForm.source.trim(),path:gitForm.path.trim(),...(gitForm.branch.trim()?{branch:gitForm.branch.trim()}:{})});setGitForm(null);onPick(result.workspaceId)}catch(error){setGitError(error instanceof Error?error.message:String(error))}finally{setGitBusy(false)}
+					children:react_jsx_runtime.jsxs("form",{className:"dshWorkspaceForm dshSourceForm",onSubmit:async event=>{
+						event.preventDefault();if(gitBusy)return;setGitBusy(true);setGitError(null);setGitCancelling(false);gitOperation.current=globalThis.crypto.randomUUID();
+						try{const result=await createWorkspace({kind:gitForm.kind,source:gitForm.source.trim(),path:gitForm.path.trim(),operationId:gitOperation.current,...(gitForm.branch.trim()?{branch:gitForm.branch.trim()}:{})});setGitForm(null);onPick(result.workspaceId)}catch(error){setGitError(error instanceof Error?error.message:String(error))}finally{gitOperation.current=null;setGitBusy(false);setGitCancelling(false)}
 					},children:[
-						react_jsx_runtime.jsx("p",{children:"仓库克隆到本机后，Agent 在本机目录运行。私有仓库使用已有 Git 凭据或 SSH 密钥。"}),
+						react_jsx_runtime.jsx("p",{children:"仓库克隆到本机后，Agent 在本机目录运行，不提供云端计算。私有仓库使用已有 Git 凭据或 SSH 密钥；无需填写令牌。"}),
 						...[ ["source","仓库地址", "https://github.com/owner/repository.git"], ["path","本机目标目录", "填写尚不存在的绝对目录"], ["branch","分支（可选）","留空使用仓库默认分支"] ].map(([key,label,placeholder])=>react_jsx_runtime.jsxs("label",{style:{display:"grid",gap:6,marginBottom:12},children:[label,react_jsx_runtime.jsx("input",{name:key,value:gitForm[key],placeholder,required:key!=="branch",disabled:gitBusy,onChange:event=>setGitForm(form=>({...form,[key]:event.target.value}))})]},key)),
 						gitError&&react_jsx_runtime.jsx("p",{role:"alert",className:WorkspacePicker_module_css_default.modalError,children:gitError}),
 						react_jsx_runtime.jsx("button",{type:"submit",disabled:gitBusy||!gitForm.source.trim()||!gitForm.path.trim(),children:gitBusy?"正在克隆…":"克隆并添加工作区"}),
-						react_jsx_runtime.jsx("button",{type:"button",disabled:gitBusy,onClick:()=>setGitForm(null),children:t("cancel")})
+						react_jsx_runtime.jsx("button",{type:"button",disabled:gitCancelling,onClick:()=>gitBusy?cancelGit():setGitForm(null),children:gitCancelling?"正在取消…":gitBusy?"取消克隆":t("cancel")})
 					]})
 				}),
 				(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {

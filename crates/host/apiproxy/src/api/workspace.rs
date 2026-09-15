@@ -45,6 +45,12 @@ pub struct WorkspaceCreateRequest {
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    #[serde(
+        default,
+        rename = "operationId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub operation_id: Option<String>,
 }
 
 /// `workspace.create` response value.

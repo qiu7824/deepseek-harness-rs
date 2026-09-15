@@ -16,8 +16,8 @@ pub mod proxy;
 mod public_event;
 mod queue_projection;
 mod remote_payload;
-mod workspace_git;
 pub mod session_export;
+mod workspace_git;
 
 pub use agent_lookup::{
     AgentResolver, ApiRemoteAgentOptions, ApiRemoteAgentResult, has_api_remote_subagent_owner,

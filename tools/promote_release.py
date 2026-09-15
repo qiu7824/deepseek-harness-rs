@@ -13,6 +13,18 @@ import urllib.request
 PLATFORMS = {"windows-x86_64", "linux-x86_64", "macos-x86_64", "macos-aarch64"}
 
 
+def version_tag(tag: str) -> str:
+    if re.fullmatch(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", tag) is None:
+        raise ValueError("invalid release tag")
+    return re.sub(r"-r[1-9][0-9]*$", "", tag)
+
+
+def notes_path(tag: str) -> Path:
+    base = version_tag(tag)
+    exact = Path("release/notes") / (tag + ".md")
+    return exact if exact.is_file() else Path("release/notes") / (base + ".md")
+
+
 def api(path: str):
     repository = os.environ["GITHUB_REPOSITORY"]
     req = urllib.request.Request(
@@ -48,6 +60,7 @@ def digest(path: Path) -> str:
 def validate_payload(directory: Path, tag: str) -> dict[str, str]:
     if re.fullmatch(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", tag) is None:
         raise ValueError("invalid release tag")
+    artifact_tag = version_tag(tag)
     expected = {}
     for platform in sorted(PLATFORMS):
         manifest = directory / f"SHA256SUMS-{platform}.txt"
@@ -57,13 +70,13 @@ def validate_payload(directory: Path, tag: str) -> dict[str, str]:
             if match is None:
                 raise ValueError("invalid checksum entry")
             sha, name = match.groups()
-            prefix = f"deepseek-harness-rs-{tag}-{platform}-"
+            prefix = f"deepseek-harness-rs-{artifact_tag}-{platform}-"
             if not name.startswith(prefix) or "/" in name or "\\" in name or name in rows:
                 raise ValueError("checksum filename is not owned by this platform")
             rows[name] = sha
         from release_variants import expected_artifacts
         variant_names = ["core", "skin", "free"] if any("-free-" in n or "-free." in n for n in rows) else ["core", "skin"]
-        if set(rows) != expected_artifacts(f"deepseek-harness-rs-{tag}-{platform}", platform.split("-")[0], variant_names):
+        if set(rows) != expected_artifacts(f"deepseek-harness-rs-{artifact_tag}-{platform}", platform.split("-")[0], variant_names):
             raise ValueError("platform artifact set is incomplete")
         expected.update(rows)
     actual = {p.name for p in directory.iterdir() if p.is_file() and not p.name.startswith("SHA256SUMS")}
@@ -103,14 +116,19 @@ def release_metadata(tag: str, *, allow_draft: bool = False) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["identity", "payload", "staged", "verify"])
+    parser.add_argument("mode", choices=["identity", "payload", "staged", "verify", "notes"])
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--directory", type=Path, default=Path("dist"))
     args = parser.parse_args()
     if re.fullmatch(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", args.tag) is None:
         raise ValueError("invalid release tag")
-    if args.mode == "identity":
+    if args.mode == "notes":
+        path = notes_path(args.tag)
+        if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+            raise ValueError("release notes are missing or empty")
+        print(path.as_posix())
+    elif args.mode == "identity":
         run = api(f"actions/runs/{args.run_id}")
         obj = api("git/ref/tags/" + urllib.parse.quote(args.tag, safe=""))["object"]
         while obj["type"] == "tag":
@@ -125,7 +143,7 @@ def main() -> None:
         if args.mode in {"staged", "verify"}:
             expected["SHA256SUMS.txt"] = digest(args.directory / "SHA256SUMS.txt")
             release = release_metadata(args.tag, allow_draft=args.mode == "staged")
-            notes = Path("release/notes") / (args.tag + ".md")
+            notes = notes_path(args.tag)
             validate_release(release, expected, notes.read_text(encoding="utf-8"),
                              allow_draft=args.mode == "staged")
         print(json.dumps({"tag": args.tag, "verifiedFiles": len(expected)}))

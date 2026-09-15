@@ -80,6 +80,7 @@ async fn retry_uses_the_real_agent_waterfall_payload_and_optional_decision_contr
                         step: 1,
                         provider: "fixture".into(),
                         failure: dsh_llm::LlmFailure {
+                            offload_images: None,
                             message: "interrupted response body".into(),
                             code: "TRANSPORT".into(),
                             status: None,

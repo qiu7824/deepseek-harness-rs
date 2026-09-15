@@ -224,7 +224,9 @@ pub(crate) async fn request(
     envelope.push(1);
     envelope.extend_from_slice(&(body.len() as u32).to_be_bytes());
     envelope.extend_from_slice(&body);
-    if let Some(telemetry)=&options.telemetry {telemetry.network_start();}
+    if let Some(telemetry) = &options.telemetry {
+        telemetry.network_start();
+    }
     let response = send(
         client
             .post(
@@ -241,7 +243,9 @@ pub(crate) async fn request(
         &cancelled,
     )
     .await?;
-    if let Some(telemetry)=&options.telemetry {telemetry.phase("response_headers",None);}
+    if let Some(telemetry) = &options.telemetry {
+        telemetry.phase("response_headers", None);
+    }
     let status = response.status();
     if !status.is_success() {
         let bytes = read_owned(response, 1024 * 1024, sender, &cancelled).await?;
@@ -254,7 +258,7 @@ pub(crate) async fn request(
     let mut expanded_bytes = 0usize;
     let mut frames = 0usize;
     let mut ended = false;
-    let mut progress_deadline=tokio::time::Instant::now()+connection.stream_progress_timeout;
+    let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
         let next = tokio::time::timeout(connection.stream_idle_timeout, response.chunk());
         tokio::pin!(next);
@@ -331,7 +335,10 @@ pub(crate) async fn request(
                 break;
             }
             for chunk in translator.consume(&payload)? {
-                if dsh_llm::is_token_delta(&chunk) {progress_deadline=tokio::time::Instant::now()+connection.stream_progress_timeout;}
+                if dsh_llm::is_token_delta(&chunk) {
+                    progress_deadline =
+                        tokio::time::Instant::now() + connection.stream_progress_timeout;
+                }
                 sender
                     .send(chunk)
                     .await

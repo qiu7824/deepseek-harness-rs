@@ -120,7 +120,9 @@ pub trait ComputerUseAdapter: Send + Sync + 'static {
         Ok(self.adapter_id())
     }
 
-    fn targets(&self) -> Value { Value::Null }
+    fn targets(&self) -> Value {
+        Value::Null
+    }
 
     fn availability_for(&self, _arguments: &Value) -> Result<(), AdapterError> {
         self.availability()

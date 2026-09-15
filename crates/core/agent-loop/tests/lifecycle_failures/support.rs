@@ -22,6 +22,7 @@ impl LlmAdapter for ErrorAdapter {
         Box::pin(futures::stream::iter(vec![StreamChunk::Finish {
             reason: FinishReason::Error {
                 failure: LlmFailure {
+                    offload_images: None,
                     message: "GPT API stream failed: HTTP response body failed".to_string(),
                     code: "TRANSPORT".to_string(),
                     status: None,

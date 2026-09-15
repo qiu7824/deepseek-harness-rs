@@ -16,6 +16,7 @@ pub(crate) struct ResponseContinuation {
 
 fn incomplete(code: &str, message: &str) -> LlmFailure {
     LlmFailure {
+        offload_images: None,
         message: message.into(),
         code: code.into(),
         status: None,

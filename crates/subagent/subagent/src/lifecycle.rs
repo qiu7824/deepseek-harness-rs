@@ -19,6 +19,39 @@ use dsh_agent::Agent;
 use dsh_scope::{ScopeCarrier, scope_target};
 use dsh_session::SessionEvent;
 
+fn notification_content(output: Vec<dsh_llm::ContentBlock>) -> Option<Vec<dsh_llm::ContentBlock>> {
+    let content: Vec<_> = output
+        .into_iter()
+        .filter(|block| !matches!(block, dsh_llm::ContentBlock::Reasoning { .. }))
+        .collect();
+    (!content.is_empty()).then_some(content)
+}
+
+#[test]
+fn completion_notifications_exclude_reasoning_without_changing_body() {
+    use dsh_llm::ContentBlock;
+    let output = vec![
+        ContentBlock::Reasoning {
+            text: "private thinking".into(),
+        },
+        ContentBlock::Text {
+            text: "final body".into(),
+        },
+    ];
+    assert_eq!(
+        notification_content(output).unwrap(),
+        vec![ContentBlock::Text {
+            text: "final body".into()
+        }]
+    );
+    assert!(
+        notification_content(vec![ContentBlock::Reasoning {
+            text: "thinking only".into()
+        }])
+        .is_none()
+    );
+}
+
 use crate::types::{
     SubagentResult, SubagentRun, SubagentRunEndInfo, SubagentRunInfo, SubagentStopReason,
     subagent_run_id,
@@ -147,11 +180,7 @@ pub fn observe_run(
             Ok(result) => {
                 let info = SubagentRunEndInfo {
                     stop_reason: result.stop_reason,
-                    last_assistant_message: if result.output.is_empty() {
-                        None
-                    } else {
-                        Some(result.output)
-                    },
+                    last_assistant_message: notification_content(result.output),
                     ..end_identity
                 };
                 emit_lifecycle_edge(&end_ctx, LifecycleEdge::End(info, end_parent));
@@ -238,7 +267,7 @@ impl ActivationObserver {
                     id: self.identity.id.clone(),
                     local: self.identity.local,
                     stop_reason: terminal.stop_reason,
-                    last_assistant_message: terminal.output,
+                    last_assistant_message: terminal.output.and_then(notification_content),
                 },
                 self.parent.clone(),
             ),

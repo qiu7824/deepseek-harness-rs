@@ -106,6 +106,7 @@ impl LlmAdapter for Adapter {
                 _ => "ABORTED",
             };
             let failure = LlmFailure {
+                offload_images: None,
                 code: code.into(),
                 message: "provider stopped".into(),
                 status: None,

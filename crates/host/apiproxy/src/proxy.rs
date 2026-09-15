@@ -3158,18 +3158,57 @@ impl ApiProxyService {
         let path = request.payload.path.clone();
         if let Some(kind) = request.payload.kind.as_deref() {
             if !matches!(kind, "local" | "git" | "cloud" | "ssh") {
-                return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: format!("unsupported workspace kind: {kind}"), details: crate::api::rpc::PathDetails { path } }));
+                return err(
+                    request.rpc_id,
+                    RpcError::WorkspaceInvalidPath(RpcErrorBody {
+                        message: format!("unsupported workspace kind: {kind}"),
+                        details: crate::api::rpc::PathDetails { path },
+                    }),
+                );
             }
             if kind == "ssh" {
-                return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: format!("workspace kind {kind} is not connected to an execution provider yet; choose local or git"), details: crate::api::rpc::PathDetails { path } }));
+                return err(
+                    request.rpc_id,
+                    RpcError::WorkspaceInvalidPath(RpcErrorBody {
+                        message: format!(
+                            "workspace kind {kind} is not connected to an execution provider yet; choose local or git"
+                        ),
+                        details: crate::api::rpc::PathDetails { path },
+                    }),
+                );
             }
         }
         if matches!(request.payload.kind.as_deref(), Some("git" | "cloud")) {
-            let Some(source) = request.payload.source.as_deref().filter(|s| !s.trim().is_empty()) else {
-                return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message: "git workspace requires a repository URL or local repository path".into(), details: crate::api::rpc::PathDetails { path } }));
+            let Some(source) = request
+                .payload
+                .source
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            else {
+                return err(
+                    request.rpc_id,
+                    RpcError::WorkspaceInvalidPath(RpcErrorBody {
+                        message: "git workspace requires a repository URL or local repository path"
+                            .into(),
+                        details: crate::api::rpc::PathDetails { path },
+                    }),
+                );
             };
-            if let Err(message) = crate::workspace_git::clone_repository(source, &path, request.payload.branch.as_deref()).await {
-                return err(request.rpc_id, RpcError::WorkspaceInvalidPath(RpcErrorBody { message, details: crate::api::rpc::PathDetails { path } }));
+            if let Err(message) = crate::workspace_git::clone_repository(
+                source,
+                &path,
+                request.payload.branch.as_deref(),
+                request.payload.operation_id.as_deref(),
+            )
+            .await
+            {
+                return err(
+                    request.rpc_id,
+                    RpcError::WorkspaceInvalidPath(RpcErrorBody {
+                        message,
+                        details: crate::api::rpc::PathDetails { path },
+                    }),
+                );
             }
         }
         // The `created` bit: the registry reuses an existing path, and the
@@ -7588,6 +7627,24 @@ impl ApiProxyCarrier for ApiProxyService {
                     payload: request.payload,
                 })
                 .await
+            }
+            "workspace.cancelCreate" => {
+                match request
+                    .payload
+                    .get("operationId")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "缺少克隆操作标识".to_string())
+                    .and_then(crate::workspace_git::cancel)
+                {
+                    Ok(()) => ok(rpc_id, serde_json::json!({"cancelled":true})),
+                    Err(message) => err(
+                        rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message,
+                            details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                        }),
+                    ),
+                }
             }
             "workspace.create" => {
                 let payload: crate::api::workspace::WorkspaceCreateRequest =

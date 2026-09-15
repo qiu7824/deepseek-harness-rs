@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
     LlmFailure {
+        offload_images: None,
         message: message.into(),
         code: code.into(),
         status: None,
@@ -836,7 +837,8 @@ mod tests {
             signal: None,
             session_id: None,
             purpose: None,
-            agent_loop_request: false, telemetry: None,
+            agent_loop_request: false,
+            telemetry: None,
         };
         let serialize = |options: &GenerateOptions| {
             crate::serialize::serialize_request_with_prepared_images(

@@ -1,15 +1,15 @@
 #[cfg(windows)]
+mod accessibility;
+#[cfg(windows)]
 mod capture;
+#[cfg(windows)]
+mod identity;
 #[cfg(windows)]
 mod input;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
 mod platform;
-#[cfg(windows)]
-mod identity;
-#[cfg(windows)]
-mod accessibility;
 
 #[cfg(not(windows))]
 fn main() {
@@ -170,11 +170,20 @@ fn main() {
             if command.cancelled.load(Ordering::SeqCst) {
                 return Err("COMPUTER_USE_ABORTED".into());
             }
-            if matches!(action,"list_windows"|"list_apps"|"launch_app"){
-                let requested=request["ownerId"].as_str().filter(|id|!id.is_empty()&&id.len()<=256).ok_or("缺少会话归属")?;
-                if !owner.is_empty()&&owner!=requested{return Err("控制会话归属不匹配".into());}
-                owner=requested.to_string();
-                return match action{"list_windows"=>native::window_targets(),"list_apps"=>native::application_targets(),_=>native::launch_application(args)};
+            if matches!(action, "list_windows" | "list_apps" | "launch_app") {
+                let requested = request["ownerId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 256)
+                    .ok_or("缺少会话归属")?;
+                if !owner.is_empty() && owner != requested {
+                    return Err("控制会话归属不匹配".into());
+                }
+                owner = requested.to_string();
+                return match action {
+                    "list_windows" => native::window_targets(),
+                    "list_apps" => native::application_targets(),
+                    _ => native::launch_application(args),
+                };
             }
             if action == "start" {
                 let requested = request["ownerId"]

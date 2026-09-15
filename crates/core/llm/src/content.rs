@@ -114,7 +114,9 @@ pub fn offload_request_images_with_policy(
 ) -> Vec<Message> {
     let mut lengths = Vec::new();
     for message in messages {
-        collect_image_lengths(&message.content, &mut lengths, policy);
+        if message.role == crate::Role::User {
+            collect_image_lengths(&message.content, &mut lengths, policy);
+        }
     }
     let total = lengths.iter().copied().sum::<u64>();
     let excess_count = policy
@@ -158,7 +160,9 @@ pub fn offload_request_images_with_policy(
         .iter()
         .map(|message| {
             let mut projected = message.clone();
-            projected.content = replace_oldest_images(&message.content, &mut remaining);
+            if message.role == crate::Role::User {
+                projected.content = replace_oldest_images(&message.content, &mut remaining);
+            }
             projected
         })
         .collect()

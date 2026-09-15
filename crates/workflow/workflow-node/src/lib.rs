@@ -481,6 +481,7 @@ async fn drive(
     });
     match code_runtime
         .run(CodeRunRequest {
+            timeout_ms: None,
             program,
             bindings: vec![CodeBindingNamespace {
                 global: "workflowHost".to_string(),
@@ -588,9 +589,16 @@ fn output_text(output: &[ContentBlock]) -> String {
         .collect::<String>()
 }
 
-fn child_value(id: &str, settled: dsh_subagent::SubagentResult, structured: bool) -> Result<Value, String> {
+fn child_value(
+    id: &str,
+    settled: dsh_subagent::SubagentResult,
+    structured: bool,
+) -> Result<Value, String> {
     if settled.stop_reason != SubagentStopReason::Completed {
-        return Err(format!("WORKFLOW_CHILD_FAILED: child {id} ended with {}; inspect the child session for the provider failure", settled.stop_reason.as_str()));
+        return Err(format!(
+            "WORKFLOW_CHILD_FAILED: child {id} ended with {}; inspect the child session for the provider failure",
+            settled.stop_reason.as_str()
+        ));
     }
     if structured {
         return settled.structured.ok_or_else(|| format!("WORKFLOW_CHILD_RESULT_MISSING: child {id} did not return the requested structured result"));
@@ -603,15 +611,52 @@ mod result_tests {
     use super::*;
     #[test]
     fn failed_children_cannot_resolve_as_successful_null() {
-        for stop_reason in [SubagentStopReason::Error, SubagentStopReason::Aborted, SubagentStopReason::MaxTokens, SubagentStopReason::Refusal] {
-            let result = child_value("child-evidence", dsh_subagent::SubagentResult { output: vec![], structured: Some(serde_json::json!({"partial":true})), stop_reason }, true);
+        for stop_reason in [
+            SubagentStopReason::Error,
+            SubagentStopReason::Aborted,
+            SubagentStopReason::MaxTokens,
+            SubagentStopReason::Refusal,
+        ] {
+            let result = child_value(
+                "child-evidence",
+                dsh_subagent::SubagentResult {
+                    output: vec![],
+                    structured: Some(serde_json::json!({"partial":true})),
+                    stop_reason,
+                },
+                true,
+            );
             let error = result.unwrap_err();
             assert!(error.contains("WORKFLOW_CHILD_FAILED"));
             assert!(error.contains("child-evidence"));
         }
-        assert!(child_value("child", dsh_subagent::SubagentResult { output: vec![], structured: None, stop_reason: SubagentStopReason::Completed }, true).unwrap_err().contains("RESULT_MISSING"));
-        let value=serde_json::json!({"finding":"verified"});
-        assert_eq!(child_value("child", dsh_subagent::SubagentResult { output: vec![], structured: Some(value.clone()), stop_reason: SubagentStopReason::Completed }, true).unwrap(), value);
+        assert!(
+            child_value(
+                "child",
+                dsh_subagent::SubagentResult {
+                    output: vec![],
+                    structured: None,
+                    stop_reason: SubagentStopReason::Completed
+                },
+                true
+            )
+            .unwrap_err()
+            .contains("RESULT_MISSING")
+        );
+        let value = serde_json::json!({"finding":"verified"});
+        assert_eq!(
+            child_value(
+                "child",
+                dsh_subagent::SubagentResult {
+                    output: vec![],
+                    structured: Some(value.clone()),
+                    stop_reason: SubagentStopReason::Completed
+                },
+                true
+            )
+            .unwrap(),
+            value
+        );
     }
 }
 

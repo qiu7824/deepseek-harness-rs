@@ -65,6 +65,84 @@ fn agent(ctx: &Context, id: SessionId) -> Arc<dyn Agent> {
     })
 }
 
+#[tokio::test]
+async fn creation_listeners_are_async_serial_and_veto_stops_later_listeners() {
+    let ctx = Context::root();
+    let registry = AgentRegistry::install(&ctx);
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let first = order.clone();
+    ctx.on(
+        "agent/created",
+        Arc::new(move |_, _| {
+            let first = first.clone();
+            Box::pin(async move {
+                first.lock().unwrap().push(1);
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                first.lock().unwrap().push(2);
+                None
+            })
+        }),
+        Default::default(),
+    )
+    .await;
+    let second = order.clone();
+    ctx.on(
+        "agent/created",
+        Arc::new(move |_, _| {
+            let second = second.clone();
+            Box::pin(async move {
+                second.lock().unwrap().push(3);
+                None
+            })
+        }),
+        Default::default(),
+    )
+    .await;
+    let value = agent(&ctx, dsh_session::session_id("serial-created"));
+    let detach = registry.enter(value.clone(), None).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), registry.announce(&value))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
+    detach().await;
+    ctx.on(
+        "agent/created",
+        Arc::new(|_, _| {
+            Box::pin(async {
+                tokio::task::yield_now().await;
+                panic!("async-veto")
+            })
+        }),
+        Default::default(),
+    )
+    .await;
+    let after = order.clone();
+    ctx.on(
+        "agent/created",
+        Arc::new(move |_, _| {
+            let after = after.clone();
+            Box::pin(async move {
+                after.lock().unwrap().push(4);
+                None
+            })
+        }),
+        Default::default(),
+    )
+    .await;
+    let value = agent(&ctx, dsh_session::session_id("veto-created"));
+    let detach = registry.enter(value.clone(), None).unwrap();
+    assert!(
+        registry
+            .announce(&value)
+            .await
+            .unwrap_err()
+            .contains("async-veto")
+    );
+    assert!(!order.lock().unwrap().contains(&4));
+    detach().await;
+}
+
 struct Factory {
     ctx: Context,
     registry: Weak<AgentRegistry>,

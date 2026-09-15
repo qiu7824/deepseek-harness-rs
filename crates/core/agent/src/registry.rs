@@ -21,6 +21,7 @@ use cordis::{
 use dsh_scope::{ScopeCarrier, scope_chain_of, scope_of, scope_target};
 use dsh_session::{SessionId, session_id};
 use dsh_typert_protocol::{TypertLookup, TypertService};
+use futures::FutureExt;
 use parking_lot::Mutex;
 
 use crate::runtime_types::{
@@ -538,17 +539,19 @@ impl AgentRegistry {
             agent: entry.agent.clone(),
         });
         let listeners = dispatch_ctx.events.collect(
-            DispatchMode::Emit,
+            DispatchMode::Serial,
             Some(&dispatch_ctx),
             "agent/created",
             std::slice::from_ref(&payload),
         );
         let mut veto: Option<String> = None;
         for (listener_ctx, callback) in &listeners {
-            let future = callback(listener_ctx, vec![payload.clone()]);
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                futures::executor::block_on(future)
-            })) {
+            match std::panic::AssertUnwindSafe(async {
+                callback(listener_ctx, vec![payload.clone()]).await
+            })
+            .catch_unwind()
+            .await
+            {
                 Ok(_) => {}
                 Err(error) => {
                     veto = Some(render_panic(error));

@@ -11,8 +11,8 @@ use dsh_subprocess::{
     SubprocessCollect, SubprocessOutputMode, SubprocessRuntime, SubprocessSpawnSpec,
     SubprocessStdinMode, SubprocessStdio,
 };
-use serde_json::{Value, json};
 use futures::FutureExt;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
 
@@ -25,17 +25,50 @@ mod rejection_tests {
     use dsh_code_runtime::CodeBindingNamespace;
 
     #[tokio::test]
+    async fn elapsed_deadline_reaps_compute_and_binding_waits() {
+        let ctx = Context::root();
+        let _subprocess = dsh_subprocess_local::LocalSubprocessRuntime::install(&ctx);
+        let runtime = NodeCodeRuntime::install(&ctx, Config::default()).unwrap();
+        for program in ["while(true) {}", "await host.wait({});"] {
+            let result = runtime
+                .run(CodeRunRequest {
+                    timeout_ms: Some(1000),
+                    program: program.into(),
+                    signal: None,
+                    bindings: vec![CodeBindingNamespace {
+                        global: "host".into(),
+                        error_class: None,
+                        functions: vec![(
+                            "wait".into(),
+                            Arc::new(|_| {
+                                Box::pin(async { futures::future::pending::<Value>().await })
+                            }),
+                        )],
+                    }],
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.error.unwrap().kind, CodeRunFailureKind::Timeout);
+        }
+        runtime.dispose().await;
+        assert!(runtime.lifecycle.state.lock().active.is_empty());
+    }
+
+    #[tokio::test]
     async fn binding_rejection_is_catchable_and_next_call_still_works() {
         let ctx = Context::root();
         let _subprocess = dsh_subprocess_local::LocalSubprocessRuntime::install(&ctx);
         let runtime = NodeCodeRuntime::install(&ctx, Config::default()).unwrap();
-        let function: CodeBindingFunction = Arc::new(|args| Box::pin(async move {
-            if args["prompt"].as_str().is_none_or(|s| s.trim().is_empty()) {
-                panic!("agent input requires a non-empty prompt string");
-            }
-            json!({"accepted":args["prompt"]})
-        }));
+        let function: CodeBindingFunction = Arc::new(|args| {
+            Box::pin(async move {
+                if args["prompt"].as_str().is_none_or(|s| s.trim().is_empty()) {
+                    panic!("agent input requires a non-empty prompt string");
+                }
+                json!({"accepted":args["prompt"]})
+            })
+        });
         let result = runtime.run(CodeRunRequest {
+            timeout_ms: None,
             program: "let rejection; try { await agents.run({}); } catch (e) { rejection = e.message; } const next = await agents.run({prompt: 'valid'}); return {rejection, next};".into(),
             bindings: vec![CodeBindingNamespace { global: "agents".into(), functions: vec![("run".into(), function)], error_class: None }],
             signal: None,
@@ -43,7 +76,10 @@ mod rejection_tests {
         runtime.dispose().await;
         assert!(result.error.is_none(), "{:?}", result.error);
         let value = result.value.unwrap();
-        assert_eq!(value["rejection"], "agent input requires a non-empty prompt string");
+        assert_eq!(
+            value["rejection"],
+            "agent input requires a non-empty prompt string"
+        );
         assert_eq!(value["next"]["accepted"], "valid");
     }
 }
@@ -234,9 +270,51 @@ impl CodeRuntime for NodeCodeRuntime {
         }
         let subprocess = self.subprocess.clone();
         let sandbox = self.sandbox.clone();
-        let config = self.config.clone();
+        let mut config = self.config.clone();
         let lifecycle = self.lifecycle.clone();
-        Box::pin(async move { run_one(subprocess, sandbox, config, lifecycle, request).await })
+        Box::pin(async move {
+            let budget = request
+                .timeout_ms
+                .unwrap_or(120_000)
+                .min(config.max_wall_ms)
+                .min(600_000);
+            if budget == 0 {
+                return Err("PTC timeoutMs must be positive".into());
+            }
+            config.max_wall_ms = budget;
+            config.compute_ms = budget;
+            let started = std::time::Instant::now();
+            let previous = request.signal.clone();
+            let mut request = request;
+            request.signal = Some(Arc::new(move || {
+                started.elapsed() >= std::time::Duration::from_millis(budget)
+                    || previous.as_ref().is_some_and(|abort| abort())
+            }));
+            let child_owner = Arc::new(parking_lot::Mutex::new(
+                None::<Arc<dyn dsh_subprocess::SubprocessHandle>>,
+            ));
+            let run = run_one(
+                subprocess,
+                sandbox,
+                config,
+                lifecycle,
+                request,
+                child_owner.clone(),
+            );
+            let result = tokio::time::timeout(std::time::Duration::from_millis(budget), run).await;
+            if result.is_err() || started.elapsed() >= std::time::Duration::from_millis(budget) {
+                let child = child_owner.lock().clone();
+                if let Some(child) = child {
+                    child.terminate();
+                    let _ = child.wait_for_exit(None).await;
+                }
+                return Ok(failure(
+                    CodeRunFailureKind::Timeout,
+                    "elapsed PTC deadline reached",
+                ));
+            }
+            result.expect("timeout checked")
+        })
     }
 }
 
@@ -246,6 +324,7 @@ async fn run_one(
     config: Config,
     lifecycle: Arc<Lifecycle>,
     request: CodeRunRequest,
+    child_owner: Arc<parking_lot::Mutex<Option<Arc<dyn dsh_subprocess::SubprocessHandle>>>>,
 ) -> Result<CodeRunResult, String> {
     if request.signal.as_ref().is_some_and(|signal| signal()) {
         return Ok(failure(CodeRunFailureKind::Abort, "aborted"));
@@ -333,6 +412,7 @@ async fn run_one(
         (child, id)
     };
     let mut child_guard = ChildGuard::new(child.clone(), lifecycle.clone(), id);
+    *child_owner.lock() = Some(child.clone());
     let mut stdin = child
         .stdin()
         .ok_or_else(|| "code-runtime-node: child stdin was not piped".to_string())?;

@@ -117,6 +117,7 @@ impl LlmError {
             message: message.to_string(),
             code,
             failure: LlmFailure {
+                offload_images: None,
                 message: message.to_string(),
                 code: code.to_string(),
                 status: options.status,
@@ -1190,6 +1191,7 @@ impl LlmRuntime {
                 if prepared.is_some() && !generate_options_config_equals(&options, &resolved_config)
                 {
                     let failure = LlmFailure {
+                        offload_images: None,
                         message: "prepared LLM call config changed before adapter dispatch"
                             .to_string(),
                         code: "INVALID_PREPARED_CALL".to_string(),

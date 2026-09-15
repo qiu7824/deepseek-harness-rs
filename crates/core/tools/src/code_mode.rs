@@ -27,7 +27,8 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                 "description": {
                     "type": "string",
                     "description": "Clear, concise description of what this program does in active voice, 5-10 words (shown in the UI)."
-                }
+                },
+                "timeoutMs": {"type":"integer","minimum":1,"maximum":600000,"description":"Elapsed budget in milliseconds, including nested tools and approval waits. Default 120000; maximum 600000. Zero does not disable the deadline."}
             },
             "required": ["code", "description"]
         }),
@@ -70,12 +71,22 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
         execute: Arc::new(move |args, exec| {
             let runtime = runtime.clone();
             let code = args["code"].as_str().unwrap_or_default().to_string();
+            let timeout_ms = match args.get("timeoutMs") {
+                None => Ok(120_000),
+                Some(value) => value
+                    .as_u64()
+                    .filter(|n| *n > 0 && *n <= 600_000)
+                    .ok_or_else(|| {
+                        ToolBodyError::plain("timeoutMs must be an integer from 1 to 600000")
+                    }),
+            };
             let signal = exec.signal.lock().clone();
             let agent = exec.agent.clone();
             let root_call_id = exec.root_call_id.clone();
             let parent_call_id = exec.call_id.clone();
             let parent = exec.token;
             Box::pin(async move {
+                let timeout_ms = timeout_ms?;
                 let owner = runtime
                     .upgrade()
                     .ok_or_else(|| ToolBodyError::plain("tool runtime is unavailable"))?;
@@ -136,6 +147,7 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                 functions.sort_by(|left, right| left.0.cmp(&right.0));
                 let outcome = code_runtime
                     .run(dsh_code_runtime::CodeRunRequest {
+                        timeout_ms: Some(timeout_ms),
                         program: code,
                         bindings: vec![CodeBindingNamespace {
                             global: "tools".to_string(),

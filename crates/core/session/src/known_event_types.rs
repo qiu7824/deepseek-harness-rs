@@ -5,7 +5,7 @@
 /// vocabulary this build understands. The persistence read path refuses to
 /// interpret a log containing a type outside this set unless the event
 /// carries the envelope's `ignorable` marker.
-pub const KNOWN_SESSION_EVENT_TYPES: [&str; 61] = [
+pub const KNOWN_SESSION_EVENT_TYPES: [&str; 62] = [
     "agent-preset/selected",
     "agent/inbox/spliced",
     "approval/asked",
@@ -31,6 +31,7 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 61] = [
     "goal/change",
     "hook/invoked",
     "hook/result",
+    "image/offload",
     "llm/retry",
     "llm/retry-started",
     "model/selection",

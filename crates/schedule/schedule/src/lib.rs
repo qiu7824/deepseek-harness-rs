@@ -173,7 +173,7 @@ pub fn apply(ctx: &Context) {
             Box::pin(async move {
                 if let Some(payload) = args
                     .first()
-                    .and_then(|value| downcast::<dsh_agent::AgentSessionStartPayload>(value))
+                    .and_then(|value| downcast::<dsh_agent::AgentLifecyclePayload>(value))
                     .cloned()
                 {
                     attach_root(payload.agent);
@@ -184,7 +184,7 @@ pub fn apply(ctx: &Context) {
     });
 
     let stop_session_start = futures::executor::block_on(ctx.on(
-        "agent/session-start",
+        "agent/created",
         session_start_listener,
         EventOptions::default().global(true),
     ));

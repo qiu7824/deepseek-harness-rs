@@ -199,7 +199,9 @@ async fn handle(
         Err(response) => return response,
     };
     if operation == "meta" {
-        let availability = runtime.as_ref().map(|runtime| runtime.availability_for(&body));
+        let availability = runtime
+            .as_ref()
+            .map(|runtime| runtime.availability_for(&body));
         let available = availability.as_ref().is_some_and(|result| result.is_ok());
         let availability_error = availability.and_then(Result::err).map(|failure| {
             json!({

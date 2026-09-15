@@ -666,7 +666,13 @@ impl DesktopAdapter {
         if let Some(slot) = self.sessions.lock().get(&key).cloned() {
             return Ok(slot);
         }
-        if request.action != "start" && !(self.backend == Backend::Native && matches!(request.action.as_str(),"list_windows"|"list_apps"|"launch_app")) {
+        if request.action != "start"
+            && !(self.backend == Backend::Native
+                && matches!(
+                    request.action.as_str(),
+                    "list_windows" | "list_apps" | "launch_app"
+                ))
+        {
             return Err(failure(
                 "COMPUTER_USE_SESSION_NOT_FOUND",
                 "请先连接已绑定的设备",

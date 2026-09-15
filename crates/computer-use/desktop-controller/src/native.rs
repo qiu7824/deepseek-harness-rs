@@ -265,7 +265,9 @@ fn bounds(hwnd: Option<usize>, monitor: usize) -> Result<Bounds, String> {
     }
 }
 pub fn window_targets() -> Result<Value, String> {
-    if !desktop_available(){return Err("COMPUTER_USE_DESKTOP_LOCKED".into());}
+    if !desktop_available() {
+        return Err("COMPUTER_USE_DESKTOP_LOCKED".into());
+    }
     unsafe extern "system" fn collect(hwnd: HWND, parameter: LPARAM) -> i32 {
         let rows = unsafe { &mut *(parameter as *mut Vec<Value>) };
         if rows.len() >= 256 {
@@ -301,7 +303,9 @@ pub fn window_targets() -> Result<Value, String> {
         {
             return 1;
         }
-        let Ok(identity)=crate::identity::WindowIdentity::read(hwnd as usize) else {return 1};
+        let Ok(identity) = crate::identity::WindowIdentity::read(hwnd as usize) else {
+            return 1;
+        };
         rows.push(json!({"windowId":hwnd as usize,"windowRef":identity.window_ref(),"appRef":identity.app_ref(),"processId":identity.process,"executable":identity.executable,"title":String::from_utf16_lossy(&title[..length as usize]),"visible":true,"foreground":unsafe { GetForegroundWindow() } == hwnd,"bounds":{"left":rect.left,"top":rect.top,"width":rect.right-rect.left,"height":rect.bottom-rect.top}}));
         1
     }
@@ -312,21 +316,38 @@ pub fn window_targets() -> Result<Value, String> {
     }
     Ok(json!({"windows":rows}))
 }
-pub fn application_targets()->Result<Value,String>{
-    let windows=window_targets()?;let mut apps=std::collections::BTreeMap::<String,Value>::new();
-    for window in windows["windows"].as_array().into_iter().flatten(){
-        let key=window["appRef"].as_str().unwrap_or("").to_string();
+pub fn application_targets() -> Result<Value, String> {
+    let windows = window_targets()?;
+    let mut apps = std::collections::BTreeMap::<String, Value>::new();
+    for window in windows["windows"].as_array().into_iter().flatten() {
+        let key = window["appRef"].as_str().unwrap_or("").to_string();
         let app=apps.entry(key.clone()).or_insert_with(||json!({"appRef":key,"processId":window["processId"],"executable":window["executable"],"running":true,"windows":[]}));
         app["windows"].as_array_mut().unwrap().push(window.clone());
     }
     Ok(json!({"apps":apps.into_values().collect::<Vec<_>>()}))
 }
-pub fn launch_application(args:&Value)->Result<Value,String>{
+pub fn launch_application(args: &Value) -> Result<Value, String> {
     use std::os::windows::process::CommandExt;
-    let path=std::path::PathBuf::from(args["executable"].as_str().ok_or("COMPUTER_USE_EXECUTABLE_REQUIRED")?);
-    if !path.is_absolute()||!path.is_file()||!path.extension().is_some_and(|extension|extension.eq_ignore_ascii_case("exe")){return Err("COMPUTER_USE_EXECUTABLE_INVALID".into());}
-    let path=path.canonicalize().map_err(|_|"COMPUTER_USE_EXECUTABLE_INVALID")?;
-    let child=std::process::Command::new(&path).creation_flags(0x08000000).spawn().map_err(|_|"COMPUTER_USE_APP_LAUNCH_FAILED")?;
+    let path = std::path::PathBuf::from(
+        args["executable"]
+            .as_str()
+            .ok_or("COMPUTER_USE_EXECUTABLE_REQUIRED")?,
+    );
+    if !path.is_absolute()
+        || !path.is_file()
+        || !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        return Err("COMPUTER_USE_EXECUTABLE_INVALID".into());
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|_| "COMPUTER_USE_EXECUTABLE_INVALID")?;
+    let child = std::process::Command::new(&path)
+        .creation_flags(0x08000000)
+        .spawn()
+        .map_err(|_| "COMPUTER_USE_APP_LAUNCH_FAILED")?;
     Ok(json!({"launched":true,"processId":child.id(),"executable":path.to_string_lossy()}))
 }
 fn requested_wait_ms(args: &Value, default_ms: u64) -> Result<u64, String> {
@@ -448,9 +469,16 @@ impl Engine {
         let monitor =
             unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) } as usize;
         bounds(target, monitor)?;
-        let identity=target.map(crate::identity::WindowIdentity::read).transpose()?;
-        if let Some(expected)=args["windowRef"].as_str() {
-            if identity.as_ref().is_none_or(|value|value.window_ref()!=expected) { return Err("COMPUTER_USE_STALE_WINDOW".into()); }
+        let identity = target
+            .map(crate::identity::WindowIdentity::read)
+            .transpose()?;
+        if let Some(expected) = args["windowRef"].as_str() {
+            if identity
+                .as_ref()
+                .is_none_or(|value| value.window_ref() != expected)
+            {
+                return Err("COMPUTER_USE_STALE_WINDOW".into());
+            }
         }
         let capture = Capture::new(target, monitor)?;
         let intervention = Intervention::new(paused.clone())?;
@@ -539,7 +567,9 @@ impl Engine {
         json!({"title":"本机桌面","targetTitle":title,"foreground":foreground,"connected":true,"interactive":self.observed.is_some(),"phase":if self.observed.is_some(){"ready"}else{"waiting-for-frame"},"viewport":{"width":w,"height":h},"windowId":self.target,"controlId":self.control_id,"manualInterventionAvailable":self.intervention.available,"escapeAvailable":self.intervention.available,"controlDiagnostics":control_diagnostics()})
     }
     pub fn control_mode(&mut self, manual: bool) -> Result<(), String> {
-        if let Some(accessibility)=&mut self.accessibility {accessibility.invalidate();}
+        if let Some(accessibility) = &mut self.accessibility {
+            accessibility.invalidate();
+        }
         self.paused.store(true, Ordering::SeqCst);
         self.observed = None;
         self.release_inputs()?;
@@ -559,7 +589,9 @@ impl Engine {
         Ok(())
     }
     fn allowed(&self, human: bool) -> Result<(), String> {
-        if let Some(identity)=&self.identity { identity.validate()?; }
+        if let Some(identity) = &self.identity {
+            identity.validate()?;
+        }
         if self.cancelled.load(Ordering::SeqCst) {
             return Err("COMPUTER_USE_ABORTED".into());
         }
@@ -838,8 +870,13 @@ impl Engine {
         self.active_input_generation = generation;
         self.poll();
         let result = self.act_inner(args, human);
-        if !matches!(args["action"].as_str(),Some("ax_state"|"status"|"list_windows")) {
-            if let Some(accessibility)=&mut self.accessibility {accessibility.invalidate();}
+        if !matches!(
+            args["action"].as_str(),
+            Some("ax_state" | "status" | "list_windows")
+        ) {
+            if let Some(accessibility) = &mut self.accessibility {
+                accessibility.invalidate();
+            }
         }
         if result.is_err() {
             let _ = self.capture.invalidate();
@@ -897,18 +934,33 @@ impl Engine {
         }
         self.allowed(human)?;
         if action == "ax_state" {
-            let target=self.target.ok_or("COMPUTER_USE_WINDOW_REQUIRED: bind a window before reading accessibility")?;
-            let mut result=self.snapshot(human)?;
-            if self.accessibility.is_none(){self.accessibility=Some(crate::accessibility::Accessibility::new()?);}
-            self.snapshot_serial=self.snapshot_serial.wrapping_add(1);
-            let snapshot=format!("{}:ax:{}",self.control_id,self.snapshot_serial);
-            let cancelled=self.cancelled.clone();let paused=self.paused.clone();
-            result["accessibility"]=self.accessibility.as_mut().unwrap().observe(target,snapshot,||cancelled.load(Ordering::SeqCst)||(!human&&paused.load(Ordering::SeqCst)))?;
+            let target = self.target.ok_or(
+                "COMPUTER_USE_WINDOW_REQUIRED: bind a window before reading accessibility",
+            )?;
+            let mut result = self.snapshot(human)?;
+            if self.accessibility.is_none() {
+                self.accessibility = Some(crate::accessibility::Accessibility::new()?);
+            }
+            self.snapshot_serial = self.snapshot_serial.wrapping_add(1);
+            let snapshot = format!("{}:ax:{}", self.control_id, self.snapshot_serial);
+            let cancelled = self.cancelled.clone();
+            let paused = self.paused.clone();
+            result["accessibility"] =
+                self.accessibility
+                    .as_mut()
+                    .unwrap()
+                    .observe(target, snapshot, || {
+                        cancelled.load(Ordering::SeqCst)
+                            || (!human && paused.load(Ordering::SeqCst))
+                    })?;
             return Ok(result);
         }
-        if matches!(action,"invoke"|"set_value"|"select"|"scroll_element") {
+        if matches!(action, "invoke" | "set_value" | "select" | "scroll_element") {
             self.input_allowed(human)?;
-            self.accessibility.as_mut().ok_or("COMPUTER_USE_STALE_SNAPSHOT")?.act(args)?;
+            self.accessibility
+                .as_mut()
+                .ok_or("COMPUTER_USE_STALE_SNAPSHOT")?
+                .act(args)?;
             self.allowed(human)?;
             return self.snapshot(human);
         }

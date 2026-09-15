@@ -1,25 +1,25 @@
 # 上游 v0.1.6-alpha.1 兼容性评估
 
-评估日期：2026-09-15；Rust 源码基线：c6e6e27d60，应用版本：0.1.3-alpha.20。
+评估日期：2026-09-16；应用版本：0.1.3-alpha.20。
 
 依据：[上游正式发布记录](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.6-alpha.1)（2026-09-15 04:57:57 UTC），[版本比较范围](https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.1.5-rc.2...dsh-v0.1.6-alpha.1)。发布说明证明变更范围，不替代源码对照与运行验收。
 
 ## 结论
 
-Rust 仅完成部分同类能力，尚未全面对齐此上游版本。SSH、MCP 资源、PTC 单次超时、图片 offload 事件及生命周期协议有明确缺口。Cloud 并非这份上游发布说明中的新增工作区功能，不能用 SSH 支持证明 Cloud 已实现。
+Rust 已完成 Git／Cloud 可取消克隆、独立远端 Harness SSH 隧道、MCP 资源和 URI 模板、PTC 单次超时、图片 offload 持久化及 agent/created 串行初始化等对应实现；仍未全面对齐此上游版本。SSH 隧道不等同上游“本地 Agent＋远端执行器”，其提供方组合和 macOS/Linux 真机验收仍有边界。Cloud 并非这份上游发布说明中的新增工作区功能。
 
 ## 核心协议与执行能力
 
 | 优先级 | 上游变化 | Rust 证据及待完成条件 |
 | --- | --- | --- |
-| P0 | 本地 Agent 使用 SSH 工作区 | workspace.create 仍拒绝 kind=ssh；需接通远端文件、Shell、PTC、取消和重连，不能把远端路径注册为本机目录 |
+| P0 | 本地 Agent 使用 SSH 工作区 | workspace.create 仍拒绝 kind=ssh；产品 SSH 入口通过独立隧道访问远端 Harness，远端文件及执行器不注册到本机。该模式不等同本地 Agent 使用 SSH 执行器，后者仍待实现 |
 | P0 | 沙箱准备异步、可取消并计入超时 | 搜索已增加总预算；其他执行器仍需准备、启动、执行、清理四阶段测试 |
 | P0 | Node PTC 独立进程与文件策略 | code-runtime-node 有独立进程；文件策略、环境变量、堆限制、输出限制仍需专项对照 |
-| P0 | 异步串行 agent/created | core/agent-loop/src/index.rs 仍发送 agent/session-start；需迁移初始化顺序并验证首次请求等待 |
+| P0 | 异步串行 agent/created | 已改为等待串行 `agent/created` 完成后释放 Agent 首次请求；保留旧 `agent/session-start` 兼容监听点的插件仍需逐个迁移 |
 | P0 | 子代理通知排除推理块 | 工作流已修复失败返回 null，但这是不同问题；需单独验证通知进入 Messages 协议时仅含正文 |
-| P1 | MCP 资源及 URI 模板 | mcp-client/src/lib.rs 目前丢弃 resource 内容；需枚举、模板、读取、大小限制和来源约束 |
-| P1 | run_code 单次超时 120–600 秒 | core/tools/src/code_mode.rs 的 schema 只有 code、description；需新增超时范围及进程回收测试 |
-| P1 | 图片 offload 持久化 | 当前附件与上传缓存不等同 offload 事件；需验证恢复、分叉及重复发送 |
+| P1 | MCP 资源及 URI 模板 | 已增加 resources/list、resources/templates/list、resources/read、分页终止、资源内容大小限制、来源作用域和资源内容保留；MCP 服务器真实资源端到端仍需实际服务器验收 |
+| P1 | run_code 单次超时 120–600 秒 | 已增加 1–600000ms 参数、默认 120000ms、绑定等待和进程回收测试；完整 sandbox 文件策略仍需专项对照 |
+| P1 | 图片 offload 持久化 | 已增加 `image/offload` 事件、按输入图片 occurrence 选择、重复目标拒绝、恢复／分叉重放和请求重试接线；真实供应商超限响应仍需实际账号验收 |
 | P1 | DeepSeek 默认 Messages 协议与 Files 复用 | 已有对应传输模块和缓存；默认端点迁移、自定义端点保持及鉴权失败不回退仍需对照 |
 | P1 | V4.1 图片质量和 token 估算 | attachment-local 与 llm-deepseek 存在处理路径；默认尺寸、质量、动画及估算尚需逐值核对 |
 | P1 | 请求图片缓存目录迁移 | 需验证 DSH_HOME/cache/attachments/request-images 重建、原图保留及旧缓存不误删 |
@@ -61,9 +61,29 @@ Rust NativeBrowserAdapter 的真实 Edge 点击、输入、滚动、上传和截
 
 ## 发布与验收边界
 
-- Git 克隆 RPC 已验证生成 .git 和 Cargo.toml；产品表单、取消、认证失败和路径边界仍需覆盖。
-- Cloud 在本产品中定义为云端 Git 仓库来源：克隆到本机后使用本机执行器，不提供托管计算；SSH 指真正的远端目录与远端执行，仍需完整接线。
+- Git／Cloud 产品表单覆盖仓库地址、本机绝对目录、可选分支、错误保留和取消。真实 Git 测试已验证分支文件、已有目录保护、无效来源拒绝、启动前取消和运行中取消；Edge 已验证表单提交后生成真实克隆工作区。
+- MCP 资源、URI 模板和 PTC 超时专项单元测试已通过；图片 offload 事件已通过 Session 恢复／分叉／重复目标拒绝测试；Agent 创建通知已通过异步串行与 veto 测试。
+- Cloud 在本产品中定义为云端 Git 仓库来源：克隆到本机后使用本机执行器，不提供托管计算。私有 Git 提供商凭据需在实际账号环境另行验收，表单模拟认证失败不等同真实账号认证验收。
+- SSH 独立远端 Harness 模式使用 OpenSSH 严格主机密钥校验、回环地址转发和存活检测，不转发 ssh-agent、不复制本机模型凭据、不自动部署远端软件。配置重启恢复为断开状态，连接、取消、断开、重连和移除均有产品入口。
+- Windows 隔离环境及安装版已验证真实 OpenSSH 公钥认证、远端工作目录隔离、终端写入与取消、连接取消、断线重连、未知主机密钥拒绝、认证失败及目录不存在。损坏的 SSH 配置不会阻止本地工作区启动，原配置保留。回环 SSH 服务不是 macOS/Linux 远端设备，不能作为跨平台真机验收证据。
 - v0.1.3-alpha.20-r3 四个平台均失败在版本与产品门禁，未证明平台编译成功。
-- 发布工作流已有 contents: write 和发布任务，可使用 Actions 自身凭据；本机缺少 GitHub token 并非自动发布的必要阻塞条件。
+- 发布工作流使用 Actions 自身凭据，等待四个平台构建与门禁通过后核对完整包集合及 SHA-256，上传草稿并回读附件及说明，全部一致才公开。修订标签沿用应用版本包名与说明回退规则；已公开的同名版本禁止覆盖。本机缺少 GitHub token 并非自动发布的必要阻塞条件。
+- 发布版本、产品契约、包完整性及发布提升相关测试通过；这些本地结果不代表 GitHub Actions 已成功运行或 Release 页面已发布。
 - GitHub 托管 runner 测试与用户桌面真机交互是不同验收范围；当前无可用 macOS/Linux 桌面设备，不能声明完成真机交互测试。
 - 全量验收须使用相同提交的本机安装版、远程执行器和发布包；代码存在、未执行测试或模糊结果均不计为完成。
+
+## Windows 本地验收记录
+
+| 验收范围 | 结果 |
+| --- | --- |
+| 产品、发布与完整性契约 | 145 项通过 |
+| API 网关单元测试 | 39 项通过 |
+| Host 单元测试 | 224 项通过；1 项 UU 设备测试因缺少实际测试设备跳过 |
+| 工作目录交互 | 本地目录选择、Git／Cloud 表单、取消、SSH 管理与错误显示通过 |
+| Edge 实际界面 | 真实克隆提交、Cloud 入口、SSH 输入校验及窄屏布局通过 |
+| 后端端到端 | Git 分支克隆、启动前／运行中取消、SSH 公钥认证、远端终端读写与取消、连接恢复及配置隔离通过 |
+| 会话恢复 | 普通路径会话在标准化工作区中重启恢复；外部与缺失路径拒绝通过 |
+| 安装版 | 二进制及工作目录界面已更新；102 个已有会话保留，原设置文件校验和不变；安装后 Git、SSH 与 Edge 复验通过 |
+| 发布状态 | 发布流程代码已修复；尚无对应改动的成功 Actions 构建与公开 Release 证据 |
+
+以上记录不覆盖 macOS/Linux 桌面真机操作，也不证明上表所有上游协议差异已消除。

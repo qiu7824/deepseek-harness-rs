@@ -51,13 +51,19 @@ pub(crate) async fn request(
     .await
     .map_err(|error| failure(format!("Anthropic request failed: {error}"), "TRANSPORT"))?;
     if !response.status.is_success() {
-        if let Some(telemetry)=&options.telemetry {telemetry.phase("error_body",None);}
+        if let Some(telemetry) = &options.telemetry {
+            telemetry.phase("error_body", None);
+        }
         let status = response.status;
         let headers = response.headers.clone();
         let bytes = response
             .collect_limited(8 * 1024 * 1024)
             .await
-            .unwrap_or_else(|error|serde_json::json!({"error":{"message":error}}).to_string().into_bytes());
+            .unwrap_or_else(|error| {
+                serde_json::json!({"error":{"message":error}})
+                    .to_string()
+                    .into_bytes()
+            });
         return Err(http_failure(status, &headers, &bytes, provider_name));
     }
     let mut parser = sse::SseParser::new();
@@ -101,7 +107,10 @@ pub(crate) async fn request(
                 ));
             }
             for chunk in chunks {
-                if dsh_llm::is_token_delta(&chunk) { progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout; }
+                if dsh_llm::is_token_delta(&chunk) {
+                    progress_deadline =
+                        tokio::time::Instant::now() + connection.stream_progress_timeout;
+                }
                 sender
                     .send(chunk)
                     .await

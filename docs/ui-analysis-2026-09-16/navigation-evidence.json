@@ -1,0 +1,227 @@
+{
+  "模型": {
+    "headings": [
+      "模型"
+    ],
+    "buttons": [
+      "关闭",
+      "检查 Codex 网络连接",
+      "API 连接",
+      "订阅账号",
+      "任务分工",
+      "仅待修复",
+      "DeepSeek",
+      "OpenCode 免费模型",
+      "OpenCode Zen",
+      "doubao-seed-evolving",
+      "ChatGPT / Codex",
+      "Devin / Windsurf",
+      "OpenAI API",
+      "编辑连接",
+      "收起模型",
+      "刷新目录",
+      "显示筛选结果",
+      "隐藏筛选结果",
+      "添加手动模型",
+      "添加提供方",
+      "添加自定义提供方"
+    ],
+    "search": [
+      "搜索连接或模型 ID",
+      "搜索模型名称或 ID"
+    ],
+    "scroll": [
+      {
+        "cls": "_7h7_Oq_options",
+        "viewport": 618,
+        "content": 1258
+      }
+    ],
+    "firstModelTop": 688.578125,
+    "dialogBottom": 696
+  },
+  "子智能体": {
+    "headings": [
+      "子智能体",
+      "默认值与限制"
+    ],
+    "buttons": [
+      "关闭"
+    ],
+    "search": [],
+    "scroll": [
+      {
+        "cls": "_7h7_Oq_options",
+        "viewport": 618,
+        "content": 994
+      }
+    ],
+    "dialogBottom": 696
+  },
+  "插件": {
+    "headings": [
+      "插件",
+      "",
+      "",
+      ""
+    ],
+    "buttons": [
+      "关闭",
+      "插件配置",
+      "插件列表",
+      "Agent 循环\nAgent 如何派发工具调用。",
+      "网页搜索\n搜索服务及请求设置。",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "search": [],
+    "scroll": [],
+    "dialogBottom": 696
+  },
+  "技能与 MCP": {
+    "headings": [
+      "技能与 MCP"
+    ],
+    "buttons": [
+      "关闭",
+      "Skills",
+      "MCP",
+      "刷新",
+      "添加 Skill",
+      "导入 SKILL.md",
+      "查看位置"
+    ],
+    "search": [
+      "搜索名称与描述"
+    ],
+    "scroll": [],
+    "dialogBottom": 696
+  },
+  "目录与运行环境": {
+    "headings": [],
+    "buttons": [
+      "关闭"
+    ],
+    "search": [],
+    "scroll": [],
+    "dialogBottom": 696
+  },
+  "小菜单设置": {
+    "headings": [
+      "小菜单设置"
+    ],
+    "buttons": [
+      "关闭"
+    ],
+    "search": [],
+    "scroll": [],
+    "dialogBottom": 696
+  },
+  "focusAfterLastTab": {
+    "inside": false,
+    "tag": "BODY",
+    "label": null
+  },
+  "connectionEditor": {
+    "buttons": [
+      "通用设置",
+      "模型",
+      "目录与运行环境",
+      "插件",
+      "记忆与上下文",
+      "Agent 预设",
+      "子智能体",
+      "安全盾",
+      "技能与 MCP",
+      "归档管理",
+      "小菜单设置",
+      "垃圾槽",
+      "打开配置文件",
+      "关闭",
+      "检查 Codex 网络连接",
+      "API 连接",
+      "订阅账号",
+      "任务分工",
+      "仅待修复",
+      "DeepSeek",
+      "OpenCode 免费模型",
+      "OpenCode Zen",
+      "doubao-seed-evolving",
+      "OpenAI API",
+      "编辑连接",
+      "收起模型",
+      "刷新目录",
+      "显示筛选结果",
+      "隐藏筛选结果",
+      "添加手动模型",
+      "取消",
+      "保存",
+      "添加提供方",
+      "添加自定义提供方"
+    ],
+    "fields": [
+      {
+        "label": "搜索连接或模型 ID",
+        "type": "search",
+        "placeholder": "搜索连接或模型 ID"
+      },
+      {
+        "label": "搜索模型名称或 ID",
+        "type": "search",
+        "placeholder": "搜索模型名称或 ID"
+      },
+      {
+        "label": "模型显示状态",
+        "type": "select-one"
+      },
+      {
+        "label": "显示 DeepSeek-V4-Flash",
+        "type": "checkbox",
+        "placeholder": ""
+      },
+      {
+        "label": "显示 DeepSeek-V4-Pro",
+        "type": "checkbox",
+        "placeholder": ""
+      },
+      {
+        "label": "显示 DeepSeek-V4-Flash-Vision-Exp",
+        "type": "checkbox",
+        "placeholder": ""
+      },
+      {
+        "label": "显示 deepseek-v4.1-flash-expires-on-0910",
+        "type": "checkbox",
+        "placeholder": ""
+      },
+      {
+        "label": "API 密钥",
+        "type": "password",
+        "placeholder": "输入 API 密钥"
+      }
+    ]
+  }
+}

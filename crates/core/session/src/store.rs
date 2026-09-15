@@ -762,7 +762,10 @@ impl Session {
             let additions = nodes[start..]
                 .iter()
                 .filter_map(|seq| state.log.get(*seq as usize))
-                .filter_map(derive_event_message)
+                .filter_map(|event| {
+                    derive_event_message(event)
+                        .map(|message| state.surface.project_message(event.seq.get(), message))
+                })
                 .collect::<Vec<_>>();
             Arc::make_mut(&mut state.derived).extend(additions);
             state.derived_nodes = nodes.len();
@@ -772,7 +775,10 @@ impl Session {
 
     /// Instance face of the pure per-node `deriveEventMessage` export.
     pub fn derive_event_message(&self, event: &SessionEvent) -> Option<Message> {
+        let state = &mut *self.inner.state.lock();
+        state.surface.nodes(&state.log).ok()?;
         derive_event_message(event)
+            .map(|message| state.surface.project_message(event.seq.get(), message))
     }
 }
 

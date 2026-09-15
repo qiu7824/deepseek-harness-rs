@@ -54,8 +54,10 @@ jobs:
           VERSION="$(python tools/verify_release_version.py --print-version)"
           python tools/verify_release_version.py --version "$VERSION"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then python tools/verify_release_version.py --version "$VERSION" --tag "$GITHUB_REF_NAME"; fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then python tools/promote_release.py notes --tag "$GITHUB_REF_NAME"; fi
           python tools/verify_product_surface.py
           python -B -m unittest tools.tests.test_release_build_identity -v
+          python -B -m unittest tools.tests.test_release_promotion -v
           python -B -m unittest tools.tests.test_e2e_http -v
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_rust_ui_contract tools.tests.test_rust_runtime_contract tools.tests.test_release_product_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance tools.tests.test_free_model_evidence tools.tests.test_release_variants tools.tests.test_settings_migration_contract tools.tests.test_installer_compile_gate -v
       - name: Web 交互与滚动回归
@@ -242,6 +244,9 @@ jobs:
           python tools/e2e_sidebar_git_terminal.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-sidebar-git-terminal" --without-node
           python tools/e2e_workspace_resources.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-resources"
           python tools/e2e_workspace_device_settings.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-device-settings"
+          python tools/e2e_workspace_sources.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-sources"
+          python -m pip install --target "$RUNNER_TEMP/dsh-ssh-deps" paramiko==4.0.0
+          PYTHONPATH="$RUNNER_TEMP/dsh-ssh-deps" python tools/e2e_workspace_ssh.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-ssh"
           python tools/e2e_package_variant.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-package-variant" --variant core
           if [[ "${{ matrix.platform }}" == "windows" ]]; then
             python tools/e2e_computer_use.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-computer-use"
@@ -399,6 +404,10 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: 核对发布标签仍对应当前源码
@@ -409,15 +418,27 @@ jobs:
           test "$ACTUAL" = "$GITHUB_SHA"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { path: dist, pattern: "deepseek-harness-rs-*", merge-multiple: true }
-      - name: 合并发布校验和
+      - name: 核验四个平台的包集合与校验和
         shell: bash
         run: |
-          cd dist
-          cat SHA256SUMS-*.txt | sort -k2 > SHA256SUMS.txt
-          rm SHA256SUMS-*.txt
-      - uses: softprops/action-gh-release@e5ee6bc58a36b838b92fc1217f2e4b414b5abcc8
-        with:
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          body_path: release/notes/${{ github.ref_name }}.md
-          generate_release_notes: false
-          files: dist/*
+          python tools/promote_release.py payload --tag "$RELEASE_TAG"
+          python tools/promote_release.py notes --tag "$RELEASE_TAG"
+      - name: 创建或更新发布草稿
+        shell: bash
+        run: |
+          NOTES="$(python tools/promote_release.py notes --tag "$RELEASE_TAG")"
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          else
+            FLAGS=()
+            if [[ "$RELEASE_PRERELEASE" == true ]]; then FLAGS+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file "$NOTES" "${FLAGS[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" dist/deepseek-harness-rs-* dist/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --notes-file "$NOTES"
+      - name: 完整核验后公开并回读发布页
+        shell: bash
+        run: |
+          python tools/promote_release.py staged --tag "$RELEASE_TAG"
+          gh release edit "$RELEASE_TAG" --draft=false
+          python tools/promote_release.py verify --tag "$RELEASE_TAG"

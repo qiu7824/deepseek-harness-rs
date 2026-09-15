@@ -1,8 +1,10 @@
 //! MCP client bridges for stdio servers and streamable HTTP endpoints:
 //! serialized JSON-RPC correlation, model-tool registration, and bounded teardown.
 
+mod discovery;
 mod http;
 mod remote_http;
+mod resources;
 
 pub use http::{StreamableHttpClient, StreamableHttpConfig};
 pub use remote_http::{RemoteHttpClient, RemoteHttpConfig};
@@ -23,7 +25,7 @@ use dsh_subprocess::{
 use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRuntime};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 pub(crate) const PROTOCOL_VERSION: &str = "2025-11-25";
 
@@ -70,6 +72,7 @@ impl std::error::Error for McpClientError {}
 pub struct StdioClient {
     child: Arc<dyn SubprocessHandle>,
     input: tokio::sync::Mutex<BufReader<Box<dyn AsyncRead + Unpin + Send>>>,
+    partial_frame: tokio::sync::Mutex<Vec<u8>>,
     output: tokio::sync::Mutex<Option<Box<dyn AsyncWrite + Unpin + Send>>>,
     request_gate: tokio::sync::Mutex<()>,
     next_id: AtomicU64,
@@ -209,16 +212,27 @@ impl StdioClient {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr_stream);
             loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line).await {
+                let mut chunk = [0u8; 8192];
+                match reader.read(&mut chunk).await {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => stderr_for_task.lock().push_str(&line),
+                    Ok(count) => {
+                        let mut retained = stderr_for_task.lock();
+                        retained.push_str(&String::from_utf8_lossy(&chunk[..count]));
+                        if retained.len() > 65536 {
+                            let mut cut = retained.len() - 65536;
+                            while !retained.is_char_boundary(cut) {
+                                cut += 1;
+                            }
+                            retained.drain(..cut);
+                        }
+                    }
                 }
             }
         });
         let client = Arc::new(Self {
             child,
             input: tokio::sync::Mutex::new(BufReader::new(input)),
+            partial_frame: Default::default(),
             output: tokio::sync::Mutex::new(Some(output)),
             request_gate: tokio::sync::Mutex::new(()),
             next_id: AtomicU64::new(1),
@@ -239,11 +253,9 @@ impl StdioClient {
                     }),
                 )
                 .await?;
-            if !initialized.is_object() {
-                return Err(error("MCP initialize response must be an object"));
-            }
+            discovery::negotiated_version(&initialized)?;
             client.notify("notifications/initialized", None).await?;
-            client.request("tools/list", json!({})).await
+            discovery::catalog(client.as_ref(), &initialized).await
         }
         .await;
         match startup {
@@ -303,6 +315,12 @@ impl StdioClient {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpClientError> {
+        tokio::time::timeout(self.request_timeout, self.request_inner(method, params))
+            .await
+            .map_err(|_| error(format!("MCP request {method:?} timed out")))?
+    }
+
+    async fn request_inner(&self, method: &str, params: Value) -> Result<Value, McpClientError> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(error("MCP connection is closed"));
         }
@@ -321,19 +339,30 @@ impl StdioClient {
         }
         let read = async {
             let mut input = self.input.lock().await;
+            let mut partial = self.partial_frame.lock().await;
             loop {
-                let mut line = String::new();
-                let bytes = input
-                    .read_line(&mut line)
-                    .await
-                    .map_err(|failure| error(format!("MCP stdout read failed: {failure}")))?;
-                if bytes == 0 {
+                let buffer = input.fill_buf().await.map_err(|e| error(e.to_string()))?;
+                if buffer.is_empty() {
                     let outcome = self.child.done().await.map_err(error)?;
                     return Err(error(format!(
                         "MCP server closed stdout (code {:?}, signal {:?})",
                         outcome.exit_code, outcome.signal
                     )));
                 }
+                let end = buffer.iter().position(|b| *b == b'\n').map(|n| n + 1);
+                let count = end.unwrap_or(buffer.len());
+                if partial.len() + count > 8 * 1024 * 1024 {
+                    self.closed.store(true, Ordering::SeqCst);
+                    self.child.terminate();
+                    return Err(error("MCP stdout frame exceeds the size limit"));
+                }
+                partial.extend_from_slice(&buffer[..count]);
+                input.consume(count);
+                if end.is_none() {
+                    continue;
+                }
+                let line = String::from_utf8(std::mem::take(&mut *partial))
+                    .map_err(|_| error("MCP stdout frame is not UTF-8"))?;
                 let frame: Value = serde_json::from_str(line.trim())
                     .map_err(|failure| error(format!("invalid MCP JSON-RPC frame: {failure}")))?;
                 if frame.get("id").and_then(Value::as_u64) != Some(id) {
@@ -474,6 +503,9 @@ async fn write_frame(
 ) -> Result<(), McpClientError> {
     let mut bytes = serde_json::to_vec(frame)
         .map_err(|failure| error(format!("MCP JSON encode failed: {failure}")))?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(error("MCP request exceeds the size limit"));
+    }
     bytes.push(b'\n');
     output
         .write_all(&bytes)
@@ -651,6 +683,9 @@ pub(crate) async fn register_tools(
         });
     }
     let mut registrations = Vec::new();
+    if listed["resourcesSupported"] == true {
+        registrations.push(resources::register(ctx, server, client.clone())?);
+    }
     for definition in pending {
         match tools.prepare_register_arc(ctx, Arc::new(definition)) {
             Ok(prepared) => registrations.push(prepared.commit(ctx)),
@@ -689,7 +724,7 @@ fn extract_text(content: &Value, tool_name: &str) -> String {
                     .unwrap_or("unknown")
             )),
             Some("resource" | "resource_link") => {
-                parts.push("[resource: content discarded]".to_string())
+                parts.push(serde_json::to_string(block).unwrap_or_default())
             }
             Some(other) => parts.push(format!("[unsupported content type: {other}]")),
             None => parts.push("[unsupported content type: unknown]".to_string()),

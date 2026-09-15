@@ -50,9 +50,15 @@ fn failure(code: &str, completed: u64, uncertain: bool) -> ToolBodyError {
     ToolBodyError::coded(json!({"code":code,"completedActions":completed,"uncertainAction":uncertain,"kernelReset":true}).to_string(),"ComputerUseJsError",code)
 }
 impl ComputerJs {
-    async fn run(&self,code:&str,execution:Arc<ToolExecution>)->Result<Value,ToolBodyError>{
-        let value=self.evaluate(code,execution).await?;
-        if value["ok"]!=true{return Err(ToolBodyError::coded(value.to_string(),"ComputerUseJsError","COMPUTER_USE_JS_FAILED"));}
+    async fn run(&self, code: &str, execution: Arc<ToolExecution>) -> Result<Value, ToolBodyError> {
+        let value = self.evaluate(code, execution).await?;
+        if value["ok"] != true {
+            return Err(ToolBodyError::coded(
+                value.to_string(),
+                "ComputerUseJsError",
+                "COMPUTER_USE_JS_FAILED",
+            ));
+        }
         Ok(value)
     }
     async fn spawn(&self) -> Result<Kernel, ToolBodyError> {
@@ -144,18 +150,35 @@ impl ComputerJs {
     }
 
     async fn reap_idle(&self) {
-        let slots=self.slots.lock().iter().map(|(owner,slot)|(owner.clone(),slot.clone())).collect::<Vec<_>>();
-        for (owner,slot) in slots {
-            let Ok(mut guard)=slot.kernel.try_lock() else {continue};
-            if slot.last_used.lock().elapsed()<Duration::from_secs(300){continue;}
-            slot.generation.fetch_add(1,Ordering::SeqCst);
-            let kernel=guard.take();
+        let slots = self
+            .slots
+            .lock()
+            .iter()
+            .map(|(owner, slot)| (owner.clone(), slot.clone()))
+            .collect::<Vec<_>>();
+        for (owner, slot) in slots {
+            let Ok(mut guard) = slot.kernel.try_lock() else {
+                continue;
+            };
+            if slot.last_used.lock().elapsed() < Duration::from_secs(300) {
+                continue;
+            }
+            slot.generation.fetch_add(1, Ordering::SeqCst);
+            let kernel = guard.take();
             {
-                let mut slots=self.slots.lock();
-                if slots.get(&owner).is_some_and(|entry|Arc::ptr_eq(entry,&slot)){slots.remove(&owner);}
+                let mut slots = self.slots.lock();
+                if slots
+                    .get(&owner)
+                    .is_some_and(|entry| Arc::ptr_eq(entry, &slot))
+                {
+                    slots.remove(&owner);
+                }
             }
             drop(guard);
-            if let Some(kernel)=kernel{kernel.child.terminate();let _=kernel.child.wait_for_exit(None).await;}
+            if let Some(kernel) = kernel {
+                kernel.child.terminate();
+                let _ = kernel.child.wait_for_exit(None).await;
+            }
         }
     }
     async fn evaluate(
@@ -273,11 +296,24 @@ impl ComputerJs {
                         })
                         .await;
                     uncertain = false;
-                    if let Some(error)=result.error.as_ref(){if let Some(info)=&error.info{
-                        if matches!(info.code.as_str(),"USER_APPROVAL_DENIED"|"USER_APPROVAL_CANCELLED"|"USER_APPROVAL_TIMED_OUT"|"USER_APPROVAL_UNAVAILABLE"|"COMPUTER_USE_MANUAL_CONTROL"){
-                            return Err(ToolBodyError::coded(format!("{}; completedActions={completed}",error.message),&info.name,&info.code));
+                    if let Some(error) = result.error.as_ref() {
+                        if let Some(info) = &error.info {
+                            if matches!(
+                                info.code.as_str(),
+                                "USER_APPROVAL_DENIED"
+                                    | "USER_APPROVAL_CANCELLED"
+                                    | "USER_APPROVAL_TIMED_OUT"
+                                    | "USER_APPROVAL_UNAVAILABLE"
+                                    | "COMPUTER_USE_MANUAL_CONTROL"
+                            ) {
+                                return Err(ToolBodyError::coded(
+                                    format!("{}; completedActions={completed}", error.message),
+                                    &info.name,
+                                    &info.code,
+                                ));
+                            }
                         }
-                    }}
+                    }
                     if !result.is_error {
                         completed += 1;
                         if let Some(value) = &result.value {
@@ -375,16 +411,42 @@ pub fn install_js(ctx: &Context, node: String, root: PathBuf) -> Result<(), Stri
         slots: Default::default(),
     });
     ctx.register_service(service.clone());
-    for event in ["session/disposed","workspace/session-deleted"] {
-        let weak=Arc::downgrade(&service);
-        futures::executor::block_on(ctx.on(event,Arc::new(move|_,args|{
-            let weak=weak.clone();
-            let owner=args.first().and_then(|value|cordis::downcast::<dsh_session::Session>(value).map(|session|session.id().as_str().to_string()).or_else(||cordis::downcast::<dsh_session::SessionId>(value).map(|id|id.as_str().to_string())));
-            Box::pin(async move{if let(Some(service),Some(owner))=(weak.upgrade(),owner){service.reset(&owner).await;}None})
-        }),cordis::EventOptions::default().global(true)));
+    for event in ["session/disposed", "workspace/session-deleted"] {
+        let weak = Arc::downgrade(&service);
+        futures::executor::block_on(ctx.on(
+            event,
+            Arc::new(move |_, args| {
+                let weak = weak.clone();
+                let owner = args.first().and_then(|value| {
+                    cordis::downcast::<dsh_session::Session>(value)
+                        .map(|session| session.id().as_str().to_string())
+                        .or_else(|| {
+                            cordis::downcast::<dsh_session::SessionId>(value)
+                                .map(|id| id.as_str().to_string())
+                        })
+                });
+                Box::pin(async move {
+                    if let (Some(service), Some(owner)) = (weak.upgrade(), owner) {
+                        service.reset(&owner).await;
+                    }
+                    None
+                })
+            }),
+            cordis::EventOptions::default().global(true),
+        ));
     }
-    let stopped=Arc::new(AtomicBool::new(false));let stop_reaper=stopped.clone();let weak_reaper=Arc::downgrade(&service);
-    tokio::spawn(async move{while !stop_reaper.load(Ordering::SeqCst){tokio::time::sleep(Duration::from_secs(1)).await;let Some(service)=weak_reaper.upgrade()else{break};service.reap_idle().await;}});
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stop_reaper = stopped.clone();
+    let weak_reaper = Arc::downgrade(&service);
+    tokio::spawn(async move {
+        while !stop_reaper.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let Some(service) = weak_reaper.upgrade() else {
+                break;
+            };
+            service.reap_idle().await;
+        }
+    });
     for reset in [false, true] {
         let service = service.clone();
         tools.register(ctx,ToolDefinition{name:if reset{"computer_use_js_reset"}else{"computer_use_js"}.into(),description:if reset{"Reset this session's Computer Use JavaScript kernel and invalidate its variables."}else{"Run persistent JavaScript for Computer Use. Variables persist across calls in this conversation. Use let app = await cua.getApp(name or windowRef), await app.getAXStateAndScreenshot(), app.click(elementId or [x,y]), app.setValue(elementId,text), app.typeText(text), app.pressKey('Control+a'), app.scroll(...). Use cua.getState() to discover windows. Default target is the Host computer; cua.remote().perform(...) uses only the bound UU device; cua.browser().perform(...) uses the isolated browser. nodeRepl.write(value) and nodeRepl.emitImage(observation) produce output. No modules, files, network or processes are accessible to code. Observe before acting; stale element IDs are rejected. Await all actions. A timeout resets variables. Every action receives normal Host authorization."}.into(),parameters:if reset{json!({"type":"object","properties":{},"additionalProperties":false})}else{json!({"type":"object","properties":{"code":{"type":"string","minLength":1,"maxLength":65536}},"required":["code"],"additionalProperties":false})},output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|{let mut blocks=vec![dsh_llm::ContentBlock::Text{text:value.to_string()}];for image in value["images"].as_array().into_iter().flatten(){blocks.push(dsh_llm::ContentBlock::Image{attachment:serde_json::from_value(image.clone()).map_err(|e|e.to_string())?});}Ok(blocks)}),presentation_meta:None},timeout_ms:Some(70000),is_concurrency_safe:Some(Arc::new(move |_|reset)),execute:Arc::new(move|args,run|{let service=service.clone();let code=args["code"].as_str().unwrap_or("").to_string();let execution=run.execution.clone();Box::pin(async move{if reset{let id=execution.agent.as_ref().ok_or_else(||ToolBodyError::plain("Session required"))?.id().as_str().to_string();service.reset(&id).await;Ok(json!({"reset":true}))}else{service.run(&code,execution).await}})}),finalize_content:None,present_call:None,present_result:None})?;
@@ -394,7 +456,7 @@ pub fn install_js(ctx: &Context, node: String, root: PathBuf) -> Result<(), Stri
         "computerUseJs.shutdown",
         Box::pin(async move {
             Some(cordis::make_disposer(move || {
-                stopped.store(true,Ordering::SeqCst);
+                stopped.store(true, Ordering::SeqCst);
                 let weak = weak.clone();
                 Box::pin(async move {
                     if let Some(service) = weak.upgrade() {

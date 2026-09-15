@@ -465,6 +465,7 @@ mod tests {
 
 fn failure(message: impl Into<String>, code: &str) -> LlmFailure {
     LlmFailure {
+        offload_images: None,
         message: message.into(),
         code: code.to_string(),
         status: None,

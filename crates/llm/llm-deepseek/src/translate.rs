@@ -62,6 +62,7 @@ mod identity_tests {
 
 fn failure(message: impl Into<String>, code: impl Into<String>) -> LlmFailure {
     LlmFailure {
+        offload_images: None,
         message: message.into(),
         code: code.into(),
         status: None,

@@ -98,15 +98,21 @@ impl ComputerUseRuntime {
     pub fn adapter_id_for(&self, arguments: &Value) -> Result<&'static str, AdapterError> {
         self.adapter.adapter_id_for(arguments)
     }
-    pub fn targets(&self) -> Value { self.adapter.targets() }
+    pub fn targets(&self) -> Value {
+        self.adapter.targets()
+    }
     pub fn availability_for(&self, arguments: &Value) -> Result<(), AdapterError> {
         self.adapter.availability_for(arguments)
     }
     pub fn actions_for(&self, arguments: &Value) -> Option<&'static [&'static str]> {
-        self.adapter_id_for(arguments).ok().and_then(supported_actions)
+        self.adapter_id_for(arguments)
+            .ok()
+            .and_then(supported_actions)
     }
     pub fn human_only_actions_for(&self, arguments: &Value) -> &'static [&'static str] {
-        self.adapter_id_for(arguments).map(human_only_actions).unwrap_or(&[])
+        self.adapter_id_for(arguments)
+            .map(human_only_actions)
+            .unwrap_or(&[])
     }
 
     /// Built-in transport capabilities. External commands provide their own

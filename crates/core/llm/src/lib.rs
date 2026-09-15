@@ -26,7 +26,6 @@ pub use api_key::{ApiKeyCheck, ApiKeyRejection, normalize_api_key};
 pub use assembler::BlockAssembler;
 pub use attribution::{AppIdentity, app_identity, attribution_headers, user_agent};
 mod request_telemetry;
-pub use request_telemetry::{RequestPhase,RequestTelemetry};
 pub use brand::{
     CallId, CallIdTag, MessageId, MessageIdTag, ProviderRequestId, ProviderRequestIdTag,
     ReasoningEffortId, ReasoningEffortIdTag, call_id, message_id, provider_request_id,
@@ -56,6 +55,7 @@ pub use message::{
     create_user_message, freeze_message, is_token_delta,
 };
 pub use never::assert_never;
+pub use request_telemetry::{RequestPhase, RequestTelemetry};
 pub use retry_policy::{
     DEFAULT_JITTER_RATIO, DEFAULT_MAX_DELAY_MS, DEFAULT_MAX_RETRIES, DEFAULT_RETRYABLE_CODES,
     ResolvedAlwaysRetryPolicy, ResolvedNormalRetryPolicy, ResolvedRetryBackoff,

@@ -13,6 +13,13 @@ use serde_json::Value as JsonValue;
 /// Serializable provider or transport failure facts (TS `LlmFailure`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmFailure {
+    /// Additional oldest retained image occurrences to omit durably before retry.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "offloadImages"
+    )]
+    pub offload_images: Option<usize>,
     /// Human-readable provider or transport failure.
     pub message: String,
     /// Stable provider-neutral machine-routing code.

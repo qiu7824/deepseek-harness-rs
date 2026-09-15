@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from promote_release import PLATFORMS, release_metadata, validate_payload, validate_release, validate_run
+from promote_release import PLATFORMS, notes_path, version_tag, release_metadata, validate_payload, validate_release, validate_run
 from release_variants import expected_artifacts
 
 
@@ -34,6 +34,7 @@ class ReleasePromotionTests(unittest.TestCase):
                     rows.append(f"{sha}  {name}\n")
                 (root / f"SHA256SUMS-{platform}.txt").write_text("".join(rows), encoding="utf-8")
             self.assertEqual(validate_payload(root, "v0.1.3-test"), expected)
+            self.assertEqual(validate_payload(root, "v0.1.3-test-r4"), expected)
             self.assertEqual(len(expected), 24)
             checksums = (root / "SHA256SUMS.txt").read_bytes()
             self.assertNotIn(b"\r", checksums, "release checksums must have identical bytes on Windows and Unix")
@@ -46,6 +47,13 @@ class ReleasePromotionTests(unittest.TestCase):
     def test_tag_cannot_escape_notes_or_artifact_paths(self):
         with self.assertRaisesRegex(ValueError, "invalid release tag"):
             validate_payload(Path("."), "../../other")
+
+    def test_revision_tags_use_versioned_packages_and_notes(self):
+        self.assertEqual(version_tag("v0.1.3-alpha.20-r4"), "v0.1.3-alpha.20")
+        self.assertEqual(notes_path("v0.1.3-alpha.20-r4").name, "v0.1.3-alpha.20.md")
+        self.assertEqual(version_tag("v0.1.3-alpha.20"), "v0.1.3-alpha.20")
+        with self.assertRaises(ValueError):
+            notes_path("../notes")
 
     def test_complete_draft_is_checked_before_publication(self):
         expected = {"package.zip": "a" * 64, "SHA256SUMS.txt": "b" * 64}

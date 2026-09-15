@@ -1,0 +1,25 @@
+{
+  "calls": [
+    {
+      "action": "session",
+      "selection": {
+        "sessionId": "fixture-session",
+        "provider": "fixture",
+        "model": "model-b",
+        "executionMode": "standard"
+      }
+    },
+    {
+      "action": "global-default",
+      "selection": {
+        "provider": "fixture",
+        "model": "model-b"
+      }
+    }
+  ],
+  "defaultFailure": {
+    "selectionPromiseResolved": true,
+    "status": "ready",
+    "error": "Model changed; the default could not be saved: Error: fixture write failure"
+  }
+}

@@ -11,8 +11,8 @@ use cordis::{
 };
 use dsh_agent::{
     Agent, AgentErrorPayload, AgentInboxClaimedPayload, AgentInboxMessagePayload,
-    AgentLifecyclePayload, AgentPreStepPayload, AgentRegistry, AgentSessionStartPayload,
-    AgentStatus, AgentStatusPayload, CancelOptions, InboxTarget, PreStepDecision,
+    AgentLifecyclePayload, AgentPreStepPayload, AgentRegistry, AgentStatus, AgentStatusPayload,
+    CancelOptions, InboxTarget, PreStepDecision,
 };
 use dsh_goal::{
     GoalActivation, GoalBlockReason, GoalChangedPayload, GoalPhase, GoalRef, GoalService, GoalView,
@@ -457,7 +457,7 @@ fn session_start_listener(driver: Arc<Driver>) -> Arc<Listener> {
         Box::pin(async move {
             if let Some(payload) = args
                 .first()
-                .and_then(|value| value.downcast_ref::<AgentSessionStartPayload>())
+                .and_then(|value| value.downcast_ref::<AgentLifecyclePayload>())
                 && driver.is_live(&payload.agent)
             {
                 let state = driver.state_for(payload.agent.clone());
@@ -844,7 +844,7 @@ pub fn apply(ctx: &Context) -> Result<Disposer, String> {
     });
     let options = EventOptions::default().global(true);
     let session_start = futures::executor::block_on(ctx.on(
-        "agent/session-start",
+        "agent/created",
         session_start_listener(driver.clone()),
         options.clone(),
     ));

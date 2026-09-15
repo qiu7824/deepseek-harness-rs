@@ -6,10 +6,12 @@ Object.assign(global,{window:dom.window,document:dom.window.document,IS_REACT_AC
 const h=React.createElement,root=require(path.join(modules,'react-dom/client')).createRoot(document.getElementById('root'));
 const source=fs.readFileSync(path.join(__dirname,'../../web/src/runtime-plugins/ui-workspace.js'),'utf8');
 const primitive={Menu:({open,items,onSelect})=>open?h('div',null,items.map(item=>h('button',{key:item.id,disabled:item.disabled,onClick:()=>onSelect(item.id)},item.label))):null,Modal:({open,title,children})=>open?h('section',{role:'dialog'},h('h1',null,title),children):null,Button:({children,...props})=>h('button',props,children)};
-const context={react:React,react_jsx_runtime:jsx,WorkspacePicker_module_css_default:{},_deepseek_ai_dsh_client_ui_primitives:new Proxy(primitive,{get:(o,k)=>o[k]||(()=>null)})};
+let sshItems=[],fetchCalls=[],pendingClone=null;
+const context={crypto:require('node:crypto').webcrypto,setInterval,clearInterval,fetch:async(url,options)=>{const data=options?.body?JSON.parse(options.body):null;fetchCalls.push({url,data});if(url.endsWith('workspace.cancelCreate')){pendingClone?.reject(Error('Git 克隆已取消'));return {ok:true,json:async()=>({result:{ok:true}})}}if(url.endsWith('/connect')){sshItems=[{connection:data,state:'connected',url:'http://127.0.0.1:12345'}];return {ok:true,json:async()=>({id:data.id,url:sshItems[0].url})}}if(url.endsWith('/disconnect'))sshItems=sshItems.map(item=>({...item,state:'disconnected',url:null}));if(url.endsWith('/remove'))sshItems=[];return {ok:true,json:async()=>({items:sshItems})}},react:React,react_jsx_runtime:jsx,WorkspacePicker_module_css_default:{},_deepseek_ai_dsh_client_ui_primitives:new Proxy(primitive,{get:(o,k)=>o[k]||(()=>null)})};
 vm.runInNewContext(source.slice(source.indexOf('const ADD_WORKSPACE ='),source.indexOf('function WorkspacePicker(')),context);
 const calls=[],picks=[];let reject=false;
-const props={t:key=>key,open:true,addOnly:true,useWorkspaces:fn=>fn({items:[],phase:'ready'}),useDirectoryFlow:fn=>fn(true),renderDirectoryFlow:()=>null,createWorkspace:async value=>{calls.push(value);if(reject)throw Error('authentication failed');return {workspaceId:'cloned'}},onPick:id=>picks.push(id),onClose(){}};
+let slow=false;
+const props={t:key=>key,open:true,addOnly:true,useWorkspaces:fn=>fn({items:[],phase:'ready'}),useDirectoryFlow:fn=>fn(true),renderDirectoryFlow:()=>null,createWorkspace:async value=>{calls.push(value);if(reject)throw Error('authentication failed');if(slow)return new Promise((resolve,reject)=>pendingClone={resolve,reject});return {workspaceId:'cloned'}},onPick:id=>picks.push(id),onClose(){}};
 const act=fn=>React.act(async()=>{await fn();await new Promise(r=>setTimeout(r,10))});
 const button=label=>[...document.querySelectorAll('button')].find(el=>el.textContent===label);
 async function fill(name,value){await act(()=>{const input=document.querySelector(`input[name="${name}"]`); const reactProps=Object.keys(input).find(key=>key.startsWith('__reactProps$'));input[reactProps].onChange({target:{value}});});}
@@ -23,5 +25,17 @@ async function fill(name,value){await act(()=>{const input=document.querySelecto
  assert.match(document.querySelector('[role=alert]').textContent,/authentication/);assert.equal(document.querySelector('input[name=branch]').value,'feature/test');assert.equal(picks.length,0);
  reject=false;await act(()=>document.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true})));
  assert.equal(calls[1].kind,'cloud');assert.equal(calls[1].branch,'feature/test');assert.deepEqual(picks,['cloned']);assert.equal(document.querySelector('[role=dialog]'),null);
+ assert.match(calls[1].operationId,/^[0-9a-f-]{36}$/);
+ await act(()=>button('从 Git 克隆工作目录').click());await fill('source','https://example.test/repo');await fill('path','E:\\work\\new');slow=true;
+ await act(()=>document.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true})));
+ assert.ok(button('取消克隆'));await act(()=>button('取消克隆').click());assert.match(document.querySelector('[role=alert]').textContent,/取消/);assert.equal(picks.length,1);
+ assert.equal(fetchCalls.find(call=>call.url.endsWith('workspace.cancelCreate')).data.payload.operationId,calls[2].operationId);
+ await act(()=>button('cancel').click());
+ await act(()=>button('SSH 远程工作目录').click());await fill('host','build-server');await fill('path','/srv/project');
+ await act(()=>document.querySelector('form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true})));
+ const link=document.querySelector('a');assert.equal(link.href,'http://127.0.0.1:12345/');assert.match(link.rel,/noopener/);assert.equal(picks.length,1,'remote workspace must not be adopted locally');
+ await act(()=>button('断开连接').click());assert.equal(document.querySelector('a'),null);assert.ok(button('编辑／重连'));
+ await act(()=>button('编辑／重连').click());assert.equal(document.querySelector('input[name=host]').value,'build-server');
+ await act(()=>button('移除连接').click());assert.equal(sshItems.length,0);
  await act(()=>root.unmount());dom.window.close();console.log('PASS Git/Cloud form: source, destination, branch, error retention, successful workspace adoption');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close()});
