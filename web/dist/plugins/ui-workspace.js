@@ -868,6 +868,9 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region lib/types/client/WorkspacePicker.js
 		const ADD_WORKSPACE = "::add-workspace";
+		const ADD_GIT_WORKSPACE = "::add-git-workspace";
+		const ADD_CLOUD_WORKSPACE = "::add-cloud-workspace";
+		const ADD_SSH_WORKSPACE = "::add-ssh-workspace";
 		/**
 		* Render the pick menu plus the adoption error dialog.
 		* @param props - owner-controlled flow props.
@@ -893,7 +896,7 @@ window.__ModuleLoader__.load({
 				label: t("menu.addWorkspace"),
 				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutline16, { size: 16 }),
 				disabled: flowBusy
-			}] : [];
+			}, { id: ADD_GIT_WORKSPACE, label: "从 Git 克隆工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_CLOUD_WORKSPACE, label: "Cloud 工作目录（未连接）", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: true }, { id: ADD_SSH_WORKSPACE, label: "SSH 远程工作目录（未连接）", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: true }] : [];
 			const pinAdd = !addOnly && workspaces.length > 0;
 			const items = pinAdd ? workspaces.map((workspace) => ({
 				id: workspace.workspaceId,
@@ -960,6 +963,14 @@ window.__ModuleLoader__.load({
 			const handleSelect = (id) => {
 				if (id === ADD_WORKSPACE) {
 					openDirectoryFlow();
+					return;
+				}
+				if (id === ADD_GIT_WORKSPACE) {
+					const source = window.prompt("Git 仓库地址或本地仓库路径");
+					if (!source?.trim()) return;
+					const path = window.prompt("克隆到本机目录", source.split(/[\\/]/).pop()?.replace(/\.git$/i, "") || "git-workspace");
+					if (!path?.trim()) return;
+					createWorkspace({ path: path.trim(), source: source.trim(), kind: "git" }).then((workspace) => onPick(workspace.workspaceId)).catch((reason) => { setModalError(reason instanceof Error ? reason.message : String(reason)); setErrorOpen(true); });
 					return;
 				}
 				onPick(id);
