@@ -16,6 +16,8 @@ The Rust edition maintains its own bounded conversation history, targeted naviga
 
 Teams are available from the conversation header and Settings. Model search keeps its full height, model rows expose a compact delete action, and focus-only composer tips can be switched off in General settings. Computer Use compatibility is documented in [the capability matrix](docs/computer-use-compatibility.zh.md).
 
+The `glob` and `grep` tools require [ripgrep (rg)](https://github.com/BurntSushi/ripgrep#installation) on PATH. DEB packages declare the dependency; install ripgrep separately for Windows, macOS and portable Linux setups, then check `rg --version`.
+
 ## 0.1.3-alpha.22 capabilities
 
 - **Sessions and feedback**: permanent deletion includes owned subagent histories while preserving independent forks; ratings require confirmation and retain failed drafts.

@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import sys
 import subprocess
@@ -367,12 +368,22 @@ def stop_verification_host(process: subprocess.Popen) -> None:
             stream.close()
 
 
+def verify_search_runtime() -> None:
+    executable = shutil.which("rg")
+    if executable is None:
+        raise ValueError("ripgrep (rg) is required for the Harness glob verification; install the search runtime first")
+    result = subprocess.run([executable, "--no-config", "--version"], capture_output=True, timeout=10)
+    if result.returncode != 0:
+        raise ValueError("ripgrep (rg) could not start; repair the search runtime before model verification")
+
+
 def verify_harness(binary: Path, model_id: str, url: str, workdir: Path | None, timeout: float, api: str = "openai-completions") -> dict:
     binary = binary.resolve(strict=True)
     if not binary.is_file():
         raise ValueError("--binary must name the actual release executable")
     if url != DEFAULT_CATALOG_URL:
         raise ValueError("binary verification requires the official anonymous OpenCode route")
+    verify_search_runtime()
     route = provider_for(api)
     digest = binary_sha256(binary)
     if workdir is not None:
@@ -585,6 +596,11 @@ def main() -> None:
     if args.report:
         # A failed rerun must not leave an older successful attestation behind.
         Path(args.report).unlink(missing_ok=True)
+    if args.binary:
+        try:
+            verify_search_runtime()
+        except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+            parser.error(str(error))
     if args.all:
         evidence = verify_many(args.url, args.binary, args.workdir, args.timeout, Path(args.report) if args.report else None, args.prefer)
         passed = evidence["includedModels"] if args.binary else [row for row in evidence["models"] if row.get("inference") is True]

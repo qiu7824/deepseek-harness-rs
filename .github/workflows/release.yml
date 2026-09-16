@@ -45,8 +45,22 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y bubblewrap ripgrep pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
           python -B tools/verify_linux_sandbox.py --workdir "$RUNNER_TEMP/dsh-sandbox-preflight" --prepare-ci-profile
+      - name: macOS 搜索运行依赖
+        if: matrix.platform == 'macos'
+        run: command -v rg >/dev/null || brew install ripgrep
+      - name: Windows 搜索运行依赖
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            choco install ripgrep -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'ripgrep installation failed' }
+          }
+      - name: 搜索运行依赖预检
+        shell: bash
+        run: rg --no-config --version
       - name: 版本与产品门禁
         timeout-minutes: 10
         shell: bash
@@ -310,7 +324,7 @@ jobs:
             rm -rf "$PKG"
             mkdir -p "$PKG/DEBIAN" "$PKG/opt/deepseek-harness-rs/${variant}" "$PKG/usr/bin"
             cp -R "$STAGE"/. "$PKG/opt/deepseek-harness-rs/${variant}/"
-            printf 'Package: deepseek-harness-rs-%s\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nDepends: bubblewrap\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent (%s variant)\n' "$variant" "$VERSION" "$variant" > "$PKG/DEBIAN/control"
+            printf 'Package: deepseek-harness-rs-%s\nVersion: %s\nSection: devel\nPriority: optional\nArchitecture: amd64\nDepends: bubblewrap, ripgrep\nMaintainer: DeepSeek Harness-rs\nDescription: Rust native DeepSeek Harness Web Agent (%s variant)\n' "$variant" "$VERSION" "$variant" > "$PKG/DEBIAN/control"
             ln -s "/opt/deepseek-harness-rs/${variant}/dsh-launcher" "$PKG/usr/bin/deepseek-harness-rs-${variant}"
             dpkg-deb --root-owner-group --build "$PKG" "dist/deepseek-harness-rs-v${VERSION}-linux-x86_64-${variant}.deb"
           done

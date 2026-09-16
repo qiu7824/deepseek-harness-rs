@@ -26,6 +26,17 @@ def report(rows):
             "models":rows,"includedModels":included,"defaultModel":included[0] if included else None}
 
 class FreeEvidenceTests(unittest.TestCase):
+    def test_missing_search_runtime_is_reported_before_process_launch(self):
+        with patch.object(verifier.shutil, "which", return_value=None), patch.object(verifier.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "ripgrep.*required"):
+                verifier.verify_search_runtime()
+            run.assert_not_called()
+
+    def test_unusable_search_runtime_is_not_a_model_failure(self):
+        with patch.object(verifier.shutil, "which", return_value="rg"), patch.object(verifier.subprocess, "run", return_value=verifier.subprocess.CompletedProcess([], 1)):
+            with self.assertRaisesRegex(ValueError, "repair the search runtime"):
+                verifier.verify_search_runtime()
+
     def test_completed_stream_does_not_wait_for_transport_eof(self):
         class OpenAfterCompletion(io.BytesIO):
             def __iter__(self):

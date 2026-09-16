@@ -86,7 +86,7 @@ const settle = () => React.act(async () => { await new Promise(resolve => setTim
   const registered = [];
   const connection = { api: { subagents: { history: async payload => { assert.equal(payload.maxMessages, 8); return { result: { ok: true, value: success.settledHistory } }; } } } };
   const sessions = { list: store, openSubagent: address => addresses.push(address), refreshSubagents: () => {}, setSubagentCatalogOpen: () => {} };
-  const context = { sessions, get: key => key === 'connection' ? connection : key === 'inputTriggers' ? { registerSource: () => () => {} } : undefined, effect: callback => callback(), locale: { register: () => () => {} }, slots: { register: (options, component) => { registered.push({ options, component }); return () => {}; }, inject: (_name, factory) => { const value = factory(); if (value && value[Symbol.iterator]) [...value]; } } };
+  const context = { sessions, settingsScope: { bind: ({namespace}) => { assert.equal(namespace, 'agent-teams'); return { getSnapshot: () => ({value:{enabled:false,maxMembers:8},writable:true}), subscribe: () => () => {} }; } }, get: key => key === 'connection' ? connection : key === 'inputTriggers' ? { registerSource: () => () => {} } : undefined, effect: callback => callback(), locale: { register: () => () => {}, bind: () => t }, slots: { register: (options, component) => { registered.push({ options, component }); return () => {}; }, inject: (_name, factory) => { const value = factory(); if (value && value[Symbol.iterator]) [...value]; } } };
   plugin.apply(context);
   const registration = registered.find(entry => entry.options.key === 'subagent');
   assert.equal(registration.component, SubagentToolRow);

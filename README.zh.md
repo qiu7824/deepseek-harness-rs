@@ -63,6 +63,9 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
 
+文件搜索工具 `glob`／`grep` 需要 PATH 中可运行的 [ripgrep（rg）](https://github.com/BurntSushi/ripgrep#installation)。DEB 包声明该依赖；Windows、macOS 和 Linux 便携安装需先安装 ripgrep，可用 `rg --version` 检查。
+
+
 ## 快速启动
 
 默认下载 `core` 包；它不包含扩展皮肤。解压后直接运行三平台统一的 ZSUI 原生启动器：
