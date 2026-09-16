@@ -1,0 +1,17 @@
+[package]
+name = "dsh-task-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Durable task acceptance contracts and conservative effect recovery"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+parking_lot.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+roxmltree = "0.21"

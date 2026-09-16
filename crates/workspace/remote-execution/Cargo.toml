@@ -1,0 +1,34 @@
+[package]
+name = "dsh-remote-execution"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+description = "Versioned SSH execution provider and independently authorized remote helper"
+
+[[bin]]
+name = "dsh-remote-helper"
+path = "src/main.rs"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-atomic-write = { path = "../../util/atomic-write" }
+dsh-fs = { path = "../../fs/fs" }
+dsh-fs-local = { path = "../../fs/fs-local" }
+dsh-shell = { path = "../../shell/shell" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-sandbox-local = { path = "../../sandbox/sandbox-local" }
+dsh-session = { path = "../../core/session" }
+dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }
+dsh-workspace = { path = "../workspace" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+libc = { workspace = true }
+base64 = "0.22"
+

@@ -21,3 +21,11 @@ pub use spec::{
     workspace_record_schema,
 };
 pub use types::{Workspace, WorkspaceId, WorkspaceIdTag, workspace_id};
+
+/// Verifies provider-owned remote workspace identities without treating them as local paths.
+pub trait WorkspaceExecutionProvider: Send + Sync + 'static {
+    fn verify(&self, uri:String)->futures::future::BoxFuture<'static,Result<String,String>>;
+}
+impl cordis::Service for dyn WorkspaceExecutionProvider {
+    fn service_name(&self)->&'static str {"workspaceExecutionProvider"}
+}

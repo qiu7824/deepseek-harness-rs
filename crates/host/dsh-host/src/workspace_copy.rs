@@ -273,6 +273,21 @@ pub fn promote(
     expected: &Value,
     signal: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<Value, String> {
+    promote_validated(store, id, relative, project, target, expected, None, signal)
+}
+
+/// A trusted preflight may bind acceptance to the exact copied bytes. Checking
+/// the private snapshot closes the source-mutation race before publishing it.
+pub fn promote_validated(
+    store: &Store,
+    id: &str,
+    relative: &str,
+    project: &str,
+    target: &str,
+    expected: &Value,
+    expected_source_sha256: Option<&str>,
+    signal: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<Value, String> {
     let root = std::fs::canonicalize(project).map_err(|e| e.to_string())?;
     let destination = safe(&root, target)?;
     let source = store.path(id, relative)?;
@@ -292,6 +307,9 @@ pub fn promote(
     let result = (|| {
         copy(&source, &temp, &signal)?;
         let checksum = hash(&temp)?;
+        if expected_source_sha256.is_some_and(|expected| expected != checksum) {
+            return Err("候选产物在验收后发生变化，请重新验收；目标未修改".into());
+        }
         if !matches(&destination)? {
             return Err("交付期间目标被修改，候选产物保留".into());
         }
@@ -316,6 +334,46 @@ mod tests {
         let path = std::env::temp_dir().join(format!("dsh-copy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[test]
+    fn validated_promotion_rejects_candidate_replaced_after_check() {
+        let root = fixture();
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let store = Store::open(root.join("managed")).unwrap();
+        let mut candidate = store
+            .allocate("owner", &project.to_string_lossy(), "candidate", "output")
+            .unwrap();
+        let id = candidate.id().to_owned();
+        let path = candidate.path().join("result.txt");
+        std::fs::write(&path, b"validated bytes").unwrap();
+        let checked = hash(&path).unwrap();
+        candidate.finish(true).unwrap();
+        std::fs::write(&path, b"changed bytes").unwrap();
+        let error = promote_validated(
+            &store,
+            &id,
+            "result.txt",
+            &project.to_string_lossy(),
+            "result.txt",
+            &Value::Null,
+            Some(&checked),
+            Arc::new(|| false),
+        )
+        .unwrap_err();
+        assert!(error.contains("验收后发生变化"));
+        assert!(!project.join("result.txt").exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"changed bytes");
+        assert!(!std::fs::read_dir(&project).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".dsh-delivery-")
+        }));
+        drop(candidate);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worktree_copy_preserves_local_edits_and_recovers_its_git_link() {

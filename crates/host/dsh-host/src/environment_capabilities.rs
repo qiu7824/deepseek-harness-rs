@@ -2,6 +2,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cordis::Context;
@@ -12,6 +13,10 @@ use dsh_subprocess::{
 };
 use dsh_system_prompt::{PromptContext, PromptText, SystemPrompt};
 use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRuntime};
+use futures::{
+    FutureExt,
+    future::{BoxFuture, Shared},
+};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,7 +24,9 @@ use sha2::{Digest, Sha256};
 
 use crate::runtime_paths::RuntimePaths;
 
-const IDS: [&str; 7] = ["python", "node", "git", "rg", "pwsh", "ffmpeg", "wps"];
+pub(super) const IDS: [&str; 8] = [
+    "python", "node", "git", "rg", "pwsh", "ffmpeg", "wps", "rustc",
+];
 const POSITIVE_TTL: u64 = 24 * 60 * 60;
 const NEGATIVE_TTL: u64 = 60;
 const MAX_CACHE_BYTES: u64 = 128 * 1024;
@@ -104,6 +111,21 @@ pub(super) struct EnvironmentCapabilities {
     records: Mutex<BTreeMap<String, Record>>,
     gates: BTreeMap<&'static str, tokio::sync::Mutex<()>>,
     persist_gate: tokio::sync::Mutex<()>,
+    flights: Mutex<BTreeMap<String, Arc<ProbeFlight>>>,
+}
+
+struct ProbeFlight {
+    result: Shared<BoxFuture<'static, Result<Value, ToolBodyError>>>,
+    waiters: AtomicUsize,
+    cancelled: Arc<AtomicBool>,
+}
+struct FlightWaiter(Arc<ProbeFlight>);
+impl Drop for FlightWaiter {
+    fn drop(&mut self) {
+        if self.0.waiters.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.cancelled.store(true, Ordering::Release);
+        }
+    }
 }
 
 fn now() -> u64 {
@@ -114,7 +136,7 @@ fn now() -> u64 {
 }
 
 impl EnvironmentCapabilities {
-    fn new(runtime: Arc<dyn SubprocessRuntime>, paths: Arc<RuntimePaths>) -> Arc<Self> {
+    pub(super) fn new(runtime: Arc<dyn SubprocessRuntime>, paths: Arc<RuntimePaths>) -> Arc<Self> {
         let cache_path = paths.paths["cacheDirectory"].join("environment-capabilities-v1.json");
         let records = std::fs::metadata(&cache_path)
             .ok()
@@ -138,10 +160,11 @@ impl EnvironmentCapabilities {
                 .map(|id| (id, tokio::sync::Mutex::new(())))
                 .collect(),
             persist_gate: tokio::sync::Mutex::new(()),
+            flights: Mutex::new(BTreeMap::new()),
         })
     }
 
-    fn environment(&self) -> String {
+    pub(super) fn environment(&self) -> String {
         // Hash only execution identity/configuration. Never persist environment values or credentials.
         let environment: Vec<_> = [
             "PATH",
@@ -178,7 +201,76 @@ impl EnvironmentCapabilities {
             "environment":environment,"pathDirectories":path_directories,"node":self.paths.node_command(),"runtimeDirectory":self.paths.paths["environmentDirectory"]})).unwrap()))
     }
 
-    async fn inspect(
+    pub(super) async fn inspect(
+        self: &Arc<Self>,
+        id: &str,
+        refresh: bool,
+        signal: dsh_tools::AbortPredicate,
+    ) -> Result<Value, ToolBodyError> {
+        if signal() {
+            return Err(ToolBodyError::coded(
+                "environment probe cancelled",
+                "AbortError",
+                "ABORTED",
+            ));
+        }
+        let key = format!("{id}:{refresh}:{}", self.environment());
+        let (flight, coalesced) = {
+            let mut flights = self.flights.lock();
+            flights.retain(|_, flight| !flight.cancelled.load(Ordering::Acquire));
+            let flight = flights
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    let cache = self.clone();
+                    let id = id.to_string();
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let flag = cancelled.clone();
+                    let result = async move {
+                        cache
+                            .inspect_inner(
+                                &id,
+                                refresh,
+                                Arc::new(move || flag.load(Ordering::Acquire)),
+                            )
+                            .await
+                    }
+                    .boxed()
+                    .shared();
+                    Arc::new(ProbeFlight {
+                        result,
+                        waiters: AtomicUsize::new(0),
+                        cancelled,
+                    })
+                })
+                .clone();
+            let coalesced = flight.waiters.fetch_add(1, Ordering::AcqRel) > 0;
+            (flight, coalesced)
+        };
+        let waiter = FlightWaiter(flight.clone());
+        let mut result = tokio::select! {
+            result = flight.result.clone() => result,
+            _ = cancelled(signal) => Err(ToolBodyError::coded("environment probe cancelled", "AbortError", "ABORTED")),
+        };
+        if flight.result.peek().is_some() || flight.waiters.load(Ordering::Acquire) == 1 {
+            let mut flights = self.flights.lock();
+            if flights
+                .get(&key)
+                .is_some_and(|active| Arc::ptr_eq(active, &flight))
+            {
+                flights.remove(&key);
+            }
+        }
+        drop(waiter);
+        if coalesced {
+            if let Ok(value) = &mut result {
+                value["cacheHit"] = json!(true);
+                value["coalesced"] = json!(true);
+            }
+        }
+        result
+    }
+
+    async fn inspect_inner(
         &self,
         id: &str,
         refresh: bool,
@@ -336,7 +428,7 @@ impl EnvironmentCapabilities {
                             || lower.contains("permission")
                             || lower.contains("拒绝")
                         {
-                            "permission-denied"
+                            "permission_denied"
                         } else if lower.contains("not found")
                             || lower.contains("missing")
                             || lower.contains("no such")
@@ -374,7 +466,7 @@ impl EnvironmentCapabilities {
                             || lower.contains("permission")
                             || lower.contains("拒绝")
                         {
-                            "permission-denied"
+                            "permission_denied"
                         } else {
                             "error"
                         },
@@ -411,7 +503,7 @@ impl EnvironmentCapabilities {
                 result["error"] = json!(error.chars().take(256).collect::<String>());
             }
             Err(_) => {
-                result["status"] = json!("timeout");
+                result["status"] = json!("timed_out");
                 result["error"] = json!("Host probe exceeded five seconds");
             }
         }
@@ -465,7 +557,7 @@ impl EnvironmentCapabilities {
         Ok(read.text)
     }
 
-    fn summary(&self) -> String {
+    pub(super) fn summary(&self) -> String {
         let environment = self.environment();
         let records = self.records.lock();
         let mut text = String::from(
@@ -503,9 +595,17 @@ async fn cancelled(signal: dsh_tools::AbortPredicate) {
     }
 }
 
-fn find_wps() -> Option<String> {
+pub(super) fn find_wps() -> Option<String> {
     if !cfg!(windows) {
-        return None;
+        return std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|p| p.is_absolute())
+            .map(|p| p.join("wps"))
+            .find(|p| p.is_file())
+            .map(|p| p.to_string_lossy().into_owned());
+    }
+    #[cfg(windows)]
+    if let Some(path) = registered_wps() {
+        return Some(path);
     }
     for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
         let Some(root) = std::env::var_os(variable).map(PathBuf::from) else {
@@ -537,19 +637,57 @@ fn find_wps() -> Option<String> {
     None
 }
 
+#[cfg(windows)]
+fn registered_wps() -> Option<String> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
+    };
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        for key in [
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\wps.exe",
+            "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\wps.exe",
+        ] {
+            let key: Vec<_> = key.encode_utf16().chain(Some(0)).collect();
+            let mut data = vec![0u16; 4096];
+            let mut bytes = (data.len() * 2) as u32;
+            let status = unsafe {
+                RegGetValueW(
+                    hive,
+                    key.as_ptr(),
+                    std::ptr::null(),
+                    RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                    std::ptr::null_mut(),
+                    data.as_mut_ptr().cast(),
+                    &mut bytes,
+                )
+            };
+            if status == 0 {
+                let length = data.iter().position(|c| *c == 0).unwrap_or(data.len());
+                let path = String::from_utf16_lossy(&data[..length])
+                    .trim_matches('"')
+                    .to_string();
+                if Path::new(&path).is_absolute() && Path::new(&path).is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
 pub(super) fn install(
     ctx: &Context,
     tools: &Arc<ToolRuntime>,
     prompt: &Arc<SystemPrompt>,
     runtime: Arc<dyn SubprocessRuntime>,
     paths: Arc<RuntimePaths>,
-) -> Result<(), String> {
+) -> Result<Arc<EnvironmentCapabilities>, String> {
     let capabilities = EnvironmentCapabilities::new(runtime, paths);
     let probe = capabilities.clone();
     tools.register(ctx, ToolDefinition {
         name: "environment_probe".into(),
-        description: "Get cached host program paths, versions and supported capabilities. Request only required names: python, node, git, rg, pwsh, ffmpeg, wps. Reuse results; refresh only after failure or environment changes. Python module checks use isolated mode. WPS is located without launching Office. This does not establish sandbox or remote permissions.".into(),
-        parameters: json!({"type":"object","properties":{"names":{"type":"array","minItems":1,"maxItems":7,"items":{"type":"string","enum":IDS}},"refresh":{"type":"boolean"}},"required":["names"],"additionalProperties":false}),
+        description: "Get cached host program paths, versions and supported capabilities. Request only required names: python, node, git, rg, pwsh, ffmpeg, wps, rustc. Reuse results; refresh only after failure or environment changes. Python module checks use isolated mode. WPS is located without launching Office. This does not establish sandbox or remote permissions; use environment_validate for the selected execution context.".into(),
+        parameters: json!({"type":"object","properties":{"names":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","enum":IDS}},"refresh":{"type":"boolean"}},"required":["names"],"additionalProperties":false}),
         output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_, value| Ok(vec![ContentBlock::Text { text: value.to_string() }])), presentation_meta: None },
         timeout_ms: Some(60000), is_concurrency_safe: Some(Arc::new(|_| true)),
         execute: Arc::new(move |args, exec| {
@@ -565,6 +703,7 @@ pub(super) fn install(
         }), finalize_content: None, present_call: None, present_result: None,
     })?;
     let weak_tools = Arc::downgrade(tools);
+    let summary_capabilities = capabilities.clone();
     prompt.context(
         ctx,
         PromptContext {
@@ -578,11 +717,11 @@ pub(super) fn install(
                 }) {
                     return String::new();
                 }
-                capabilities.summary()
+                summary_capabilities.summary()
             })),
         },
     );
-    Ok(())
+    Ok(capabilities)
 }
 
 pub(super) fn discovery_config(

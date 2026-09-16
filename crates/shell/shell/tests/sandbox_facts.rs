@@ -17,15 +17,22 @@ fn command_exit_does_not_masquerade_as_runner_failure_or_bypass_allowed_exit_rul
     let observe = |exit, text| {
         ShellSandboxInfo::observe(SandboxMode::WorkspaceWrite, &confined, Some(exit), text)
     };
-    assert_eq!(observe(125, "command exited").runner_failed, Some(false));
-    assert_eq!(observe(1, "runner: failed").runner_failed, Some(false));
-    assert_eq!(observe(125, "runner: ready").runner_failed, Some(false));
-    assert_eq!(
-        observe(125, "RUNNER: cannot start").runner_failed,
-        Some(true)
-    );
+    for text in [
+        "command exited",
+        "runner: failed",
+        "runner: ready",
+        "RUNNER: cannot start",
+        "dsh-sandbox-windows: access is denied",
+        "bwrap: cannot start",
+    ] {
+        assert_eq!(
+            observe(125, text).runner_failed,
+            None,
+            "application text cannot attest runner failure"
+        );
+    }
     assert!(!observe(125, "runner: access is denied").denied);
-    assert!(observe(1, "Access is denied").denied);
+    assert!(!observe(1, "Access is denied").denied);
     assert!(!observe(0, "access is denied").denied);
     assert!(!observe(1, "[sandbox-cleanup] access is denied\ncommand failed").denied);
 }

@@ -7,6 +7,7 @@
 pub mod agent_lookup;
 pub mod api;
 pub mod capabilities;
+pub mod skill_lifecycle;
 pub mod fetch;
 mod interactions;
 mod learning_preview;

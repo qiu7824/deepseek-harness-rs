@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
-use cordis::{Context, Disposer, Service, make_disposer};
+use cordis::{Context, Disposer, EventOptions, Listener, Service, downcast, make_disposer};
 use dsh_agent::{Agent, AgentRegistry};
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
@@ -43,6 +43,7 @@ pub fn owner_key(owner: &Arc<dyn Agent>) -> usize {
 
 /// Published-session bookkeeping (TS `SessionRecord`).
 pub struct SessionRecord {
+    permissions_revoked: AtomicBool,
     pub id: TerminalSessionId,
     pub owner: Arc<dyn Agent>,
     pub name: Option<String>,
@@ -183,6 +184,22 @@ impl TerminalSessionService {
             }),
         );
         ctx.register_service(service.clone());
+        let weak = Arc::downgrade(&service);
+        let listener: Arc<Listener> = Arc::new(move |_, args| {
+            if let (Some(service), Some(session), Some(event)) = (
+                weak.upgrade(),
+                args.first().and_then(downcast::<dsh_session::Session>),
+                args.get(1).and_then(downcast::<dsh_session::SessionEvent>),
+            ) {
+                service.observe_permission_event(session, event);
+            }
+            Box::pin(async { None })
+        });
+        let _ = futures::executor::block_on(ctx.on(
+            "session/event",
+            listener,
+            EventOptions::default().global(true),
+        ));
         service
     }
 
@@ -191,6 +208,130 @@ impl TerminalSessionService {
             Err(TerminalFailure::Coded(service_disposing()))
         } else {
             Ok(())
+        }
+    }
+
+    /// Fence old processes synchronously when the durable permission policy
+    /// tightens. Cleanup runs after the session append observer returns, since
+    /// waiting for Tokio I/O inside that synchronous publication would deadlock.
+    fn observe_permission_event(
+        self: &Arc<Self>,
+        session: &dsh_session::Session,
+        event: &dsh_session::SessionEvent,
+    ) {
+        let rank = |mode: dsh_sandbox::SandboxMode| match mode {
+            dsh_sandbox::SandboxMode::ReadOnly => 0,
+            dsh_sandbox::SandboxMode::WorkspaceWrite => 1,
+            dsh_sandbox::SandboxMode::DangerFullAccess => 2,
+        };
+        let next = if event.type_ == "sandbox/mode" {
+            match event.data.get("mode").and_then(|value| value.as_str()) {
+                Some("read-only") => Some(dsh_sandbox::SandboxMode::ReadOnly),
+                Some("workspace-write") => Some(dsh_sandbox::SandboxMode::WorkspaceWrite),
+                Some("danger-full-access") => Some(dsh_sandbox::SandboxMode::DangerFullAccess),
+                _ => return,
+            }
+        } else if matches!(
+            event.type_.as_str(),
+            "sandbox/grants-revoked" | "sandbox/roots-revoked"
+        ) {
+            None
+        } else {
+            return;
+        };
+        let events = session.events();
+        let previous = events
+            .iter()
+            .position(|entry| entry.seq == event.seq)
+            .and_then(|index| dsh_sandbox_policy::effective_sandbox_mode(&events[..index]))
+            .or_else(|| {
+                self.ctx
+                    .get_typed::<Arc<dsh_sandbox_policy::SandboxPolicyService>>(
+                        "sandboxPolicy",
+                        false,
+                    )
+                    .map(|service| service.default_mode)
+            })
+            .unwrap_or(dsh_sandbox::SandboxMode::DangerFullAccess);
+        let records = self
+            .sessions
+            .lock()
+            .values()
+            .filter(|record| {
+                record.owner.session().identity() == session.identity()
+                    && next.is_none_or(|next| {
+                        rank(
+                            record
+                                .session
+                                .execution_policy()
+                                .map(|policy| policy.mode)
+                                .unwrap_or(previous),
+                        ) > rank(next)
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let tightening = next.is_none_or(|next| rank(previous) > rank(next));
+        if records.is_empty() && !tightening {
+            return;
+        }
+        let owners = self
+            .owners
+            .lock()
+            .iter()
+            .filter(|(_, owner)| owner.agent.session().identity() == session.identity())
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        let reason = TerminalError::new(
+            "Terminal permissions were revoked",
+            TerminalErrorCode::PermissionsRevoked,
+        );
+        let mut pending = Vec::new();
+        if tightening {
+            for owner in owners {
+                pending.extend(self.abort_pending(Some(owner), &reason));
+            }
+        }
+        let ids = records
+            .iter()
+            .map(|record| record.id.as_str().to_string())
+            .collect::<Vec<_>>();
+        for record in &records {
+            record.permissions_revoked.store(true, SeqCst);
+            if let Some(operation) = record.active.lock().as_ref() {
+                operation.cancel();
+            }
+        }
+        if records.is_empty() && pending.is_empty() {
+            return;
+        }
+        let close = self.close_records(records, "Execution permissions tightened".into());
+        let service = self.clone();
+        let session = session.clone();
+        let cleanup = async move {
+            tokio::task::yield_now().await;
+            let (pending_result, close_result) =
+                futures::join!(service.await_pending_cleanup(pending), close);
+            let error = pending_result
+                .err()
+                .or_else(|| close_result.err())
+                .map(|error| error.to_string());
+            let _=session.append("terminal/permissions-revoked",serde_json::json!({"terminalIds":ids,"cleanupComplete":error.is_none(),"error":error}),None);
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(cleanup);
+        } else {
+            // Published sessions normally require a runtime. If a synchronous
+            // administration caller changes policy, preserve the immediate
+            // fence and drive the same cleanup on a dedicated runtime.
+            std::thread::spawn(move || {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    runtime.block_on(cleanup);
+                }
+            });
         }
     }
 
@@ -357,6 +498,7 @@ impl TerminalSessionService {
 
     fn snapshot(&self, record: &Arc<SessionRecord>, motd: bool) -> TerminalSpawnResult {
         TerminalSpawnResult {
+            execution_context_id: record.session.execution_context_id(),
             session_id: record.id.clone(),
             name: record.name.clone(),
             type_: record.type_.clone(),
@@ -561,6 +703,7 @@ impl TerminalSessionService {
             let Some(failure) = failure else {
                 // Publish after setup succeeds.
                 let record = Arc::new(SessionRecord {
+                    permissions_revoked: AtomicBool::new(false),
                     id: session_id.clone(),
                     owner: owner.clone(),
                     name: request.name.clone(),
@@ -661,6 +804,12 @@ impl TerminalSessionService {
         request: TerminalSendRequest,
     ) -> Result<Arc<dyn TerminalSendOperation>, TerminalFailure> {
         let record = self.expect_owned(owner, id)?;
+        if record.permissions_revoked.load(SeqCst) {
+            return Err(coded(
+                "Terminal permissions changed; create a new terminal under the current policy",
+                TerminalErrorCode::PermissionsRevoked,
+            ));
+        }
         if record.closing.lock().is_some() {
             return Err(TerminalFailure::Plain(format!(
                 "PTY session {id} is closing"
@@ -696,6 +845,12 @@ impl TerminalSessionService {
         data: &str,
     ) -> Result<BoxFuture<'static, Result<(), TerminalFailure>>, TerminalFailure> {
         let record = self.expect_owned(owner, id)?;
+        if record.permissions_revoked.load(SeqCst) {
+            return Err(coded(
+                "Terminal permissions changed; create a new terminal under the current policy",
+                TerminalErrorCode::PermissionsRevoked,
+            ));
+        }
         if record.closing.lock().is_some() {
             return Err(TerminalFailure::Plain(format!(
                 "PTY session {id} is closing"
@@ -703,6 +858,12 @@ impl TerminalSessionService {
         }
         let future = record.session.write_input(data);
         Ok(Box::pin(async move {
+            if record.permissions_revoked.load(SeqCst) {
+                return Err(coded(
+                    "Terminal permissions were revoked before input dispatch",
+                    TerminalErrorCode::PermissionsRevoked,
+                ));
+            }
             future.await.map_err(TerminalFailure::Plain)
         }))
     }
@@ -811,6 +972,7 @@ impl TerminalSessionService {
             .values()
             .filter(|record| Arc::ptr_eq(&record.owner, owner))
             .map(|record| TerminalSessionSnapshot {
+                execution_context_id: record.session.execution_context_id(),
                 session_id: record.id.clone(),
                 name: record.name.clone(),
                 type_: record.type_.clone(),
@@ -1280,6 +1442,123 @@ mod limit_tests {
             name: None,
             cwd: None,
         }
+    }
+
+    #[tokio::test]
+    async fn permission_tightening_fences_old_terminals_before_cleanup_and_allows_recreation() {
+        let ctx = Context::root();
+        let agents = AgentRegistry::install(&ctx);
+        let owner = agent(&ctx).await;
+        let _entry = agents.enter(owner.clone(), None).unwrap();
+        let service = TerminalSessionService::install(&ctx);
+        let closed = Arc::new(AtomicUsize::new(0));
+        let _backend = service
+            .register_backend(Arc::new(FakeBackend {
+                spawned: Arc::new(AtomicUsize::new(0)),
+                closed: closed.clone(),
+            }))
+            .unwrap();
+        owner
+            .session()
+            .append(
+                "sandbox/mode",
+                serde_json::json!({"mode":"danger-full-access"}),
+                None,
+            )
+            .unwrap();
+        let terminal = service
+            .spawn(owner.clone(), request(), None)
+            .unwrap()
+            .await
+            .unwrap();
+        owner
+            .session()
+            .append(
+                "sandbox/mode",
+                serde_json::json!({"mode":"workspace-write"}),
+                None,
+            )
+            .unwrap();
+        let failure = service
+            .write_input(&owner, &terminal.session_id, "must not execute")
+            .err()
+            .expect("revocation fences synchronously");
+        assert!(matches!(
+            failure.code(),
+            Some(TerminalErrorCode::PermissionsRevoked | TerminalErrorCode::NoSession)
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while closed.load(SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let replacement = service
+            .spawn(owner.clone(), request(), None)
+            .unwrap()
+            .await
+            .unwrap();
+        service
+            .write_input(
+                &owner,
+                &replacement.session_id,
+                "allowed under current policy",
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        owner
+            .session()
+            .append(
+                "sandbox/mode",
+                serde_json::json!({"mode":"danger-full-access"}),
+                None,
+            )
+            .unwrap();
+        service
+            .write_input(
+                &owner,
+                &replacement.session_id,
+                "old terminal remains in its narrower snapshot",
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        service.dispose_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_root_revocation_stops_existing_terminal_without_waiting_for_next_action() {
+        let ctx = Context::root();
+        let agents = AgentRegistry::install(&ctx);
+        let owner = agent(&ctx).await;
+        let _entry = agents.enter(owner.clone(), None).unwrap();
+        let service = TerminalSessionService::install(&ctx);
+        let closed = Arc::new(AtomicUsize::new(0));
+        let _backend = service
+            .register_backend(Arc::new(FakeBackend {
+                spawned: Arc::new(AtomicUsize::new(0)),
+                closed: closed.clone(),
+            }))
+            .unwrap();
+        service
+            .spawn(owner.clone(), request(), None)
+            .unwrap()
+            .await
+            .unwrap();
+        owner
+            .session()
+            .append("sandbox/roots-revoked", serde_json::json!({}), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while closed.load(SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        service.dispose_all().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

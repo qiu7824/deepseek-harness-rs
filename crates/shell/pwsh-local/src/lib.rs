@@ -18,7 +18,7 @@ use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
 
-pub const ENCODING_PREAMBLE: &str = "$ErrorActionPreference = 'Stop'; $OutputEncoding = [System.Text.Encoding]::UTF8; if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') { [Console]::OutputEncoding = $OutputEncoding }; $PSNativeCommandUseErrorActionPreference = $true; $global:LASTEXITCODE = 0; ";
+pub const ENCODING_PREAMBLE: &str = "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; $OutputEncoding = [System.Text.Encoding]::UTF8; if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') { [Console]::OutputEncoding = $OutputEncoding }; $PSNativeCommandUseErrorActionPreference = $true; $global:LASTEXITCODE = 0; ";
 const NATIVE_PROBE_PREAMBLE: &str = include_str!("native_probe.ps1");
 
 #[derive(Debug, Clone, Default)]
@@ -57,15 +57,20 @@ struct PwshProcess {
 
 struct FailedPwshProcess {
     note: Mutex<Option<String>>,
+    aborted: bool,
 }
 
 impl ShellProcess for FailedPwshProcess {
     fn status(&self) -> ShellProcessStatus {
-        ShellProcessStatus::Completed
+        if self.aborted {
+            ShellProcessStatus::Killed
+        } else {
+            ShellProcessStatus::Completed
+        }
     }
 
     fn exit_code(&self) -> Option<i32> {
-        Some(127)
+        if self.aborted { None } else { Some(127) }
     }
 
     fn signal(&self) -> Option<String> {
@@ -96,16 +101,20 @@ impl ShellProcess for FailedPwshProcess {
 
 fn failed_process(note: String) -> Arc<dyn ShellProcess> {
     Arc::new(FailedPwshProcess {
+        aborted: note.starts_with("[SHELL_ABORTED]"),
         note: Mutex::new(Some(note)),
     })
 }
 
 fn pwsh_argv(config: &Config, spec: &ShellExecSpec) -> Vec<String> {
+    if let Some(argv) = &spec.native_argv {
+        return argv.clone();
+    }
     vec![
-        config
-            .pwsh_path
+        spec.shell_path
             .clone()
-            .unwrap_or_else(|| default_powershell(spec)),
+            .or_else(|| config.pwsh_path.clone())
+            .unwrap_or_else(default_powershell),
         "-NoLogo".to_string(),
         "-NoProfile".to_string(),
         "-NonInteractive".to_string(),
@@ -173,22 +182,9 @@ fn shell_environment(spec: &ShellExecSpec, executable: &str) -> Vec<(String, Opt
     env
 }
 
-fn default_powershell(spec: &ShellExecSpec) -> String {
+fn default_powershell() -> String {
     #[cfg(windows)]
     {
-        if spec
-            .sandbox_policy
-            .as_ref()
-            .is_some_and(|policy| policy.mode != SandboxMode::DangerFullAccess)
-        {
-            if let Some(windows) = std::env::var_os("SystemRoot") {
-                let system = std::path::PathBuf::from(windows)
-                    .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-                if system.is_file() {
-                    return system.to_string_lossy().into_owned();
-                }
-            }
-        }
         for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
             let candidate = directory.join("pwsh.exe");
             if candidate.is_file() {
@@ -206,7 +202,6 @@ fn default_powershell(spec: &ShellExecSpec) -> String {
     }
     #[cfg(not(windows))]
     {
-        let _ = spec;
         "pwsh".into()
     }
 }
@@ -322,6 +317,12 @@ impl ShellExecutor for LocalPwshExecutor {
     fn resolve(&self, request: ShellExecRequest) -> ShellExecSpec {
         ShellExecSpec {
             command: request.command,
+            native_argv: request.native_argv,
+            shell_path: request
+                .shell_path
+                .or_else(|| self.config.pwsh_path.clone())
+                .or_else(|| Some(default_powershell())),
+            execution_context_id: request.execution_context_id,
             workdir: request
                 .workdir
                 .or_else(|| {
@@ -377,6 +378,8 @@ impl ShellExecutor for LocalPwshExecutor {
                 })
             };
             let argv = pwsh_argv(&config, &spec);
+            dsh_shell::validate_native_argv(&argv)?;
+            let executable = argv[0].clone();
             let env = shell_environment(&spec, &argv[0]);
             let (mut argv, confined) =
                 apply_sandbox(sandbox.as_ref(), argv, spec.sandbox_policy.as_ref())?;
@@ -519,6 +522,16 @@ impl ShellExecutor for LocalPwshExecutor {
             }
             let cause = cause.load(std::sync::atomic::Ordering::SeqCst);
             let collected = handle.collected();
+            let stdout_total_bytes = collected
+                .stdout
+                .as_ref()
+                .map(|reader| reader.read_from(0).next_offset)
+                .unwrap_or(0);
+            let stderr_total_bytes = collected
+                .stderr
+                .as_ref()
+                .map(|reader| reader.read_from(0).next_offset)
+                .unwrap_or(0);
             let output = |reader: Arc<dyn dsh_subprocess::SubprocessOutputReader>| {
                 let read = reader.read_from(0);
                 CollectedOutput {
@@ -550,6 +563,10 @@ impl ShellExecutor for LocalPwshExecutor {
                         )
                     });
             Ok(ShellRunResult {
+                execution_context_id: spec.execution_context_id,
+                executable,
+                stdout_total_bytes,
+                stderr_total_bytes,
                 exit_code: outcome.exit_code,
                 signal: outcome.signal,
                 timed_out: cause == 2,
@@ -563,6 +580,12 @@ impl ShellExecutor for LocalPwshExecutor {
     }
 
     fn start(&self, spec: ShellExecSpec) -> Arc<dyn ShellProcess> {
+        if spec.signal.as_ref().is_some_and(|signal| signal()) {
+            return failed_process(
+                "[SHELL_ABORTED] execution cancelled before background startup".into(),
+            );
+        }
+        let abort_predicate = spec.signal.clone();
         let max_output_bytes = self.config.max_output_bytes.unwrap_or(64_000);
         let collect = || {
             SubprocessOutputMode::Collect(SubprocessCollect {
@@ -573,6 +596,9 @@ impl ShellExecutor for LocalPwshExecutor {
             })
         };
         let argv = pwsh_argv(&self.config, &spec);
+        if let Err(error) = dsh_shell::validate_native_argv(&argv) {
+            return failed_process(error);
+        }
         let env = shell_environment(&spec, &argv[0]);
         let (argv, confined) =
             match apply_sandbox(self.sandbox.as_ref(), argv, spec.sandbox_policy.as_ref()) {
@@ -629,17 +655,19 @@ impl ShellExecutor for LocalPwshExecutor {
                             },
                         );
                         let _ = handle.wait_for_exit(None).await;
+                        *state.exit_code.lock() = outcome.exit_code;
+                        *state.signal.lock() = outcome.signal.clone();
                         let mut status = state.status.lock();
                         if *status == ShellProcessStatus::Running {
-                            *status = if outcome.signal.is_some() {
+                            *status = if outcome.signal.is_some()
+                                || abort_predicate.as_ref().is_some_and(|abort| abort())
+                            {
                                 ShellProcessStatus::Killed
                             } else {
                                 ShellProcessStatus::Completed
                             };
                         }
                         drop(status);
-                        *state.exit_code.lock() = outcome.exit_code;
-                        *state.signal.lock() = outcome.signal;
                     }
                     Err(_) => *state.status.lock() = ShellProcessStatus::Killed,
                 }

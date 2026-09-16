@@ -326,6 +326,31 @@ pub fn application_targets() -> Result<Value, String> {
     }
     Ok(json!({"apps":apps.into_values().collect::<Vec<_>>()}))
 }
+pub fn permission_identity(args:&Value,engine:Option<&Engine>)->Result<Value,String>{
+    let action=args["requestedAction"].as_str().or_else(||args["action"].as_str()).unwrap_or("");
+    if action=="launch_app" {
+        let path=std::path::PathBuf::from(args["executable"].as_str().ok_or("COMPUTER_USE_EXECUTABLE_REQUIRED")?);
+        if !path.is_absolute() || !path.is_file(){return Err("COMPUTER_USE_EXECUTABLE_INVALID".into());}
+        let path=path.canonicalize().map_err(|_|"COMPUTER_USE_EXECUTABLE_INVALID")?.to_string_lossy().into_owned();
+        let revision=crate::identity::executable_revision(&path)?;
+        return Ok(json!({"applicationId":path.to_ascii_lowercase(),"applicationRevision":revision,"targetRevision":revision,"label":path}));
+    }
+    let target=args["windowId"].as_u64().map(|value|value as usize).or_else(||engine.and_then(|engine|engine.target));
+    if let Some(target)=target {
+        let identity=crate::identity::WindowIdentity::read(target)?;
+        if let Some(expected)=args["windowRef"].as_str() && expected!=identity.window_ref(){return Err("COMPUTER_USE_STALE_WINDOW".into());}
+        identity.permission_identity()
+    }else{
+        Ok(json!({"applicationId":"desktop","applicationRevision":"desktop-scope-v1","targetRevision":engine.map(|engine|engine.control_id.as_str()).unwrap_or("unopened"),"label":"本机整个桌面"}))
+    }
+}
+pub fn validate_permission_identity(args:&Value,engine:Option<&Engine>,expected:&Value)->Result<(),String>{
+    let observed=permission_identity(args,engine)?;
+    for field in ["applicationId","applicationRevision","targetRevision"] {
+        if observed[field]!=expected[field]{return Err("COMPUTER_USE_APP_IDENTITY_CHANGED".into());}
+    }
+    Ok(())
+}
 pub fn launch_application(args: &Value) -> Result<Value, String> {
     use std::os::windows::process::CommandExt;
     let path = std::path::PathBuf::from(
@@ -933,6 +958,13 @@ impl Engine {
             return Err("COMPUTER_USE_STALE_CONTROL".into());
         }
         self.allowed(human)?;
+        if action == "clipboard_read" {
+            return Ok(json!({"text": crate::clipboard::read()?}));
+        }
+        if action == "clipboard_write" {
+            crate::clipboard::write(args["text"].as_str().ok_or("COMPUTER_USE_CLIPBOARD_TEXT_INVALID")?)?;
+            return Ok(json!({"written": true}));
+        }
         if action == "ax_state" {
             let target = self.target.ok_or(
                 "COMPUTER_USE_WINDOW_REQUIRED: bind a window before reading accessibility",

@@ -1,0 +1,728 @@
+//! Host adapters for immutable acceptance requirements and durable effect recovery.
+use cordis::{Context, downcast_arc};
+use dsh_fs::{FileSystem, ResolveOptions};
+use dsh_task_runtime::*;
+use dsh_tools::{
+    ToolBodyError, ToolDefinition, ToolExecution, ToolExecutionResult, ToolOutputDefinition,
+    ToolRuntime,
+};
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+};
+
+pub(crate) struct TaskExecution {
+    pub runtime: Arc<TaskRuntime>,
+    context: Context,
+    fs: Arc<dyn FileSystem>,
+    resources: Option<Arc<crate::workspace_resources::Resources>>,
+}
+const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
+
+fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
+    value[key]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("Missing {key}"))
+}
+fn exempt(name: &str) -> bool {
+    matches!(
+        name,
+        "task_execution"
+            | "tool_search"
+            | "tool_describe"
+            | "get_goal"
+            | "create_goal"
+            | "update_goal"
+            | "present"
+    )
+}
+fn effect(name: &str) -> EffectKind {
+    if matches!(
+        name,
+        "read"
+            | "read_file"
+            | "list_directory"
+            | "glob"
+            | "grep"
+            | "environment_probe"
+            | "environment_validate"
+            | "web_search"
+            | "web_fetch"
+            | "job_output"
+            | "job_list"
+    ) {
+        EffectKind::ReadOnly
+    } else {
+        EffectKind::Write
+    }
+}
+fn execution_id(execution: &ToolExecution) -> String {
+    format!("call-{}", digest(execution.call_id.as_str().as_bytes()))
+}
+fn outcome_flags(name: &str, value: Option<&Value>, is_error: bool) -> (bool, bool) {
+    let Some(value) = value else {
+        return (!is_error, false);
+    };
+    let failed = is_error
+        || value["exitCode"].as_i64().is_some_and(|code| code != 0)
+        || value["timedOut"] == true
+        || value["aborted"] == true
+        || matches!(
+            value["status"].as_str(),
+            Some("failed" | "cancelled" | "unknown")
+        )
+        || name == "terminal_send" && value["completion"] != "completed";
+    let running = value["jobId"].is_string()
+        || matches!(
+            value["status"].as_str(),
+            Some("running" | "pending" | "queued")
+        )
+        || value["completed"] == false;
+    (!failed, running)
+}
+
+impl TaskExecution {
+    fn environment(&self, owner: &str, cwd: &str) -> Result<String> {
+        crate::skill_validation::environment_fingerprint(&self.context, Some(owner), cwd)
+    }
+    async fn preflight(&self, execution: &ToolExecution) -> Result<()> {
+        let Some(agent) = &execution.agent else {
+            return Ok(());
+        };
+        let owner = agent.id().as_str();
+        let cwd = agent
+            .session()
+            .header()
+            .cwd
+            .as_deref()
+            .ok_or("Missing workspace")?;
+        if execution.name == "present"
+            || execution.name == "update_goal" && execution.arguments["action"] == "complete"
+        {
+            if let Some(task) = self.runtime.latest(owner)? {
+                let signal = execution.signal.lock().clone();
+                self.verified_evidence(owner, &task.task_id, task.revision, cwd, signal)
+                    .await?;
+            }
+            return Ok(());
+        }
+        let Some(task) = self.runtime.active(owner)? else {
+            return Ok(());
+        };
+        if !exempt(&execution.name)
+            && self.environment(owner, cwd)? != task.spec.environment_fingerprint
+        {
+            return Err("The task execution environment changed; review the contract and its acceptance evidence before continuing".into());
+        }
+        if execution.name != "workspace_scratch" || execution.arguments["action"] != "promote" {
+            return Ok(());
+        }
+        let resources = self
+            .resources
+            .as_ref()
+            .ok_or("Managed resources unavailable")?;
+        let id = text(&execution.arguments, "id")?;
+        let store = resources.assert_owner(owner, id)?;
+        let candidate = store.path(id, text(&execution.arguments, "path")?)?;
+        let signal = execution.signal.lock().clone();
+        let bytes = self
+            .input(owner, cwd, &candidate.to_string_lossy(), signal.clone())
+            .await?;
+        let options = ResolveOptions {
+            cwd: Some(cwd.into()),
+            signal: Some(signal),
+        };
+        let target = self
+            .fs
+            .resolve(text(&execution.arguments, "target")?, Some(&options))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut matched = false;
+        for check in &task.spec.acceptance_checks {
+            let Some(path) = check.checker.path() else {
+                continue;
+            };
+            let expected = self
+                .fs
+                .resolve(path, Some(&options))
+                .await
+                .map_err(|e| e.to_string())?;
+            if expected.target_key != target.target_key {
+                continue;
+            }
+            matched = true;
+            let result = check_bytes(check, &bytes);
+            if result.status != AcceptanceStatus::Passed {
+                return Err(format!(
+                    "Candidate failed acceptance {}: {}",
+                    check.id,
+                    result.failure_reason.unwrap_or_default()
+                ));
+            }
+        }
+        if !matched {
+            return Err("Add the intended target content checks when creating the contract; a candidate cannot be promoted without a matching checker".into());
+        }
+        resources.seal_promotion(execution.token, owner, &execution.arguments, digest(&bytes));
+        Ok(())
+    }
+    /// Export only a completed, currently matching validation snapshot.
+    /// Consumers such as skill promotion must not accept model-provided pass flags.
+    pub async fn verified_evidence(
+        &self,
+        owner: &str,
+        task_id: &str,
+        revision: u64,
+        cwd: &str,
+        signal: dsh_tools::AbortPredicate,
+    ) -> Result<TaskContract> {
+        let task = self.runtime.get(owner, task_id)?;
+        if task.revision != revision || task.state != TaskState::Completed {
+            return Err("Acceptance evidence must reference an exact completed revision".into());
+        }
+        if !task.completion_blockers().is_empty() {
+            return Err("Acceptance evidence is incomplete".into());
+        }
+        if self.environment(owner, cwd)? != task.spec.environment_fingerprint {
+            return Err("Acceptance evidence belongs to a different execution environment".into());
+        }
+        let (_, current) = self.inputs(&task, cwd, signal).await?;
+        if current != task.output_identities {
+            return Err("Acceptance inputs changed since the verified task".into());
+        }
+        Ok(task)
+    }
+    async fn input(
+        &self,
+        owner: &str,
+        cwd: &str,
+        path: &str,
+        signal: dsh_tools::AbortPredicate,
+    ) -> Result<Vec<u8>> {
+        if dsh_tools::path_is_sensitive(Path::new(path)) {
+            return Err("Sensitive acceptance inputs require the approved read tool; use its recorded result checker instead".into());
+        }
+        let options = ResolveOptions {
+            cwd: Some(cwd.into()),
+            signal: Some(signal.clone()),
+        };
+        let target = self
+            .fs
+            .resolve(path, Some(&options))
+            .await
+            .map_err(|e| e.to_string())?;
+        if dsh_tools::path_is_sensitive(Path::new(&target.display_path)) {
+            return Err(
+                "Resolved acceptance input is sensitive; the ordinary read approval policy applies"
+                    .into(),
+            );
+        }
+        let root = self
+            .fs
+            .resolve(cwd, Some(&options))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut allowed = self.fs.contains(&root, &target);
+        if !allowed && let Some(resources) = &self.resources {
+            // Reuse resource ownership instead of treating all scratch directories as readable.
+            for resource in resources
+                .list(Some(owner))?
+                .iter()
+                .filter(|resource| resource.owner == owner)
+            {
+                if resource.path.is_empty() {
+                    continue;
+                }
+                let root = self
+                    .fs
+                    .resolve(&resource.path, Some(&options))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if self.fs.contains(&root, &target) {
+                    allowed = true;
+                    break;
+                }
+            }
+        }
+        if !allowed {
+            return Err(
+                "Acceptance input is outside the session workspace and owned scratch resources"
+                    .into(),
+            );
+        }
+        self.fs
+            .read_bytes(&target, Some(signal), MAX_INPUT_BYTES)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    async fn inputs(
+        &self,
+        task: &TaskContract,
+        cwd: &str,
+        signal: dsh_tools::AbortPredicate,
+    ) -> Result<(BTreeMap<String, Vec<u8>>, BTreeMap<String, String>)> {
+        let mut paths = task
+            .spec
+            .expected_outputs
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        paths.extend(
+            task.spec
+                .acceptance_checks
+                .iter()
+                .filter_map(|check| check.checker.path().map(str::to_owned)),
+        );
+        let mut bytes = BTreeMap::new();
+        let mut identities = BTreeMap::new();
+        let mut total = 0usize;
+        for path in paths {
+            if signal() {
+                return Err("Task validation cancelled".into());
+            }
+            let data = self.input(&task.owner, cwd, &path, signal.clone()).await?;
+            total = total.saturating_add(data.len());
+            if total > 128 * 1024 * 1024 {
+                return Err("Task validation exceeds the total input budget".into());
+            }
+            identities.insert(path.clone(), digest(&data));
+            bytes.insert(path, data);
+        }
+        Ok((bytes, identities))
+    }
+    async fn validate(
+        &self,
+        owner: &str,
+        id: &str,
+        key: &str,
+        cwd: &str,
+        signal: dsh_tools::AbortPredicate,
+    ) -> Result<TaskContract> {
+        let task = self.runtime.get(owner, id)?;
+        if self.environment(owner, cwd)? != task.spec.environment_fingerprint {
+            return Err("Task environment changed; previous evidence is invalid".into());
+        }
+        let (bytes, identities) = self.inputs(&task, cwd, signal.clone()).await?;
+        let identity = digest(&serde_json::to_vec(&identities).map_err(|e| e.to_string())?);
+        let mut results = Vec::new();
+        for check in &task.spec.acceptance_checks {
+            if signal() {
+                return Err("Task validation cancelled".into());
+            }
+            let result = match &check.checker {
+                Checker::Manual { reason } => {
+                    if let Some(previous) = task.acceptance_results.iter().find(|r| {
+                        r.check_id == check.id
+                            && r.input_identity == identity
+                            && r.status == AcceptanceStatus::Passed
+                    }) {
+                        previous.clone()
+                    } else {
+                        AcceptanceResult {
+                            check_id: check.id.clone(),
+                            checker_version: CHECKER_VERSION.into(),
+                            input_identity: identity.clone(),
+                            status: AcceptanceStatus::AwaitingUser,
+                            evidence_refs: vec![],
+                            coverage: reason.clone(),
+                            failure_reason: None,
+                        }
+                    }
+                }
+                Checker::ToolResult { step_id, .. } => check_tool_result(
+                    check,
+                    task.steps.iter().rev().find(|s| {
+                        s.id == *step_id
+                            || step_id
+                                .strip_prefix("tool:")
+                                .is_some_and(|name| s.tool == name)
+                    }),
+                ),
+                _ => {
+                    let check = check.clone();
+                    let data = bytes[check.checker.path().unwrap()].clone();
+                    tokio::task::spawn_blocking(move || check_bytes(&check, &data))
+                        .await
+                        .map_err(|e| e.to_string())?
+                }
+            };
+            results.push(result);
+        }
+        self.runtime
+            .record_validation(owner, id, key, task.revision, results, identities)
+    }
+    pub async fn action(
+        &self,
+        owner: &str,
+        cwd: &str,
+        args: &Value,
+        signal: dsh_tools::AbortPredicate,
+        user_control: bool,
+    ) -> Result<Value> {
+        if signal() {
+            return Err("Task action cancelled".into());
+        }
+        let action = text(args, "action")?;
+        if action == "list" {
+            return Ok(json!({"tasks":self.runtime.list(owner)?}));
+        }
+        let id = text(args, "taskId")?;
+        if action == "get" || action == "recover" {
+            let task = self.runtime.get(owner, id)?;
+            return Ok(
+                json!({"recovery":task.recovery(),"blockers":task.completion_blockers(),"task":task}),
+            );
+        }
+        let key = text(args, "idempotencyKey")?;
+        let task = match action {
+            "create" => {
+                let mut spec: ContractSpec =
+                    serde_json::from_value(args["contract"].clone()).map_err(|e| e.to_string())?;
+                spec.environment_fingerprint = self.environment(owner, cwd)?;
+                self.runtime.create(owner, id, spec)?
+            }
+            "validate" => self.validate(owner, id, key, cwd, signal).await?,
+            "complete" => {
+                let current = self.runtime.get(owner, id)?;
+                let (_, identities) = self.inputs(&current, cwd, signal).await?;
+                self.runtime
+                    .complete(owner, id, key, current.revision, &identities)?
+            }
+            "cancel" if user_control => self.runtime.cancel(owner, id, key)?,
+            "confirm" if user_control => self.runtime.confirm_manual_by_user(
+                owner,
+                id,
+                key,
+                args["revision"].as_u64().ok_or("Missing revision")?,
+                text(args, "checkId")?,
+                text(args, "inputIdentity")?,
+            )?,
+            "resume" if user_control => self.runtime.resume_by_user(
+                owner,
+                id,
+                key,
+                args["revision"].as_u64().ok_or("Missing revision")?,
+            )?,
+            "reconcile" if user_control => {
+                let current = self.runtime.get(owner, id)?;
+                let check = current
+                    .spec
+                    .acceptance_checks
+                    .iter()
+                    .find(|check| check.id == args["checkId"].as_str().unwrap_or_default())
+                    .ok_or("Unknown acceptance check")?;
+                let path = check
+                    .checker
+                    .path()
+                    .ok_or("Effect reconciliation requires a file-content checker")?;
+                let bytes = self.input(owner, cwd, path, signal).await?;
+                let observed = check_bytes(check, &bytes);
+                if observed.status != AcceptanceStatus::Passed {
+                    return Err(observed
+                        .failure_reason
+                        .unwrap_or("Effect not verified".into()));
+                }
+                self.runtime.reconcile(
+                    owner,
+                    id,
+                    text(args, "stepId")?,
+                    key,
+                    &format!("acceptance:{}:{}", check.id, observed.input_identity),
+                    &observed.input_identity,
+                )?
+            }
+            _ => return Err("Unknown action or user-only operation".into()),
+        };
+        Ok(json!({"recovery":task.recovery(),"blockers":task.completion_blockers(),"task":task}))
+    }
+}
+
+pub(crate) async fn install(
+    ctx: &Context,
+    tools: &Arc<ToolRuntime>,
+    prompt: &Arc<dsh_system_prompt::SystemPrompt>,
+    fs: Arc<dyn FileSystem>,
+    resources: Option<Arc<crate::workspace_resources::Resources>>,
+    data_root: &Path,
+) -> Result<Arc<TaskExecution>> {
+    let service = Arc::new(TaskExecution {
+        runtime: Arc::new(TaskRuntime::open(
+            &data_root.join("task-execution-v1.sqlite"),
+        )?),
+        context: ctx.clone(),
+        fs,
+        resources,
+    });
+    let for_preflight = service.clone();
+    ctx.on(
+        "tools/pre-execute",
+        Arc::new(move |_, args| {
+            let service = for_preflight.clone();
+            let execution = args
+                .first()
+                .and_then(downcast_arc::<Arc<ToolExecution>>)
+                .map(|v| v.as_ref().clone());
+            let next = args.last().and_then(downcast_arc::<cordis::NextFn>);
+            Box::pin(async move {
+                if let Some(execution) = execution
+                    && let Err(reason) = service.preflight(&execution).await
+                {
+                    return Some(cordis::arc(dsh_tools::PreToolDecision::Deny { reason }));
+                }
+                match next {
+                    Some(next) => Some(next.call().await),
+                    None => Some(cordis::arc(dsh_tools::PreToolDecision::Allow)),
+                }
+            })
+        }),
+        cordis::EventOptions::default().global(true),
+    )
+    .await;
+    let runtime = service.runtime.clone();
+    tools.guard(ctx,Arc::new(move|execution|{
+        let owner=execution.agent.as_ref()?.id().as_str().to_owned();
+        let task=match runtime.active(&owner) {Ok(Some(task))=>task,Ok(None)=>return None,Err(error)=>return Some(error)};
+        if execution.name=="update_goal"&&execution.arguments["action"]=="complete" || execution.name=="present" {
+            if task.state!=TaskState::Completed {return Some("Complete task_execution acceptance before final delivery or marking the goal complete".into());}
+        }
+        if exempt(&execution.name) {return None;}
+        let id=execution_id(execution);
+        if task.steps.iter().any(|step|step.execution_id==id) {return Some("Execution identity is already durable; inspect its status rather than replaying it".into());}
+        let input_identity=digest(&serde_json::to_vec(&execution.arguments).unwrap_or_default());
+        if task.steps.iter().any(|step|step.effect!=EffectKind::ReadOnly && matches!(step.state,StepState::Unknown|StepState::Running|StepState::Dispatched) && step.tool==execution.name && step.input_identity==input_identity) {
+            return Some("An identical operation may already have effects or still be running; inspect its execution before retrying".into());
+        }
+        let step=Step{id:id.clone(),execution_id:id.clone(),idempotency_key:id.clone(),input_identity:digest(&serde_json::to_vec(&execution.arguments).unwrap_or_default()),tool:execution.name.clone(),effect:effect(&execution.name),state:StepState::Prepared,updated_at:now(),process:None,result_identity:None,result:None,evidence_refs:vec![],failure_reason:None};
+        runtime.prepare(&owner,&task.task_id,step).and_then(|_|runtime.dispatch(&owner,&task.task_id,&id)).err()
+    }))?;
+    let runtime = service.runtime.clone();
+    ctx.on(
+        "tools/result",
+        Arc::new(move |listener_ctx, args| {
+            let ctx = listener_ctx.clone();
+            let runtime = runtime.clone();
+            let execution = args
+                .first()
+                .and_then(downcast_arc::<Arc<ToolExecution>>)
+                .map(|v| v.as_ref().clone());
+            let result = args
+                .get(1)
+                .and_then(downcast_arc::<Arc<ToolExecutionResult>>)
+                .map(|v| v.as_ref().clone());
+            Box::pin(async move {
+                if let (Some(execution), Some(result)) = (execution, result)
+                    && !exempt(&execution.name)
+                    && let Some(agent) = &execution.agent
+                {
+                    let owner = agent.id().as_str();
+                    let id = execution_id(&execution);
+                    // Include cancelled contracts: late notifications must not reactivate them.
+                    if let Ok(tasks) = runtime.list(owner)
+                        && let Some(task) = tasks
+                            .iter()
+                            .find(|t| t.steps.iter().any(|s| s.execution_id == id))
+                    {
+                        let value = result.value.clone().or_else(|| result.error.as_ref().map(|error|json!({"isError":true,"error":{"message":error.message,"code":error.info.as_ref().map(|info|info.code.clone())}})));
+                        let (success, running) = outcome_flags(&execution.name, value.as_ref(), result.is_error);
+                        let evidence = vec![format!(
+                            "session:{owner}:call:{}",
+                            execution.call_id.as_str()
+                        )];
+                        if let Err(error) = runtime.observe(
+                            owner,
+                            &task.task_id,
+                            &id,
+                            &format!("result-{}", digest(id.as_bytes())),
+                            success,
+                            running,
+                            value.clone(),
+                            evidence,
+                        ) {
+                            ctx.named_logger(Some("task-execution"))
+                                .warn(vec![cordis::arc(format!(
+                                    "Durable task result could not be recorded: {error}"
+                                ))]);
+                        }
+                        if execution.name=="skill_candidate" && execution.arguments["action"]=="read" && !result.is_error
+                            && let Some(hash)=value.as_ref().and_then(|value|value["contentHash"].as_str())
+                            && task.spec.validation_subject.as_ref().is_some_and(|subject|subject.kind=="skill"&&subject.identity==hash) {
+                            if let Err(error)=runtime.mark_subject_loaded(owner,&task.task_id,&id,hash) {
+                                ctx.named_logger(Some("task-execution")).warn(vec![cordis::arc(format!("Skill subject read not recorded: {error}"))]);
+                            }
+                        }
+                        if execution.name == "job_output" && !result.is_error && let Some(value) = value {
+                            let job = &value["job"];
+                            // A PTY send job ending proves only the observation ended.
+                            if job["kind"] != "pty-send" && matches!(job["status"].as_str(),Some("completed"|"failed"|"killed")) {
+                                for prior in &task.steps {
+                                    if matches!(prior.state,StepState::Running|StepState::Unknown)
+                                        && prior.result.as_ref().is_some_and(|result|result["jobId"]==job["id"] && job["id"].is_string()) {
+                                        let key=format!("job-{}",digest(format!("{}:{}",prior.id,job["status"]).as_bytes()));
+                                        if let Err(error)=runtime.observe(owner,&task.task_id,&prior.id,&key,job["status"]=="completed",false,Some(value.clone()),vec![format!("job:{}",job["id"].as_str().unwrap_or_default())]) {
+                                            ctx.named_logger(Some("task-execution")).warn(vec![cordis::arc(format!("Job effect state not recorded: {error}"))]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            })
+        }),
+        cordis::EventOptions::default().global(true),
+    )
+    .await;
+    let action = service.clone();
+    tools.register(ctx,ToolDefinition{
+        name:"task_execution".into(),
+        description:"Create and inspect a durable task acceptance contract for multi-step work. Requirements cannot be weakened after creation. Other tool executions are journaled automatically. validate runs real content checkers; complete rechecks input identities and blocks unfinished or unknown effects. recover only inspects and never replays. Manual confirmation, effect reconciliation, cancellation and resume require user controls. Declare content checks against final target paths: workspace_scratch promote checks candidate bytes against those requirements before version-checked delivery.".into(),
+        parameters:json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","get","validate","complete","recover"]},"taskId":{"type":"string"},"idempotencyKey":{"type":"string"},"contract":{"type":"object","properties":{"objective":{"type":"string"},"goalId":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"expectedOutputs":{"type":"array","items":{"type":"string"}},"acceptanceChecks":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"checker":{"type":"object","description":"kind=text(path,required,forbidden), json(path,assertions keyed by JSON pointer), image(path,min_width,min_height,channels), office_package(path,format docx/xlsx/pptx), tool_result(step_id exact ID or tool:NAME,assertions), manual(reason)"}},"required":["id","description","checker"]}},"validationSubject":{"type":"object","properties":{"kind":{"type":"string"},"identity":{"type":"string"},"expectedOutcome":{"type":"string"}},"required":["kind","identity","expectedOutcome"]}},"required":["objective","acceptanceChecks"]}},"required":["action"],"additionalProperties":false}),
+        output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
+        timeout_ms:Some(60_000),is_concurrency_safe:None,finalize_content:None,present_call:None,present_result:None,
+        execute:Arc::new(move|args,run|{let service=action.clone();let args=args.clone();let agent=run.agent.clone();let signal=run.signal.lock().clone();Box::pin(async move{
+            let agent=agent.ok_or_else(||ToolBodyError::plain("Task contracts require an owning session"))?;
+            let cwd=agent.session().header().cwd.as_deref().ok_or_else(||ToolBodyError::plain("Task contract requires a workspace"))?;
+            service.action(agent.id().as_str(),cwd,&args,signal,false).await.map_err(ToolBodyError::plain)
+        })}),
+    })?;
+    prompt.section(ctx,dsh_system_prompt::PromptSection{name:"task:acceptance".into(),order:108.0,complete:None,text:dsh_tools::scoped_tool_guidance(ctx,&["task_execution"],"For multi-step implementation or artifact tasks, create task_execution with the user's objective, constraints and explicit content acceptance checks before execution. Do not weaken requirements. Use its durable recovery state after a restart; unknown effects must be inspected before retrying. A successful process alone is not business acceptance. Validate all final inputs and complete the contract before present/update_goal complete. Office package checks only prove structural readability: add actual WPS rendering/layout or manual checks when layout is required. Manual confirmation and resuming cancelled tasks require direct user controls.")});
+    let runtime = service.runtime.clone();
+    prompt.context(ctx,dsh_system_prompt::PromptContext{name:"task:durable-state".into(),order:82.0,text:dsh_system_prompt::PromptText::Provider(Arc::new(move|context|{
+        let Some(owner)=context.field_str("sessionId") else {return String::new()};
+        match runtime.latest(owner) {
+            Ok(Some(task))=>{
+                let summary=json!({"taskId":task.task_id,"revision":task.revision,"state":task.state,"blockers":task.completion_blockers().into_iter().take(12).collect::<Vec<_>>(),"recovery":task.recovery().into_iter().take(8).collect::<Vec<_>>()});
+                format!("Durable task acceptance state (inspect task_execution for full facts; never replay unknown effects): {}",summary.to_string().chars().take(6000).collect::<String>())
+            }
+            Ok(None)=>String::new(),
+            Err(error)=>format!("Durable task state unavailable: {error}; do not infer completion from chat history."),
+        }
+    }))});
+    Ok(service)
+}
+
+pub(crate) fn register_route(
+    server: &Arc<dsh_host_webserver::WebServer>,
+    service: Arc<TaskExecution>,
+    api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
+    allow_remote_host: bool,
+) -> dsh_host_webserver::RouteDisposer {
+    use axum::body::{Body, to_bytes};
+    use http::{Method, Response, StatusCode, header};
+    server.register(dsh_host_webserver::WebRoute {
+        kind: dsh_host_webserver::WebRouteKind::Prefix,
+        path: "/__dsh-task-execution".into(),
+        handler: Arc::new(move |request| {
+            let service = service.clone();
+            let api = api.clone();
+            Box::pin(async move {
+                let trusted = request
+                    .headers()
+                    .get(header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|host| super::allowed_web_authority(host, allow_remote_host))
+                    && super::trusted_web_request(&request, allow_remote_host);
+                let (status, value) = if !trusted {
+                    (StatusCode::FORBIDDEN, json!({"error":"forbidden"}))
+                } else if request.method() != Method::POST {
+                    (
+                        StatusCode::METHOD_NOT_ALLOWED,
+                        json!({"error":"POST required"}),
+                    )
+                } else {
+                    let result = async {
+                        let bytes = to_bytes(Body::new(request.into_body()), 256 * 1024)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let args: Value =
+                            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                        let owner = text(&args, "sessionId")?;
+                        let lease = api.resolve_control_agent(owner).await?;
+                        let cwd = lease
+                            .agent
+                            .session()
+                            .header()
+                            .cwd
+                            .as_deref()
+                            .ok_or("Session workspace unavailable")?;
+                        let value = service
+                            .action(
+                                lease.agent.id().as_str(),
+                                cwd,
+                                &args,
+                                Arc::new(|| false),
+                                true,
+                            )
+                            .await?;
+                        if args["action"] == "cancel" && value["task"]["state"] == "cancelled" {
+                            lease.agent.cancel(dsh_agent::AgentCancelCause::User, None);
+                        }
+                        Ok::<_, String>(value)
+                    }
+                    .await;
+                    match result {
+                        Ok(value) => (StatusCode::OK, value),
+                        Err(error) => (StatusCode::BAD_REQUEST, json!({"error":error})),
+                    }
+                };
+                Ok(Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(Body::from(value.to_string()))
+                    .expect("task execution response"))
+            })
+        }),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn silent_terminal_observation_is_not_command_success() {
+        assert_eq!(
+            outcome_flags(
+                "terminal_send",
+                Some(&json!({"completion":"unknown","terminalState":"running"})),
+                false
+            ),
+            (false, false)
+        );
+        assert_eq!(
+            outcome_flags(
+                "pwsh",
+                Some(&json!({"jobId":"job1","kind":"background"})),
+                false
+            ),
+            (true, true)
+        );
+        assert_eq!(
+            outcome_flags(
+                "job_output",
+                Some(&json!({"job":{"status":"running"}})),
+                false
+            ),
+            (true, false)
+        );
+    }
+    #[test]
+    fn native_nonzero_and_cancellation_do_not_turn_into_success() {
+        assert_eq!(
+            outcome_flags("execute_native", Some(&json!({"exitCode":1})), false),
+            (false, false)
+        );
+        assert_eq!(
+            outcome_flags("pwsh", Some(&json!({"exitCode":0,"aborted":true})), false),
+            (false, false)
+        );
+        assert_eq!(
+            outcome_flags("pwsh", Some(&json!({"exitCode":0})), false),
+            (true, false)
+        );
+    }
+}

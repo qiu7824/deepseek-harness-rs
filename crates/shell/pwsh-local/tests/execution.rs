@@ -9,17 +9,35 @@ use dsh_subprocess_local::LocalSubprocessRuntime;
 async fn redirected_python_keeps_chinese_stdout_and_stderr_in_utf8() {
     let ctx = Context::root();
     let _processes = LocalSubprocessRuntime::install(&ctx);
-    let shell = LocalPwshExecutor::install(&ctx, Config {
-        pwsh_path: Some(std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe").to_string_lossy().into_owned()),
-        ..Default::default()
-    });
-    let result = shell.run(shell.resolve(ShellExecRequest::new(
-        "python -c \"import sys; print('中文标题'); sys.stderr.write('诊断信息')\""
-    ))).await.unwrap();
+    let shell = LocalPwshExecutor::install(
+        &ctx,
+        Config {
+            pwsh_path: Some(
+                std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                    .join("System32/WindowsPowerShell/v1.0/powershell.exe")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ..Default::default()
+        },
+    );
+    let result = shell
+        .run(shell.resolve(ShellExecRequest::new(
+            "python -c \"import sys; print('中文标题'); sys.stderr.write('诊断信息')\"",
+        )))
+        .await
+        .unwrap();
     assert_eq!(result.exit_code, Some(0), "{}", result.stderr.text);
-    assert!(result.stdout.text.contains("中文标题"), "{}", result.stdout.text);
-    assert!(result.stderr.text.contains("诊断信息"), "{}", result.stderr.text);
+    assert!(
+        result.stdout.text.contains("中文标题"),
+        "{}",
+        result.stdout.text
+    );
+    assert!(
+        result.stderr.text.contains("诊断信息"),
+        "{}",
+        result.stderr.text
+    );
 }
 
 #[tokio::test]
@@ -265,4 +283,131 @@ async fn missing_background_executable_reports_failure_instead_of_cancellation()
     assert_eq!(process.status(), dsh_shell::ShellProcessStatus::Completed);
     assert_eq!(process.exit_code(), Some(127));
     assert!(!process.read_output().delta.is_empty());
+}
+
+#[tokio::test]
+async fn resolved_shell_selection_is_independent_of_permission_mode() {
+    let ctx = Context::root();
+    LocalSubprocessRuntime::install(&ctx);
+    let shell = LocalPwshExecutor::install(&ctx, Config::default());
+    let mut request = ShellExecRequest::new("exit 0");
+    request.sandbox_policy = Some(SandboxExecutionPolicy {
+        mode: SandboxMode::WorkspaceWrite,
+        workspace_root: "project".into(),
+        read_only_roots: vec![],
+        session_id: None,
+    });
+    let restricted = shell.resolve(request.clone()).shell_path;
+    request.sandbox_policy.as_mut().unwrap().mode = SandboxMode::DangerFullAccess;
+    assert_eq!(restricted, shell.resolve(request.clone()).shell_path);
+    request.shell_path = Some("explicit-executable".into());
+    assert_eq!(
+        shell.resolve(request).shell_path.as_deref(),
+        Some("explicit-executable")
+    );
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn noninteractive_progress_is_disabled_and_direct_native_argv_avoids_ps5_parsing() {
+    let ctx = Context::root();
+    LocalSubprocessRuntime::install(&ctx);
+    let shell = LocalPwshExecutor::install(
+        &ctx,
+        Config {
+            pwsh_path: Some(
+                std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                    .join("System32/WindowsPowerShell/v1.0/powershell.exe")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ..Default::default()
+        },
+    );
+    let result=shell.run(shell.resolve(ShellExecRequest::new("if ($ProgressPreference -ne 'SilentlyContinue') { throw 'progress enabled' }; Write-Progress -Activity 'checking' -PercentComplete 50; Write-Output 'ready'"))).await.unwrap();
+    assert_eq!(result.exit_code, Some(0), "{}", result.stderr.text);
+    assert!(result.stdout.text.contains("ready"));
+    let mut native = ShellExecRequest::new("this text must never be shell interpreted");
+    native.shell_path = Some("missing-shell-must-not-be-started.exe".into());
+    native.native_argv = Some(vec![
+        "python".into(),
+        "-c".into(),
+        "import sys; print(repr(sys.argv[1:])); sys.stderr.write('warning only'); sys.exit(0)"
+            .into(),
+        "a\"b".into(),
+        "".into(),
+        "中文 路径".into(),
+        "$x; & literal".into(),
+    ]);
+    let result = shell.run(shell.resolve(native)).await.unwrap();
+    assert_eq!(result.exit_code, Some(0), "{}", result.stderr.text);
+    assert!(
+        result.stdout.text.contains("a\"b"),
+        "{}",
+        result.stdout.text
+    );
+    assert!(result.stdout.text.contains("''"));
+    assert!(result.stdout.text.contains("中文 路径"));
+    assert!(result.stdout.text.contains("$x; & literal"));
+    assert_eq!(result.stderr.text, "warning only");
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn overflow_spill_contains_original_head_and_native_nonzero_is_not_overwritten() {
+    let ctx = Context::root();
+    LocalSubprocessRuntime::install(&ctx);
+    let shell = LocalPwshExecutor::install(
+        &ctx,
+        Config {
+            max_output_bytes: Some(128),
+            max_spill_bytes: Some(32_000),
+            ..Default::default()
+        },
+    );
+    let mut request = ShellExecRequest::new("");
+    request.native_argv = Some(vec![
+        "python".into(),
+        "-c".into(),
+        "import sys; sys.stdout.write('ORIGINAL_HEAD'+('x'*10000)+'FINAL_TAIL'); sys.exit(7)"
+            .into(),
+    ]);
+    let result = shell.run(shell.resolve(request)).await.unwrap();
+    assert_eq!(result.exit_code, Some(7));
+    assert!(result.stdout.truncated);
+    assert_eq!(result.stdout_total_bytes, 10_023);
+    let path = result.stdout.spill_path.unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.starts_with("ORIGINAL_HEAD"));
+    assert!(raw.ends_with("FINAL_TAIL"));
+    assert_eq!(raw.len() as u64, result.stdout_total_bytes);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn direct_native_execution_works_without_a_powershell_installation() {
+    let ctx = Context::root();
+    LocalSubprocessRuntime::install(&ctx);
+    let shell = LocalPwshExecutor::install(
+        &ctx,
+        Config {
+            pwsh_path: Some("missing-powershell".into()),
+            ..Default::default()
+        },
+    );
+    let mut request = ShellExecRequest::new("must not be parsed");
+    request.native_argv = Some(vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "printf '%s\\n' \"$@\" >&2; exit 7".into(),
+        "fixture".into(),
+        "a'b".into(),
+        "".into(),
+        "中文 $x; & literal".into(),
+    ]);
+    let result = shell.run(shell.resolve(request)).await.unwrap();
+    assert_eq!(result.exit_code, Some(7));
+    assert_eq!(result.stderr.text, "a'b\n\n中文 $x; & literal\n");
+    assert!(result.stdout.text.is_empty());
 }

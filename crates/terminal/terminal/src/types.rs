@@ -268,6 +268,7 @@ pub struct TerminalSignalResult {
 /// `TerminalSessionSnapshot`).
 #[derive(Debug, Clone)]
 pub struct TerminalSessionSnapshot {
+    pub execution_context_id: Option<String>,
     /// Registry-minted identity used by every operation.
     pub session_id: TerminalSessionId,
     /// Optional owner-local display name.
@@ -284,6 +285,7 @@ pub struct TerminalSessionSnapshot {
 /// `TerminalSpawnResult`).
 #[derive(Debug, Clone)]
 pub struct TerminalSpawnResult {
+    pub execution_context_id: Option<String>,
     pub session_id: TerminalSessionId,
     pub name: Option<String>,
     pub type_: String,
@@ -298,6 +300,13 @@ pub struct TerminalSpawnResult {
 /// their state through internal `Arc`s so the `'static` futures never
 /// capture the borrow (the TS `this` closure equivalent).
 pub trait TerminalBackendSession: Send + Sync + 'static {
+    fn execution_policy(&self) -> Option<dsh_sandbox::SandboxExecutionPolicy> {
+        None
+    }
+    /// Immutable environment snapshot; changing settings does not rewrite an existing terminal.
+    fn execution_context_id(&self) -> Option<String> {
+        None
+    }
     /// Initial bounded terminal output returned from `terminal_open`.
     fn motd(&self) -> String;
     /// Top-level process id when one exists.
@@ -355,6 +364,7 @@ pub enum TerminalErrorCode {
     SessionLimit,
     SendActive,
     ServiceDisposing,
+    PermissionsRevoked,
 }
 
 impl TerminalErrorCode {
@@ -374,6 +384,7 @@ impl TerminalErrorCode {
             TerminalErrorCode::SessionLimit => "SESSION_LIMIT",
             TerminalErrorCode::SendActive => "SEND_ACTIVE",
             TerminalErrorCode::ServiceDisposing => "SERVICE_DISPOSING",
+            TerminalErrorCode::PermissionsRevoked => "TERMINAL_PERMISSIONS_REVOKED",
         }
     }
 }

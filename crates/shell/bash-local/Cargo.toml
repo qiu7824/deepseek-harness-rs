@@ -6,6 +6,7 @@ license = "MIT"
 description = "Local bash executor over the subprocess seam: command defaulting, deadlines, cause classification, and model-facing background reads — Rust port of @deepseek-ai/dsh-bash-local"
 
 [dependencies]
+dsh-sandbox = { path = "../../sandbox/sandbox" }
 cordis = { path = "../../vendor/cordis" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-settings = { path = "../../settings/settings" }

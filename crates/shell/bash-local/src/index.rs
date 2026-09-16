@@ -563,6 +563,15 @@ impl LocalBashExecutor {
         let subprocess = self.subprocess.clone();
         Box::pin(async move {
             // One deadline combines timeout and upstream cancellation;
+            dsh_shell::validate_native_argv(&argv)?;
+            if spec
+                .sandbox_policy
+                .as_ref()
+                .is_some_and(|policy| policy.mode != dsh_sandbox::SandboxMode::DangerFullAccess)
+            {
+                return Err("[SANDBOX_UNAVAILABLE] bash-local has no sandbox adapter; refusing restricted execution".into());
+            }
+            let executable = argv[0].clone();
             // disposal clears its timer.
             let upstream = DeadlineSignal::never();
             let mut deadline = deadline(Some(&upstream), spec.timeout_ms, "BASH_TIMEOUT");
@@ -613,6 +622,10 @@ impl LocalBashExecutor {
             let timed_out = timeout_of(fused.reason().as_ref(), Some("BASH_TIMEOUT")).is_some();
             let aborted = fused.is_cancelled() && !timed_out;
             Ok(ShellRunResult {
+                execution_context_id: spec.execution_context_id,
+                executable,
+                stdout_total_bytes: stdout.read_from(0).next_offset,
+                stderr_total_bytes: stderr.read_from(0).next_offset,
                 exit_code: outcome.exit_code,
                 signal: outcome.signal,
                 timed_out,
@@ -628,6 +641,16 @@ impl LocalBashExecutor {
     /// Start an explicit argv with the background lifecycle (TS
     /// `startArgv`).
     pub fn start_argv(&self, spec: ShellExecSpec, argv: Vec<String>) -> Arc<dyn ShellProcess> {
+        if let Err(error) = dsh_shell::validate_native_argv(&argv) {
+            return failed_process(error);
+        }
+        if spec
+            .sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| policy.mode != dsh_sandbox::SandboxMode::DangerFullAccess)
+        {
+            return failed_process("[SANDBOX_UNAVAILABLE] bash-local has no sandbox adapter; refusing restricted execution".into());
+        }
         // Background runs ignore timeoutMs; callers stop them through kill()
         // or spec.signal.
         let config = self.config();
@@ -679,6 +702,9 @@ impl LocalBashExecutor {
             async move {
                 match subprocess.done().await {
                     Ok(outcome) => {
+                        let _ = subprocess.wait_for_exit(None).await;
+                        *state.exit_code.lock() = outcome.exit_code;
+                        *state.signal.lock() = outcome.signal.clone();
                         // Any signal termination is killed, including a
                         // command signaling itself.
                         {
@@ -693,8 +719,6 @@ impl LocalBashExecutor {
                                 };
                             }
                         }
-                        *state.exit_code.lock() = outcome.exit_code;
-                        *state.signal.lock() = outcome.signal;
                         // The settlement hook receives the retained stderr
                         // tail (a lossy-aware read-from-0 probe that never
                         // consumes the incremental cursor).
@@ -756,6 +780,9 @@ impl ShellExecutor for LocalBashExecutor {
         }
         ShellExecSpec {
             command: request.command,
+            native_argv: request.native_argv,
+            shell_path: request.shell_path,
+            execution_context_id: request.execution_context_id,
             workdir: request.workdir.or(config.cwd).unwrap_or_else(|| {
                 std::env::current_dir()
                     .map(|cwd| cwd.to_string_lossy().into_owned())
@@ -772,12 +799,24 @@ impl ShellExecutor for LocalBashExecutor {
     }
 
     fn run(&self, spec: ShellExecSpec) -> BoxFuture<'static, Result<ShellRunResult, String>> {
-        let argv = vec!["bash".to_string(), "-c".to_string(), spec.command.clone()];
+        let argv = spec.native_argv.clone().unwrap_or_else(|| {
+            vec![
+                spec.shell_path.clone().unwrap_or_else(|| "bash".into()),
+                "-c".to_string(),
+                spec.command.clone(),
+            ]
+        });
         self.run_argv(spec, argv)
     }
 
     fn start(&self, spec: ShellExecSpec) -> Arc<dyn ShellProcess> {
-        let argv = vec!["bash".to_string(), "-c".to_string(), spec.command.clone()];
+        let argv = spec.native_argv.clone().unwrap_or_else(|| {
+            vec![
+                spec.shell_path.clone().unwrap_or_else(|| "bash".into()),
+                "-c".to_string(),
+                spec.command.clone(),
+            ]
+        });
         self.start_argv(spec, argv)
     }
 }

@@ -1,6 +1,7 @@
 //! Provider-independent progressive tool disclosure. Discovery never changes permissions.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cordis::Context;
 use dsh_llm::{ContentBlock, ToolSchema};
@@ -71,6 +72,11 @@ impl Default for DiscoveryConfig {
                 "tool_search",
                 "tool_describe",
                 "environment_probe",
+                "environment_validate",
+                "execute_native",
+                "execute_steps",
+                "execute_script",
+                "task_execution",
                 "run_code",
             ]
             .into_iter()
@@ -118,6 +124,10 @@ pub struct ToolDiscovery {
     runtime: Weak<ToolRuntime>,
     config: DiscoveryConfig,
     sessions: Mutex<VecDeque<(String, CachedSession)>>,
+    search_requests: AtomicU64,
+    describe_requests: AtomicU64,
+    search_hits: AtomicU64,
+    discovery_micros: AtomicU64,
 }
 
 pub fn install(
@@ -145,6 +155,10 @@ pub fn install(
         runtime: Arc::downgrade(runtime),
         config,
         sessions: Mutex::new(VecDeque::new()),
+        search_requests: AtomicU64::new(0),
+        describe_requests: AtomicU64::new(0),
+        search_hits: AtomicU64::new(0),
+        discovery_micros: AtomicU64::new(0),
     });
     let search = runtime.prepare_register_arc(ctx, definition(&discovery, false))?;
     let describe = runtime.prepare_register_arc(ctx, definition(&discovery, true))?;
@@ -221,7 +235,7 @@ impl ToolDiscovery {
     }
 
     fn deferred(&self, tool: &ToolSchema, count: usize) -> bool {
-        if [SEARCH, DESCRIBE, "environment_probe", "run_code"].contains(&tool.name.as_str())
+        if [SEARCH, DESCRIBE, "environment_probe", "environment_validate", "execute_native", "execute_steps", "execute_script", "task_execution", "run_code"].contains(&tool.name.as_str())
             || self.config.eager_tools.contains(&tool.name)
         {
             return false;
@@ -454,6 +468,8 @@ fn definition(discovery: &Arc<ToolDiscovery>, exact: bool) -> Arc<ToolDefinition
             let owner = owner.clone(); let args = args.clone(); let agent = exec.agent.clone();
             Box::pin(async move {
                 let owner = owner.upgrade().ok_or_else(|| ToolBodyError::plain("tool discovery unavailable"))?;
+                let started = std::time::Instant::now();
+                if exact {owner.describe_requests.fetch_add(1,Ordering::Relaxed);}else{owner.search_requests.fetch_add(1,Ordering::Relaxed);}
                 let runtime = owner.runtime.upgrade().ok_or_else(|| ToolBodyError::plain("tool runtime unavailable"))?;
                 let agent = agent.ok_or_else(|| ToolBodyError::plain("tool discovery requires an agent session"))?;
                 let visible = runtime.schemas(Some(agent.scope_key()));
@@ -464,6 +480,8 @@ fn definition(discovery: &Arc<ToolDiscovery>, exact: bool) -> Arc<ToolDefinition
                     search(&visible, query, args["limit"].as_u64().unwrap_or(5).min(16) as usize)
                 };
                 let mut value = owner.load(agent.session(), &visible, &selected, &release)?;
+                if !exact {owner.search_hits.fetch_add(selected.len() as u64,Ordering::Relaxed);}
+                owner.discovery_micros.fetch_add(started.elapsed().as_micros().min(u64::MAX as u128) as u64,Ordering::Relaxed);
                 let mut sources = BTreeMap::<String, usize>::new();
                 for tool in &visible { *sources.entry(source(&tool.name)).or_default() += 1; }
                 let source_count = sources.len();
@@ -474,6 +492,22 @@ fn definition(discovery: &Arc<ToolDiscovery>, exact: bool) -> Arc<ToolDefinition
         }),
         finalize_content: None, present_call: None, present_result: None,
     })
+}
+
+impl ToolRuntime {
+    /// Host diagnostics only; no tool names, search text or private schemas leave their scope.
+    pub fn discovery_diagnostics(&self) -> Value {
+        let service = self.discovery.lock().clone();
+        match service {
+            Some(service) => json!({"enabled":true,"effectiveConfig":service.config,
+                "cachedSessions":service.sessions.lock().len(),"sessionLimit":SESSION_LIMIT,"restoreScanLimit":SCAN_LIMIT,
+                "searchRequests":service.search_requests.load(Ordering::Relaxed),
+                "describeRequests":service.describe_requests.load(Ordering::Relaxed),
+                "searchHits":service.search_hits.load(Ordering::Relaxed),
+                "discoveryMicros":service.discovery_micros.load(Ordering::Relaxed)}),
+            None => json!({"enabled":false,"cachedSessions":0,"searchRequests":0,"describeRequests":0,"searchHits":0,"discoveryMicros":0}),
+        }
+    }
 }
 
 fn names(value: &Value) -> Vec<String> {

@@ -567,7 +567,7 @@ impl Client {
         }
         *self.last_used.lock() = Instant::now();
         let id = self.serial.fetch_add(1, Ordering::SeqCst);
-        let wire = json!({"id":id,"ownerId":request.owner_id.as_deref().unwrap_or("host"),"origin":if request.origin==ControlOrigin::Human{"human"}else{"agent"},"binding":{"deviceId":binding.device_id,"account":binding.account},"arguments":request.arguments});
+        let wire = json!({"id":id,"ownerId":request.owner_id.as_deref().unwrap_or("host"),"origin":if request.origin==ControlOrigin::Human{"human"}else{"agent"},"binding":{"deviceId":binding.device_id,"account":binding.account},"permissionTarget":request.permission_target,"arguments":request.arguments});
         let mut bytes = serde_json::to_vec(&wire)
             .map_err(|_| failure("COMPUTER_USE_INVALID_ARGUMENT", "无法编码控制命令"))?;
         if bytes.len() > 65535 {
@@ -670,7 +670,7 @@ impl DesktopAdapter {
             && !(self.backend == Backend::Native
                 && matches!(
                     request.action.as_str(),
-                    "list_windows" | "list_apps" | "launch_app"
+                    "list_windows" | "list_apps" | "launch_app" | "permission_identity"
                 ))
         {
             return Err(failure(
@@ -720,6 +720,22 @@ impl DesktopAdapter {
 }
 #[async_trait]
 impl ComputerUseAdapter for DesktopAdapter {
+    async fn permission_identity(&self,request:&AdapterRequest,signal:AbortPredicate)->Result<crate::ComputerTargetIdentity,AdapterError>{
+        let mut query=request.clone();
+        query.arguments["requestedAction"]=json!(request.action);
+        query.arguments["action"]=json!("permission_identity");
+        query.action="permission_identity".into();
+        query.permission_target=None;
+        if self.backend==Backend::Uu {
+            let binding=(self.binding)()?;
+            return Ok(crate::ComputerTargetIdentity {host_id:"local".into(),device_id:binding.device_id.clone(),application_id:"remote-device-desktop".into(),application_revision:"device-scope-v1".into(),origin:None,target_revision:format!("uu:{}",binding.device_id),label:"远程设备整个桌面（应用身份不可用）".into()});
+        }
+        let slot=self.slot(&query).await?;
+        let client=slot.client.get_or_try_init(||Client::spawn(&self.worker,&self.data_root,&slot.binding,self.backend)).await?;
+        let value=client.request(&query,&slot.binding,signal).await?;
+        let required=|name:&str|value[name].as_str().filter(|value|!value.is_empty()).map(str::to_string).ok_or_else(||failure("COMPUTER_USE_IDENTITY_UNAVAILABLE","桌面控制器未返回应用身份"));
+        Ok(crate::ComputerTargetIdentity {host_id:"local".into(),device_id:slot.binding.device_id.clone(),application_id:required("applicationId")?,application_revision:required("applicationRevision")?,origin:None,target_revision:required("targetRevision")?,label:required("label")?})
+    }
     fn adapter_id(&self) -> &'static str {
         self.backend.id()
     }

@@ -221,6 +221,13 @@ fn fit_completion_notice(snapshot: &JobSnapshot) -> String {
         snapshot.label,
         status_line(snapshot)
     );
+    let detail = if snapshot.kind == "pty-send" {
+        format!(
+            "{detail}; terminal wait ended, command completion is unknown without an observed command exit"
+        )
+    } else {
+        detail
+    };
     let action = "\nDone; job_output.";
     let complete = format!("{prefix}{detail}. Read its output with job_output.");
     let Some(max_bytes) = snapshot.output_limit_bytes else {

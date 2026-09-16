@@ -43,6 +43,9 @@ pub struct SandboxPolicyRequest {
 /// Resolve filesystem identity before lexical normalization can erase
 /// symlink-sensitive components (TS `resolveWorkspaceRoot`).
 fn resolve_workspace_root(path: &str) -> String {
+    // Execution-world URIs are resolved and enforced by their remote provider.
+    // Never make a local filesystem path out of a remote workspace identity.
+    if path.starts_with("dsh-remote://") {return path.into();}
     let canonical = canonical_path(path);
     std::path::absolute(&canonical)
         .unwrap_or_else(|_| std::path::PathBuf::from(canonical))

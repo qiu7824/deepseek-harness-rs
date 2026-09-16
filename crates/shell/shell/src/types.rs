@@ -38,7 +38,8 @@ pub struct ShellSandboxInfo {
 }
 
 impl ShellSandboxInfo {
-    /// COM activation is a desktop/registry permission failure, not evidence of a file denial.
+    /// Recognize a possible COM error in application text. This is a diagnostic
+    /// clue, never confirmation of a desktop, registry or file denial.
     pub fn com_access_denied(stderr: &str) -> bool {
         let text = stderr.to_ascii_lowercase();
         (text.contains("80070005") || text.contains("e_accessdenied"))
@@ -49,42 +50,18 @@ impl ShellSandboxInfo {
     pub fn observe(
         mode: SandboxMode,
         confined: &dsh_sandbox::ConfinedArgv,
-        exit_code: Option<i32>,
-        stderr: &str,
+        _exit_code: Option<i32>,
+        _stderr: &str,
     ) -> Self {
-        let failed = exit_code.is_some_and(|code| code != 0);
-        let lines = stderr
-            .lines()
-            .filter(|line| !line.starts_with("[sandbox-cleanup]"))
-            .map(str::to_ascii_lowercase)
-            .collect::<Vec<_>>();
-        let runner_failed = failed
-            && confined.runner_failure_rules.iter().any(|rule| {
-                rule.allowed_exit_codes
-                    .as_ref()
-                    .is_none_or(|codes| exit_code.is_some_and(|code| codes.contains(&code)))
-                    && lines.iter().any(|line| {
-                        !rule.informational_lines.as_ref().is_some_and(|items| {
-                            items.iter().any(|item| line.eq_ignore_ascii_case(item))
-                        }) && rule
-                            .fatal_signatures
-                            .iter()
-                            .any(|signature| line.contains(&signature.to_ascii_lowercase()))
-                    })
-            });
-        let denied = failed
-            && !runner_failed
-            && !Self::com_access_denied(stderr)
-            && confined.denial_signatures.iter().any(|signature| {
-                lines
-                    .iter()
-                    .any(|line| line.contains(&signature.to_ascii_lowercase()))
-            });
+        // stderr is an untrusted application stream. Even a runner prefix plus
+        // its usual exit code can be printed by the program being executed.
+        // Confirmed setup failures are returned by prepare/readiness, never
+        // inferred from this stream. Keep the enforcement fact independently.
         Self {
             mode,
-            denied,
+            denied: false,
             enforcement: Some(confined.enforcement),
-            runner_failed: Some(runner_failed),
+            runner_failed: None,
         }
     }
 }
@@ -98,7 +75,7 @@ mod tests {
         assert!(ShellSandboxInfo::com_access_denied(stderr));
     }
     #[test]
-    fn ordinary_access_denial_remains_sandbox_signal() {
+    fn ordinary_access_denial_does_not_imply_a_com_error() {
         assert!(!ShellSandboxInfo::com_access_denied(
             "Access is denied reading file"
         ));
@@ -112,6 +89,11 @@ mod tests {
 #[derive(Clone)]
 pub struct ShellExecRequest {
     pub command: String,
+    /// Native argv bypasses shell parsing. The first element is the executable.
+    pub native_argv: Option<Vec<String>>,
+    /// Immutable selected executable for this shell adapter (never a language switch).
+    pub shell_path: Option<String>,
+    pub execution_context_id: Option<String>,
     /// Working directory override (default: implementation-configured).
     pub workdir: Option<String>,
     /// Timeout override in milliseconds (implementations cap it).
@@ -136,6 +118,9 @@ impl ShellExecRequest {
     pub fn new(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
+            native_argv: None,
+            shell_path: None,
+            execution_context_id: None,
             workdir: None,
             timeout_ms: None,
             stdout_max_bytes: None,
@@ -155,6 +140,9 @@ impl ShellExecRequest {
 #[derive(Clone)]
 pub struct ShellExecSpec {
     pub command: String,
+    pub native_argv: Option<Vec<String>>,
+    pub shell_path: Option<String>,
+    pub execution_context_id: Option<String>,
     pub workdir: String,
     pub timeout_ms: u64,
     /// Resolved foreground stdout capture budget in bytes. `run()` uses it
@@ -178,6 +166,10 @@ pub struct ShellExecSpec {
 /// `ShellRunResult`).
 #[derive(Debug, Clone)]
 pub struct ShellRunResult {
+    pub execution_context_id: Option<String>,
+    pub executable: String,
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
     /// Exit code; `None` when the process died from a signal.
     pub exit_code: Option<i32>,
     /// Terminating signal (e.g. `SIGTERM`); `None` on normal exit.

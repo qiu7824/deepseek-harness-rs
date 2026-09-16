@@ -115,7 +115,9 @@ fn normalized_key(path: &Path) -> String {
     }
 }
 
-fn path_is_sensitive(path: &Path) -> bool {
+/// Shared conservative classification for host-side inspection adapters.
+/// This reports sensitivity only; it never grants read authorization.
+pub fn path_is_sensitive(path: &Path) -> bool {
     let value = normalized_key(path).to_ascii_lowercase();
     SENSITIVE_COMPONENTS.iter().any(|needle| {
         let needle = needle.to_ascii_lowercase();

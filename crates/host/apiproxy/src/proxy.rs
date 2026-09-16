@@ -1884,6 +1884,7 @@ impl ApiProxyService {
         // recorded preset's standing key, else the global layer; the Rust
         // composition reads the global layer until the preset milestone.
         let options = dsh_skill::SkillViewOptions {
+            session_id: Some(session.header().id.to_string()),
             cwd: Some(cwd.clone()),
             signal: None,
             scope: None,
@@ -3173,9 +3174,9 @@ impl ApiProxyService {
         let Some(registry) = self.workspace_registry() else {
             return err(request.rpc_id, Self::workspace_absent());
         };
-        let path = request.payload.path.clone();
+        let mut path = request.payload.path.clone();
         if let Some(kind) = request.payload.kind.as_deref() {
-            if !matches!(kind, "local" | "git" | "cloud" | "ssh") {
+            if !matches!(kind, "local" | "git" | "cloud" | "ssh" | "ssh-execution") {
                 return err(
                     request.rpc_id,
                     RpcError::WorkspaceInvalidPath(RpcErrorBody {
@@ -3194,6 +3195,12 @@ impl ApiProxyService {
                         details: crate::api::rpc::PathDetails { path },
                     }),
                 );
+            }
+            if kind=="ssh-execution" {
+                let Some(connection)=request.payload.source.as_deref().filter(|id|uuid::Uuid::parse_str(id).is_ok()) else {
+                    return err(request.rpc_id,RpcError::WorkspaceInvalidPath(RpcErrorBody{message:"a verified remote execution connection id is required".into(),details:crate::api::rpc::PathDetails{path}}));
+                };
+                path=format!("dsh-remote://{connection}/");
             }
         }
         if matches!(request.payload.kind.as_deref(), Some("git" | "cloud")) {
@@ -7577,6 +7584,15 @@ impl ApiProxyCarrier for ApiProxyService {
                 .await
             }
             "capabilities.list"
+            | "capabilities.skillRevisionList"
+            | "capabilities.skillRevisionToggle"
+            | "capabilities.skillRevisionRead"
+            | "capabilities.skillRevisionCreate"
+            | "capabilities.skillRevisionValidate"
+            | "capabilities.skillRevisionActivate"
+            | "capabilities.skillRevisionRestore"
+            | "capabilities.skillRevisionWithdraw"
+            | "capabilities.skillRevisionRemove"
             | "capabilities.skillRead"
             | "capabilities.skillSave"
             | "capabilities.skillRemove"

@@ -1660,6 +1660,7 @@ dependencies = [
  "async-trait",
  "cordis",
  "dsh-invariants",
+ "dsh-sandbox",
  "dsh-schemastery",
  "dsh-settings",
  "dsh-shell",
@@ -1982,6 +1983,7 @@ dependencies = [
  "base64 0.22.1",
  "image",
  "serde_json",
+ "sha2",
  "windows",
  "windows-sys 0.61.2",
 ]
@@ -2226,6 +2228,7 @@ dependencies = [
  "dsh-subprocess",
  "dsh-subprocess-local",
  "dsh-system-prompt",
+ "dsh-task-runtime",
  "dsh-terminal",
  "dsh-terminal-bash",
  "dsh-timeout-policy",
@@ -2807,6 +2810,33 @@ dependencies = [
  "futures",
  "parking_lot",
  "tokio",
+]
+
+[[package]]
+name = "dsh-remote-execution"
+version = "0.1.0-rc.8"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cordis",
+ "dsh-atomic-write",
+ "dsh-fs",
+ "dsh-fs-local",
+ "dsh-sandbox",
+ "dsh-sandbox-local",
+ "dsh-session",
+ "dsh-shell",
+ "dsh-subprocess",
+ "dsh-subprocess-local",
+ "dsh-workspace",
+ "futures",
+ "libc",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -3612,6 +3642,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-task-runtime"
+version = "0.1.3-alpha.22"
+dependencies = [
+ "image",
+ "parking_lot",
+ "roxmltree 0.21.1",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "dsh-terminal"
 version = "0.1.0-rc.8"
 dependencies = [
@@ -3620,10 +3665,13 @@ dependencies = [
  "dsh-agent",
  "dsh-brand",
  "dsh-invariants",
+ "dsh-sandbox",
+ "dsh-sandbox-policy",
  "dsh-scope",
  "dsh-session",
  "futures",
  "parking_lot",
+ "serde_json",
  "tokio",
 ]
 
@@ -3634,6 +3682,7 @@ dependencies = [
  "cordis",
  "dsh-sandbox",
  "dsh-sandbox-policy",
+ "dsh-shell",
  "dsh-subprocess",
  "dsh-terminal",
  "futures",
@@ -3740,6 +3789,7 @@ dependencies = [
  "futures",
  "parking_lot",
  "reqwest",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 dsh-agent-team = { path = "../../subagent/agent-team" }
+dsh-task-runtime = { path = "../../workflow/task-runtime" }
 dsh-http-proxy = { path = "../../util/http-proxy" }
 dsh-workspace-resources = { path = "../../workspace/workspace-resources" }
 dsh-spill = { path = "../../spill/spill" }

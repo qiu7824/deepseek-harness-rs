@@ -8,6 +8,8 @@ mod command;
 mod control;
 mod desktop;
 mod routing;
+mod permissions;
+pub use permissions::{ComputerTargetIdentity,ComputerPermissionRequest,ComputerPermissionLease,ComputerPermissionService,COMPUTER_PERMISSION_SCOPES,action_scopes};
 pub use routing::TargetRouter;
 mod js;
 pub use js::install_js;
@@ -329,6 +331,8 @@ fn validate_adapter_url(adapter: &str, arguments: &Value) -> Result<(), AdapterE
 fn supported_actions(adapter: &str) -> Option<&'static [&'static str]> {
     match adapter {
         "native-browser" => Some(&[
+            "clipboard_read",
+            "clipboard_write",
             "list_tabs",
             "new_tab",
             "select_tab",
@@ -355,6 +359,8 @@ fn supported_actions(adapter: &str) -> Option<&'static [&'static str]> {
             "resume_agent",
         ]),
         "native-desktop" => Some(&[
+            "clipboard_read",
+            "clipboard_write",
             "list_apps",
             "launch_app",
             "ax_state",
@@ -537,7 +543,9 @@ pub fn install_adapter(
         .get_typed::<Arc<dyn AttachmentStore>>("attachments", false)
         .map(|slot| slot.as_ref().clone());
 
-    let listener: Arc<Listener> = Arc::new(|_ctx, args| {
+    let permission_service=ctx.get_typed::<Arc<dyn ComputerPermissionService>>("computerPermissions",false).map(|slot|slot.as_ref().clone());
+    let scoped_permissions=permission_service.is_some();
+    let listener: Arc<Listener> = Arc::new(move |_ctx, args| {
         let execution = args
             .first()
             .and_then(|value| downcast_arc::<Arc<ToolExecution>>(value))
@@ -545,6 +553,7 @@ pub fn install_adapter(
         let next = args.last().and_then(|value| downcast_arc::<NextFn>(value));
         Box::pin(async move {
             if let Some(execution) = execution
+                && !scoped_permissions
                 && execution.name == "computer_use"
                 && action_requires_approval(
                     execution
@@ -572,6 +581,7 @@ pub fn install_adapter(
         EventOptions::default().global(true),
     ));
 
+    let adapter=match permission_service {Some(service)=>Arc::new(permissions::PermissionedAdapter::new(adapter,service)) as Arc<dyn ComputerUseAdapter>,None=>adapter};
     let adapter: Arc<dyn ComputerUseAdapter> = Arc::new(control::ControlledAdapter::new(adapter));
     let runtime = Arc::new(ComputerUseRuntime {
         ctx: ctx.clone(),

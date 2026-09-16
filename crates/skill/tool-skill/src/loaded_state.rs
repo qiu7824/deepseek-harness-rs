@@ -293,6 +293,7 @@ pub(super) async fn install(
                 .get("skill", Some(payload.agent.scope_key()))
                 .is_some_and(|registered| Arc::ptr_eq(&registered, &definition));
             let lookup = SkillViewOptions {
+                session_id: Some(payload.agent.session().header().id.to_string()),
                 cwd: payload.agent.session().header().cwd.clone(),
                 scope: Some(payload.agent.scope_key().clone()),
                 signal: None,

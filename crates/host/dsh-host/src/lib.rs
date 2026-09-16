@@ -29,6 +29,10 @@ mod computer_use_stream;
 mod context_stats_test;
 mod deepseek_settings;
 mod environment_capabilities;
+mod discovery_settings;
+mod execution_profiles;
+mod task_execution;
+mod skill_validation;
 mod devin_auth;
 mod feedback_delivery;
 mod free_catalog;
@@ -1693,6 +1697,9 @@ pub struct HostSpine {
     provider_auth_route: RouteDisposer,
     free_catalog_route: RouteDisposer,
     runtime_route: RouteDisposer,
+    environment_route: RouteDisposer,
+    task_execution_route: RouteDisposer,
+    discovery_settings_route: RouteDisposer,
     pub runtime_paths: Arc<runtime_paths::RuntimePaths>,
     data_root: std::path::PathBuf,
     owns_data_root: bool,
@@ -1767,6 +1774,9 @@ impl HostSpine {
                 (self.provider_auth_route)();
                 (self.free_catalog_route)();
                 (self.runtime_route)();
+                (self.environment_route)();
+                (self.task_execution_route)();
+                (self.discovery_settings_route)();
                 (self.api_route)();
 
                 let companion_fiber = self.companion_fiber.lock().clone();
@@ -3242,7 +3252,9 @@ fn compose_host_in_fiber(
     .map_err(|error| format!("tools: {error}"))?;
     dsh_tools::install_security_policy(ctx, security_policy_state);
     dsh_tools::discovery::install(ctx, &tools, environment_capabilities::discovery_config(&data_root)?)?;
-    environment_capabilities::install(ctx, &tools, &system_prompt, subprocess.clone(), runtime_paths.clone())?;
+    let environment_capabilities = environment_capabilities::install(ctx, &tools, &system_prompt, subprocess.clone(), runtime_paths.clone())?;
+    let execution_profiles = execution_profiles::ExecutionProfiles::install(ctx, subprocess.clone(), runtime_paths.clone(), environment_capabilities);
+    execution_profiles.install_tools(ctx, &tools, &system_prompt)?;
     let task_models = task_models::TaskModels::install(ctx, settings.clone(), llm.clone())?;
     let _image_generation =
         image_generation::ImageGeneration::install(ctx, task_models.clone(), account_auth.clone())?;
@@ -3272,7 +3284,7 @@ fn compose_host_in_fiber(
     let _skills = dsh_skill::SkillRegistry::install(ctx, Default::default())
         .map_err(|error| format!("skills: {error}"))?;
     let _skill_badge = dsh_skill_badge::apply(ctx);
-    futures::executor::block_on(dsh_host_apiproxy::capabilities::CapabilityManager::install(
+    let capability_manager = futures::executor::block_on(dsh_host_apiproxy::capabilities::CapabilityManager::install(
         ctx,
         data_root.clone(),
         std::env::current_dir()
@@ -3281,6 +3293,10 @@ fn compose_host_in_fiber(
             .into_owned(),
     ))
     .map_err(|error| format!("capabilities: {error}"))?;
+    let task_execution = futures::executor::block_on(task_execution::install(
+        ctx, &tools, &system_prompt, _fs.clone(), Some(resources.clone()), &data_root,
+    ))?;
+    skill_validation::install(ctx, capability_manager, task_execution.clone(), execution_profiles.clone());
     {
         let memory_root = data_root.join("memory");
         dsh_tool_memory_local::install(ctx, memory_root.clone())
@@ -4277,6 +4293,9 @@ fn compose_host_in_fiber(
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
     let allow_remote_host = bind_host == BindHost::AllInterfaces;
+    let discovery_settings_route = discovery_settings::register(&web_server, &data_root, tools.clone(), allow_remote_host);
+    let environment_route = execution_profiles.register(&web_server, allow_remote_host);
+    let task_execution_route = task_execution::register_route(&web_server, task_execution, api_proxy.clone(), allow_remote_host);
     let task_models_route = task_models.register_http(&web_server);
     let productivity_route = productivity::install(
         ctx,
@@ -4371,6 +4390,9 @@ fn compose_host_in_fiber(
         provider_auth_route,
         free_catalog_route,
         runtime_route,
+        environment_route,
+        task_execution_route,
+        discovery_settings_route,
         runtime_paths,
         data_root,
         owns_data_root,

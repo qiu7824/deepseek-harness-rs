@@ -169,6 +169,8 @@ pub struct SkillRegistration {
 /// Caller context used for cwd-sensitive and abortable provider work.
 #[derive(Clone, Default)]
 pub struct SkillLookupOptions {
+    /// Session-specific execution environment selector; never an authorization grant.
+    pub session_id: Option<String>,
     /// Workspace selector for the current lookup.
     pub cwd: Option<String>,
     /// Abort discovery or loading work for the current caller.
@@ -178,6 +180,8 @@ pub struct SkillLookupOptions {
 /// Registry read options: provider lookup context plus the viewing scope.
 #[derive(Clone, Default)]
 pub struct SkillViewOptions {
+    /// Session-specific execution environment selector.
+    pub session_id: Option<String>,
     /// Workspace selector for the current lookup.
     pub cwd: Option<String>,
     /// Abort discovery or loading work for the current caller.
@@ -190,6 +194,7 @@ pub struct SkillViewOptions {
 impl SkillViewOptions {
     fn lookup(&self) -> SkillLookupOptions {
         SkillLookupOptions {
+            session_id: self.session_id.clone(),
             cwd: self.cwd.clone(),
             signal: self.signal.clone(),
         }
@@ -927,6 +932,7 @@ impl SkillRegistry {
             .collect();
         serde_json::to_string(&serde_json::json!({
             "cwd": options.cwd,
+            "sessionId": options.session_id,
             "scopes": ids,
             "revision": revision,
         }))

@@ -14,6 +14,8 @@ pub enum ControlOrigin {
 
 #[derive(Clone)]
 pub struct AdapterRequest {
+    /// Adapter-observed authorization snapshot; cannot be populated from JSON.
+    pub permission_target:Option<crate::ComputerTargetIdentity>,
     pub action: String,
     pub arguments: Value,
     /// Host-owned isolation scope. Model arguments cannot set this value.
@@ -39,9 +41,16 @@ impl AdapterRequest {
                 )
             })?
             .to_string();
+        let mut arguments = arguments.clone();
+        if let Some(object) = arguments.as_object_mut() {
+            for key in ["permissionTarget", "permission_target", "requestedAction"] {
+                object.remove(key);
+            }
+        }
         Ok(Self {
+            permission_target:None,
             action,
-            arguments: arguments.clone(),
+            arguments,
             owner_id: None,
             origin: ControlOrigin::Agent,
             workspace_root: None,
@@ -115,6 +124,10 @@ impl std::error::Error for AdapterError {}
 #[async_trait]
 pub trait ComputerUseAdapter: Send + Sync + 'static {
     fn adapter_id(&self) -> &'static str;
+
+    async fn permission_identity(&self,_request:&AdapterRequest,_signal:AbortPredicate)->Result<crate::ComputerTargetIdentity,AdapterError>{
+        Err(AdapterError::new("COMPUTER_USE_IDENTITY_UNAVAILABLE","This adapter cannot attest an application/device identity; application permissions cannot authorize this action"))
+    }
 
     fn adapter_id_for(&self, _arguments: &Value) -> Result<&'static str, AdapterError> {
         Ok(self.adapter_id())

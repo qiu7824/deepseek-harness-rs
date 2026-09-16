@@ -129,6 +129,7 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                 // layered registry exactly as this agent's composition sees
                 // it.
                 let lookup = SkillViewOptions {
+                    session_id: agent.as_ref().map(|agent|agent.session().header().id.to_string()),
                     cwd: agent
                         .as_ref()
                         .and_then(|agent| agent.session().header().cwd.clone()),
@@ -225,6 +226,7 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                 // The payload carries no signal in the port (dsh-agent
                 // deviation); lookups run without an abort predicate.
                 let lookup = SkillViewOptions {
+                    session_id: Some(payload.agent.session().header().id.to_string()),
                     cwd: payload.agent.session().header().cwd.clone(),
                     signal: None,
                     scope: Some(payload.agent.scope_key().clone()),
@@ -314,6 +316,7 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                     .get("skill", Some(payload.agent.scope_key()))
                     .is_some_and(|registered| Arc::ptr_eq(&registered, &definition));
                 let lookup = SkillViewOptions {
+                    session_id: Some(payload.agent.session().header().id.to_string()),
                     cwd: payload.agent.session().header().cwd.clone(),
                     signal: None,
                     scope: Some(payload.agent.scope_key().clone()),

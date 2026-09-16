@@ -5,6 +5,8 @@ mod capture;
 #[cfg(windows)]
 mod identity;
 #[cfg(windows)]
+mod clipboard;
+#[cfg(windows)]
 mod input;
 #[cfg(windows)]
 mod native;
@@ -169,6 +171,12 @@ fn main() {
         let result = (|| -> Result<Value, String> {
             if command.cancelled.load(Ordering::SeqCst) {
                 return Err("COMPUTER_USE_ABORTED".into());
+            }
+            if action=="permission_identity" {
+                return native::permission_identity(args,engine.as_ref());
+            }
+            if !human && let Some(expected)=request.get("permissionTarget").filter(|value|value.is_object()) {
+                native::validate_permission_identity(args,engine.as_ref(),expected)?;
             }
             if matches!(action, "list_windows" | "list_apps" | "launch_app") {
                 let requested = request["ownerId"]

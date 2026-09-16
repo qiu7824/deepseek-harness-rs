@@ -42,7 +42,11 @@ impl JobHooks for TerminalSendJob {
                 } else {
                     JobOutcomeStatus::Completed
                 },
-                detail: Some(format!("wait: {}", result.wait_reason.as_str())),
+                detail: Some(format!(
+                    "observation ended; wait: {}; command completion: unknown; terminal: {}",
+                    result.wait_reason.as_str(),
+                    status_json(&result.session_status)
+                )),
                 output: None,
             }
         })
@@ -97,6 +101,7 @@ impl ToolTerminalService {
                         "additionalProperties": false,
                         "properties": {
                             "sessionId": { "type": "string" },
+                            "executionContextId": { "oneOf": [{"type":"string"},{"type":"null"}] },
                             "name": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
                             "type": { "type": "string" },
                             "pid": { "oneOf": [{ "type": "integer" }, { "type": "null" }] },
@@ -148,6 +153,7 @@ impl ToolTerminalService {
                             .map_err(terminal_failure)?;
                         Ok(serde_json::json!({
                             "sessionId": created.session_id.as_str(),
+                            "executionContextId": created.execution_context_id,
                             "name": created.name,
                             "type": created.type_,
                             "pid": created.pid,
@@ -168,7 +174,7 @@ impl ToolTerminalService {
             ctx,
             ToolDefinition {
                 name: "terminal_send".to_string(),
-                description: "Send text to a persistent terminal and wait for bounded readiness."
+                description: "Send text to a persistent terminal and wait for bounded observation. Quiet output or readiness is not command completion. Inspect waitReason and terminalState; without a command-specific exit frame completion remains unknown. Use execute_native/execute_steps when a checked exit status is required."
                     .to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
@@ -191,6 +197,9 @@ impl ToolTerminalService {
                             "viewport": { "type": "string" },
                             "waitReason": { "type": "string" },
                             "sessionStatus": { "type": "object" },
+                            "terminalState": { "type": "string" },
+                            "observedExitCode": { "oneOf": [{"type":"integer"},{"type":"null"}] },
+                            "completion": { "type": "string" },
                             "truncated": { "type": "boolean" }
                         },
                         "required": ["kind"]
@@ -202,7 +211,7 @@ impl ToolTerminalService {
                                 value["jobId"].as_str().unwrap_or_default()
                             )
                         } else {
-                            value["viewport"].as_str().unwrap_or_default().to_string()
+                            render_send_result(value)
                         };
                         Ok(vec![ContentBlock::Text { text }])
                     }),
@@ -272,6 +281,7 @@ impl ToolTerminalService {
                                 "jobId": job_id.as_str(),
                             }));
                         }
+                        let cancelled = signal.clone();
                         let operation = terminals
                             .start_send(
                                 &owner,
@@ -289,6 +299,9 @@ impl ToolTerminalService {
                             "viewport": result.viewport,
                             "waitReason": result.wait_reason.as_str(),
                             "sessionStatus": status_json(&result.session_status),
+                            "terminalState": if matches!(result.session_status, TerminalSessionStatus::Running) { "running" } else { "exited" },
+                            "observedExitCode": match result.session_status { TerminalSessionStatus::Exited {exit_code,..} => exit_code, _ => None },
+                            "completion": if cancelled() { "cancelled" } else { "unknown" },
                             "truncated": result.truncated,
                         }))
                     })
@@ -400,7 +413,7 @@ impl ToolTerminalService {
                     }),
                     render: Arc::new(|_args, value| {
                         Ok(vec![ContentBlock::Text {
-                            text: value["text"].as_str().unwrap_or_default().to_string(),
+                            text: format!("{}\n[retained lines: {}..{} of {}; truncated: {}; this read does not establish command completion]", value["text"].as_str().unwrap_or_default(), value["lineBegin"],value["lineEnd"],value["totalLines"],value["truncated"]),
                         }])
                     }),
                     presentation_meta: None,
@@ -543,6 +556,7 @@ impl ToolTerminalService {
                                 .map(|session| {
                                     serde_json::json!({
                                         "sessionId": session.session_id.as_str(),
+                                        "executionContextId": session.execution_context_id,
                                         "name": session.name,
                                         "type": session.type_,
                                         "pid": session.pid,
@@ -570,6 +584,32 @@ fn parse_signal(value: &str) -> Result<TerminalSignal, ToolBodyError> {
         "SIGTSTP" => Ok(TerminalSignal::SigTstp),
         "SIGHUP" => Ok(TerminalSignal::SigHup),
         _ => Err(ToolBodyError::plain("unsupported terminal signal")),
+    }
+}
+
+fn render_send_result(value: &serde_json::Value) -> String {
+    format!(
+        "{}\n[waitReason: {}; terminalState: {}; observed session exit: {}; command completion: {}; truncated: {}]",
+        value["viewport"].as_str().unwrap_or_default(),
+        value["waitReason"].as_str().unwrap_or("unknown"),
+        value["terminalState"].as_str().unwrap_or("unknown"),
+        value["observedExitCode"],
+        value["completion"].as_str().unwrap_or("unknown"),
+        value["truncated"]
+    )
+}
+
+#[cfg(test)]
+mod result_tests {
+    #[test]
+    fn terminal_silence_and_echoed_markers_never_claim_command_success() {
+        let rendered = super::render_send_result(&serde_json::json!({
+            "viewport":"echo COMMAND_COMPLETE exit=0", "waitReason":"inferred_idle",
+            "terminalState":"running", "observedExitCode":null, "completion":"unknown", "truncated":false
+        }));
+        assert!(rendered.contains("command completion: unknown"));
+        assert!(rendered.contains("waitReason: inferred_idle"));
+        assert!(rendered.contains("terminalState: running"));
     }
 }
 

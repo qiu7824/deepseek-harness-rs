@@ -39,6 +39,7 @@ pub use schema::{
 pub use security_policy::{
     CredentialShellPolicy, OutsideWritePolicy, RiskToolPolicy, SecurityPolicyConfig,
     SecurityPolicyState, SensitiveReadPolicy,
+    path_is_sensitive,
 };
 pub use types::{CodeDispatchEventData, CodeDispatchStartEventData};
 

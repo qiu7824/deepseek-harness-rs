@@ -34,8 +34,47 @@ pub(crate) struct Resources {
     stores: parking_lot::Mutex<BTreeMap<String, Arc<Store>>>,
     agents: Arc<dsh_agent::AgentRegistry>,
     size_jobs: Arc<parking_lot::Mutex<BTreeMap<String, (u64, bool)>>>,
+    /// Runtime-token-bound acceptance receipts; never accepted as model arguments.
+    validated_promotions: parking_lot::Mutex<BTreeMap<u64, (String, String, String)>>,
 }
 impl Resources {
+    pub(crate) fn seal_promotion(
+        &self,
+        token: u64,
+        owner: &str,
+        arguments: &Value,
+        sha256: String,
+    ) {
+        let mut receipts = self.validated_promotions.lock();
+        if receipts.len() >= 256
+            && let Some(oldest) = receipts.keys().next().copied()
+        {
+            receipts.remove(&oldest);
+        }
+        receipts.insert(
+            token,
+            (
+                owner.into(),
+                digest(arguments.to_string().as_bytes()),
+                sha256,
+            ),
+        );
+    }
+    fn take_promotion(
+        &self,
+        token: u64,
+        owner: &str,
+        arguments: &Value,
+    ) -> Result<Option<String>, String> {
+        let Some((expected_owner, input, sha256)) = self.validated_promotions.lock().remove(&token)
+        else {
+            return Ok(None);
+        };
+        if expected_owner != owner || input != digest(arguments.to_string().as_bytes()) {
+            return Err("验收凭据与当前执行身份不匹配".into());
+        }
+        Ok(Some(sha256))
+    }
     pub fn policy(&self) -> Policy {
         self.settings
             .get(&settings_namespace("workspace-scratch").unwrap())
@@ -332,6 +371,7 @@ impl Resources {
             stores: parking_lot::Mutex::new(BTreeMap::new()),
             agents,
             size_jobs: Default::default(),
+            validated_promotions: Default::default(),
         });
         for root in known {
             if Path::new(&root).join(".dsh-resources").is_file() {
@@ -412,9 +452,10 @@ impl Resources {
             output:dsh_tools::ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
             timeout_ms:Some(30000),is_concurrency_safe:None,finalize_content:None,present_call:None,present_result:None,
             execute:Arc::new(move |args,run| {
-                let args=args.clone();let manager=manager.clone();let signal=run.signal.lock().clone();let owner=run.agent.as_ref().map(|agent|(agent.id().as_str().to_string(),agent.session().header().cwd.clone().unwrap_or_default()));
+                let args=args.clone();let manager=manager.clone();let signal=run.signal.lock().clone();let token=run.token;let owner=run.agent.as_ref().map(|agent|(agent.id().as_str().to_string(),agent.session().header().cwd.clone().unwrap_or_default()));
                 Box::pin(async move {let (owner,project)=owner.ok_or_else(||dsh_tools::ToolBodyError::plain("临时资源必须归属于任务"))?;
-                    tokio::task::spawn_blocking(move ||manager.tool_action(&owner,&project,&args,signal)).await.map_err(|e|dsh_tools::ToolBodyError::plain(e.to_string()))?.map_err(dsh_tools::ToolBodyError::plain)
+                    let validated_source=manager.take_promotion(token,&owner,&args).map_err(dsh_tools::ToolBodyError::plain)?;
+                    tokio::task::spawn_blocking(move ||manager.tool_action(&owner,&project,&args,validated_source.as_deref(),signal)).await.map_err(|e|dsh_tools::ToolBodyError::plain(e.to_string()))?.map_err(dsh_tools::ToolBodyError::plain)
                 })
             }),
         }).map(|_|())?;
@@ -437,6 +478,7 @@ impl Resources {
         owner: &str,
         project: &str,
         args: &Value,
+        validated_source: Option<&str>,
         signal: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Value, String> {
         if args
@@ -472,7 +514,7 @@ impl Resources {
             "promote" => {
                 let id = string("id")?;
                 let store = self.assert_owner(owner, id)?;
-                super::workspace_copy::promote(
+                super::workspace_copy::promote_validated(
                     &store,
                     id,
                     string("path")?,
@@ -480,6 +522,7 @@ impl Resources {
                     string("target")?,
                     args.get("expectedSha256")
                         .ok_or("交付前请 inspect 目标并提供 expectedSha256")?,
+                    validated_source,
                     signal,
                 )
             }

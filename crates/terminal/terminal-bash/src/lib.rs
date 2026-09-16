@@ -87,6 +87,7 @@ pub struct ShellTerminalBackend {
     sandbox_policy: Arc<SandboxPolicyService>,
     sandbox: Option<Arc<dyn SandboxProvider>>,
     config: Config,
+    profiles: Option<Arc<dyn dsh_shell::ExecutionProfileResolver>>,
 }
 
 impl ShellTerminalBackend {
@@ -112,6 +113,12 @@ impl ShellTerminalBackend {
             sandbox_policy,
             sandbox,
             config,
+            profiles: ctx
+                .get_typed::<Arc<dyn dsh_shell::ExecutionProfileResolver>>(
+                    "executionProfiles",
+                    false,
+                )
+                .map(|slot| slot.as_ref().clone()),
         });
         terminals
             .register_backend(backend.clone())
@@ -140,9 +147,10 @@ fn validate(config: &Config) -> Result<(), String> {
 fn terminal_argv(
     backend: &ShellTerminalBackend,
     policy: &dsh_sandbox::SandboxExecutionPolicy,
+    config: &Config,
 ) -> Result<(Vec<String>, Option<dsh_sandbox::SandboxStartup>), String> {
-    let mut argv = vec![backend.config.shell_path.clone()];
-    argv.extend(backend.config.shell_args.clone());
+    let mut argv = vec![config.shell_path.clone()];
+    argv.extend(config.shell_args.clone());
     let mode = match policy.mode {
         SandboxMode::DangerFullAccess => return Ok((argv, None)),
         SandboxMode::ReadOnly => ConfinedSandboxMode::ReadOnly,
@@ -197,14 +205,71 @@ impl TerminalBackend for ShellTerminalBackend {
             session: Some(Arc::new(spec.owner.session().clone())),
             mode: None,
         });
-        let argv = terminal_argv(self, &policy);
+        let mut config = self.config.clone();
+        let mut selected_kind = None;
+        let profile = self
+            .profiles
+            .as_ref()
+            .map(|profiles| {
+                profiles.resolve(
+                    Some(spec.owner.session().id().as_str()),
+                    spec.cwd.as_deref().unwrap_or(&policy.workspace_root),
+                )
+            })
+            .transpose();
+        let environment = profile.and_then(|profile| {
+            if let Some(profile) = profile {
+                selected_kind = Some(profile.shell_kind.clone());
+                config.shell_path = profile
+                    .shell_path
+                    .ok_or("Selected terminal shell has no resolved executable")?;
+                config.shell_args = match profile.shell_kind.as_str() {
+                    "powershell" | "pwsh" => vec![
+                        "-NoLogo".into(),
+                        "-NoProfile".into(),
+                        "-NoExit".into(),
+                        "-Command".into(),
+                        "$ProgressPreference='SilentlyContinue'".into(),
+                    ],
+                    "bash" => vec!["--noprofile".into(), "--norc".into(), "-i".into()],
+                    "zsh" => vec!["-f".into(), "-i".into()],
+                    other => return Err(format!("Unsupported selected terminal shell: {other}")),
+                };
+                Ok(Some(profile.context_id))
+            } else {
+                Ok(None)
+            }
+        });
+        let argv = match &environment {
+            Ok(_) => terminal_argv(self, &policy, &config),
+            Err(error) => Err(error.clone()),
+        };
         let sandbox = self.sandbox.clone();
-        let config = self.config.clone();
+        let profiles = self.profiles.clone();
         Box::pin(async move {
             if spec.signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(TerminalBackendSpawnError::spawn("terminal spawn aborted"));
             }
+            let context_id = environment.map_err(TerminalBackendSpawnError::spawn)?;
             let (argv, startup) = argv.map_err(TerminalBackendSpawnError::spawn)?;
+            if let Some(profiles) = profiles {
+                profiles
+                    .validate(dsh_shell::ExecutionValidationRequest {
+                        session_id: Some(spec.owner.session().id().as_str().into()),
+                        workdir: spec
+                            .cwd
+                            .clone()
+                            .unwrap_or_else(|| policy.workspace_root.clone()),
+                        capability: "shell".into(),
+                        executable: Some(config.shell_path.clone()),
+                        shell_kind: selected_kind,
+                        execution_context_id: context_id.clone(),
+                        sandbox_policy: Some(policy.clone()),
+                        signal: spec.signal.clone(),
+                    })
+                    .await
+                    .map_err(TerminalBackendSpawnError::spawn)?;
+            }
             if let Some(sandbox) = sandbox {
                 sandbox.prepare(&policy).await.map_err(|message| {
                     let code = if message.starts_with("[SANDBOX_SETUP_TIMEOUT]") {
@@ -218,7 +283,7 @@ impl TerminalBackend for ShellTerminalBackend {
             if spec.signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(TerminalBackendSpawnError::spawn("terminal spawn aborted"));
             }
-            let cwd = terminal_cwd(spec.cwd.unwrap_or(policy.workspace_root));
+            let cwd = terminal_cwd(spec.cwd.unwrap_or_else(|| policy.workspace_root.clone()));
             let cancellation = spec.signal.clone();
             let terminal = subprocess
                 .spawn_terminal(SubprocessTerminalSpawnSpec {
@@ -246,7 +311,10 @@ impl TerminalBackend for ShellTerminalBackend {
                 })
                 .await
                 .map_err(TerminalBackendSpawnError::spawn)?;
-            let session = Arc::new(LocalPtySession::new(terminal, config));
+            let mut session = LocalPtySession::new(terminal, config);
+            session.execution_context_id = context_id;
+            session.execution_policy = Some(policy);
+            let session = Arc::new(session);
             if let Err(mut error) = session.initialize(startup, cancellation).await {
                 return match session.close("PTY startup failed").await {
                     Ok(()) => Err(error),
@@ -373,6 +441,8 @@ impl TerminalSendOperation for LocalSendOperation {
 }
 
 struct LocalPtySession {
+    execution_context_id: Option<String>,
+    execution_policy: Option<dsh_sandbox::SandboxExecutionPolicy>,
     terminal: Arc<dyn SubprocessTerminalHandle>,
     status: Arc<Mutex<TerminalSessionStatus>>,
     output: Arc<Mutex<BoundedText>>,
@@ -441,6 +511,8 @@ impl LocalPtySession {
             notify_exit.notify_waiters();
         });
         Self {
+            execution_context_id: None,
+            execution_policy: None,
             terminal,
             status,
             output,
@@ -612,6 +684,12 @@ fn visible_terminal_text(value: &str) -> String {
 }
 
 impl TerminalBackendSession for LocalPtySession {
+    fn execution_policy(&self) -> Option<dsh_sandbox::SandboxExecutionPolicy> {
+        self.execution_policy.clone()
+    }
+    fn execution_context_id(&self) -> Option<String> {
+        self.execution_context_id.clone()
+    }
     fn motd(&self) -> String {
         self.output.lock().snapshot().0
     }

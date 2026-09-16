@@ -6,6 +6,9 @@ license = "MIT"
 description = "Persistent PTY session seam: owner-scoped ids, backend registry, interactive sends, reads, signals, and awaited cleanup — Rust port of @deepseek-ai/dsh-terminal"
 
 [dependencies]
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
+serde_json = { workspace = true }
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
 dsh-brand = { path = "../../util/brand" }

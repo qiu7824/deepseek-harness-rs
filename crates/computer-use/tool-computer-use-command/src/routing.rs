@@ -46,6 +46,9 @@ impl TargetRouter {
 }
 #[async_trait]
 impl ComputerUseAdapter for TargetRouter {
+    async fn permission_identity(&self,request:&AdapterRequest,signal:AbortPredicate)->Result<crate::ComputerTargetIdentity,AdapterError>{
+        self.selected(&request.arguments)?.permission_identity(request,signal).await
+    }
     fn adapter_id(&self) -> &'static str {
         self.local.adapter_id()
     }

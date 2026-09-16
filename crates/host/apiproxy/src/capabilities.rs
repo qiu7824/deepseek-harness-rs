@@ -93,6 +93,7 @@ pub struct CapabilityManager {
     cwd: String,
     skills: Arc<SkillRegistry>,
     state: tokio::sync::Mutex<State>,
+    lifecycle: Arc<crate::skill_lifecycle::SkillLifecycle>,
 }
 impl cordis::Service for CapabilityManager {
     fn service_name(&self) -> &'static str {
@@ -135,11 +136,19 @@ impl CapabilityManager {
             },
         )
         .await?;
+        let lifecycle = crate::skill_lifecycle::SkillLifecycle::open(&root).await?;
+        crate::skill_lifecycle::install_candidate_tool(ctx, lifecycle.clone())?;
+        let lifecycle_for_provider = lifecycle.clone();
+        let lifecycle_provider = skills.register_provider(ctx, Arc::new(move |control| {
+            lifecycle_for_provider.set_invalidator(control.invalidate.clone());
+            lifecycle_for_provider.clone()
+        }));
         let manager = Arc::new(Self {
             ctx: ctx.clone(),
             root,
             cwd,
             skills,
+            lifecycle,
             state: tokio::sync::Mutex::new(State {
                 document,
                 connections: BTreeMap::new(),
@@ -154,6 +163,7 @@ impl CapabilityManager {
                 Some(cordis::make_disposer(move || {
                     let weak = weak.clone();
                     let provider = provider.clone();
+                    let lifecycle_provider = lifecycle_provider.clone();
                     Box::pin(async move {
                         if let Some(manager) = weak.upgrade() {
                             let connections =
@@ -163,6 +173,7 @@ impl CapabilityManager {
                             }
                         }
                         provider().await;
+                        lifecycle_provider().await;
                     })
                 }))
             }),
@@ -181,6 +192,9 @@ impl CapabilityManager {
     }
 
     pub async fn invoke(&self, method: &str, payload: Value) -> Result<Value, String> {
+        if method.starts_with("capabilities.skillRevision") {
+            return self.revision_invoke(method, payload).await;
+        }
         if method == "capabilities.list" {
             return self.list(payload.get("cwd").and_then(Value::as_str)).await;
         }
@@ -342,6 +356,64 @@ impl CapabilityManager {
                 Ok(json!({"revision":state.document.revision,"server":server_view(&server,&state)}))
             }
             _ => Err("unknown capabilities method".into()),
+        }
+    }
+
+    pub fn skill_lifecycle(&self) -> Arc<crate::skill_lifecycle::SkillLifecycle> {
+        self.lifecycle.clone()
+    }
+
+    async fn revision_invoke(&self, method: &str, payload: Value) -> Result<Value, String> {
+        if method == "capabilities.skillRevisionList" { return Ok(self.lifecycle.list().await); }
+        if method == "capabilities.skillRevisionRead" {
+            return serde_json::to_value(self.lifecycle.get(required(&payload, "id")?).await?).map_err(|e| e.to_string());
+        }
+        let expected = payload.get("expectedRevision").and_then(Value::as_u64).ok_or("expectedRevision is required")?;
+        match method {
+            "capabilities.skillRevisionToggle" => {
+                let enabled = payload["enabled"].as_bool().ok_or("enabled is required")?;
+                self.lifecycle.set_enabled(expected, enabled).await?;
+                Ok(self.lifecycle.list().await)
+            }
+            "capabilities.skillRevisionCreate" => {
+                let name = required(&payload, "name")?;
+                let project = required(&payload, "project")?;
+                let catalog = self.skills.management_catalog(SkillViewOptions { cwd:Some(project.into()), ..Default::default() }).await?;
+                if catalog.iter().any(|s| s.name == name && s.provider != "validated-skill-revisions") {
+                    return Err("同名技能已由其他来源提供，请使用独立名称".into());
+                }
+                let source: Vec<String> = serde_json::from_value(payload.get("sourceEvidence").cloned().ok_or("sourceEvidence is required")?).map_err(|e| e.to_string())?;
+                let candidate = self.lifecycle.create(expected, name, required(&payload,"description")?, required(&payload,"content")?,
+                    project, required(&payload,"ownerSessionId")?, source).await?;
+                Ok(json!({"candidate":candidate,"state":self.lifecycle.list().await}))
+            }
+            "capabilities.skillRevisionValidate" => {
+                let samples = serde_json::from_value(payload.get("samples").cloned().ok_or("samples are required")?).map_err(|e| e.to_string())?;
+                let evidence = self.lifecycle.validate(expected, required(&payload,"id")?, samples).await?;
+                Ok(json!({"evidence":evidence,"state":self.lifecycle.list().await}))
+            }
+            "capabilities.skillRevisionActivate" | "capabilities.skillRevisionRestore" => {
+                let revision = self.lifecycle.get(required(&payload,"id")?).await?;
+                let catalog = self.skills.management_catalog(SkillViewOptions { cwd:Some(revision.project.clone()), ..Default::default() }).await?;
+                if catalog.iter().any(|s| s.name == revision.name && s.provider != "validated-skill-revisions") {
+                    return Err("同名技能已由其他来源提供，不能覆盖现有项目指令".into());
+                }
+                if method == "capabilities.skillRevisionRestore" {
+                    self.lifecycle.restore(expected, required(&payload,"id")?).await?;
+                } else {
+                    self.lifecycle.activate(expected, required(&payload,"id")?).await?;
+                }
+                Ok(self.lifecycle.list().await)
+            }
+            "capabilities.skillRevisionWithdraw" => {
+                self.lifecycle.withdraw(expected, required(&payload,"id")?).await?;
+                Ok(self.lifecycle.list().await)
+            }
+            "capabilities.skillRevisionRemove" => {
+                self.lifecycle.remove(expected, required(&payload,"id")?).await?;
+                Ok(self.lifecycle.list().await)
+            }
+            _ => Err("unsupported skill revision action".into()),
         }
     }
 

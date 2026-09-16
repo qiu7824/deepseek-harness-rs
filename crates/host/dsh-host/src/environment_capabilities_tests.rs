@@ -229,7 +229,7 @@ async fn timeout_is_bounded_and_negative_result_is_reused() {
             .inspect("git", false, Arc::new(|| false))
             .await
             .unwrap()["status"],
-        "timeout"
+        "timed_out"
     );
     assert!(fixture.runtime.killed.load(Ordering::SeqCst));
     assert_eq!(
