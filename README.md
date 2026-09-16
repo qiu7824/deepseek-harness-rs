@@ -54,7 +54,7 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.22) 下载对应平台的完整包：
+从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
 
 - `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-{core,skin,free}-portable.zip`
 - `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-{core,skin,free}-portable.tar.gz`

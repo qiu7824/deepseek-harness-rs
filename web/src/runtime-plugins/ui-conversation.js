@@ -6614,7 +6614,7 @@ window.__ModuleLoader__.load({
             "placeholder.tipNumbered": "Ctrl+Enter 可继续当前编号列表。",
             "placeholder.tipReference": "输入 @ 可引用其他对话。",
             "placeholder.tipCommands": "输入 / 可查看可用命令。",
-            "placeholder.tipTeam": "点击会话顶部的团队，可查看成员与共享任务。",
+            "placeholder.tipTeam": "可在设置中开启团队协作，并在会话中查看成员与共享任务。",
 
             "placeholder.tipNewline": "Shift+Enter 换行，Enter 发送",
             "placeholder.tipImage": "粘贴或拖入图片，再输入你想修改的内容",
@@ -6931,7 +6931,7 @@ window.__ModuleLoader__.load({
             "placeholder.tipNumbered": "Ctrl+Enter continues the current numbered list.",
             "placeholder.tipReference": "Type @ to reference another conversation.",
             "placeholder.tipCommands": "Type / to browse available commands.",
-            "placeholder.tipTeam": "Open Team above the conversation to view members and shared tasks.",
+            "placeholder.tipTeam": "Enable team collaboration in Settings, then view members and shared tasks in the conversation.",
 
             "placeholder.tipNewline": "Shift+Enter for a new line; Enter to send",
             "placeholder.tipImage": "Paste or drop an image, then describe your changes",
@@ -11078,6 +11078,7 @@ window.__ModuleLoader__.load({
 						stop: void 0,
 						command: void 0,
 						hooks: {
+							composerTips: composerTips.store,
 							notices: ABSENT_NOTICES,
 							lexicon: ABSENT_LEXICON,
 							menuLauncher: ABSENT_MENU_LAUNCHER

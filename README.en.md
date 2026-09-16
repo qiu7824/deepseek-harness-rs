@@ -49,7 +49,7 @@ See the [alpha.21 release notes](release/notes/v0.1.3-alpha.22.md) and [rc.1 cap
 
 ## Downloads
 
-Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.22):
+Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
 
 - `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-{core,skin,free}-portable.zip`
 - `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-{core,skin,free}-portable.tar.gz`

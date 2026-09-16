@@ -50,6 +50,11 @@ async fn fixture() -> (String, tokio::task::JoinHandle<()>) {
                     "200 OK"
                 };
                 let result = match request["method"].as_str() {
+                    Some("initialize") => json!({
+                        "protocolVersion": request["params"]["protocolVersion"],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "replacement-fixture", "version": "1"}
+                    }),
                     Some("tools/list") => {
                         let names = match path {
                             "/candidate" => vec!["new", "collision"],
@@ -93,7 +98,7 @@ async fn failed_mcp_startup_or_catalog_activation_preserves_the_working_connecti
         .invoke("capabilities.serverSave", json!({"server":config("/old")}))
         .await
         .unwrap();
-    assert_eq!(first["status"], "connected");
+    assert_eq!(first["status"], "connected", "{first}");
     assert_eq!(first["toolCount"], 1);
     let original = match manager
         .state

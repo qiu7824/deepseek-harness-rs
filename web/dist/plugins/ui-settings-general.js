@@ -84,6 +84,7 @@ window.__ModuleLoader__.load({
 		*/
 		/** Nav glyph by section id; unknown ids fall back to the settings gear. */
 		function navIcon(id) {
+            if (id === "agent-teams") id = "subagent";
             const paths={
                 "runtime-paths":["M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"],
                 memory:["M8 3a4 4 0 0 0-4 4v2a4 4 0 0 0 0 6v2a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4Zm8 0a4 4 0 0 1 4 4v2a4 4 0 0 1 0 6v2a4 4 0 0 1-8 0V7a4 4 0 0 1 4-4Z","M4 9h3m10 0h3M6 16h2m8 0h2"],

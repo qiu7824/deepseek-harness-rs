@@ -11,6 +11,14 @@ const begin=source.indexOf('function InputBar('),end=source.indexOf('\n\t\t//#en
 let tips='on';let active='a';const state=new Map(['a','b'].map(id=>[id,{draft:'',imageIds:[],phase:'editing',queue:[],claim:null}])),submissions=[];
 const image={id:'image',file:{name:'frame.png'},previewUrl:'data:image/png;base64,fixture'};
 const root=Client.createRoot(document.getElementById('root')),act=fn=>React.act(async()=>{await fn();await new Promise(resolve=>setTimeout(resolve,10));});
+const store={getSnapshot:()=>({mode:tips}),subscribe:()=>()=>{}};
+const slotStart=source.indexOf('name: "conversation.composer.bar"',source.indexOf('function apply(ctx)'));
+const injectStart=source.indexOf('inject: (sessionId) => {',slotStart)+'inject: '.length;
+const injectEnd=source.indexOf('\n\t\t\t}, InputBar);',injectStart);
+const shell={notices:{},lexicon:{}};
+const factory=vm.runInNewContext('('+source.slice(injectStart,injectEnd)+')',{composerTips:{store},ABSENT_NOTICES:{},ABSENT_LEXICON:{},ABSENT_MENU_LAUNCHER:{},concreteConversation:()=>({}),ctx:{},inputHub:{shell:()=>shell,inputTriggers:()=>undefined}});
+assert.equal(factory(undefined).hooks.composerTips,store,'unscoped composer binds the preference hook');
+assert.equal(factory('a').hooks.composerTips,store,'scoped composer retains the same preference hook');
 const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,useComposerTips:select=>select({mode:tips}),useSession:select=>select({running:false,removed:false}),useInput:select=>select(state.get(active)),inputActions:{pruneImages(){},submit(){submissions.push({sessionId:active,...state.get(active)})}},keyboard:{snapshot:{},setDraft(value){state.set(active,{...state.get(active),draft:value});render()},track(){}},draftImages:ids=>ids.map(()=>image),removeImage:()=>{state.set(active,{...state.get(active),imageIds:[]});render()},useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),useProjection:(name,select)=>select?select(undefined):undefined,t:key=>key,renderSlot:()=>null}));
 const send=()=>document.querySelector('button[aria-label="input.send"]');
 (async()=>{
