@@ -143,6 +143,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("discovery-settings-{}", uuid::Uuid::new_v4()));
         let context = cordis::Context::root();
+        dsh_system_prompt::SystemPrompt::install(&context, Default::default()).unwrap();
         let tools = ToolRuntime::install(&context, Default::default()).unwrap();
         let service = Settings {
             path: root.join("tool-discovery.json"),
