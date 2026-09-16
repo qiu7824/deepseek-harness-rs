@@ -52,14 +52,14 @@ async function render(frame, options = {}) {
   } };
   await React.act(async () => root.render(React.createElement(Component, { key: frame.rpcId, matched, t, useSession: selector => selector({ chat: { nodes } }) })));
   const paired = calls.find(event => event.data.callId === frame.payload.callId); assert.ok(paired, 'approval correlates with a real tool call');
-  const target = JSON.parse(paired.data.arguments).file_path;
+  const args=JSON.parse(paired.data.arguments),target=args.file_path??args.workdir;
   evidence.detailsVisible.push({ tool: frame.payload.toolName, target, visible: document.body.textContent.includes(target) || document.body.textContent.includes(target.replace(/^\\\\\?\\/, '')) });
   assert.match(document.body.textContent, /拒绝/); assert.match(document.body.textContent, /允许一次/);
   assert.equal([...document.querySelectorAll('button')].find(button => button.textContent === '始终允许').disabled, !frame.payload.rememberable);
 }
 async function click(label) { const button = [...document.querySelectorAll('button')].find(button => button.textContent === label); assert.ok(button); await React.act(async () => { button.click(); await new Promise(resolve => setTimeout(resolve, 30)); }); }
 async function resolved(frame, outcome) { await until(() => frames.find(item => item.payload?.type === 'approval/resolved' && item.payload.approvalId === frame.payload.approvalId && (!outcome || item.payload.outcome === outcome)), 'approval resolution broadcast missing'); await React.act(async () => root.render(null)); current = null; }
-async function completed(expected = 'completed') { const events = await until(async () => { const value = await history(session); return value.filter(event => event.type === 'turn/end').length >= turns ? value : null; }, 'turn did not settle'); assert.equal(events.filter(event => event.type === 'turn/end').at(-1).data.reason.kind, expected); return events; }
+async function completed(expected = 'completed', timeout = 15000) { const events = await until(async () => { const value = await history(session); return value.filter(event => event.type === 'turn/end').length >= turns ? value : null; }, 'turn did not settle', timeout); assert.equal(events.filter(event => event.type === 'turn/end').at(-1).data.reason.kind, expected); return events; }
 async function start(tool, relative, marker) {
   const target = path.resolve(work, relative); assert.ok(target.startsWith(work + path.sep)); fs.mkdirSync(path.dirname(target), { recursive: true }); if (tool === 'write') fs.writeFileSync(target, 'BEFORE:' + marker);
   const index = frames.length; turns++;
@@ -80,6 +80,17 @@ const pending = async index => until(() => frames.slice(index).find(frame => fra
   run = await start('write', 'outside-one/sibling.txt', 'same-directory'); await completed(); assert.equal(frames.slice(run.index).some(frame => frame.payload?.type === 'approval/requested'), false); assert.equal(fs.readFileSync(run.target, 'utf8'), 'APPROVAL_FIXTURE_WRITTEN:same-directory'); evidence.checks.push('remembered-directory-reuses-exact-scope');
   for (const relative of ['outside-two/other.txt', 'outside-one/child/nested.txt']) { run = await start('write', relative, 'different-directory'); frame = await pending(run.index); await render(frame); await click('拒绝'); await resolved(frame, 'rejected'); await completed(); assert.equal(fs.readFileSync(run.target, 'utf8'), run.before); }
   evidence.checks.push('other-and-child-directories-still-require-approval');
+  if(process.platform==='win32') {
+    run=await start('pwsh','outside-two/scoped-denied.txt','SCOPE_DENIED');frame=await pending(run.index);
+    assert.equal(frame.payload.rememberable,false);assert.equal(fs.existsSync(run.target),false);
+    await render(frame);await click('拒绝');await resolved(frame,'rejected');await completed();assert.equal(fs.existsSync(run.target),false);
+    evidence.checks.push('external-workdir-requests-approval-before-launch-and-denial-never-writes');
+    run=await start('pwsh','outside-two/scoped-allowed.txt','SCOPE_ALLOWED');frame=await pending(run.index);
+    assert.equal(frame.payload.rememberable,false);assert.equal(fs.existsSync(run.target),false);
+    await render(frame);await click('允许一次');await resolved(frame,'allowed-once');await completed('completed',135000);
+    assert.equal(fs.readFileSync(run.target,'utf8').replace(/^\uFEFF/,'').trim(),'SCOPE_ALLOWED');
+    evidence.checks.push('external-workdir-single-use-approval-executes-without-full-access');
+  }
   const security = (await rpc('settings.describe')).namespaces.find(row => row.ns === 'security');
   await rpc('settings.mutate', {ns:'security', ops:[{op:'set',path:['approvalTimeoutSeconds'],value:5}], expectedRevision:security.revision});
   run = await start('write', 'outside-two/timeout.txt', 'timeout-denied'); frame = await pending(run.index); const started = Date.now(); await render(frame); await resolved(frame); await completed(); assert.ok(Date.now()-started >= 4000, 'configured wait must not be skipped'); assert.equal(fs.readFileSync(run.target,'utf8'),run.before); assert.equal((await respond(frame,'allowed-once')).accepted,false); evidence.checks.push('configured-timeout-denies-and-retires-stale-card');

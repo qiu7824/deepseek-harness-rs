@@ -140,6 +140,7 @@ window.__ModuleLoader__.load({
 				}]];
 				const result = await session.prompt(content, mode);
 				if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`);
+				if (result.value?.accepted !== true) throw new Error("消息尚未被接收，请重试；输入内容已保留。 / Message was not accepted; your draft is preserved.");
 				this.releaseDraftImages(attachments);
 			}
 			/**
@@ -4437,7 +4438,7 @@ window.__ModuleLoader__.load({
 						labels: lightboxLabels(t),
 						onClose: closePreview
 					}),
-                    showTip && (0,react_jsx_runtime.jsx)("div", {className:"dshComposerTip", "data-composer-tip":true, children:t(tipKeys[tipIndex])}),
+                    tipPreference.mode !== "off" && (0,react_jsx_runtime.jsx)("div", {className:"dshComposerTip", "data-composer-tip-region":true, style:{height:24,flexShrink:0,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",visibility:showTip?"visible":"hidden"}, "aria-hidden":!showTip, children:showTip?(0,react_jsx_runtime.jsx)("span", {"data-composer-tip":true,title:t(tipKeys[tipIndex]),children:t(tipKeys[tipIndex])}):null}),
 					footer
 				]
 			});

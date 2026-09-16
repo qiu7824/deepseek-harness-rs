@@ -6,6 +6,24 @@ use dsh_subprocess_local::LocalSubprocessRuntime;
 
 #[tokio::test]
 #[cfg(windows)]
+async fn redirected_python_keeps_chinese_stdout_and_stderr_in_utf8() {
+    let ctx = Context::root();
+    let _processes = LocalSubprocessRuntime::install(&ctx);
+    let shell = LocalPwshExecutor::install(&ctx, Config {
+        pwsh_path: Some(std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe").to_string_lossy().into_owned()),
+        ..Default::default()
+    });
+    let result = shell.run(shell.resolve(ShellExecRequest::new(
+        "python -c \"import sys; print('中文标题'); sys.stderr.write('诊断信息')\""
+    ))).await.unwrap();
+    assert_eq!(result.exit_code, Some(0), "{}", result.stderr.text);
+    assert!(result.stdout.text.contains("中文标题"), "{}", result.stdout.text);
+    assert!(result.stderr.text.contains("诊断信息"), "{}", result.stderr.text);
+}
+
+#[tokio::test]
+#[cfg(windows)]
 async fn optional_native_probes_preserve_diagnostics_without_weakening_later_failures() {
     let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");

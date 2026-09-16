@@ -129,6 +129,49 @@ fn execution_directory(
     Ok(())
 }
 
+fn outside_execution_directory(request: &ShellExecRequest) -> Option<String> {
+    let policy = request.sandbox_policy.as_ref()?;
+    if policy.mode == dsh_sandbox::SandboxMode::DangerFullAccess {
+        return None;
+    }
+    let directory = std::fs::canonicalize(request.workdir.as_ref()?).ok()?;
+    let roots = std::iter::once(policy.workspace_root.clone())
+        .chain(policy.read_only_roots.clone())
+        .chain(dsh_sandbox::writable_roots(policy));
+    for root in roots {
+        if std::fs::canonicalize(root).is_ok_and(|root| directory.starts_with(root)) {
+            return None;
+        }
+    }
+    Some(directory.to_string_lossy().into_owned())
+}
+
+async fn authorize_execution_directory(
+    request: &mut ShellExecRequest,
+    owner: Option<&Arc<dyn dsh_agent::Agent>>,
+    approval: Option<&Arc<ApprovalService>>,
+    call_id: &str,
+) -> Result<(), ToolBodyError> {
+    let Some(directory) = outside_execution_directory(request) else { return Ok(()); };
+    let agent = owner.cloned().ok_or_else(|| ToolBodyError::coded(
+        "Cross-directory execution requires an initiating agent", "ApprovalError", "APPROVAL_UNAVAILABLE"))?;
+    let approval = approval.ok_or_else(|| ToolBodyError::coded(
+        "Cross-directory execution requires an approval service", "ApprovalError", "APPROVAL_UNAVAILABLE"))?;
+    let mode = request.sandbox_policy.as_ref().unwrap().mode;
+    let outcome = approval.request(&ApprovalRequest {
+        agent, tool_name: "pwsh".into(), call_id: Some(call_id.into()),
+        reason: Some(format!("本次命令需要在工作区外目录执行：{directory}。仅为此命令授予该目录的 {} 权限，当前会话工作区保持不变。", mode.as_str())),
+        grant_key: None, rememberable: false, signal: request.signal.clone(),
+    }).await.map_err(ToolBodyError::plain)?;
+    if !matches!(outcome, ApprovalOutcome::AllowedOnce | ApprovalOutcome::AllowedAlways) {
+        return Err(ToolBodyError::coded(format!("Cross-directory execution was not approved: {}. The command did not run.", outcome.as_str()), "ApprovalError", "APPROVAL_REJECTED"));
+    }
+    let policy = request.sandbox_policy.as_mut().unwrap();
+    let project = std::mem::replace(&mut policy.workspace_root, directory);
+    if !policy.read_only_roots.contains(&project) { policy.read_only_roots.push(project); }
+    Ok(())
+}
+
 pub fn removes_directory(command: &str) -> bool {
     let normalized = command.to_ascii_lowercase();
     normalized.contains("[system.io.directory]::delete")
@@ -226,7 +269,7 @@ impl ToolPwshService {
                     "additionalProperties": false,
                     "properties": {
                             "command": { "type": "string" },
-                            "workdir": { "type": "string", "description": "Working directory; managed execution copies preserve the source project as read-only." },
+                            "workdir": { "type": "string", "description": "Working directory. An external directory automatically requests one-command scoped approval before launch; the session workspace is unchanged. Managed copies preserve the source project as read-only." },
                             "description": { "type": "string" },
                             "sandbox_permissions": { "type": "string", "enum": ["use_default", "with_additional_permissions", "require_escalated"], "description": "Request a wider sandbox for this exact command; requires justification and user approval." },
                             "justification": { "type": "string", "description": "Why this command needs the requested wider sandbox." },
@@ -377,6 +420,7 @@ impl ToolPwshService {
                                 request.sandbox_policy = Some(policy);
                             }
                             execution_directory(&mut request,&args,owner.as_ref(),workspaces.as_ref())?;
+                            authorize_execution_directory(&mut request,owner.as_ref(),approval.as_ref(),&call_id).await?;
                             let spec = shell.resolve(request);
                             let process_shell = shell.clone();
                             let id = jobs
@@ -415,6 +459,7 @@ impl ToolPwshService {
                             request.sandbox_policy = Some(policy);
                         }
                         execution_directory(&mut request,&args,owner.as_ref(),workspaces.as_ref())?;
+                        authorize_execution_directory(&mut request,owner.as_ref(),approval.as_ref(),&call_id).await?;
                         let result = shell
                             .run(shell.resolve(request))
                             .await
@@ -446,7 +491,10 @@ impl ToolPwshService {
                             } else if output.contains("Unable to read current working directory") {
                                 "\nThe current directory is unreadable; this is not evidence that .git is missing. Check the resolved workdir and sandbox runtime permissions before retrying."
                             } else if output.contains("NativeCommandError") || output.contains("NativeCommandExitException") {
-                                "\nPowerShell interrupted native stderr handling. For optional dependency checks, use Invoke-DshNativeProbe and inspect its ExitCode and complete Output; allow_nonzero alone cannot resume an interrupted script."
+                                "\nPowerShell interrupted native stderr handling; stderr text alone is not a failing exit code. For native tests or dependency checks with redirected stderr, use Invoke-DshNativeProbe and inspect its ExitCode and complete Output; allow_nonzero alone cannot resume an interrupted script."
+                            } else if result.sandbox.as_ref().is_some_and(|s| s.mode != dsh_sandbox::SandboxMode::DangerFullAccess)
+                                && (output.contains("FileNotFoundError") || output.contains("不存在") || output.contains("No such file")) {
+                                "\nA sandboxed process may see an existing external file as missing. Verify the exact path with the read tool before diagnosing a missing file or encoding problem. For work in another directory, set workdir to that directory to request scoped approval; otherwise request approval for this exact command using sandbox_permissions: require_escalated and justification. Never bypass a denial or timeout."
                             } else { "" };
                             return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}{hint}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED"));
                         }
@@ -469,6 +517,34 @@ impl ToolPwshService {
 #[cfg(test)]
 mod tests {
     use super::escalation_mode_for_permissions;
+
+    #[tokio::test]
+    async fn external_workdir_is_gated_and_missing_approval_fails_closed() {
+        use super::*;
+        let root = std::env::temp_dir().join(format!("dsh-workdir-gate-{}", std::process::id()));
+        let project = root.join("project");
+        let external = root.join("external");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let mut request = ShellExecRequest::new("Get-ChildItem");
+        request.workdir = Some(external.to_string_lossy().into_owned());
+        request.sandbox_policy = Some(dsh_sandbox::SandboxExecutionPolicy {
+            mode: dsh_sandbox::SandboxMode::ReadOnly, workspace_root: project.to_string_lossy().into_owned(),
+            read_only_roots: vec![], session_id: None,
+        });
+        let before = request.sandbox_policy.clone();
+        assert!(outside_execution_directory(&request).is_some());
+        assert!(authorize_execution_directory(&mut request, None, None, "probe").await.is_err());
+        assert_eq!(request.sandbox_policy, before, "failure cannot mutate the execution policy");
+        request.sandbox_policy.as_mut().unwrap().read_only_roots.push(external.to_string_lossy().into_owned());
+        assert!(outside_execution_directory(&request).is_none(), "already granted read roots need no new approval");
+        request.sandbox_policy.as_mut().unwrap().read_only_roots.clear();
+        request.workdir = Some(project.to_string_lossy().into_owned());
+        assert!(outside_execution_directory(&request).is_none());
+        std::fs::remove_dir(&external).unwrap();
+        std::fs::remove_dir(&project).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
 
     #[test]
     fn explicit_escalation_modes_are_fail_closed_and_justified() {

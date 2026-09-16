@@ -122,6 +122,10 @@ fn shell_environment(spec: &ShellExecSpec, executable: &str) -> Vec<(String, Opt
         ("NO_COLOR".to_string(), Some("1".to_string())),
         ("PAGER".to_string(), Some("cat".to_string())),
         ("GIT_PAGER".to_string(), Some("cat".to_string())),
+        // Python writes to redirected pipes using the Windows ANSI code page
+        // unless configured explicitly; PowerShell and our readers use UTF-8.
+        ("PYTHONIOENCODING".to_string(), Some("utf-8".to_string())),
+        ("PYTHONUTF8".to_string(), Some("1".to_string())),
     ];
     #[cfg(windows)]
     if let Some(parent) = std::path::Path::new(executable).parent() {

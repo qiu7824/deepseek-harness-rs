@@ -427,7 +427,7 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		function SecuritySection({ api }) {
-			const [state, setState] = (0, react.useState)({ loading: true, error: null, namespace: null, timeout: 30, preset: "workspace-write" });
+			const [state, setState] = (0, react.useState)({ loading: true, error: null, namespace: null, timeout: 300, preset: "workspace-write" });
 			const load = (0, react.useCallback)(async () => {
 				try {
 					const settingsReply = await api.settings.describe({});
@@ -436,7 +436,7 @@ window.__ModuleLoader__.load({
 					const securityNamespace = namespaces.find((entry) => entry.ns === "security") ?? null;
 					const security = securityNamespace?.value ?? {};
 					const permission = namespaces.find((entry) => entry.ns === "permission")?.value ?? {};
-					setState({ loading: false, error: null, namespace: securityNamespace, timeout: security.approvalTimeoutSeconds ?? 30, preset: permission.defaultPreset ?? "workspace-write" });
+					setState({ loading: false, error: null, namespace: securityNamespace, timeout: security.approvalTimeoutSeconds ?? 300, preset: permission.defaultPreset ?? "workspace-write" });
 				} catch (error) {
 					setState((previous) => ({ ...previous, loading: false, error: error instanceof Error ? error.message : String(error) }));
 				}
@@ -458,7 +458,7 @@ window.__ModuleLoader__.load({
 			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSecurity", children: [
 				(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityHeader", children: [(0, react_jsx_runtime.jsx)("h2", { children: "安全盾" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityIntro", children: "控制工具在执行前如何审批。修改会立即保存并应用到当前 Host。" })] }),
 				state.namespace && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityGroup", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityGroupTitle", children: "审批行为" }), row("timeout", "审批超时", "等待对话中确认的最长时间。超时后按无人确认策略处理。", (0, react_jsx_runtime.jsx)("input", { id: "security-timeout", type: "number", min: 5, max: 300, step: 1, value: securityValue("approvalTimeoutSeconds", 30), onChange: (event) => setField("approvalTimeoutSeconds", Number(event.target.value)) })), row("unattended", "无人确认", "没有可用浏览器、断线或超时后的默认处理。", select("security-unattended", "unattendedPolicy", "deny", [["deny", "拒绝（推荐）"], ["allow-safe-only", "仅允许安全操作"], ["allow-all", "允许可审批操作"]]))] }),
+					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityGroup", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityGroupTitle", children: "审批行为" }), row("timeout", "审批超时", "等待对话中确认的最长时间。超时后按无人确认策略处理。", (0, react_jsx_runtime.jsx)("input", { id: "security-timeout", type: "number", min: 5, max: 300, step: 1, value: securityValue("approvalTimeoutSeconds", 300), onChange: (event) => setField("approvalTimeoutSeconds", Number(event.target.value)) })), row("unattended", "无人确认", "没有可用浏览器、断线或超时后的默认处理。", select("security-unattended", "unattendedPolicy", "deny", [["deny", "拒绝（推荐）"], ["allow-safe-only", "仅允许安全操作"], ["allow-all", "允许可审批操作"]]))] }),
 					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityGroup", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityGroupTitle", children: "工具与路径" }), row("risk", "破坏性命令", "删除、重置、终止进程等高风险命令。", select("security-risk", "riskToolPolicy", "ask", [["ask", "对话中询问"], ["deny", "直接拒绝"]])), row("outside", "工作区外写入", "控制对当前工作区之外文件的修改。", select("security-outside-write", "outsideWritePolicy", "ask-directory", [["ask-directory", "按目录询问，可记忆"], ["ask-every-time", "每次询问"], ["deny", "直接拒绝"]])), row("sensitive", "敏感路径读取", ".env、SSH、云凭据等敏感位置；授权不会被记忆。", select("security-sensitive-read", "sensitiveReadPolicy", "ask", [["ask", "对话中询问"], ["deny", "直接拒绝"]])), row("credential", "凭据 Shell", "凭据提取并外传始终硬阻断；此项控制其他可疑 Shell 操作。", select("security-credential-shell", "credentialShellPolicy", "strict", [["strict", "严格阻断"], ["ask", "对话中询问"]]))] })
 				] }),
 				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityNotice", children: "固定保护：凭据外传、子代理访问敏感路径等硬阻断始终生效，不会被宽松设置覆盖。审批卡片会显示在当前对话输入区上方。" }),

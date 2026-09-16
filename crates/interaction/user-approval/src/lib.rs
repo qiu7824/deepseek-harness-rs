@@ -251,7 +251,7 @@ mod policy_tests {
         );
         assert_eq!(
             tokio::time::Instant::now().duration_since(started),
-            std::time::Duration::from_secs(30)
+            std::time::Duration::from_secs(300)
         );
         let traces = super::invariant::Traces::default();
         let events = owner.session().events();
@@ -524,7 +524,7 @@ impl ApprovalService {
     /// Create the service, register it as `approval`, and mount the
     /// system-prompt policy context (TS constructor + `ctx.inject`).
     pub fn install(ctx: &Context, config: Config) -> Arc<Self> {
-        let timeout_ms = config.timeout_ms.unwrap_or(30_000);
+        let timeout_ms = config.timeout_ms.unwrap_or(300_000);
         let service = Arc::new(Self {
             ctx: ctx.clone(),
             config,

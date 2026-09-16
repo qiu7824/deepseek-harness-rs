@@ -2442,7 +2442,7 @@ fn compose_host_in_fiber(
                         .min(5.0)
                         .max(300.0)
                         .step(1.0)
-                        .default(dsh_schemastery::Data::Number(30.0)),
+                        .default(dsh_schemastery::Data::Number(300.0)),
                 ),
                 (
                     "unattendedPolicy".to_string(),
@@ -3683,11 +3683,11 @@ fn compose_host_in_fiber(
     let read_approval_runtime = |value: &dsh_schemastery::Data| {
         let object = match value {
             dsh_schemastery::Data::Object(object) => object,
-            _ => return (30_000, dsh_user_approval::UnattendedPolicy::Deny),
+            _ => return (300_000, dsh_user_approval::UnattendedPolicy::Deny),
         };
         let timeout = match object.get("approvalTimeoutSeconds") {
             Some(dsh_schemastery::Data::Number(value)) => (*value as u64) * 1_000,
-            _ => 30_000,
+            _ => 300_000,
         };
         let unattended = match object.get("unattendedPolicy") {
             Some(dsh_schemastery::Data::String(value)) if value == "allow-all" => {

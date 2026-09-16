@@ -9,6 +9,15 @@ vm.runInNewContext(source.slice(shellStart, shellEnd), context);
 const snapshots = { ids: ['self', 'source-中文', 'duplicate'], byId: { self: { title: 'Current' }, 'source-中文': { title: '标题]\\', cwd: 'E:/工作区' }, duplicate: { title: '标题]\\', cwd: 'E:/other' } } };
 const references = context.createSessionReferenceSource({ list: { getSnapshot: () => snapshots } });
 (async () => {
+const sendStart=source.indexOf('async sendSession('),sendEnd=source.indexOf('\n\t\t\t/**',sendStart);
+const sender=vm.runInNewContext('({'+source.slice(sendStart,sendEnd)+'})',{});
+let released=0;const attachment={file:{}};
+Object.assign(sender,{draftImages:()=>[attachment],serializeImages:async()=>[{type:'image'}],releaseDraftImages:()=>released++});
+for(const reply of [{ok:true,value:{accepted:false}},{ok:false,error:{code:'offline',message:'offline'}}]) {
+  await assert.rejects(()=>sender.sendSession({prompt:async()=>reply},'draft',['image'],'queue'));
+  assert.equal(released,0,'a rejected admission must retain attachment ownership and draft');
+}
+await sender.sendSession({prompt:async()=>({ok:true,value:{accepted:true}})},'draft',['image'],'queue');assert.equal(released,1);
 const abort = new AbortController(), candidates = await references.candidates({ sessionId: 'self' }, { query: '', signal: abort.signal });
 assert.equal(candidates.length, 2); assert.notEqual(candidates[0].name, candidates[1].name, 'duplicate titles have distinct menu identities');
 const selected = references.onPick({ candidate: candidates[0] }).insert;

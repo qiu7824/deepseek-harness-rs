@@ -64,6 +64,11 @@ class ApprovalFixture(BaseHTTPRequestHandler):
                 arguments = {"file_path": str(target)}
                 if tool == "write":
                     arguments["content"] = "APPROVAL_FIXTURE_WRITTEN:" + spec["marker"]
+                if spec["tool"] == "pwsh":
+                    tool = "pwsh"
+                    quote = lambda text: "'" + text.replace("'", "''") + "'"
+                    arguments = {"command": "Set-Content -LiteralPath " + quote(target.name) + " -Value " + quote(spec["marker"]) + " -Encoding UTF8",
+                                 "workdir": str(target.parent), "description": "Scoped external directory write"}
                 delta = {"role": "assistant", "tool_calls": [{"index": 0, "id": "approval-call-" + uuid.uuid4().hex, "type": "function", "function": {"name": tool, "arguments": json.dumps(arguments)}}]}
                 finish = "tool_calls"
         events = [{"id": "fixture-" + uuid.uuid4().hex, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}, {"choices": [{"index": 0, "delta": {}, "finish_reason": finish}], "usage": {"prompt_tokens": 128, "completion_tokens": 64, "total_tokens": 192}}]
