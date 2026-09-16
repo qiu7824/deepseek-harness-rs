@@ -842,6 +842,8 @@ window.__ModuleLoader__.load({
 		//#region lib/types/client/index.js
 		/** Required services for references, conversation slots, and session navigation. */
 		const inject = [
+			"settingsScope",
+			"conversation",
 			"inputTriggers",
 			"connection",
 			"sessions",
