@@ -8,14 +8,15 @@ window.__ModuleLoader__.load({
 		let react = require("react");
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+        const SubagentDefaultsSection = require("@deepseek-ai/dsh-client-ui-settings-general").SubagentDefaultsSection;
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-subagent\src\client\SubagentCatalogAction.module.css.mjs
-		const css$1 = "[data-agent-team-board] h3{margin:0;font-size:14px;line-height:22px;font-weight:600}[data-agent-team-board] p{margin:0}.dshTeamTrigger{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:4px 8px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}.dshTeamTrigger:hover,.dshTeamButton:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshTeamSettings{display:grid;gap:16px}.dshTeamHint{margin:0;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.7}.dshTeamSetting{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:14px}.dshTeamSetting select,.dshTeamButton{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 12px;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-primary);font:inherit}.dshTeamButton{cursor:pointer}.dshTeamSetting input{appearance:none;-webkit-appearance:none;position:relative;flex:none;width:36px;height:22px;margin:0;border:0;border-radius:20px;background:var(--dsw-alias-border-l3,#c9cdd4);cursor:pointer;transition:background .15s}.dshTeamSetting input:before{content:\"\";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0002;transition:transform .15s}.dshTeamSetting input:checked{background:var(--dsw-alias-state-business-primary,#4d6bfe)}.dshTeamSetting input:checked:before{transform:translateX(14px)}.dshTeamSetting input:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:3px}.dshTeamSetting input:disabled{opacity:.45;cursor:default}.dshTeamTrigger:focus-visible,.dshTeamButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.HfG9eW_root{position:relative}.HfG9eW_trigger{min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:3px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.HfG9eW_count{margin:0 5px}.HfG9eW_activitySlot{flex:none;width:10px;height:10px;display:inline-flex}.HfG9eW_trigger:hover,.HfG9eW_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.HfG9eW_trigger svg{transition:transform .12s}.HfG9eW_triggerOpen{transform:rotate(180deg)}.HfG9eW_menu{z-index:100;box-sizing:border-box;background:var(--dsw-specific-menu);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);width:336px;max-width:min(400px,100vw - 32px);max-height:min(560px,100vh - 140px);box-shadow:var(--dsw-shadow-lv3);border-radius:12px;flex-direction:column;padding:4px;display:flex;position:absolute;top:calc(100% + 5px);left:0;overflow:auto}.HfG9eW_node{min-width:0;position:relative}.HfG9eW_menu>.HfG9eW_node{margin-left:-3px}.HfG9eW_row{box-sizing:border-box;width:100%;min-height:50px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:0;border-radius:8px;outline:none;align-items:flex-start;gap:8px;padding:7px 8px 7px 11px;font-size:13px;line-height:18px;display:flex;position:relative}.HfG9eW_row:hover>.HfG9eW_clickarea,.HfG9eW_row:focus-visible>.HfG9eW_clickarea{background:var(--dsw-alias-interactive-bg-hover)}.HfG9eW_clickarea{box-sizing:border-box;border-radius:8px;flex:1;align-self:stretch;align-items:flex-start;gap:8px;min-width:0;margin:-7px -8px;padding:7px 8px;display:flex}.HfG9eW_row>[data-state],.HfG9eW_clickarea>[data-state]{margin-top:4px}.HfG9eW_disabled{color:var(--dsw-alias-label-dimmed);cursor:not-allowed}.HfG9eW_disabled:hover{background:0 0}.HfG9eW_loadingRow{cursor:default}.HfG9eW_disclosure,.HfG9eW_disclosureSpace{flex:none;width:14px;height:18px}.HfG9eW_disclosure{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;justify-content:center;align-items:center;padding:0;transition:transform .12s;display:inline-flex}.HfG9eW_disclosure:hover{color:var(--dsw-alias-label-primary)}.HfG9eW_disclosureOpen{transform:rotate(90deg)}.HfG9eW_content{flex-direction:column;flex:1;min-width:0;display:flex}.HfG9eW_label,.HfG9eW_summary{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.HfG9eW_label{color:inherit;font-weight:400}.HfG9eW_summary,.HfG9eW_metrics{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.HfG9eW_metrics{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;flex:none;grid-template-rows:18px 16px;display:grid}.HfG9eW_metricToken{grid-row:1;line-height:18px}.HfG9eW_metricDuration{grid-row:2}.HfG9eW_children{margin-left:18px;padding-left:4px;position:relative}.HfG9eW_children:before,.HfG9eW_children>.HfG9eW_node:before{content:\"\";border-left:1px solid var(--dsw-alias-border-l2);position:absolute;left:0}.HfG9eW_children:before{height:26px;top:-26px}.HfG9eW_children[aria-busy=true]:before{content:none}.HfG9eW_children>.HfG9eW_node:before{top:0;bottom:0;left:-4px}.HfG9eW_children>.HfG9eW_node:last-child:before{height:17px;bottom:auto}.HfG9eW_children>.HfG9eW_node>.HfG9eW_row:before{content:\"\";border-top:1px solid var(--dsw-alias-border-l2);width:14px;position:absolute;top:16px;left:-4px}.HfG9eW_notice,.HfG9eW_error{color:var(--dsw-alias-label-tertiary);padding:10px 12px;font-size:12px;line-height:18px}.HfG9eW_error{color:var(--dsw-alias-state-error-primary);justify-content:space-between;align-items:center;gap:12px;display:flex}.HfG9eW_refresh{color:inherit;cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;align-items:center;gap:4px;padding:4px 6px;display:inline-flex}.HfG9eW_refresh:hover{background:var(--dsw-alias-interactive-bg-hover)}";
+		const css$1 = ".dshCollaborationPanel{display:grid;gap:16px;max-height:70vh;overflow:auto;overflow-wrap:anywhere}.dshTeamToolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dshTeamToolbar label{display:flex;gap:8px;align-items:center}.dshTeamTabs{display:flex;gap:4px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:8px}.dshTeamTabs button{font:inherit;border:0;border-radius:8px;padding:7px 12px;cursor:pointer;color:var(--dsw-alias-label-secondary);background:transparent}.dshTeamTabs button[aria-selected=true]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.dshTeamCard{display:grid;gap:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:14px;margin:10px 0;min-width:0}.dshTeamCard fieldset{border:0;padding:0;margin:0;display:grid;gap:10px;min-width:0}.dshTeamCard legend{font-weight:600;margin-bottom:10px}.dshTeamField{display:grid;gap:6px;font-size:13px}.dshTeamField input,.dshTeamField textarea,.dshTeamField select,.dshTeamToolbar select,.dshTeamMessage input{box-sizing:border-box;min-width:0;width:100%;min-height:36px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary);font:inherit;padding:7px 10px}.dshTeamField textarea{resize:vertical;line-height:1.6}.dshTeamToolbar select{width:auto}.dshTeamField select[multiple]{min-height:70px}.dshTeamButton:disabled{opacity:.45;cursor:default}.dshTeamError{color:var(--dsw-alias-state-error-primary);font-size:13px}.dshTeamMessage{display:flex;gap:8px}.dshTeamMessage input{flex:1}.dshTeamRole{border-top:1px solid var(--dsw-alias-border-l2);padding-top:10px}.dshTeamRole summary{cursor:pointer;padding:6px 0}.dshTeamRole[open] .dshTeamField{margin:10px 0}.dshTeamCard p{white-space:pre-wrap}[data-agent-team-board] h3{margin:0;font-size:14px;line-height:22px;font-weight:600}[data-agent-team-board] p{margin:0}.dshTeamTrigger{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:4px 8px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}.dshTeamTrigger:hover,.dshTeamButton:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshTeamSettings{display:grid;gap:16px}.dshTeamHint{margin:0;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.7}.dshTeamSetting{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:14px}.dshTeamSetting select,.dshTeamButton{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 12px;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-primary);font:inherit}.dshTeamButton{cursor:pointer}.dshTeamSetting input{appearance:none;-webkit-appearance:none;position:relative;flex:none;width:36px;height:22px;margin:0;border:0;border-radius:20px;background:var(--dsw-alias-border-l3,#c9cdd4);cursor:pointer;transition:background .15s}.dshTeamSetting input:before{content:\"\";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0002;transition:transform .15s}.dshTeamSetting input:checked{background:var(--dsw-alias-state-business-primary,#4d6bfe)}.dshTeamSetting input:checked:before{transform:translateX(14px)}.dshTeamSetting input:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:3px}.dshTeamSetting input:disabled{opacity:.45;cursor:default}.dshTeamTrigger:focus-visible,.dshTeamButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.HfG9eW_root{position:relative}.HfG9eW_trigger{min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:3px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.HfG9eW_count{margin:0 5px}.HfG9eW_activitySlot{flex:none;width:10px;height:10px;display:inline-flex}.HfG9eW_trigger:hover,.HfG9eW_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.HfG9eW_trigger svg{transition:transform .12s}.HfG9eW_triggerOpen{transform:rotate(180deg)}.HfG9eW_menu{z-index:100;box-sizing:border-box;background:var(--dsw-specific-menu);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);width:336px;max-width:min(400px,100vw - 32px);max-height:min(560px,100vh - 140px);box-shadow:var(--dsw-shadow-lv3);border-radius:12px;flex-direction:column;padding:4px;display:flex;position:absolute;top:calc(100% + 5px);left:0;overflow:auto}.HfG9eW_node{min-width:0;position:relative}.HfG9eW_menu>.HfG9eW_node{margin-left:-3px}.HfG9eW_row{box-sizing:border-box;width:100%;min-height:50px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:0;border-radius:8px;outline:none;align-items:flex-start;gap:8px;padding:7px 8px 7px 11px;font-size:13px;line-height:18px;display:flex;position:relative}.HfG9eW_row:hover>.HfG9eW_clickarea,.HfG9eW_row:focus-visible>.HfG9eW_clickarea{background:var(--dsw-alias-interactive-bg-hover)}.HfG9eW_clickarea{box-sizing:border-box;border-radius:8px;flex:1;align-self:stretch;align-items:flex-start;gap:8px;min-width:0;margin:-7px -8px;padding:7px 8px;display:flex}.HfG9eW_row>[data-state],.HfG9eW_clickarea>[data-state]{margin-top:4px}.HfG9eW_disabled{color:var(--dsw-alias-label-dimmed);cursor:not-allowed}.HfG9eW_disabled:hover{background:0 0}.HfG9eW_loadingRow{cursor:default}.HfG9eW_disclosure,.HfG9eW_disclosureSpace{flex:none;width:14px;height:18px}.HfG9eW_disclosure{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;justify-content:center;align-items:center;padding:0;transition:transform .12s;display:inline-flex}.HfG9eW_disclosure:hover{color:var(--dsw-alias-label-primary)}.HfG9eW_disclosureOpen{transform:rotate(90deg)}.HfG9eW_content{flex-direction:column;flex:1;min-width:0;display:flex}.HfG9eW_label,.HfG9eW_summary{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.HfG9eW_label{color:inherit;font-weight:400}.HfG9eW_summary,.HfG9eW_metrics{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.HfG9eW_metrics{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;flex:none;grid-template-rows:18px 16px;display:grid}.HfG9eW_metricToken{grid-row:1;line-height:18px}.HfG9eW_metricDuration{grid-row:2}.HfG9eW_children{margin-left:18px;padding-left:4px;position:relative}.HfG9eW_children:before,.HfG9eW_children>.HfG9eW_node:before{content:\"\";border-left:1px solid var(--dsw-alias-border-l2);position:absolute;left:0}.HfG9eW_children:before{height:26px;top:-26px}.HfG9eW_children[aria-busy=true]:before{content:none}.HfG9eW_children>.HfG9eW_node:before{top:0;bottom:0;left:-4px}.HfG9eW_children>.HfG9eW_node:last-child:before{height:17px;bottom:auto}.HfG9eW_children>.HfG9eW_node>.HfG9eW_row:before{content:\"\";border-top:1px solid var(--dsw-alias-border-l2);width:14px;position:absolute;top:16px;left:-4px}.HfG9eW_notice,.HfG9eW_error{color:var(--dsw-alias-label-tertiary);padding:10px 12px;font-size:12px;line-height:18px}.HfG9eW_error{color:var(--dsw-alias-state-error-primary);justify-content:space-between;align-items:center;gap:12px;display:flex}.HfG9eW_refresh{color:inherit;cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;align-items:center;gap:4px;padding:4px 6px;display:inline-flex}.HfG9eW_refresh:hover{background:var(--dsw-alias-interactive-bg-hover)}";
 		const tagId$1 = "@deepseek-ai/dsh-client-ui-subagent/SubagentCatalogAction.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "@deepseek-ai/dsh-client-ui-subagent";
 			tag.dataset.pluginCss = tagId$1;
-			tag.textContent = css$1;
+			tag.textContent = css$1 + '.dshTeamModal{width:min(760px,calc(100vw - 32px));max-width:calc(100vw - 32px)}.dshTeamModalContent{box-sizing:border-box;width:100%;min-width:0}.dshTeamCreate>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;min-height:32px}.dshTeamCreate>summary:before{content:"+";margin-right:8px}.dshTeamCreate[open]>summary:before{content:"−"}.dshTeamCreate>summary:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:3px}';
 			document.head.appendChild(tag);
 		}
 		var SubagentCatalogAction_module_css_default = {
@@ -680,27 +681,96 @@ window.__ModuleLoader__.load({
 		const NS = "subagent";
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
-            "team.title": "团队",
-            "team.settingsTitle": "团队协作",
-            "team.enable": "开启团队功能",
+            "team.title": "协作",
+            "team.advancedDefaults": "临时子代理设置", "team.advancedHint": "临时委派不要求开启团队协作；是否可用由当前智能体的工具与权限决定。协作方案中的明确角色配置优先。",
+            "team.stopAll": "停止全部", "team.taskStatus": "任务状态",
+            "team.settingsTitle": "协作设置",
+            "team.enable": "启用协作功能",
+            "team.settingsDescription": "统一管理任务、成员和独立对话。方案设置保存后即时生效，已启动成员保留原配置。",
+            "team.disabled": "协作功能尚未启用，请在“设置”页开启并保存。",
+            "team.noTasks": "暂无任务。可以直接创建任务，再分配给成员。",
+            "team.empty": "暂无成员。开启当前会话的协作后，可创建成员并分配工作。",
+            "team.tasks": "任务",
+            "team.messages": "消息",
+            "team.settings": "设置",
+            "team.mode": "当前方式",
+            "team.mode.off": "单人",
+            "team.mode.auto": "自动协作",
+            "team.mode.custom": "自定义方案",
+            "team.profile": "协作方案",
+            "team.refresh": "刷新",
+            "team.mainConversation": "主对话",
+            "team.newConversation": "新建独立主对话",
+            "team.configDuringRun": "执行期间保留当前配置；停止或完成后可更改协作方式。",
+            "team.openConversation": "打开对话",
+            "team.stopMember": "停止成员",
+            "team.inheritModel": "沿用主对话模型",
+            "team.otherMembers": "临时子代理",
+            "team.standaloneHint": "主智能体可以按需临时委派，无需创建团队。下方可查看子代理记录，包含团队成员；可继续的子代理支持独立续聊，一次性子代理保留执行记录。",
+            "team.noMessages": "暂无成员消息。",
+            "team.delivered": "已投递",
+            "team.queued": "等待投递",
+            "team.enableSession": "选择自动协作或自定义方案后，可以创建成员。",
+            "team.addMember": "创建成员",
+            "team.memberName": "成员名称",
+            "team.role": "角色",
+            "team.initialTask": "首次任务",
+            "team.createAndRun": "创建并执行",
+            "team.memberMessage": "给此成员补充要求",
+            "team.send": "发送",
+            "team.editTask": "编辑任务",
+            "team.addTask": "创建任务",
+            "team.subject": "任务名称",
+            "team.description": "任务内容",
+            "team.acceptance": "验收条件",
+            "team.owner": "执行成员",
+            "team.result": "结果与验收证据",
+            "team.save": "保存",
+            "team.cancel": "取消",
+            "team.edit": "编辑",
+            "team.dispatch": "派发",
+            "team.accept": "验收完成",
+            "team.delete": "删除",
+            "team.showButton": "显示输入区协作按钮",
+            "team.defaultMode": "新会话默认方式",
+            "team.defaultProfile": "默认方案",
+            "team.none": "未选择",
+            "team.profileName": "方案名称",
+            "team.roleName": "角色名称",
+            "team.instructions": "职责与要求",
+            "team.model": "模型",
+            "team.effort": "推理等级（留空沿用默认）",
+            "team.maxTokens": "单次最大输出（留空沿用默认）",
+            "team.tools": "可用工具，逗号分隔；留空继承",
+            "team.canSpawn": "允许创建下级成员",
+            "team.deleteRole": "删除角色",
+            "team.addRole": "添加角色",
+            "team.newRole": "新角色",
+            "team.newProfile": "新方案",
+            "team.addProfile": "添加方案",
+            "team.copy": "副本",
+            "team.reset": "重置未保存修改",
+            "team.saved": "设置已保存并生效。",
+            "team.unavailable": "当前连接不能保存协作设置。",
+            "team.modelUnavailable": "目录中不可用",
+            "team.writeScopes": "协作文件范围（逗号分隔）",
+            "team.status.queued": "已派发",
+            "team.status.review": "待验收",
+            "team.status.blocked": "受阻",
+            "team.status.cancelled": "已取消",
+
             "team.limit": "成员上限",
-            "team.settingsDescription": "为当前任务创建具名队友，共享任务进度并相互发送消息；仅在明确要求组建团队后开始工作。",
             "team.restart": "设置已保存，重启应用后生效。",
-            "team.disabled": "团队当前未启用，可开启后重启应用。",
             "team.prepare": "填写团队任务",
             "team.template": "请组建团队完成以下任务，先明确各成员职责和文件范围，维护共享任务并汇总结果：\n",
-            "team.noTasks": "暂无共享任务。创建团队后，负责人会在这里更新分工与进度。",
             "team.pending": "{count} 条团队消息等待投递",
             "team.intro": "团队成员可并行处理独立任务；点击成员名称查看其对话。",
 
             "team.members": "成员",
-            "team.tasks": "共享任务",
             "team.lead": "负责人",
             "team.unassigned": "未分配",
             "team.close": "关闭",
-            "team.empty": "暂无团队成员，可在对话中明确要求组建团队。",
             "team.dependencies": "前置任务",
-            "team.writeScopes": "文件范围",
             "team.scopeNote": "任务分配和文件范围用于协作，不会锁定工作区文件。",
             "team.status.provisioning": "正在创建",
             "team.status.active": "已就绪",
@@ -760,27 +830,96 @@ window.__ModuleLoader__.load({
 		};
 		/** English dictionary, key-identical to the Chinese source of truth. */
 		const en = {
-            "team.title": "Team",
-            "team.settingsTitle": "Team collaboration",
-            "team.enable": "Enable teams",
+            "team.title": "Collaboration",
+            "team.advancedDefaults": "Ad hoc subagent settings", "team.advancedHint": "Ad hoc delegation does not require team collaboration. Availability follows the current agent's tools and permissions. Explicit role settings in a collaboration profile take precedence.",
+            "team.stopAll": "Stop all", "team.taskStatus": "Task status",
+            "team.settingsTitle": "Collaboration settings",
+            "team.enable": "Enable collaboration",
+            "team.settingsDescription": "Manage tasks, members and their conversations together. Saved defaults apply immediately; existing members retain their configuration.",
+            "team.disabled": "Enable collaboration in the Settings tab and save.",
+            "team.noTasks": "No tasks. Create a task and assign a member.",
+            "team.empty": "No members. Enable collaboration for this conversation to create members.",
+            "team.tasks": "Tasks",
+            "team.messages": "Messages",
+            "team.settings": "Settings",
+            "team.mode": "Mode",
+            "team.mode.off": "Solo",
+            "team.mode.auto": "Automatic",
+            "team.mode.custom": "Profile",
+            "team.profile": "Collaboration profile",
+            "team.refresh": "Refresh",
+            "team.mainConversation": "Main conversation",
+            "team.newConversation": "New main conversation",
+            "team.configDuringRun": "The current configuration is retained during execution. Change it after stopping or completing work.",
+            "team.openConversation": "Open conversation",
+            "team.stopMember": "Stop member",
+            "team.inheritModel": "Use main conversation model",
+            "team.otherMembers": "Ad hoc subagents",
+            "team.standaloneHint": "The main agent can delegate as needed without creating a team. Browse subagent records below, including team members. Continuable subagents support follow-up conversations; one-shot subagents retain their execution history.",
+            "team.noMessages": "No member messages.",
+            "team.delivered": "Delivered",
+            "team.queued": "Queued",
+            "team.enableSession": "Select Automatic or a profile to create members.",
+            "team.addMember": "Create member",
+            "team.memberName": "Member name",
+            "team.role": "Role",
+            "team.initialTask": "Initial task",
+            "team.createAndRun": "Create and run",
+            "team.memberMessage": "Message this member",
+            "team.send": "Send",
+            "team.editTask": "Edit task",
+            "team.addTask": "Create task",
+            "team.subject": "Task title",
+            "team.description": "Description",
+            "team.acceptance": "Acceptance criteria",
+            "team.owner": "Assignee",
+            "team.result": "Result and evidence",
+            "team.save": "Save",
+            "team.cancel": "Cancel",
+            "team.edit": "Edit",
+            "team.dispatch": "Dispatch",
+            "team.accept": "Accept result",
+            "team.delete": "Delete",
+            "team.showButton": "Show composer collaboration button",
+            "team.defaultMode": "Default mode",
+            "team.defaultProfile": "Default profile",
+            "team.none": "None",
+            "team.profileName": "Profile name",
+            "team.roleName": "Role name",
+            "team.instructions": "Responsibilities",
+            "team.model": "Model",
+            "team.effort": "Reasoning effort (empty uses default)",
+            "team.maxTokens": "Maximum output tokens (empty uses default)",
+            "team.tools": "Allowed tools, comma-separated; empty inherits",
+            "team.canSpawn": "Allow delegation",
+            "team.deleteRole": "Delete role",
+            "team.addRole": "Add role",
+            "team.newRole": "New role",
+            "team.newProfile": "New profile",
+            "team.addProfile": "Add profile",
+            "team.copy": "Copy",
+            "team.reset": "Reset unsaved changes",
+            "team.saved": "Settings saved and applied.",
+            "team.unavailable": "Collaboration settings cannot be saved on this connection.",
+            "team.modelUnavailable": "Unavailable in catalog",
+            "team.writeScopes": "Coordinated file scopes (comma-separated)",
+            "team.status.queued": "Dispatched",
+            "team.status.review": "Awaiting review",
+            "team.status.blocked": "Blocked",
+            "team.status.cancelled": "Cancelled",
+
             "team.limit": "Member limit",
-            "team.settingsDescription": "Create named teammates for the current task, share progress and exchange messages. Work begins only after an explicit team request.",
             "team.restart": "Saved. Restart the application to apply.",
-            "team.disabled": "Teams are disabled. Enable teams and restart the application.",
             "team.prepare": "Draft a team task",
             "team.template": "Create a team for the following task. Define each member’s responsibilities and file scope, maintain shared tasks, and summarize the results:\n",
-            "team.noTasks": "No shared tasks yet. The lead will update assignments and progress here.",
             "team.pending": "{count} team messages awaiting delivery",
             "team.intro": "Teammates can work on independent tasks in parallel. Select a member to open their conversation.",
 
             "team.members": "Members",
-            "team.tasks": "Shared tasks",
             "team.lead": "Lead",
             "team.unassigned": "Unassigned",
             "team.close": "Close",
-            "team.empty": "No teammates yet. Explicitly request a team in the conversation to create one.",
             "team.dependencies": "Dependencies",
-            "team.writeScopes": "File scopes",
             "team.scopeNote": "Task assignments and file scopes coordinate work; they do not lock workspace files.",
             "team.status.provisioning": "Creating",
             "team.status.active": "Ready",
@@ -862,65 +1001,189 @@ window.__ModuleLoader__.load({
 		* Client plugin body: register the '@' subagent source over the root session list.
 		* @param ctx - client root context.
 		*/
-        function TeamBoardAction({ parentSessionId, openChild, teamSettings, prepareTeam, t }) {
-            const h = react.createElement;
-            const [open, setOpen] = react.useState(false), [state, setState] = react.useState(null), [error, setError] = react.useState(null);
-            const trigger = react.useRef(null);
-            react.useEffect(() => { setOpen(false); setState(null); setError(null); }, [parentSessionId]);
-            react.useEffect(() => {
-                const abort = new AbortController(); let alive = true, timer;
-                const load = async () => {
-                    if (open && document.visibilityState === 'hidden') { timer = setTimeout(load, 2000); return; }
-                    try {
-                        const response = await fetch('/__dsh-agent-team', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: parentSessionId }), signal: abort.signal });
-                        const value = await response.json();
-                        if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
-                        if (alive) { setState(value); setError(null); }
-                    } catch (reason) { if (alive && !abort.signal.aborted) setError(String(reason.message || reason)); }
-                    finally { if (alive && open) timer = setTimeout(load, 2000); }
-                };
-                load(); return () => { alive = false; abort.abort(); clearTimeout(timer); };
-            }, [parentSessionId, open]);
-            const enabled = state?.enabled === true;
-            const board = state?.board, members = Object.values(board?.members ?? {}), tasks = Object.values(board?.tasks ?? {});
-            const ownerName = id => id === board?.teamId ? t('team.lead') : members.find(member => member.id === id)?.name ?? t('team.unassigned');
-            const close = () => { setOpen(false); trigger.current?.focus(); };
-            return h(react.Fragment, null,
-                h('button', { ref: trigger, type: 'button', onClick: () => setOpen(true), 'aria-label':t('team.title'), title:t('team.title'), 'aria-haspopup':'dialog', 'aria-expanded':open, className:'dshTeamTrigger' }, h('svg',{width:16,height:16,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:1.6,'aria-hidden':true},h('path',{d:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'}),h('circle',{cx:9,cy:7,r:4})), t('team.title'), members.length>0 && h('span',null,members.length)),
-                open && h(_deepseek_ai_dsh_client_ui_primitives.Modal, { open: true, title: t('team.title'), closeLabel: t('team.close'), onClose: close },
-                    h('div', { style: { display: 'grid', gap: 16, maxHeight: '65vh', overflow: 'auto', overflowWrap: 'anywhere' }, 'data-agent-team-board': true },
-                        error && h('p', { role: 'alert' }, error),
-                        !enabled && !error && h(TeamSettings, {scope:teamSettings,t}),
-                        enabled && h('p', {className:'dshTeamHint'}, t('team.intro')),
-                        enabled && prepareTeam && h('button', {type:'button',className:'dshTeamButton',onClick:()=>{prepareTeam(t('team.template'));close();}}, t('team.prepare')),
-                        enabled && h('h3', null, t('team.members')),
-                        enabled && members.length === 0 && h('p', {className:'dshTeamHint'}, t('team.empty')),
-                        members.map(member => h('div', { key: member.id, style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-                            h('button', { className:'dshTeamButton', type: 'button', disabled: member.phase !== 'active', onClick: () => { setOpen(false); openChild({ parentSessionId: board.teamId, childSessionId: member.id, mode: 'continuable' }); } }, member.name),
-                            h('span', null, t(`team.status.${member.status ?? member.phase}`)), member.error && h('span', { role: 'status' }, member.error))),
-                        enabled && h('h3', null, t('team.tasks')),
-                        enabled && tasks.filter(task=>task.status!=='deleted').length===0 && h('p',{className:'dshTeamHint'},t('team.noTasks')),
-                        enabled && board?.pendingMessages>0 && h('p',{role:'status',className:'dshTeamHint'},t('team.pending').replace('{count}',String(board.pendingMessages))),
-                        tasks.filter(task => task.status !== 'deleted').map(task => h('article', { key: task.id, style: { padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 } },
-                            h('strong', null, task.subject), h('p', null, task.description),
-                            h('div', null, `${ownerName(task.ownerId)} · ${t(`team.status.${task.status}`)}`),
-                            task.blockedBy.length > 0 && h('div', null, `${t('team.dependencies')}: ${task.blockedBy.join(', ')}`),
-                            task.writeScopes.length > 0 && h('div', null, `${t('team.writeScopes')}: ${task.writeScopes.join(', ')}`))),
-                        h('p', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, enabled ? t('team.scopeNote') : t('team.disabled')))));
-        }
-        function TeamSettings({scope,t}) {
+        function TeamBoardAction(props) {
+            const {parentSessionId,openChild,openMain,createMain,teamSettings,saveSettings,loadModels,renderDefaults,refreshList,panel,t}=props;
             const h=react.createElement;
-            const [snapshot,setSnapshot]=react.useState(()=>scope?.getSnapshot()), [saving,setSaving]=react.useState(false), [error,setError]=react.useState(null), [saved,setSaved]=react.useState(false);
-            react.useEffect(()=>{if(!scope)return;setSnapshot(scope.getSnapshot());return scope.subscribe(()=>setSnapshot(scope.getSnapshot()));},[scope]);
-            const change=async(field,value)=>{if(saving)return;setSaving(true);setError(null);setSaved(false);try{await scope.setChecked(field,value);setSaved(true);}catch(cause){setError(String(cause.message||cause));}finally{setSaving(false)}};
-            const unavailable=!snapshot?.writable||snapshot?.mode==='memory'||saving;
+            const [fallback]=react.useState(createTeamPanel);
+            const controller=panel??fallback;
+            const panelState=react.useSyncExternalStore(controller.subscribe,controller.getSnapshot);
+            const open=panelState.openFor===parentSessionId;
+            const [state,setState]=react.useState(null),[error,setError]=react.useState(null),[busy,setBusy]=react.useState(false),[tab,setTab]=react.useState('tasks'),[refresh,setRefresh]=react.useState(0);
+            const active=react.useRef(parentSessionId),epoch=react.useRef(0),pending=react.useRef(false),operationError=react.useRef(null),trigger=react.useRef(null);
+            active.current=parentSessionId;
+            const scope=useTeamScope(teamSettings);
+            react.useEffect(()=>{epoch.current++;operationError.current=null;setState(null);setError(null);setBusy(false);pending.current=false;return()=>controller.close(parentSessionId);},[parentSessionId,controller]);
+            react.useEffect(()=>{
+                const abort=new AbortController();let alive=true,timer;
+                const load=async()=>{
+                    if(pending.current||(open&&document.visibilityState==='hidden')){timer=setTimeout(load,2000);return;}
+                    const generation=epoch.current;
+                    try{
+                        const value=await teamRequest(parentSessionId,null,abort.signal);
+                        if(alive&&generation===epoch.current){setState(value);controller.update(parentSessionId,value);setError(operationError.current);}
+                    }catch(cause){if(alive&&!abort.signal.aborted)setError(String(cause.message||cause));}
+                    finally{if(alive&&open)timer=setTimeout(load,2000);}
+                };
+                load();return()=>{alive=false;abort.abort();clearTimeout(timer);};
+            },[parentSessionId,open,refresh,scope?.value,controller]);
+            const board=state?.board,enabled=state?.enabled===true,members=Object.values(board?.members??{}),tasks=Object.values(board?.tasks??{}).filter(task=>task.status!=='deleted');
+            const config=board?.config??{revision:0,mode:'off'},profiles=state?.settings?.profiles??scope?.value?.profiles??[];
+            const configurable=enabled&&!busy&&!board?.leadRunning&&!members.some(m=>m.status==='running'||m.phase==='provisioning');
+            const mutate=async args=>{
+                if(pending.current)return false;
+                pending.current=true;operationError.current=null;setBusy(true);setError(null);epoch.current++;
+                const owner=parentSessionId;
+                try{
+                    const value=await teamRequest(board?.teamId??owner,args);
+                    if(refreshList)void refreshList().catch(()=>{});
+                    if(active.current===owner){setState(value);controller.update(owner,value);if(value.board?.receipt?.error)setError(value.board.receipt.error);}
+                    return true;
+                }catch(cause){if(active.current===owner){operationError.current=String(cause.message||cause);setError(operationError.current);}return false;}
+                finally{if(active.current===owner){pending.current=false;setBusy(false);setRefresh(v=>v+1);}}
+            };
+            const close=()=>{controller.close(parentSessionId);trigger.current?.focus();};
+            const label=id=>id===board?.teamId?t('team.lead'):members.find(m=>m.id===id)?.description??t('team.unassigned');
+            const configure=(mode,profileId=config.profile?.id??'')=>mutate({action:'configure',mode,profileId:mode==='custom'?profileId:'',expectedRevision:config.revision??0});
+            return h(react.Fragment,null,
+                !props.panelOnly&&h('button',{ref:trigger,type:'button',className:'dshTeamTrigger','aria-label':t('team.title'),'aria-haspopup':'dialog','aria-expanded':open,onClick:()=>controller.open(parentSessionId)},teamIcon(),t('team.title'),members.length>0&&h('span',null,members.length)),
+                open&&h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:true,title:t('team.title'),className:'dshTeamModal',contentClassName:'dshTeamModalContent',closeLabel:t('team.close'),onClose:close},
+                    h('div',{'data-agent-team-board':true,className:'dshCollaborationPanel'},
+                        error&&h('p',{role:'alert',className:'dshTeamError'},error),
+                        h('div',{className:'dshTeamToolbar'},
+                            h('label',null,t('team.mode'),h('select',{'aria-label':t('team.mode'),value:config.mode,disabled:!configurable,onChange:e=>configure(e.target.value,config.profile?.id??profiles[0]?.id??'')},
+                                ['off','auto','custom'].map(mode=>h('option',{key:mode,value:mode,disabled:mode==='custom'&&!profiles.length},t('team.mode.'+mode))))),
+                            config.mode==='custom'&&h('select',{'aria-label':t('team.profile'),value:config.profile?.id??'',disabled:!configurable,onChange:e=>configure('custom',e.target.value)},profiles.map(profile=>h('option',{key:profile.id,value:profile.id},profile.name))),
+                            h('button',{type:'button',className:'dshTeamButton',disabled:busy,onClick:()=>{operationError.current=null;setError(null);setRefresh(v=>v+1);}},t('team.refresh')),
+                            h('button',{type:'button',className:'dshTeamButton',disabled:busy||!board?.leadRunning&&!members.some(m=>m.status==='running'||m.phase==='provisioning'),onClick:()=>mutate({action:'stopAll'})},t('team.stopAll')),
+                            board?.teamId!==parentSessionId&&h('button',{type:'button',className:'dshTeamButton',onClick:()=>{close();openMain?.(board.teamId);}},t('team.mainConversation')),
+                            createMain&&h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled,onClick:async()=>{setError(null);setBusy(true);try{await createMain(config);close();}catch(cause){setError(String(cause.message||cause));}finally{setBusy(false);}}},t('team.newConversation'))),
+                        !configurable&&enabled&&h('p',{className:'dshTeamHint'},t('team.configDuringRun')),
+                        h('div',{role:'tablist',className:'dshTeamTabs'},['tasks','members','messages','settings'].map(id=>h('button',{key:id,type:'button',role:'tab','aria-selected':tab===id,onClick:()=>setTab(id)},t('team.'+id)))),
+                        !enabled&&tab!=='settings'&&h('p',{className:'dshTeamHint'},t('team.disabled')),
+                        tab==='tasks'&&h('div',{role:'tabpanel'},
+                            enabled&&h('details',{className:'dshTeamCreate'},h('summary',null,t('team.addTask')),h(TeamTaskForm,{key:board?.teamId,members,tasks,busy,t,onSave:mutate})),
+                            tasks.length===0&&h('p',{className:'dshTeamHint'},t('team.noTasks')),
+                            tasks.map(task=>h(TeamTaskCard,{key:task.id,task,tasks,members,label,busy,enabled,t,onSave:mutate}))),
+                        tab==='members'&&h('div',{role:'tabpanel'},
+                            h('section',{'data-standalone-subagents':true,className:'dshTeamCard'},h('h3',null,t('team.otherMembers')),h('p',{className:'dshTeamHint'},t('team.standaloneHint')),props.useSessions&&h(SubagentCatalogAction,{...props,sessionId:parentSessionId})),
+                            enabled&&config.mode!=='off'&&h('details',{className:'dshTeamCreate'},h('summary',null,t('team.addMember')),h(TeamMemberForm,{key:config.revision,config,busy,t,onSave:mutate})),
+                            enabled&&config.mode==='off'&&h('p',{className:'dshTeamHint'},t('team.enableSession')),
+                            members.length===0&&h('p',{className:'dshTeamHint'},t('team.empty')),
+                            members.map(member=>h('article',{key:member.id,className:'dshTeamCard'},
+                                h('div',{className:'dshTeamToolbar'},h('strong',null,member.description||member.name),h('span',null,t('team.status.'+(member.status??member.phase))),
+                                    h('button',{type:'button',className:'dshTeamButton',disabled:member.phase!=='active',onClick:()=>{close();openChild({parentSessionId:board.teamId,childSessionId:member.id,mode:'continuable'});}},t('team.openConversation')),
+                                    h('button',{type:'button',className:'dshTeamButton',disabled:busy||member.status!=='running',onClick:()=>mutate({action:'interrupt',target:member.id})},t('team.stopMember'))),
+                                member.role&&h('p',{className:'dshTeamHint'},`${member.role.name} · ${member.role.provider&&member.role.model?member.role.provider+' / '+member.role.model:t('team.inheritModel')}`),
+                                member.error&&h('p',{role:'status',className:'dshTeamError'},member.error),
+                                member.phase==='active'&&h(TeamMessageForm,{target:member.id,busy:busy||!enabled,t,onSend:mutate})))),
+                        tab==='messages'&&h('div',{role:'tabpanel'},
+                            !(board?.mailbox?.length)&&h('p',{className:'dshTeamHint'},t('team.noMessages')),
+                            (board?.mailbox??[]).map(mail=>h('article',{key:mail.id,className:'dshTeamCard'},h('strong',null,`${mail.sender} → ${label(mail.targetId)}`),h('p',null,(mail.content??[]).filter(c=>c.type==='text').map(c=>c.text).join('\n')),h('span',{className:'dshTeamHint'},t(mail.cancelled?'team.status.cancelled':mail.delivered?'team.delivered':'team.queued'))))),
+                        tab==='settings'&&h(TeamSettings,{scope:teamSettings,saveSettings,loadModels,renderDefaults,t})
+                    )));
+        }
+        async function teamRequest(sessionId,args,signal) {
+            const response=await fetch('/__dsh-agent-team',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId,...(args?{action:'control',arguments:args}:{})}),signal});
+            const value=await response.json();if(!response.ok)throw new Error(value.error||`HTTP ${response.status}`);return value;
+        }
+        async function teamModelDirectory() {
+            const response=await fetch('/task-models/describe',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'});
+            const value=await response.json();if(!response.ok)throw new Error(value.error||`HTTP ${response.status}`);
+            return {groups:value.providers??[]};
+        }
+        function teamIcon(){const h=react.createElement;return h('svg',{width:16,height:16,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:1.6,'aria-hidden':true},h('path',{d:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'}),h('circle',{cx:9,cy:7,r:4}));}
+        function createTeamPanel(){let state={openFor:null,views:{}};const listeners=new Set();const emit=next=>{state=next;for(const fn of listeners)fn();};return{getSnapshot:()=>state,subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},open:id=>emit({...state,openFor:id}),close:id=>{if(state.openFor===id)emit({...state,openFor:null});},update:(id,value)=>emit({...state,views:{...state.views,[id]:value}})};}
+        const EMPTY_TEAM_SCOPE={getSnapshot:()=>null,subscribe:()=>()=>{}};
+        function useTeamScope(scope){const subscribe=react.useCallback(fn=>scope?scope.subscribe(fn):()=>{},[scope]),read=react.useCallback(()=>scope?.getSnapshot()??null,[scope]);return react.useSyncExternalStore(subscribe,read);}
+        function TeamComposerTrigger({parentSessionId,panel,teamSettings,t,header=false}){
+            const h=react.createElement,view=react.useSyncExternalStore(panel.subscribe,panel.getSnapshot).views[parentSessionId];
+            const settings=useTeamScope(teamSettings);
+            if(!header&&settings?.value?.showButton===false)return null;
+            return h('button',{type:'button',className:'dshTeamTrigger','aria-label':t('team.title'),onClick:()=>panel.open(parentSessionId)},teamIcon(),header?t('team.title'):t('team.mode.'+(view?.board?.config?.mode??'off')));
+        }
+        function teamIdentity(prefix){return prefix+'-'+crypto.randomUUID().slice(0,12);}
+        function TeamField({label,children}){return react.createElement('label',{className:'dshTeamField'},react.createElement('span',null,label),children);}
+        function TeamMemberForm({config,busy,t,onSave}){
+            const h=react.createElement,[title,setTitle]=react.useState(''),[prompt,setPrompt]=react.useState(''),[roleId,setRoleId]=react.useState(config.profile?.roles?.[0]?.id??''),[requestId,setRequestId]=react.useState(()=>teamIdentity('member'));
+            const edit=(setter,value)=>{setter(value);setRequestId(teamIdentity('member'));};
+            return h('form',{className:'dshTeamCard',onSubmit:async e=>{e.preventDefault();if(await onSave({action:'create',name:requestId,requestId,description:title.trim(),prompt:prompt.trim(),context:'fresh',...(roleId?{roleId}:{})})){setTitle('');setPrompt('');setRequestId(teamIdentity('member'));}}},
+                h('fieldset',{disabled:busy},h('legend',null,t('team.addMember')),
+                    h(TeamField,{label:t('team.memberName')},h('input',{required:true,maxLength:128,value:title,onChange:e=>edit(setTitle,e.target.value)})),
+                    config.profile&&h(TeamField,{label:t('team.role')},h('select',{value:roleId,onChange:e=>edit(setRoleId,e.target.value)},config.profile.roles.map(role=>h('option',{key:role.id,value:role.id},role.name)))),
+                    h(TeamField,{label:t('team.initialTask')},h('textarea',{required:true,rows:3,maxLength:16000,value:prompt,onChange:e=>edit(setPrompt,e.target.value)})),
+                    h('button',{type:'submit',className:'dshTeamButton',disabled:!title.trim()||!prompt.trim()},t('team.createAndRun'))));
+        }
+        function TeamMessageForm({target,busy,t,onSend}){
+            const h=react.createElement,[text,setText]=react.useState(''),[id,setId]=react.useState(()=>teamIdentity('message'));
+            return h('form',{className:'dshTeamMessage',onSubmit:async e=>{e.preventDefault();if(await onSend({action:'message',target,message:text.trim(),messageId:id})){setText('');setId(teamIdentity('message'));}}},
+                h('input',{'aria-label':t('team.memberMessage'),placeholder:t('team.memberMessage'),maxLength:8000,value:text,disabled:busy,onChange:e=>{setText(e.target.value);setId(teamIdentity('message'));}}),
+                h('button',{type:'submit',className:'dshTeamButton',disabled:busy||!text.trim()},t('team.send')));
+        }
+        function TeamTaskForm({task,members,tasks,busy,t,onSave,onCancel}){
+            const h=react.createElement,[draft,setDraft]=react.useState(()=>({subject:task?.subject??'',description:task?.description??'',acceptance:task?.acceptance??'',owner:task?.ownerId??'',blockedBy:task?.blockedBy??[],writeScopes:(task?.writeScopes??[]).join(', '),result:task?.result??'',status:task?.status??'pending'})),[id,setId]=react.useState(()=>task?.id??teamIdentity('task'));
+            const field=(name,value)=>setDraft(previous=>({...previous,[name]:value}));
+            return h('form',{className:'dshTeamCard',onSubmit:async e=>{e.preventDefault();if(await onSave({action:'task',taskId:id,expectedRevision:task?.revision??0,...draft,owner:draft.owner||null,writeScopes:draft.writeScopes.split(',').map(s=>s.trim()).filter(Boolean)})){if(onCancel)onCancel();else {setDraft({subject:'',description:'',acceptance:'',owner:'',blockedBy:[],writeScopes:'',result:'',status:'pending'});setId(teamIdentity('task'));}}}},
+                h('fieldset',{disabled:busy},h('legend',null,t(task?'team.editTask':'team.addTask')),
+                    ['subject','description','acceptance'].map(name=>h(TeamField,{key:name,label:t('team.'+name)},h(name==='subject'?'input':'textarea',{required:name==='subject',rows:2,value:draft[name],maxLength:name==='subject'?256:8000,onChange:e=>field(name,e.target.value)}))),
+                    h(TeamField,{label:t('team.owner')},h('select',{value:draft.owner,onChange:e=>field('owner',e.target.value)},h('option',{value:''},t('team.unassigned')),members.filter(m=>m.phase==='active').map(m=>h('option',{key:m.id,value:m.id},m.description||m.name)))),
+                    tasks.length>0&&h(TeamField,{label:t('team.dependencies')},h('select',{multiple:true,value:draft.blockedBy,onChange:e=>field('blockedBy',Array.from(e.target.selectedOptions,o=>o.value))},tasks.filter(item=>item.id!==task?.id).map(item=>h('option',{key:item.id,value:item.id},item.subject)))),
+                    h(TeamField,{label:t('team.writeScopes')},h('input',{value:draft.writeScopes,onChange:e=>field('writeScopes',e.target.value)})),
+                    task&&h(TeamField,{label:t('team.taskStatus')},h('select',{value:draft.status,onChange:e=>field('status',e.target.value)},['pending','review','blocked','completed','cancelled'].map(status=>h('option',{key:status,value:status},t('team.status.'+status))))),
+                    task&&h(TeamField,{label:t('team.result')},h('textarea',{rows:3,value:draft.result,maxLength:16000,onChange:e=>field('result',e.target.value)})),
+                    h('div',{className:'dshTeamToolbar'},h('button',{type:'submit',className:'dshTeamButton',disabled:!draft.subject.trim()},t('team.save')),onCancel&&h('button',{type:'button',className:'dshTeamButton',onClick:onCancel},t('team.cancel')))));
+        }
+        function TeamTaskCard({task,tasks,members,label,busy,enabled,t,onSave}){
+            const h=react.createElement,[editing,setEditing]=react.useState(false),active=['queued','in_progress'].includes(task.status);
+            if(editing)return h(TeamTaskForm,{key:task.id+':'+task.revision,task,tasks,members,busy,t,onSave,onCancel:()=>setEditing(false)});
+            return h('article',{className:'dshTeamCard'},h('strong',null,task.subject),h('p',null,task.description),h('p',{className:'dshTeamHint'},`${label(task.ownerId)} · ${t('team.status.'+task.status)}`),
+                task.acceptance&&h('p',null,t('team.acceptance')+': '+task.acceptance),task.result&&h('p',null,t('team.result')+': '+task.result),
+                task.blockedBy.length>0&&h('p',{className:'dshTeamHint'},t('team.dependencies')+': '+task.blockedBy.map(id=>tasks.find(item=>item.id===id)?.subject??id).join(', ')),
+                task.writeScopes.length>0&&h('p',{className:'dshTeamHint'},t('team.writeScopes')+': '+task.writeScopes.join(', ')),
+                h('div',{className:'dshTeamToolbar'},
+                    h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||active,onClick:()=>setEditing(true)},t('team.edit')),
+                    h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||!task.ownerId||!['pending','blocked','cancelled'].includes(task.status)||task.blockedBy.some(id=>tasks.find(item=>item.id===id)?.status!=='completed'),onClick:()=>onSave({action:'dispatch',taskId:task.id,expectedRevision:task.revision})},t('team.dispatch')),
+                    task.status==='review'&&h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||!!task.acceptance&&!task.result,onClick:()=>onSave({action:'task',taskId:task.id,expectedRevision:task.revision,status:'completed'})},t('team.accept')),
+                    h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||active,onClick:()=>onSave({action:'task',taskId:task.id,expectedRevision:task.revision,status:'deleted'})},t('team.delete'))));
+        }
+        function TeamSettings({scope,saveSettings,loadModels,renderDefaults,t}) {
+            const h=react.createElement,[snapshot,setSnapshot]=react.useState(()=>scope?.getSnapshot()),[draft,setDraft]=react.useState(null),[saving,setSaving]=react.useState(false),[error,setError]=react.useState(null),[saved,setSaved]=react.useState(false),[groups,setGroups]=react.useState([]);
+            const dirty=react.useRef(false),base=react.useRef(null);
+            react.useEffect(()=>{if(!scope)return;const adopt=()=>{const next=scope.getSnapshot();setSnapshot(next);if(!dirty.current){setDraft(structuredClone(next.value??{}));base.current=next.revision;}};adopt();return scope.subscribe(adopt);},[scope]);
+            react.useEffect(()=>{let alive=true;if(loadModels)loadModels().then(value=>{if(alive)setGroups(value.groups??[]);}).catch(cause=>{if(alive)setError(String(cause.message||cause));});return()=>{alive=false;};},[loadModels]);
+            const value=draft??snapshot?.value??{},profiles=value.profiles??[],unavailable=!snapshot?.writable||snapshot?.mode==='memory'||saving;
+            const set=next=>{dirty.current=true;setSaved(false);setDraft(next);};
+            const field=(key,next)=>set({...value,[key]:next});
+            const updateProfile=(id,patch)=>field('profiles',profiles.map(p=>p.id===id?{...p,...patch}:p));
+            const updateRole=(profileId,roleId,patch)=>updateProfile(profileId,{roles:profiles.find(p=>p.id===profileId).roles.map(r=>r.id===roleId?{...r,...patch}:r)});
+            const blankRole=()=>({id:teamIdentity('role'),name:t('team.newRole'),instructions:'',provider:'',model:'',reasoningEffort:'',maxTokens:null,allowTools:[],canSpawn:false});
+            const save=async()=>{if(unavailable)return;setSaving(true);setError(null);try{if(!saveSettings)throw Error(t('team.unavailable'));await saveSettings(value,base.current);dirty.current=false;await scope.load?.();setDraft(structuredClone(scope.getSnapshot().value??value));base.current=scope.getSnapshot().revision;setSaved(true);}catch(cause){setError(String(cause.message||cause));}finally{setSaving(false);}};
             return h('section',{className:'dshTeamSettings','data-team-settings':true},
                 h('p',{className:'dshTeamHint'},t('team.settingsDescription')),
-                h('label',{className:'dshTeamSetting'},h('span',null,t('team.enable')),h('input',{type:'checkbox',role:'switch',checked:snapshot?.value?.enabled===true,disabled:unavailable,onChange:e=>void change('enabled',e.target.checked)})),
-                h('label',{className:'dshTeamSetting'},h('span',null,t('team.limit')),h('select',{value:snapshot?.value?.maxMembers??8,disabled:unavailable,onChange:e=>void change('maxMembers',Number(e.target.value))},...[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(value=>h('option',{key:value,value},value)))),
-                saved&&h('p',{role:'status',className:'dshTeamHint'},t('team.restart')),
-                error&&h('p',{role:'alert'},error));
+                [['enabled','team.enable'],['showButton','team.showButton']].map(([key,label])=>h('label',{key,className:'dshTeamSetting'},h('span',null,t(label)),h('input',{type:'checkbox',role:'switch',checked:key==='showButton'?value[key]!==false:value[key]===true,disabled:unavailable,onChange:e=>field(key,e.target.checked)}))),
+                h('label',{className:'dshTeamSetting'},h('span',null,t('team.limit')),h('select',{value:value.maxMembers??8,disabled:unavailable,onChange:e=>field('maxMembers',Number(e.target.value))},Array.from({length:16},(_,i)=>h('option',{key:i,value:i+1},i+1)))),
+                h('label',{className:'dshTeamSetting'},h('span',null,t('team.defaultMode')),h('select',{value:value.defaultMode??'off',disabled:unavailable,onChange:e=>set({...value,defaultMode:e.target.value,defaultProfile:e.target.value==='custom'?(value.defaultProfile||profiles[0]?.id||''):value.defaultProfile??''})},['off','auto','custom'].map(mode=>h('option',{key:mode,value:mode,disabled:mode==='custom'&&!profiles.length},t('team.mode.'+mode))))),
+                h('label',{className:'dshTeamSetting'},h('span',null,t('team.defaultProfile')),h('select',{value:value.defaultProfile??'',disabled:unavailable,onChange:e=>field('defaultProfile',e.target.value)},h('option',{value:'',disabled:value.defaultMode==='custom'},t('team.none')),profiles.map(p=>h('option',{key:p.id,value:p.id},p.name)))),
+                profiles.map(profile=>h('fieldset',{key:profile.id,className:'dshTeamCard',disabled:unavailable},
+                    h('legend',null,t('team.profile')),h(TeamField,{label:t('team.profileName')},h('input',{value:profile.name,maxLength:128,onChange:e=>updateProfile(profile.id,{name:e.target.value})})),
+                    profile.roles.map(role=>h('details',{key:role.id,className:'dshTeamRole'},h('summary',null,role.name||t('team.newRole')),
+                        h(TeamField,{label:t('team.roleName')},h('input',{value:role.name,maxLength:128,onChange:e=>updateRole(profile.id,role.id,{name:e.target.value})})),
+                        h(TeamField,{label:t('team.instructions')},h('textarea',{value:role.instructions??'',rows:3,maxLength:8000,onChange:e=>updateRole(profile.id,role.id,{instructions:e.target.value})})),
+                        h(TeamField,{label:t('team.model')},h('select',{value:role.provider&&role.model?JSON.stringify([role.provider,role.model]):'',onChange:e=>{const [provider,model]=e.target.value?JSON.parse(e.target.value):['',''];updateRole(profile.id,role.id,{provider,model,reasoningEffort:''});}},h('option',{value:''},t('team.inheritModel')),groups.map(group=>h('optgroup',{key:group.id,label:group.name},group.models.map(model=>h('option',{key:model.id,value:JSON.stringify([group.id,model.id])},model.name||model.id)))),role.provider&&role.model&&!groups.some(group=>group.id===role.provider&&group.models.some(model=>model.id===role.model))&&h('option',{value:JSON.stringify([role.provider,role.model])},role.provider+' / '+role.model+' · '+t('team.modelUnavailable')))),
+                        h(TeamField,{label:t('team.effort')},h('input',{value:role.reasoningEffort??'',maxLength:64,onChange:e=>updateRole(profile.id,role.id,{reasoningEffort:e.target.value})})),
+                        h(TeamField,{label:t('team.maxTokens')},h('input',{type:'number',min:1,max:1000000,value:role.maxTokens??'',onChange:e=>updateRole(profile.id,role.id,{maxTokens:e.target.value?Number(e.target.value):null})})),
+                        h(TeamField,{label:t('team.tools')},h('input',{value:(role.allowTools??[]).join(', '),onChange:e=>updateRole(profile.id,role.id,{allowTools:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})})),
+                        h('label',{className:'dshTeamSetting'},h('span',null,t('team.canSpawn')),h('input',{type:'checkbox',role:'switch',checked:role.canSpawn===true,onChange:e=>updateRole(profile.id,role.id,{canSpawn:e.target.checked})})),
+                        h('button',{type:'button',className:'dshTeamButton',disabled:profile.roles.length===1,onClick:()=>updateProfile(profile.id,{roles:profile.roles.filter(r=>r.id!==role.id)})},t('team.deleteRole')))),
+                    h('div',{className:'dshTeamToolbar'},h('button',{type:'button',className:'dshTeamButton',disabled:profile.roles.length>=16,onClick:()=>updateProfile(profile.id,{roles:[...profile.roles,blankRole()]})},t('team.addRole')),
+                        h('button',{type:'button',className:'dshTeamButton',disabled:profiles.length>=16,onClick:()=>field('profiles',[...profiles,{...structuredClone(profile),id:teamIdentity('profile'),name:profile.name+' '+t('team.copy')}])},t('team.copy')),
+                        h('button',{type:'button',className:'dshTeamButton',onClick:()=>{const next=profiles.filter(p=>p.id!==profile.id);set({...value,profiles:next,defaultProfile:value.defaultProfile===profile.id?'':value.defaultProfile??'',defaultMode:value.defaultProfile===profile.id&&value.defaultMode==='custom'?'off':value.defaultMode??'off'});}},t('team.delete'))))),
+                h('div',{className:'dshTeamToolbar'},h('button',{type:'button',className:'dshTeamButton',disabled:unavailable||profiles.length>=16,onClick:()=>field('profiles',[...profiles,{id:teamIdentity('profile'),name:t('team.newProfile'),roles:[blankRole()]}])},t('team.addProfile')),
+                    h('button',{type:'button',className:'dshTeamButton',disabled:unavailable||!dirty.current,onClick:save},t('team.save')),
+                    h('button',{type:'button',className:'dshTeamButton',disabled:unavailable,onClick:()=>{dirty.current=false;setDraft(structuredClone(snapshot?.value??{}));base.current=snapshot?.revision;setError(null);}},t('team.reset'))),
+                renderDefaults&&h('details',{className:'dshTeamCard'},h('summary',null,t('team.advancedDefaults')),h('p',{className:'dshTeamHint'},t('team.advancedHint')),renderDefaults()),
+                saved&&h('p',{role:'status',className:'dshTeamHint'},t('team.saved')),error&&h('p',{role:'alert',className:'dshTeamError'},error));
         }
+
 
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, {
@@ -928,7 +1191,12 @@ window.__ModuleLoader__.load({
 				en
 			}), "ui-subagent: dictionaries");
             const teamSettings=ctx.settingsScope.bind({namespace:"agent-teams"});
-            ctx.slots.inject("settings.section",()=>ctx.slots.register({name:"settings.section",id:"agent-teams",order:23,locale:NS,label:()=>ctx.locale.bind(NS)("team.title"),inject:()=>({scope:teamSettings})},TeamSettings));
+            const panel=createTeamPanel();
+            const renderDefaults=()=>react.createElement(SubagentDefaultsSection,{api:ctx.get("connection").api});
+            const rpc=async(method,payload)=>{const result=await ctx.get("connection").rpc.call("/api",method,payload);if(!result.ok)throw new Error(result.error?.message??"Request failed");return result.value;};
+            const loadModels=teamModelDirectory;
+            const saveSettings=async(value,expectedRevision)=>{await rpc("settings.mutate",{ns:"agent-teams",ops:[{op:"set",path:[],value}],expectedRevision});await teamSettings.load();};
+            ctx.slots.inject("settings.section",()=>ctx.slots.register({name:"settings.section",id:"agent-teams",order:23,locale:NS,label:()=>ctx.locale.bind(NS)("team.title"),inject:()=>({scope:teamSettings,saveSettings,loadModels,renderDefaults})},TeamSettings));
 			const sessions = ctx.sessions;
 			const childLabels = (session, query) => {
 				const { byId } = sessions.list.getSnapshot();
@@ -965,7 +1233,18 @@ window.__ModuleLoader__.load({
 			};
 			const catalogActions = (parentSessionId) => ({
                 parentSessionId,
-                teamSettings,
+                teamSettings,panel,loadModels,saveSettings,renderDefaults,refreshList:()=>sessions.refresh(),
+                openMain: id=>sessions.open(id),
+                async createMain(config){
+                    const cwd=sessions.list.getSnapshot().byId[parentSessionId]?.cwd;
+                    if(!cwd)throw new Error("Workspace unavailable");
+                    const id=await sessions.create({cwd,sessionId:'agent-session-'+crypto.randomUUID()});
+                    await rpc("session.rename",{sessionId:id,title:ctx.locale.bind(NS)("team.mainConversation")});
+                    const created=await teamRequest(id);
+                    await teamRequest(id,{action:'configure',mode:config.mode==='custom'?'custom':'auto',profileId:config.profile?.id??'',expectedRevision:created.board?.config?.revision??0});
+                    await sessions.refresh();
+                    sessions.open(id);
+                },
                 prepareTeam(text) {
                     const shell=ctx.get("conversation").input.shell(parentSessionId);
                     const existing=shell.snapshot.draft;
@@ -986,14 +1265,10 @@ window.__ModuleLoader__.load({
 			ctx.slots.inject("tool.call.toolview", function* () {
 				for (const key of ["subagent", "subagent_fork", "subagent_codex", "subagent_claude_code"]) yield ctx.slots.register({ name: "tool.call.toolview", key, locale: NS, inject: catalogActions }, SubagentToolRow);
 			});
-			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
-				name: "conversation.session.header.actions",
-				id: "subagent-catalog",
-				order: 10,
-				locale: NS,
-				inject: catalogActions
-			}, SubagentCatalogAction));
-            ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({ name: "conversation.session.header.actions", id: "agent-team-board", order: 11, locale: NS, inject: catalogActions }, TeamBoardAction));
+
+            ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({ name: "conversation.session.header.actions", id: "agent-team-board", order: 11, locale: NS, inject: id=>({...catalogActions(id),header:true}) }, TeamComposerTrigger));
+            ctx.slots.inject("conversation.collaboration.panel",()=>ctx.slots.register({name:"conversation.collaboration.panel",locale:NS,inject:id=>({...catalogActions(id),panelOnly:true})},TeamBoardAction));
+            ctx.slots.inject("conversation.input.right",()=>ctx.slots.register({name:"conversation.input.right",id:"collaboration",order:90,locale:NS,inject:catalogActions},TeamComposerTrigger));
 			ctx.slots.inject("conversation.composer", () => ctx.slots.register({
 				name: "conversation.composer",
 				priority: -10,

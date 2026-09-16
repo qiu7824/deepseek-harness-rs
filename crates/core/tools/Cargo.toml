@@ -19,7 +19,8 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
+sha2 = { workspace = true }
+dsh-session = { path = "../session" }
 
 [dev-dependencies]
-dsh-session = { path = "../session" }
 tokio = { workspace = true, features = ["test-util"] }

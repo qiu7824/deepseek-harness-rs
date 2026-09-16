@@ -54,6 +54,18 @@ function fixture(address) {
     const retry = session.prompt(content, 'queue'); await new Promise(resolve => setImmediate(resolve));
     assert.equal(calls.at(-1).requestId, failureRequestId, 'retry after an uncertain reply reuses admission identity');
     pending.shift()({ result: { ok: true, value: { accepted: true, messageId: 'retry-message' } } }); await retry;
+    const cancelled=session.prompt(content,'queue');await new Promise(resolve=>setImmediate(resolve));
+    const cancelledId=calls.at(-1).requestId;
+    pending.shift()({result:{ok:false,error:{code:'cancelled',message:'original admission was cancelled'}}});await cancelled;
+    assert.equal(session.promptRetry,null,'a cancelled logical request must not be retried forever');
+    const fresh=session.prompt(content,'queue');await new Promise(resolve=>setImmediate(resolve));
+    assert.notEqual(calls.at(-1).requestId,cancelledId,'explicit resending after cancellation creates a new admission');
+    pending.shift()({result:{ok:true,value:{accepted:true,messageId:'already-finished',running:false}}});await fresh;
+    assert.equal(session.running,false,'an already settled receipt cannot create a false running spinner');
+    const late=session.prompt(content,'queue');await new Promise(resolve=>setImmediate(resolve));
+    session.runningRevision+=1;session.running=false;
+    pending.shift()({result:{ok:true,value:{accepted:true,messageId:'finished-before-reply',running:true}}});await late;
+    assert.equal(session.running,false,'a late receipt must not overwrite a newer idle event');
   }
   console.log('PASS session queues: main/child delivery, sending, reconnect, acknowledgement merge, retry and durable handoff');
 })().catch(error => { console.error(error); process.exitCode = 1; });

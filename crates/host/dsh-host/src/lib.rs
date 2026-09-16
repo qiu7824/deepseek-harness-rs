@@ -28,6 +28,7 @@ mod computer_use_stream;
 #[cfg(test)]
 mod context_stats_test;
 mod deepseek_settings;
+mod environment_capabilities;
 mod devin_auth;
 mod feedback_delivery;
 mod free_catalog;
@@ -2215,30 +2216,14 @@ fn compose_host_in_fiber(
             },
         )
         .map_err(|error| format!("settings storage-paths: {error}"))?;
-    let team_scope = settings
-        .register(
-            ctx,
-            dsh_settings::settings_namespace("agent-teams").map_err(|error| error.to_string())?,
-            dsh_schemastery::Schema::object(indexmap::IndexMap::from([
-                (
-                    "enabled".into(),
-                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
-                ),
-                (
-                    "maxMembers".into(),
-                    dsh_schemastery::Schema::number()
-                        .min(1.0)
-                        .max(16.0)
-                        .step(1.0)
-                        .default(dsh_schemastery::Data::Number(8.0)),
-                ),
-            ])),
-            dsh_settings::SettingsRegisterOptions {
-                applies: dsh_settings::SettingsApplies::Restart,
-                ..Default::default()
-            },
-        )
-        .map_err(|error| format!("settings agent-teams: {error}"))?;
+    let team_scope = settings.register(
+        ctx, dsh_settings::settings_namespace("agent-teams").map_err(|error|error.to_string())?,
+        agent_team_http::settings_schema(),
+        dsh_settings::SettingsRegisterOptions {
+            validate: Some(Arc::new(|value| dsh_agent_team::config::Config::parse(value.to_json().unwrap_or_else(||serde_json::json!({}))).map(|_|()))),
+            ..Default::default()
+        },
+    ).map_err(|error|format!("settings agent-teams: {error}"))?;
     let computer_use_scope = settings
         .register(
             ctx,
@@ -3256,6 +3241,8 @@ fn compose_host_in_fiber(
     )
     .map_err(|error| format!("tools: {error}"))?;
     dsh_tools::install_security_policy(ctx, security_policy_state);
+    dsh_tools::discovery::install(ctx, &tools, environment_capabilities::discovery_config(&data_root)?)?;
+    environment_capabilities::install(ctx, &tools, &system_prompt, subprocess.clone(), runtime_paths.clone())?;
     let task_models = task_models::TaskModels::install(ctx, settings.clone(), llm.clone())?;
     let _image_generation =
         image_generation::ImageGeneration::install(ctx, task_models.clone(), account_auth.clone())?;
@@ -4034,19 +4021,19 @@ fn compose_host_in_fiber(
         }),
     )
     .map_err(|error| format!("workspace: {error}"))?;
-    let agent_teams = if let dsh_schemastery::Data::Object(values) = (team_scope.get)() {
-        if values.get("enabled") == Some(&dsh_schemastery::Data::Bool(true)) {
-            let limit = match values.get("maxMembers") {
-                Some(dsh_schemastery::Data::Number(value)) => *value as usize,
-                _ => 8,
-            };
-            Some(dsh_agent_team::install(ctx, limit)?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let team_service = dsh_agent_team::install(ctx, 8)?;
+    team_service.configure(dsh_agent_team::config::Config::parse((team_scope.get)().to_json().unwrap_or_else(||serde_json::json!({})))?)?;
+    let team_watch = team_service.clone();
+    let _team_settings_watch = (team_scope.watch)(Arc::new(move |next,_previous| {
+        if let Ok(config)=dsh_agent_team::config::Config::parse(next.to_json().unwrap_or_else(||serde_json::json!({}))) { let _=team_watch.configure(config); }
+        async move {}.boxed()
+    }));
+    let team_prompt=team_service.clone();
+    let _team_context=system_prompt.context(ctx,dsh_system_prompt::PromptContext {
+        name:"collaboration:policy".into(),order:116.0,
+        text:PromptText::Provider(Arc::new(move |assembly|assembly.field_str("sessionId").map(|id|team_prompt.prompt_context(id)).unwrap_or_default())),
+    });
+    let agent_teams=Some(team_service);
     // The agent-presets roster: the shipped presets beside this app's
     // config plus the harness-home user root the service appends itself.
     // Anchored to the manifest, not the process cwd (tests and launchers
@@ -4234,6 +4221,17 @@ fn compose_host_in_fiber(
     let api_proxy = ApiProxyService::install(
         ctx,
         ApiProxyDefaults {
+            initialize_session: Some(Arc::new({
+                let teams=agent_teams.clone();
+                move |agent| {let teams=teams.clone();Box::pin(async move {if let Some(teams)=teams{teams.initialize_session(agent).await?;}Ok(())})}
+            })),
+            cancel_collaboration: Some(Arc::new({
+                let teams=agent_teams.clone();
+                move |agent| {let teams=teams.clone();Box::pin(async move {
+                    if let Some(teams)=teams {if teams.manages_cancellation(&agent){teams.control(agent,serde_json::json!({"action":"stopAll"})).await?;return Ok(true);}}
+                    Ok(false)
+                })}
+            })),
             default_model_selection: Arc::new({
                 let default_model = default_model.clone();
                 move || {
@@ -4297,7 +4295,7 @@ fn compose_host_in_fiber(
         settings.clone(),
         allow_remote_host,
     );
-    let agent_team_route = agent_team_http::register(&web_server, agent_teams, allow_remote_host);
+    let agent_team_route = agent_team_http::register(&web_server, agent_teams, api_proxy.clone(), allow_remote_host);
     let computer_use_route = computer_use_http::register(
         &web_server,
         agents.clone(),

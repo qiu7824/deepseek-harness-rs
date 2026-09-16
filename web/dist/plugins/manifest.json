@@ -40,7 +40,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "61c6ad425aae9c63",
+      "rev": "a0f6b63b8cd3f4de",
       "inject": [],
       "immediately": true
     },
@@ -56,7 +56,7 @@
     {
       "id": "@deepseek-ai/dsh-client-runtime",
       "url": "/plugins/client-runtime.js",
-      "rev": "271966a7137305dd",
+      "rev": "b2ad5ac75299126b",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-typert-registry",
@@ -124,7 +124,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-general",
       "url": "/plugins/ui-settings-general.js",
-      "rev": "735c9c045d0c23af",
+      "rev": "7fbc9f5081b67a5d",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "f8c78b19f55f0fe4",
+      "rev": "bc8a51466b9c8bd4",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -271,14 +271,15 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-subagent",
       "url": "/plugins/ui-subagent.js",
-      "rev": "95e07f6d1dd7d650",
+      "rev": "3282d8ee1ea6f897",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-client-ui-input-trigger",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-general"
       ],
       "immediately": false
     },

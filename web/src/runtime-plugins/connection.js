@@ -5301,8 +5301,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			clientTimeZone: string().optional()
 		});
 		/** session.prompt response value (the command slot appears only when the prompt dispatched a slash command). */
-		const sessionPromptValueSchema = object({
+        const sessionPromptValueSchema = object({
 			accepted: literal(true),
+			running: boolean().optional(),
 			command: object({
 				kind: literal("success"),
 				text: string().optional()
@@ -5982,9 +5983,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		]);
 		object({ parentSessionId: sessionIdSchema });
 		/** subagent.list response value. */
-		const subagentListValueSchema = object({
+        const subagentListValueSchema = object({
 			entries: array(subagentListEntrySchema),
-			parentAvailable: boolean()
+			parentAvailable: boolean(),
+			parentResumable: boolean().optional()
 		});
 		object({
 			parentSessionId: sessionIdSchema,
@@ -6040,7 +6042,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"session.cancel": sessionCancelValueSchema,
 			"subagent.list": subagentListValueSchema,
 			"subagent.history": subagentHistoryValueSchema,
-			"subagent.prompt": object({ messageId: string() }),
+			"subagent.prompt": object({ messageId: string(), requestId: string().optional(), running: boolean().optional() }),
 			"subagent.interrupt": subagentInterruptValueSchema,
 			"host.describe": hostDescribeValueSchema,
 			"host.pickDirectory": hostPickDirectoryValueSchema,

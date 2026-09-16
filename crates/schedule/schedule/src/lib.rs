@@ -76,6 +76,7 @@ pub fn apply(ctx: &Context) {
                 .map(|slot| slot.as_ref().clone());
             let key = Arc::as_ptr(&agent).cast::<()>() as usize;
             if stopping.load(std::sync::atomic::Ordering::SeqCst)
+                || agent.session().header().origin.as_deref() == Some("subagent")
                 || runtimes.lock().contains_key(&key)
                 || registry
                     .as_ref()

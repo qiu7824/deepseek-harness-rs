@@ -7353,7 +7353,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.queueMirror.begin(requestId, content);
 				this.notifier.markDirty();
 				attempt.promise = this.sendPrompt(content, mode, requestId).then(result => {
-					if (!result.ok) this.promptRetry = attempt;
+					if (!result.ok && result.error?.code !== "cancelled") this.promptRetry = attempt;
 					return result;
 				}).finally(() => {
 					this.promptInFlight = this.promptInFlight.filter(item => item !== attempt);
@@ -7414,7 +7414,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					this.notifier.markDirty();
 					return result;
 				}
-				if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(true);
+				if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(result.value.running ?? true);
 				if (this.blankBit) {
 					this.blankBit = false;
 					this.options.onEngaged?.(this);
@@ -7891,7 +7891,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* Install or clear the catalog-discovered transport address. A changed
 			* address rebuilds an already-open window through its new history route.
 			* @param address - direct parent/child address, or undefined for ordinary transport.
-			* @param parentAvailable - latest exact-parent availability hint.
+			* @param parentAvailable - whether the owner is live or can resume on submission.
 			*/
 			configureSubagent(address, parentAvailable = false) {
 				const same = this.address?.parentSessionId === address?.parentSessionId && this.address?.childSessionId === address?.childSessionId && this.address?.mode === address?.mode;
@@ -8303,7 +8303,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				const address = this.navigationAddress(sessionId);
 				if (!this.summaries.some((summary) => summary.sessionId === sessionId) && address === void 0) throw new Error(`sessions.select: unknown session ${sessionId}`);
 				if (address !== void 0) this.addresses.set(sessionId, address);
-				this.sessions.get(sessionId)?.configureSubagent(address, address === void 0 ? false : this.catalogs.get(address.parentSessionId)?.parentAvailable ?? false);
+				this.sessions.get(sessionId)?.configureSubagent(address, address !== void 0 && this.canContinueSubagent(address.parentSessionId));
 				this.selected = sessionId;
 				this.completedNotifications.delete(sessionId);
 				this.refreshSubagents(sessionId);
@@ -8318,7 +8318,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				const entry = catalog?.entries.find((candidate) => candidate.id === address.childSessionId);
 				if (entry === void 0 || entry.kind !== "child" || entry.mode !== address.mode) throw new Error(`sessions.selectSubagent: ${address.childSessionId} is not a healthy catalog child`);
 				this.addresses.set(address.childSessionId, address);
-				this.sessions.get(address.childSessionId)?.configureSubagent(address, catalog?.parentAvailable ?? false);
+				this.sessions.get(address.childSessionId)?.configureSubagent(address, this.canContinueSubagent(address.parentSessionId));
 				this.selected = address.childSessionId;
 				this.completedNotifications.delete(address.childSessionId);
 				this.refreshSubagents(address.childSessionId);
@@ -8394,12 +8394,16 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				}
 				return session;
 			}
+			canContinueSubagent(parentSessionId) {
+				const catalog = this.catalogs.get(parentSessionId);
+				return catalog?.parentAvailable === true || catalog?.parentResumable === true;
+			}
 			createSession(sessionId) {
 				const address = this.addresses.get(sessionId);
 				return new Session(sessionId, this.api, this.remote, {
 					...address === void 0 ? {} : {
 						address,
-						parentAvailable: this.catalogs.get(address.parentSessionId)?.parentAvailable ?? false
+						parentAvailable: this.canContinueSubagent(address.parentSessionId)
 					},
 					onEngaged: (engaged) => {
 						this.recordMutation({
@@ -8439,6 +8443,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				const activityRows = /* @__PURE__ */ new Map();
 				this.catalogs.set(parentSessionId, {
 					entries: previous?.entries ?? [],
+					parentResumable: previous?.parentResumable ?? false,
 					parentAvailable: previous?.parentAvailable ?? false,
 					state: "loading",
 					error: null
@@ -8458,10 +8463,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 							});
 							for (const [childId, address] of this.addresses) {
 								if (address.parentSessionId !== parentSessionId) continue;
-								this.sessions.get(childId)?.handleSubagentParentAvailable(parentAvailable);
+								this.sessions.get(childId)?.handleSubagentParentAvailable(this.canContinueSubagent(parentSessionId));
 							}
 						} else this.catalogs.set(parentSessionId, {
 							entries: this.withCatalogMutations(previous?.entries ?? [], expandableRows, activityRows),
+							parentResumable: previous?.parentResumable ?? false,
 							parentAvailable: this.catalogInflight.get(parentSessionId)?.parentAvailableOverride ?? previous?.parentAvailable ?? false,
 							state: "error",
 							error: result.error
@@ -8470,6 +8476,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						const folded = transportError(error);
 						this.catalogs.set(parentSessionId, {
 							entries: this.withCatalogMutations(previous?.entries ?? [], expandableRows, activityRows),
+							parentResumable: previous?.parentResumable ?? false,
 							parentAvailable: this.catalogInflight.get(parentSessionId)?.parentAvailableOverride ?? previous?.parentAvailable ?? false,
 							state: "error",
 							error: folded.ok ? null : folded.error
@@ -8846,7 +8853,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						});
 						for (const [childId, address] of this.addresses) {
 							if (address.parentSessionId !== frame.sessionId) continue;
-							this.sessions.get(childId)?.handleSubagentParentAvailable(false);
+							this.sessions.get(childId)?.handleSubagentParentAvailable(this.canContinueSubagent(frame.sessionId));
 						}
 						return;
 					}

@@ -256,6 +256,7 @@ pub fn scoped_tool_guidance(
 struct CompiledToolRestriction {
     allow: Option<Vec<String>>,
     deny: Option<Vec<String>>,
+    include_local: bool,
 }
 
 impl CompiledToolRestriction {
@@ -272,6 +273,7 @@ impl CompiledToolRestriction {
         }
         true
     }
+
 }
 
 /// A monotonic execution guard evaluated after every `tools/pre-execute`
@@ -466,6 +468,7 @@ struct ExecutionState {
 /// One scope's complete tool-registry contribution.
 struct ToolLayer {
     tools: NamedEntries<Arc<ToolDefinition>>,
+    inherited: Arc<Mutex<Option<HashMap<String,Arc<ToolDefinition>>>>>,
     restrictions: AnonymousEntries<CompiledToolRestriction>,
     guards: AnonymousEntries<ToolGuard>,
     mode: Arc<Mutex<Option<ToolPresentationMode>>>,
@@ -481,6 +484,7 @@ impl ToolLayer {
                     format!("tool \"{name}\" is already registered"),
                 ))
             }),
+            inherited: Arc::new(Mutex::new(None)),
             restrictions: AnonymousEntries::new(),
             guards: AnonymousEntries::new(),
             mode: Arc::new(Mutex::new(None)),
@@ -494,6 +498,10 @@ impl ToolLayer {
             .values()
             .iter()
             .all(|filter| filter.admits(name))
+    }
+
+    fn admits_local(&self, name: &str) -> bool {
+        self.restrictions.values().iter().all(|filter|!filter.include_local||filter.admits(name))
     }
 
     /// First monotonic denial from this layer's live guard registrations.
@@ -513,6 +521,7 @@ impl ScopeLayer for ToolLayer {
             && self.restrictions.is_empty()
             && self.guards.is_empty()
             && self.mode.lock().is_none()
+            && self.inherited.lock().is_none()
     }
 }
 
@@ -563,6 +572,7 @@ pub struct ToolRuntime {
     max_parallel_sub_calls: u64,
     next_token: AtomicU64,
     code_transport: Mutex<Option<Arc<ToolDefinition>>>,
+    pub(crate) discovery: Mutex<Option<Arc<crate::discovery::ToolDiscovery>>>,
 }
 
 impl Service for ToolRuntime {
@@ -595,6 +605,7 @@ impl ToolRuntime {
                 max_parallel_sub_calls,
                 next_token: AtomicU64::new(1),
                 code_transport: Mutex::new(None),
+                discovery: Mutex::new(None),
             })
         };
         ctx.register_service(runtime.clone());
@@ -602,7 +613,7 @@ impl ToolRuntime {
         // notification is the layers' on_change).
         let runtime_for_provider = Arc::clone(&runtime);
         let provider: ToolProvider = Arc::new(move |assemble: &AssembleContext| {
-            runtime_for_provider.wire_schemas(assemble.scope.as_ref())
+            runtime_for_provider.wire_schemas(assemble)
         });
         let _ = system_prompt.tools(ctx, provider);
         Ok(runtime)
@@ -695,6 +706,11 @@ impl ToolRuntime {
                 "tool name \"{RUN_CODE_NAME}\" is reserved for the Code Mode presentation transport and cannot be registered or shadowed"
             ));
         }
+        if self.discovery.lock().is_some()
+            && matches!(definition.name.as_str(), "tool_search" | "tool_describe")
+        {
+            return Err(format!("tool name \"{}\" is reserved for active tool discovery and cannot be shadowed", definition.name));
+        }
         assert_supported_json_schema(&definition.parameters).map_err(|error| {
             format!(
                 "tool \"{}\" has invalid parameters schema: {error}",
@@ -725,6 +741,36 @@ impl ToolRuntime {
 
     /// Restrict global tools for the calling agent scope.
     pub fn restrict(&self, caller: &Context, filter: ToolRestriction) -> Result<Disposer, String> {
+        self.restrict_inner(caller,filter,false)
+    }
+
+    /// A delegation capability fence also covers tools registered in the child
+    /// scope, including later registrations. Unknown denies remain fences for
+    /// optional providers; unknown allows still fail closed.
+    pub fn restrict_all(&self, caller: &Context, filter: ToolRestriction) -> Result<Disposer,String> {
+        self.restrict_inner(caller,filter,true)
+    }
+
+    /// Snapshot the creator's actual tools without inheriting its conversation
+    /// or persona. Preserve capability fences and guards across delegation.
+    pub fn inherit_visible(&self, caller: &Context, parent: &ToolRuntime, parent_scope: &ScopeKey) -> Result<(),String> {
+        let scope=scope_of(caller).ok_or("tool inheritance requires a child scope")?;
+        if &scope==parent_scope{return Err("tool inheritance requires distinct scopes".into());}
+        let source=parent.view(Some(parent_scope)).visible;
+        let layers=parent.layers.chain_layers(Some(parent_scope));
+        let restrictions=layers.iter().flat_map(|layer|layer.restrictions.values()).filter(|filter|filter.include_local).collect::<Vec<_>>();
+        let guards=layers.iter().flat_map(|layer|layer.guards.values()).collect::<Vec<_>>();
+        self.layers.effect(caller,move|layer| {
+            let cell=layer.inherited.clone();let previous=cell.lock().replace(source.clone());
+            Box::new(move||{*cell.lock()=previous.clone();})
+        },"tools.inherit-visible",true);
+        for filter in restrictions {self.restrict_all(caller,ToolRestriction{allow:filter.allow,deny:filter.deny})?;}
+        for guard in guards {self.guard(caller,guard)?;}
+        if !std::ptr::eq(self,parent) {for guard in parent.layers.global.guards.values(){self.guard(caller,guard)?;}}
+        Ok(())
+    }
+
+    fn restrict_inner(&self, caller: &Context, filter: ToolRestriction, include_local: bool) -> Result<Disposer, String> {
         let scope = scope_of(caller)
             .ok_or_else(|| "tools.restrict() requires a scoped context (agent.ctx): a context-global restriction would mask every agent — deny the tool for the intended agent instead".to_string())?;
         if filter.allow.is_none() && filter.deny.is_none() {
@@ -733,6 +779,7 @@ impl ToolRuntime {
         let compiled = CompiledToolRestriction {
             allow: filter.allow.clone(),
             deny: filter.deny.clone(),
+            include_local,
         };
         let mut named: Vec<&String> = Vec::new();
         if let Some(allow) = &filter.allow {
@@ -746,8 +793,9 @@ impl ToolRuntime {
                 "tools.restrict() cannot name reserved Code Mode presentation transport \"{RUN_CODE_NAME}\"; restrict end-capability tools instead"
             ));
         }
-        let known = self.restrictable_names(Some(&scope));
-        let unknown: Vec<&String> = named
+        let known = if include_local {self.view(Some(&scope)).known_names} else {self.restrictable_names(Some(&scope))};
+        let checked=if include_local {filter.allow.iter().flatten().collect::<Vec<_>>()} else {named};
+        let unknown: Vec<&String> = checked
             .iter()
             .filter(|name| !known.iter().any(|known| known == name.as_str()))
             .copied()
@@ -1613,7 +1661,8 @@ impl ToolRuntime {
     }
 
     /// Build one scope's wire schemas and names for prompt-order validation.
-    fn wire_schemas(&self, scope: Option<&ScopeKey>) -> ToolProviderResult {
+    fn wire_schemas(&self, assemble: &AssembleContext) -> ToolProviderResult {
+        let scope = assemble.scope.as_ref();
         let view = self.view(scope);
         let mode = self.mode_for(scope);
         let mut schemas = view
@@ -1622,6 +1671,11 @@ impl ToolRuntime {
             .map(|definition| self.schema_of(definition))
             .collect::<Vec<_>>();
         let mut known_names = view.known_names;
+        if mode == ToolPresentationMode::Native {
+            if let Some(discovery) = self.discovery.lock().clone() {
+                schemas = discovery.present(assemble, schemas);
+            }
+        }
         if mode != ToolPresentationMode::Native {
             let transport = self.require_code_transport();
             let transport_schema = self.schema_of(&transport);
@@ -1667,6 +1721,7 @@ impl ToolRuntime {
         let own = self.layers.peek(scope);
         let mut inherited: Vec<(String, Arc<ToolDefinition>)> = self.layers.global.tools.entries();
         for layer in &layers {
+            if let Some(source)=layer.inherited.lock().as_ref(){inherited=source.iter().map(|(name,definition)|(name.clone(),definition.clone())).collect();}
             if let Some(own) = &own
                 && Arc::ptr_eq(layer, own)
             {
@@ -1693,6 +1748,7 @@ impl ToolRuntime {
         if let Some(own) = &own {
             for (name, definition) in own.tools.entries() {
                 known_names.push(name.clone());
+                if !layers.iter().all(|layer|layer.admits_local(&name)){continue;}
                 if let Some(existing) = visible.iter_mut().find(|(key, _)| *key == name) {
                     existing.1 = definition;
                 } else {
@@ -1855,7 +1911,7 @@ mod input_preflight_tests;
 
 #[cfg(test)]
 #[path = "approval_tests.rs"]
-mod approval_tests;
+pub(crate) mod approval_tests;
 
 #[cfg(test)]
 mod execution_lifetime_tests {

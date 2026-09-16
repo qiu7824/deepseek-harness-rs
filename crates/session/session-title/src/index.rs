@@ -501,7 +501,7 @@ pub const SESSION_LIST_METADATA_KEY: &str = "sessionListMetadata";
 // v1 used `lastPromptAt`; v2 stores the wire-ready `updatedAt` field. The
 // version bump makes old projection-cache rows miss and rebuild instead of
 // reaching `view_checkpoint` with an incompatible shape.
-pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 2;
+pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 3;
 
 /// Fixed-size session-list state. The fold never retains event payloads.
 pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {
@@ -515,6 +515,14 @@ pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {
                     .unwrap_or_else(|| serde_json::json!({ "blank": true, "updatedAt": null }));
                 value["blank"] = JsonValue::Bool(false);
                 arc(value)
+            }
+            "team/config" if event.data["config"]["explicit"]==true && event.data["config"]["mode"]!="off" => {
+                let mut value=downcast::<JsonValue>(state).cloned().unwrap_or_else(||serde_json::json!({"blank":true,"updatedAt":null}));
+                value["blank"]=JsonValue::Bool(false);value["updatedAt"]=JsonValue::from(event.time);arc(value)
+            }
+            "team/member" | "team/task" | "team/message/queued" => {
+                let mut value=downcast::<JsonValue>(state).cloned().unwrap_or_else(||serde_json::json!({"blank":true,"updatedAt":null}));
+                value["blank"]=JsonValue::Bool(false);value["updatedAt"]=JsonValue::from(event.time);arc(value)
             }
             "user/message" => {
                 let mut value = downcast::<JsonValue>(state)

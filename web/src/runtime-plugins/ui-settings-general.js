@@ -1008,12 +1008,7 @@ window.__ModuleLoader__.load({
 				order: 20,
 				label: "记忆与上下文",inject:()=>({api:connection.api}),children:{"settings.memory.import":{kind:"single",scope:"root"}}
 			}, MemorySection));
-			ctx.slots.inject("settings.section", () => ctx.slots.register({
-				name: "settings.section",
-				id: "subagent",
-				order: 22,
-				label: "子智能体"
-			}, () => (0, react_jsx_runtime.jsx)(SubagentSection, { api: connection.api })));
+
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "security",
@@ -1022,6 +1017,7 @@ window.__ModuleLoader__.load({
 			}, () => (0, react_jsx_runtime.jsx)(SecuritySection, { api: connection.api })));
 		}
 		//#endregion
+		exports.SubagentDefaultsSection = SubagentSection;
 		exports.SettingsDocumentStore = SettingsDocumentStore;
 		exports.apply = apply;
 		exports.inject = inject;

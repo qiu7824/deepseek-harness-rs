@@ -216,7 +216,7 @@ pub struct ReactLoopAgent {
     weak: Weak<Self>,
     phase: Mutex<Phase>,
     activity: Arc<Mutex<Activity>>,
-    clear_inbox_when_idle: AtomicBool,
+    cancelled_inbox: Mutex<Vec<dsh_llm::MessageId>>,
     request_header_logged: AtomicBool,
     request_surface_generation: Mutex<Option<u64>>,
     runtime_context: RuntimeContextProjection,
@@ -303,7 +303,7 @@ impl ReactLoopAgent {
                 weak: agent_ref.clone(),
                 phase: Mutex::new(Phase::Idle { last_turn }),
                 activity: Arc::new(Mutex::new(Activity::resolved())),
-                clear_inbox_when_idle: AtomicBool::new(false),
+                cancelled_inbox: Mutex::new(Vec::new()),
                 request_header_logged: AtomicBool::new(false),
                 request_surface_generation: Mutex::new(None),
                 runtime_context,
@@ -469,9 +469,8 @@ impl ReactLoopAgent {
     }
 
     fn clear_cancelled_inbox(&self) {
-        if self.clear_inbox_when_idle.swap(false, Ordering::SeqCst) {
-            self.inbox.clear().expect("inbox clear after cancellation");
-        }
+        let captured=std::mem::take(&mut *self.cancelled_inbox.lock());
+        for id in captured {self.inbox.remove(&id).expect("cancel captured inbox item");}
     }
 
     fn finish_driver(&self, activity_token: u64) {
@@ -585,6 +584,7 @@ impl ReactLoopAgent {
     /// Open one turn before claiming its first proposed step. Returns
     /// whether another turn is pending.
     async fn turn(&self) -> Result<bool, LoopCancelled> {
+        self.clear_cancelled_inbox();
         let signal = match &*self.phase.lock() {
             Phase::Running { abort, .. } => Arc::clone(abort),
             _ => panic!(
@@ -736,6 +736,9 @@ impl ReactLoopAgent {
                 None,
             )
             .expect("turn/end");
+        // Remove only input captured by cancel, before deciding whether to
+        // start another turn. Fresh input admitted after cancel must survive.
+        self.clear_cancelled_inbox();
         if !self.inbox.has_pending() {
             return Ok(false);
         }
@@ -1571,6 +1574,7 @@ impl Agent for ReactLoopAgent {
         let keep_inbox = options.map(|options| options.keep_inbox).unwrap_or(false);
         let clear_now = {
             let mut phase = self.phase.lock();
+            if !keep_inbox {self.cancelled_inbox.lock().extend(self.inbox.pending_ids());}
             match &mut *phase {
                 Phase::Maintenance {
                     abort,
@@ -1583,7 +1587,6 @@ impl Agent for ReactLoopAgent {
                     ..
                 } => {
                     if !keep_inbox {
-                        self.clear_inbox_when_idle.store(true, Ordering::SeqCst);
                         *wake_requested = false;
                     }
                     abort.abort_with(cause);
@@ -1593,7 +1596,7 @@ impl Agent for ReactLoopAgent {
             }
         };
         if clear_now {
-            self.inbox.clear().expect("inbox clear");
+            self.clear_cancelled_inbox();
         }
     }
 

@@ -68,6 +68,16 @@ struct EffectInner {
     disposal_lock: tokio::sync::Mutex<()>,
 }
 
+/// Release teardown waiters even when asynchronous setup unwinds or is dropped.
+struct EffectSetupGuard(Arc<EffectInner>);
+
+impl Drop for EffectSetupGuard {
+    fn drop(&mut self) {
+        self.0.setup_done.store(true, Ordering::SeqCst);
+        self.0.setup_notify.notify_waiters();
+    }
+}
+
 impl EffectInner {
     fn collect(
         &self,
@@ -969,13 +979,13 @@ impl FiberCore {
 
         let fiber_list = self.disposables.clone();
         let inner_for_task = inner.clone();
+        let setup_guard = EffectSetupGuard(inner.clone());
         tokio::spawn(async move {
+            let _setup_guard = setup_guard;
             let result = execute.await;
             if let Some(disposer) = result {
                 inner_for_task.collect(disposer, &fiber_list);
             }
-            inner_for_task.setup_done.store(true, Ordering::SeqCst);
-            inner_for_task.setup_notify.notify_waiters();
         });
         wrapper
     }

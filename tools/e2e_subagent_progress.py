@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import pathlib
 import re
@@ -157,6 +158,7 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     settings = {"llm-pi-ai": {"providers": {"progress-fixture": {"keyless": True, "api": "openai-completions", "baseURL": "http://127.0.0.1:" + str(server.server_port) + "/v1", "models": MODELS}}}, "agent-default-model": {"provider": "progress-fixture", "model": "parent"}}
+    settings['agent-teams'] = {'enabled': False}
     (home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     evidence = {"binary": str(binary), "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "phases": {}, "passed": False, "observeOnly": args.observe_only}
     try:
@@ -172,8 +174,16 @@ def main():
                 Fixture.parent_release.clear()
                 attached_before = client.until(lambda: client.call("host.describe", {}), lambda value: value["attachedSessions"] == 0, "previous fixture agents must retire", timeout=5)["attachedSessions"]
                 session = client.call("session.create", {"workspaceId": workspace_id, "agentPreset": "standard"})["sessionId"]
+                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+                try:
+                    connection.request('POST', '/__dsh-agent-team', json.dumps({'sessionId': session}), {'Content-Type': 'application/json', 'Origin': f'http://127.0.0.1:{port}'})
+                    response = connection.getresponse()
+                    team = json.loads(response.read())
+                    assert response.status == 200 and team['enabled'] is False, team
+                finally:
+                    connection.close()
                 client.call("session.prompt", {"sessionId": session, "content": [{"type": "text", "text": "progress-e2e:" + phase}], "mode": "queue"})
-                row = {"sessionId": session, "attachedBefore": attached_before}
+                row = {"sessionId": session, "attachedBefore": attached_before, "teamCollaborationEnabled": False}
                 evidence["phases"][phase] = row
                 if phase != "skill":
                     assert Fixture.started.wait(20), "child model never started"

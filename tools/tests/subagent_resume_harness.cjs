@@ -1,0 +1,52 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const {runtimeClasses} = require('./model_management_harness.cjs');
+let codec;
+const connection=fs.readFileSync(path.join(__dirname,'../../web/dist/plugins/connection.js'),'utf8');
+vm.runInNewContext(connection.replace('return module.exports;','exports.testUnarySchemas=UNARY_VALUE_SCHEMAS;return module.exports;'),
+  {URL,TextEncoder,TextDecoder,AbortController,setTimeout,clearTimeout,window:{__ModuleLoader__:{load:def=>{codec=def.factory(()=>({})).testUnarySchemas;}}}});
+const wireCatalog=codec['subagent.list'].parse({entries:[],parentAvailable:false,parentResumable:true});
+assert.equal(wireCatalog.parentResumable,true,'the production wire codec must retain cold-resume capability');
+assert.equal(codec['subagent.list'].parse({entries:[],parentAvailable:false}).parentResumable,undefined,'legacy catalogs remain compatible');
+assert.throws(()=>codec['subagent.list'].parse({entries:[],parentAvailable:false,parentResumable:'true'}));
+assert.equal(codec['session.prompt'].parse({accepted:true,running:false}).running,false,'a settled main receipt must survive wire parsing');
+assert.equal(codec['subagent.prompt'].parse({messageId:'m',requestId:'r',running:false}).running,false,'a settled child receipt must survive wire parsing');
+const {SessionManager} = runtimeClasses();
+const manager = Object.create(SessionManager.prototype);
+const address = {parentSessionId:'parent',childSessionId:'child',mode:'continuable'};
+const child = {configureSubagent(_address,available){this.available=available;},handleSubagentParentAvailable(available){this.available=available;}};
+const catalog = {entries:[{kind:'child',id:'child',mode:'continuable',activity:'inactive'}],parentAvailable:true,parentResumable:true};
+Object.assign(manager,{summaries:[],sessions:new Map([['child',child]]),addresses:new Map([['child',address]]),catalogs:new Map([['parent',catalog]]),
+  catalogInflight:new Map(),catalogStale:new Set(),pendingBuffers:new Map(),pendingInteractions:new Map(),jobsBySession:new Map(),projectionStores:new Map(),
+  completedNotifications:new Set(),notifier:{markDirty(){},notifyNow(){}},recordMutation(){},updateCatalogActivity(){},refreshSubagents(){}});
+manager.selectSubagent(address);
+assert.equal(child.available,true);
+manager.handleHostEnvelope({payload:{type:'host/session-removed',sessionId:'parent'}});
+assert.equal(manager.catalogs.get('parent').parentAvailable,false,'retirement still clears the live-owner hint');
+assert.equal(child.available,true,'a restorable owner must not make an open child composer read-only');
+manager.selectSubagent(address);
+assert.equal(child.available,true,'reopening a cold child retains direct continuation');
+manager.refreshSubagents=SessionManager.prototype.refreshSubagents;
+let response={result:{ok:true,value:{...catalog,parentAvailable:false}}};
+manager.api={subagents:{list:async()=>response}};
+(async()=>{
+  await manager.refreshSubagents('parent');
+  assert.equal(child.available,true);
+  response={result:{ok:false,error:{code:'transport-error',message:'offline'}}};
+  await manager.refreshSubagents('parent');
+  assert.equal(manager.canContinueSubagent('parent'),true,'a transient refresh error preserves the last capability');
+  response={result:{ok:true,value:{...catalog,parentAvailable:false,parentResumable:false}}};
+  await manager.refreshSubagents('parent');
+  assert.equal(child.available,false,'an authoritative unavailable owner restores read-only mode');
+  manager.catalogs.set('parent',{entries:catalog.entries,parentAvailable:false});
+  manager.selectSubagent(address);
+  assert.equal(child.available,false,'older servers without cold continuation retain read-only behavior');
+  const source=fs.readFileSync(path.join(__dirname,'../../web/dist/plugins/ui-subagent.js'),'utf8');
+  const start=source.indexOf('function selectReadOnlySubagent('),end=source.indexOf('\n\t\t/**',start),context={};
+  vm.runInNewContext(source.slice(start,end),context);
+  assert.equal(context.selectReadOnlySubagent({session:{subagent:{address,parentAvailable:true}}}),null);
+  assert.equal(context.selectReadOnlySubagent({session:{subagent:{address:{...address,mode:'one-shot'},parentAvailable:true}}}).reason,'one-shot');
+  console.log('PASS member continuation: idle retirement, reopen, catalog refresh, unavailable/legacy owners, and one-shot isolation');
+})().catch(error=>{console.error(error);process.exitCode=1;});

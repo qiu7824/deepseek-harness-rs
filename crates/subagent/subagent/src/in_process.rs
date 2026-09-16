@@ -145,14 +145,17 @@ pub async fn start_in_process_run(
             handle.dispose.await;
             return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
         }
-        apply_child_composition(
+        if let Err(error)=apply_child_composition(
             child.ctx(),
             parent.as_ref(),
             &ChildComposition {
                 persona: request.request.persona.clone(),
                 tool_filter: request.request.tool_filter.clone(),
             },
-        );
+        ) {
+            handle.dispose.await;
+            return Err(SubagentError::new("CHILD_COMPOSE_FAILED",error));
+        }
     }
 
     Ok(drive_published_run(

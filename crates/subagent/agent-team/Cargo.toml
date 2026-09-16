@@ -8,6 +8,7 @@ description = "Opt-in durable teams over continuable subagents"
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
+dsh-jobs = { path = "../../jobs/jobs" }
 dsh-llm = { path = "../../core/llm" }
 dsh-session = { path = "../../core/session" }
 dsh-session-persistence = { path = "../../session/session-persistence" }

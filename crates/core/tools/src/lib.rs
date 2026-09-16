@@ -5,6 +5,7 @@
 //! milestone).
 
 mod code_mode;
+pub mod discovery;
 pub mod index;
 pub mod json_schema;
 pub mod presentation;

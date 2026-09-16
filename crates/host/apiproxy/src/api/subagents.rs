@@ -1,6 +1,7 @@
 //! Browser-safe subagent domain contract. Persisted transcript reads never
 //! activate an Agent, while continuable prompts route through the exact
-//! live direct parent into the child's Agent inbox. Rust port of
+//! direct parent into the child's Agent inbox, restoring a durable root
+//! parent on explicit submission when needed. Rust port of
 //! `packages/host/apiproxy/src/api/subagents.ts`.
 
 use async_trait::async_trait;
@@ -69,6 +70,8 @@ pub enum SubagentListEntry {
 #[serde(rename_all = "camelCase")]
 pub struct SubagentPromptReceipt {
     pub message_id: MessageId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
 }
@@ -96,6 +99,9 @@ pub struct SubagentAddress {
 pub struct SubagentCatalog {
     pub entries: Vec<SubagentListEntry>,
     pub parent_available: bool,
+    /// Advisory capability only: browsing never resumes an Agent.
+    #[serde(default)]
+    pub parent_resumable: bool,
 }
 
 /// `subagent.list` request payload.

@@ -10,6 +10,51 @@ use super::support::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_cancel_discards_old_queue_before_another_model_request() {
+    let harness=harness().await;
+    let entered=Arc::new(AtomicBool::new(false));
+    harness.tools.register(&harness.ctx,hanging_tool(entered.clone(),Arc::new(AtomicBool::new(false)))).unwrap();
+    let adapter=Arc::new(ToolThenTextAdapter{calls:std::sync::atomic::AtomicUsize::new(0)});
+    register_adapter(&harness,adapter.clone());
+    harness.agent.followup(message("original-running-request"));
+    tokio::time::timeout(Duration::from_secs(1),async{while !entered.load(Ordering::SeqCst){tokio::task::yield_now().await;}}).await.unwrap();
+    harness.agent.followup(message("old-queued-request"));
+    harness.agent.steer(message("old-steering-request"));
+    harness.agent.cancel(dsh_agent::AgentCancelCause::User,None);
+    tokio::time::timeout(Duration::from_secs(1),harness.agent.when_idle()).await.unwrap();
+    assert_eq!(adapter.calls.load(Ordering::SeqCst),1,"cancellation must not restart queued work");
+    assert!(!harness.agent.inbox().has_pending());
+    assert_eq!(turn_end_kinds(&harness.agent),["aborted"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_input_during_cancel_cleanup_is_not_discarded_with_the_old_queue() {
+    let harness=harness().await;
+    let entered=Arc::new(AtomicBool::new(false));
+    let finalizing=Arc::new(AtomicBool::new(false));
+    let release=Arc::new(AtomicBool::new(false));
+    let mut tool=hanging_tool(entered.clone(),Arc::new(AtomicBool::new(false)));
+    let inside=finalizing.clone();let finish=release.clone();
+    tool.finalize_content=Some(Arc::new(move|_,_|{inside.store(true,Ordering::SeqCst);while !finish.load(Ordering::SeqCst){std::thread::yield_now();}None}));
+    harness.tools.register(&harness.ctx,tool).unwrap();
+    register_adapter(&harness,Arc::new(ToolThenTextAdapter{calls:std::sync::atomic::AtomicUsize::new(0)}));
+    harness.agent.followup(message("original-running-request"));
+    tokio::time::timeout(Duration::from_secs(1),async{while !entered.load(Ordering::SeqCst){tokio::task::yield_now().await;}}).await.unwrap();
+    harness.agent.followup(message("old-queued-request"));
+    harness.agent.cancel(dsh_agent::AgentCancelCause::User,None);
+    let ready=tokio::time::timeout(Duration::from_secs(1),async{while !finalizing.load(Ordering::SeqCst){tokio::task::yield_now().await;}}).await;
+    if ready.is_err(){release.store(true,Ordering::SeqCst);panic!("cancellation finalizer did not start");}
+    harness.agent.followup(message("fresh-request-after-cancel"));
+    release.store(true,Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(1),harness.agent.when_idle()).await.unwrap();
+    let events=harness.agent.session().events();
+    let consumed=events.iter().filter(|event|event.type_=="user/message").map(|event|event.data.to_string()).collect::<Vec<_>>().join("\n");
+    assert!(consumed.contains("fresh-request-after-cancel"));
+    assert!(!consumed.contains("old-queued-request"));
+    assert_eq!(turn_end_kinds(&harness.agent),["aborted","completed"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_interrupts_a_non_cooperative_post_execute_hook() {
     let harness = harness().await;
     let body_entered = Arc::new(AtomicBool::new(false));

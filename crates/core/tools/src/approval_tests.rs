@@ -67,7 +67,7 @@ impl Agent for TestAgent {
     fn inject(&self, _message: UserMessage) {}
 }
 
-async fn agent(ctx: &Context, name: &str) -> Arc<dyn Agent> {
+pub(crate) async fn agent(ctx: &Context, name: &str) -> Arc<dyn Agent> {
     let store = ctx
         .get_typed::<Arc<SessionStore>>("sessions", false)
         .map(|slot| slot.as_ref().clone())

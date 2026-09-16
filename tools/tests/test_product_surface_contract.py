@@ -71,7 +71,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         runtime = RUNTIME.read_text(encoding="utf-8")
         prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
         self.assertRegex(prompt, r"(?:const|let) runningRevisionAtStart = this\.runningRevision")
-        self.assertIn("if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(true)", prompt)
+        self.assertIn("if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(result.value.running ?? true)", prompt)
         self.assertNotIn("this.running = true", prompt)
 
     def test_prompt_marks_send_attempt_before_returning_from_history_browse(self):

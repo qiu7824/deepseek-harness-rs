@@ -397,9 +397,13 @@ pub const SUBAGENT_DELEGATION_CONTEXT: &str = "You are a delegated subagent: you
 /// section and tool restriction.
 pub fn apply_child_composition(
     child_ctx: &Context,
-    _parent: &dyn Agent,
+    parent: &dyn Agent,
     composition: &ChildComposition,
-) {
+) -> Result<(), String> {
+    if let Some(tools)=child_ctx.get_typed::<Arc<dsh_tools::ToolRuntime>>("tools",false) {
+        let source=parent.ctx().get_typed::<Arc<dsh_tools::ToolRuntime>>("tools",false).ok_or("parent tools are unavailable")?;
+        tools.inherit_visible(child_ctx,source.as_ref().as_ref(),parent.scope_key())?;
+    }
     if let Some(system_prompt) = child_ctx
         .get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
         .map(|slot| slot.as_ref().clone())
@@ -426,27 +430,12 @@ pub fn apply_child_composition(
             );
         }
     }
-    if let Some(tool_filter) = &composition.tool_filter
-        && let Some(tools) = child_ctx
+    if let Some(tool_filter) = &composition.tool_filter {
+        let tools = child_ctx
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
             .map(|slot| slot.as_ref().clone())
-    {
-        if let Err(error) = tools.restrict(child_ctx, tool_filter.clone()) {
-            tools
-                .restrict(
-                    child_ctx,
-                    ToolRestriction {
-                        allow: Some(vec![]),
-                        deny: None,
-                    },
-                )
-                .expect("child tool access must be restricted before activation");
-            child_ctx
-                .named_logger(Some("subagent"))
-                .warn(vec![cordis::arc(format!(
-                    "Invalid child tool filter; tool access disabled: {error}"
-                ))]);
-        }
+            .ok_or("child tool access cannot be enforced without the tools service")?;
+        tools.restrict_all(child_ctx, tool_filter.clone())?;
         if let Some(prompt) =
             child_ctx.get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
         {
@@ -461,6 +450,7 @@ pub fn apply_child_composition(
             });
         }
     }
+    Ok(())
 }
 
 /// Policy seeded onto a child session's log at the delegation boundary.

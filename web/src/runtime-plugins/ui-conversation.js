@@ -8132,7 +8132,7 @@ window.__ModuleLoader__.load({
 				className: ConversationRoot_module_css_default.root,
 				"data-phase": phase,
 				style: contentWidth === null ? void 0 : { "--dsh-chat-user-width": `${contentWidth}px` },
-				children: [(0, react_jsx_runtime.jsx)(WidthHandle, { side: "left", rootRef, onWidth: setContentWidth, onCommit: commitWidth }), (0, react_jsx_runtime.jsx)(WidthHandle, { side: "right", rootRef, onWidth: setContentWidth, onCommit: commitWidth }), renderSlot("conversation.session.header", {}), (0, react_jsx_runtime.jsxs)("div", {
+				children: [(0, react_jsx_runtime.jsx)(WidthHandle, { side: "left", rootRef, onWidth: setContentWidth, onCommit: commitWidth }), (0, react_jsx_runtime.jsx)(WidthHandle, { side: "right", rootRef, onWidth: setContentWidth, onCommit: commitWidth }), renderSlot("conversation.session.header", {}), renderSlot("conversation.collaboration.panel", {}), (0, react_jsx_runtime.jsxs)("div", {
 					className: ConversationRoot_module_css_default.scrollBody,
 					"data-conversation-scroll": "",
 					children: [renderSlot("conversation.session", {}), composerSeat]
@@ -10955,6 +10955,10 @@ window.__ModuleLoader__.load({
 						scope: "session"
 					},
 					"conversation.session.header": {
+						kind: "single",
+						scope: "session"
+					},
+					"conversation.collaboration.panel": {
 						kind: "single",
 						scope: "session"
 					},

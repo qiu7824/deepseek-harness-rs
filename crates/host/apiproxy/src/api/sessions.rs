@@ -552,6 +552,8 @@ pub enum PromptCommandKind {
 #[serde(rename_all = "camelCase")]
 pub struct SessionPromptResult {
     pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<PromptCommandSlot>,
 }
