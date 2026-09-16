@@ -8,10 +8,10 @@ const context={ContextMeter:()=>null,react:React,react_jsx_runtime:jsx,window,do
  _deepseek_ai_dsh_client_ui_primitives:new Proxy({Tooltip:({children})=>children},{get:(object,key)=>object[key]||(()=>null)}),
  _deepseek_ai_dsh_client_ui_attachment:{AttachmentRail:({items,onRemove})=>h('div',null,items.map(item=>h('button',{key:item.id,'aria-label':item.removeLabel,onClick:()=>onRemove(item)},item.alt)))}};
 const begin=source.indexOf('function InputBar('),end=source.indexOf('\n\t\t//#endregion',begin);vm.runInNewContext(source.slice(begin,end),context);
-let active='a';const state=new Map(['a','b'].map(id=>[id,{draft:'',imageIds:[],phase:'editing',queue:[],claim:null}])),submissions=[];
+let tips='on';let active='a';const state=new Map(['a','b'].map(id=>[id,{draft:'',imageIds:[],phase:'editing',queue:[],claim:null}])),submissions=[];
 const image={id:'image',file:{name:'frame.png'},previewUrl:'data:image/png;base64,fixture'};
 const root=Client.createRoot(document.getElementById('root')),act=fn=>React.act(async()=>{await fn();await new Promise(resolve=>setTimeout(resolve,10));});
-const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,useSession:select=>select({running:false,removed:false}),useInput:select=>select(state.get(active)),inputActions:{pruneImages(){},submit(){submissions.push({sessionId:active,...state.get(active)})}},keyboard:{snapshot:{},setDraft(value){state.set(active,{...state.get(active),draft:value});render()},track(){}},draftImages:ids=>ids.map(()=>image),removeImage:()=>{state.set(active,{...state.get(active),imageIds:[]});render()},useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),useProjection:(name,select)=>select?select(undefined):undefined,t:key=>key,renderSlot:()=>null}));
+const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,useComposerTips:select=>select({mode:tips}),useSession:select=>select({running:false,removed:false}),useInput:select=>select(state.get(active)),inputActions:{pruneImages(){},submit(){submissions.push({sessionId:active,...state.get(active)})}},keyboard:{snapshot:{},setDraft(value){state.set(active,{...state.get(active),draft:value});render()},track(){}},draftImages:ids=>ids.map(()=>image),removeImage:()=>{state.set(active,{...state.get(active),imageIds:[]});render()},useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),useProjection:(name,select)=>select?select(undefined):undefined,t:key=>key,renderSlot:()=>null}));
 const send=()=>document.querySelector('button[aria-label="input.send"]');
 (async()=>{
  await act(render);assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').placeholder,'placeholder.default');
@@ -19,10 +19,15 @@ const send=()=>document.querySelector('button[aria-label="input.send"]');
  state.set('a',{...state.get('a'),draft:'text'});await act(render);assert.equal(send().disabled,false);
  assert.notEqual(document.querySelector('textarea').style.color,'transparent','plain input has native visible text');
  assert.equal(document.querySelector('[data-input-backdrop]').style.visibility,'hidden','plain input is not drawn twice');
- state.set('a',{...state.get('a'),draft:''});await act(render);assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').placeholder,'placeholder.tipNewline','tips advance after clearing a draft');
- state.set('a',{...state.get('a'),imageIds:['image']});await act(render);assert.equal(send().disabled,false);assert.equal(document.querySelector('textarea').placeholder,'placeholder.tipNewline','image attachments retain a typing hint');assert.equal(document.querySelector('textarea').getAttribute('aria-label'),'placeholder.tipNewline');
+ state.set('a',{...state.get('a'),draft:''});await act(render);assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').placeholder,'placeholder.default','placeholder remains calm after clearing a draft');
+ state.set('a',{...state.get('a'),imageIds:['image']});await act(render);assert.equal(send().disabled,false);assert.equal(document.querySelector('textarea').placeholder,'placeholder.default','image attachments retain a typing hint');assert.equal(document.querySelector('textarea').getAttribute('aria-label'),'placeholder.default');
  await act(()=>send().click());assert.equal(submissions.length,1);assert.deepEqual(submissions[0].imageIds,['image']);assert.equal(submissions[0].draft,'');
  active='b';await act(render);assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').placeholder,'placeholder.default');assert.ok(!document.body.textContent.includes('frame.png'));
  active='a';await act(render);assert.equal(send().disabled,false);await act(()=>document.querySelector('[aria-label="image.remove"]').click());assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').placeholder,'placeholder.default');
+ assert.equal(!!document.querySelector('[data-composer-tip]'),false,'unfocused input has no tip');
+ await act(()=>{document.querySelector('textarea').dispatchEvent(new window.Event('pointerdown',{bubbles:true}));document.querySelector('textarea').focus()});const firstTip=document.querySelector('[data-composer-tip]')?.textContent;assert.ok(firstTip);
+ await act(()=>document.querySelector('textarea').blur());assert.equal(!!document.querySelector('[data-composer-tip]'),false);
+ await act(()=>{document.querySelector('textarea').dispatchEvent(new window.Event('pointerdown',{bubbles:true}));document.querySelector('textarea').focus()});assert.notEqual(document.querySelector('[data-composer-tip]').textContent,firstTip,'consecutive focuses rotate tips');
+ tips='off';await act(render);assert.equal(!!document.querySelector('[data-composer-tip]'),false,'settings immediately hide focused tips');
  await act(()=>root.unmount());dom.window.close();console.log('PASS actual InputBar DOM: whitespace, deletion, attachment-only submission, session switching and placeholder restoration');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close();});

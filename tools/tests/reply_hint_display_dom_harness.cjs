@@ -34,7 +34,7 @@ function load(name, names) {
   });
   return exported.test;
 }
-const ui = load('ui-conversation.js', 'ReplyHintPreference,ReplyHintDisplayRow,ReasoningRow,TurnStatus,TodoPanel,GenericCommandCard,zh,en');
+const ui = load('ui-conversation.js', 'ReplyHintPreference,ReplyHintDisplayRow,ComposerTipPreference,ComposerTipRow,ReasoningRow,TurnStatus,TodoPanel,GenericCommandCard,zh,en');
 const tools = load('ui-tool.js', 'GenericToolCard');
 const subagents = load('ui-subagent.js', 'SubagentToolRow,zh,en');
 const cordis = load('ui-cordis.js', 'CordisDefineRow,CordisRunRow,CordisActionRow,zh,en');
@@ -48,9 +48,10 @@ const api = { settings: {
     writes.push(JSON.parse(JSON.stringify(request)));
     if (fail) return { result: { ok: false, error: { code: 'write-failed', message: 'fixture disk unavailable' } } };
     const durable = read(); assert.equal(request.expectedRevision, durable.revision);
-    assert.equal(request.ns, 'ui-conversation'); assert.deepEqual(Array.from(request.ops[0].path), ['hintDisplay']);
-    assert.ok(['both', 'text', 'icons'].includes(request.ops[0].value));
-    durable.value.hintDisplay = request.ops[0].value; durable.revision++;
+    assert.equal(request.ns, 'ui-conversation'); const field=request.ops[0].path[0];
+    assert.ok(['hintDisplay','composerTips'].includes(field));
+    assert.ok((field==='hintDisplay'?['both','text','icons']:['on','off']).includes(request.ops[0].value));
+    durable.value[field] = request.ops[0].value; durable.revision++;
     fs.writeFileSync(file, JSON.stringify(durable));
     return { result: { ok: true, value: { ns: 'ui-conversation', ...durable } } };
   }
@@ -135,6 +136,12 @@ async function main() {
   await act(() => preference.set('text')); assertMode('text');
   assert.equal(read().value.hintDisplay, 'text');
   await act(() => preference.set('both')); assertMode('both'); assert.equal(read().value.hintDisplay, 'both');
+  let tips = new ui.ComposerTipPreference(scope);
+  assert.equal(tips.store.getSnapshot().mode,'on');
+  await act(()=>tips.set('off'));assert.equal(read().value.composerTips,'off');
+  assert.equal(read().value.hintDisplay,'both');assert.equal(read().value.busyEnter,'steer');
+  fail=true;await act(()=>tips.set('on'));assert.equal(tips.store.getSnapshot().mode,'off','failed tip writes roll back');fail=false;
+  tips.dispose();tips=new ui.ComposerTipPreference(scope);assert.equal(tips.store.getSnapshot().mode,'off','tip setting survives remount');tips.dispose();
   await act(() => root.unmount()); preference.dispose(); await scope.dispose();
   assert.equal(document.documentElement.hasAttribute('data-reply-hint-display'), false, 'plugin teardown removes its visual preference owner');
   console.log('PASS reply hints: three native-menu modes; icons and text default; immediate SVG/text switch; accessible tooltip/name; native disclosure leading retained; real SettingsScope persistence/reload and write rollback; untouched content');

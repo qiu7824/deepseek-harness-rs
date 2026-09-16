@@ -2671,6 +2671,20 @@ fn compose_host_in_fiber(
         let mut fields = indexmap::IndexMap::from([(field.to_string(), choice_schema)]);
         if namespace == "ui-conversation" {
             fields.insert(
+                "composerTips".to_string(),
+                dsh_schemastery::Schema::union(
+                    ["on", "off"]
+                        .into_iter()
+                        .map(|value| {
+                            dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                                value.into(),
+                            ))
+                        })
+                        .collect(),
+                )
+                .default(dsh_schemastery::Data::String("on".into())),
+            );
+            fields.insert(
                 "hintDisplay".to_string(),
                 dsh_schemastery::Schema::union(
                     ["both", "text", "icons"]

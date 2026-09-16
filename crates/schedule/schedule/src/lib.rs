@@ -208,6 +208,7 @@ pub fn apply(ctx: &Context) {
 
     let disposer: cordis::Disposer = cordis::events::make_disposer(move || {
         let stop_session_start = stop_session_start.clone();
+        let stop_agent_created = stop_agent_created.clone();
         let runtimes = runtimes.clone();
         let stopping = stopping.clone();
         Box::pin(async move {

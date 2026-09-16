@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-subagent\src\client\SubagentCatalogAction.module.css.mjs
-		const css$1 = ".HfG9eW_root{position:relative}.HfG9eW_trigger{min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:3px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.HfG9eW_count{margin:0 5px}.HfG9eW_activitySlot{flex:none;width:10px;height:10px;display:inline-flex}.HfG9eW_trigger:hover,.HfG9eW_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.HfG9eW_trigger svg{transition:transform .12s}.HfG9eW_triggerOpen{transform:rotate(180deg)}.HfG9eW_menu{z-index:100;box-sizing:border-box;background:var(--dsw-specific-menu);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);width:336px;max-width:min(400px,100vw - 32px);max-height:min(560px,100vh - 140px);box-shadow:var(--dsw-shadow-lv3);border-radius:12px;flex-direction:column;padding:4px;display:flex;position:absolute;top:calc(100% + 5px);left:0;overflow:auto}.HfG9eW_node{min-width:0;position:relative}.HfG9eW_menu>.HfG9eW_node{margin-left:-3px}.HfG9eW_row{box-sizing:border-box;width:100%;min-height:50px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:0;border-radius:8px;outline:none;align-items:flex-start;gap:8px;padding:7px 8px 7px 11px;font-size:13px;line-height:18px;display:flex;position:relative}.HfG9eW_row:hover>.HfG9eW_clickarea,.HfG9eW_row:focus-visible>.HfG9eW_clickarea{background:var(--dsw-alias-interactive-bg-hover)}.HfG9eW_clickarea{box-sizing:border-box;border-radius:8px;flex:1;align-self:stretch;align-items:flex-start;gap:8px;min-width:0;margin:-7px -8px;padding:7px 8px;display:flex}.HfG9eW_row>[data-state],.HfG9eW_clickarea>[data-state]{margin-top:4px}.HfG9eW_disabled{color:var(--dsw-alias-label-dimmed);cursor:not-allowed}.HfG9eW_disabled:hover{background:0 0}.HfG9eW_loadingRow{cursor:default}.HfG9eW_disclosure,.HfG9eW_disclosureSpace{flex:none;width:14px;height:18px}.HfG9eW_disclosure{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;justify-content:center;align-items:center;padding:0;transition:transform .12s;display:inline-flex}.HfG9eW_disclosure:hover{color:var(--dsw-alias-label-primary)}.HfG9eW_disclosureOpen{transform:rotate(90deg)}.HfG9eW_content{flex-direction:column;flex:1;min-width:0;display:flex}.HfG9eW_label,.HfG9eW_summary{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.HfG9eW_label{color:inherit;font-weight:400}.HfG9eW_summary,.HfG9eW_metrics{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.HfG9eW_metrics{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;flex:none;grid-template-rows:18px 16px;display:grid}.HfG9eW_metricToken{grid-row:1;line-height:18px}.HfG9eW_metricDuration{grid-row:2}.HfG9eW_children{margin-left:18px;padding-left:4px;position:relative}.HfG9eW_children:before,.HfG9eW_children>.HfG9eW_node:before{content:\"\";border-left:1px solid var(--dsw-alias-border-l2);position:absolute;left:0}.HfG9eW_children:before{height:26px;top:-26px}.HfG9eW_children[aria-busy=true]:before{content:none}.HfG9eW_children>.HfG9eW_node:before{top:0;bottom:0;left:-4px}.HfG9eW_children>.HfG9eW_node:last-child:before{height:17px;bottom:auto}.HfG9eW_children>.HfG9eW_node>.HfG9eW_row:before{content:\"\";border-top:1px solid var(--dsw-alias-border-l2);width:14px;position:absolute;top:16px;left:-4px}.HfG9eW_notice,.HfG9eW_error{color:var(--dsw-alias-label-tertiary);padding:10px 12px;font-size:12px;line-height:18px}.HfG9eW_error{color:var(--dsw-alias-state-error-primary);justify-content:space-between;align-items:center;gap:12px;display:flex}.HfG9eW_refresh{color:inherit;cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;align-items:center;gap:4px;padding:4px 6px;display:inline-flex}.HfG9eW_refresh:hover{background:var(--dsw-alias-interactive-bg-hover)}";
+		const css$1 = ".dshTeamTrigger{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:4px 8px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}.dshTeamTrigger:hover,.dshTeamButton:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshTeamSettings{display:grid;gap:16px}.dshTeamHint{margin:0;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.7}.dshTeamSetting{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:14px}.dshTeamSetting select,.dshTeamButton{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 12px;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-primary);font:inherit}.dshTeamButton{cursor:pointer}.dshTeamSetting input{accent-color:var(--dsw-alias-state-business-primary);width:18px;height:18px}.dshTeamTrigger:focus-visible,.dshTeamButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.HfG9eW_root{position:relative}.HfG9eW_trigger{min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:3px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.HfG9eW_count{margin:0 5px}.HfG9eW_activitySlot{flex:none;width:10px;height:10px;display:inline-flex}.HfG9eW_trigger:hover,.HfG9eW_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.HfG9eW_trigger svg{transition:transform .12s}.HfG9eW_triggerOpen{transform:rotate(180deg)}.HfG9eW_menu{z-index:100;box-sizing:border-box;background:var(--dsw-specific-menu);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);width:336px;max-width:min(400px,100vw - 32px);max-height:min(560px,100vh - 140px);box-shadow:var(--dsw-shadow-lv3);border-radius:12px;flex-direction:column;padding:4px;display:flex;position:absolute;top:calc(100% + 5px);left:0;overflow:auto}.HfG9eW_node{min-width:0;position:relative}.HfG9eW_menu>.HfG9eW_node{margin-left:-3px}.HfG9eW_row{box-sizing:border-box;width:100%;min-height:50px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:0;border-radius:8px;outline:none;align-items:flex-start;gap:8px;padding:7px 8px 7px 11px;font-size:13px;line-height:18px;display:flex;position:relative}.HfG9eW_row:hover>.HfG9eW_clickarea,.HfG9eW_row:focus-visible>.HfG9eW_clickarea{background:var(--dsw-alias-interactive-bg-hover)}.HfG9eW_clickarea{box-sizing:border-box;border-radius:8px;flex:1;align-self:stretch;align-items:flex-start;gap:8px;min-width:0;margin:-7px -8px;padding:7px 8px;display:flex}.HfG9eW_row>[data-state],.HfG9eW_clickarea>[data-state]{margin-top:4px}.HfG9eW_disabled{color:var(--dsw-alias-label-dimmed);cursor:not-allowed}.HfG9eW_disabled:hover{background:0 0}.HfG9eW_loadingRow{cursor:default}.HfG9eW_disclosure,.HfG9eW_disclosureSpace{flex:none;width:14px;height:18px}.HfG9eW_disclosure{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;justify-content:center;align-items:center;padding:0;transition:transform .12s;display:inline-flex}.HfG9eW_disclosure:hover{color:var(--dsw-alias-label-primary)}.HfG9eW_disclosureOpen{transform:rotate(90deg)}.HfG9eW_content{flex-direction:column;flex:1;min-width:0;display:flex}.HfG9eW_label,.HfG9eW_summary{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.HfG9eW_label{color:inherit;font-weight:400}.HfG9eW_summary,.HfG9eW_metrics{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.HfG9eW_metrics{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;flex:none;grid-template-rows:18px 16px;display:grid}.HfG9eW_metricToken{grid-row:1;line-height:18px}.HfG9eW_metricDuration{grid-row:2}.HfG9eW_children{margin-left:18px;padding-left:4px;position:relative}.HfG9eW_children:before,.HfG9eW_children>.HfG9eW_node:before{content:\"\";border-left:1px solid var(--dsw-alias-border-l2);position:absolute;left:0}.HfG9eW_children:before{height:26px;top:-26px}.HfG9eW_children[aria-busy=true]:before{content:none}.HfG9eW_children>.HfG9eW_node:before{top:0;bottom:0;left:-4px}.HfG9eW_children>.HfG9eW_node:last-child:before{height:17px;bottom:auto}.HfG9eW_children>.HfG9eW_node>.HfG9eW_row:before{content:\"\";border-top:1px solid var(--dsw-alias-border-l2);width:14px;position:absolute;top:16px;left:-4px}.HfG9eW_notice,.HfG9eW_error{color:var(--dsw-alias-label-tertiary);padding:10px 12px;font-size:12px;line-height:18px}.HfG9eW_error{color:var(--dsw-alias-state-error-primary);justify-content:space-between;align-items:center;gap:12px;display:flex}.HfG9eW_refresh{color:inherit;cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;align-items:center;gap:4px;padding:4px 6px;display:inline-flex}.HfG9eW_refresh:hover{background:var(--dsw-alias-interactive-bg-hover)}";
 		const tagId$1 = "@deepseek-ai/dsh-client-ui-subagent/SubagentCatalogAction.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
@@ -681,6 +681,18 @@ window.__ModuleLoader__.load({
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
             "team.title": "团队",
+            "team.settingsTitle": "团队协作",
+            "team.enable": "开启团队功能",
+            "team.limit": "成员上限",
+            "team.settingsDescription": "为当前任务创建具名队友，共享任务进度并相互发送消息；仅在明确要求组建团队后开始工作。",
+            "team.restart": "设置已保存，重启应用后生效。",
+            "team.disabled": "团队当前未启用，可开启后重启应用。",
+            "team.prepare": "填写团队任务",
+            "team.template": "请组建团队完成以下任务，先明确各成员职责和文件范围，维护共享任务并汇总结果：\n",
+            "team.noTasks": "暂无共享任务。创建团队后，负责人会在这里更新分工与进度。",
+            "team.pending": "{count} 条团队消息等待投递",
+            "team.intro": "团队成员可并行处理独立任务；点击成员名称查看其对话。",
+
             "team.members": "成员",
             "team.tasks": "共享任务",
             "team.lead": "负责人",
@@ -749,6 +761,18 @@ window.__ModuleLoader__.load({
 		/** English dictionary, key-identical to the Chinese source of truth. */
 		const en = {
             "team.title": "Team",
+            "team.settingsTitle": "Team collaboration",
+            "team.enable": "Enable teams",
+            "team.limit": "Member limit",
+            "team.settingsDescription": "Create named teammates for the current task, share progress and exchange messages. Work begins only after an explicit team request.",
+            "team.restart": "Saved. Restart the application to apply.",
+            "team.disabled": "Teams are disabled. Enable teams and restart the application.",
+            "team.prepare": "Draft a team task",
+            "team.template": "Create a team for the following task. Define each member’s responsibilities and file scope, maintain shared tasks, and summarize the results:\n",
+            "team.noTasks": "No shared tasks yet. The lead will update assignments and progress here.",
+            "team.pending": "{count} team messages awaiting delivery",
+            "team.intro": "Teammates can work on independent tasks in parallel. Select a member to open their conversation.",
+
             "team.members": "Members",
             "team.tasks": "Shared tasks",
             "team.lead": "Lead",
@@ -836,7 +860,7 @@ window.__ModuleLoader__.load({
 		* Client plugin body: register the '@' subagent source over the root session list.
 		* @param ctx - client root context.
 		*/
-        function TeamBoardAction({ parentSessionId, openChild, t }) {
+        function TeamBoardAction({ parentSessionId, openChild, teamSettings, prepareTeam, t }) {
             const h = react.createElement;
             const [open, setOpen] = react.useState(false), [state, setState] = react.useState(null), [error, setError] = react.useState(null);
             const trigger = react.useRef(null);
@@ -855,33 +879,54 @@ window.__ModuleLoader__.load({
                 };
                 load(); return () => { alive = false; abort.abort(); clearTimeout(timer); };
             }, [parentSessionId, open]);
-            if (!state?.enabled && !error) return null;
+            const enabled = state?.enabled === true;
             const board = state?.board, members = Object.values(board?.members ?? {}), tasks = Object.values(board?.tasks ?? {});
             const ownerName = id => id === board?.teamId ? t('team.lead') : members.find(member => member.id === id)?.name ?? t('team.unassigned');
             const close = () => { setOpen(false); trigger.current?.focus(); };
             return h(react.Fragment, null,
-                h('button', { ref: trigger, type: 'button', onClick: () => setOpen(true), style: { color: 'var(--dsw-alias-label-secondary)', background: 'transparent', border: 0, borderRadius: 6, padding: '4px 8px', cursor: 'pointer' } }, t('team.title')),
+                h('button', { ref: trigger, type: 'button', onClick: () => setOpen(true), 'aria-label':t('team.title'), title:t('team.title'), 'aria-haspopup':'dialog', 'aria-expanded':open, className:'dshTeamTrigger' }, h('svg',{width:16,height:16,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:1.6,'aria-hidden':true},h('path',{d:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'}),h('circle',{cx:9,cy:7,r:4})), t('team.title'), members.length>0 && h('span',null,members.length)),
                 open && h(_deepseek_ai_dsh_client_ui_primitives.Modal, { open: true, title: t('team.title'), closeLabel: t('team.close'), onClose: close },
                     h('div', { style: { display: 'grid', gap: 16, maxHeight: '65vh', overflow: 'auto', overflowWrap: 'anywhere' }, 'data-agent-team-board': true },
                         error && h('p', { role: 'alert' }, error),
-                        h('h3', null, t('team.members')),
-                        members.length === 0 && h('p', null, t('team.empty')),
+                        !enabled && !error && h(TeamSettings, {scope:teamSettings,t}),
+                        enabled && h('p', {className:'dshTeamHint'}, t('team.intro')),
+                        enabled && prepareTeam && h('button', {type:'button',className:'dshTeamButton',onClick:()=>{prepareTeam(t('team.template'));close();}}, t('team.prepare')),
+                        enabled && h('h3', null, t('team.members')),
+                        enabled && members.length === 0 && h('p', {className:'dshTeamHint'}, t('team.empty')),
                         members.map(member => h('div', { key: member.id, style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-                            h('button', { type: 'button', disabled: member.phase !== 'active', onClick: () => { setOpen(false); openChild({ parentSessionId: board.teamId, childSessionId: member.id, mode: 'continuable' }); } }, member.name),
+                            h('button', { className:'dshTeamButton', type: 'button', disabled: member.phase !== 'active', onClick: () => { setOpen(false); openChild({ parentSessionId: board.teamId, childSessionId: member.id, mode: 'continuable' }); } }, member.name),
                             h('span', null, t(`team.status.${member.status ?? member.phase}`)), member.error && h('span', { role: 'status' }, member.error))),
-                        h('h3', null, t('team.tasks')),
+                        enabled && h('h3', null, t('team.tasks')),
+                        enabled && tasks.filter(task=>task.status!=='deleted').length===0 && h('p',{className:'dshTeamHint'},t('team.noTasks')),
+                        enabled && board?.pendingMessages>0 && h('p',{role:'status',className:'dshTeamHint'},t('team.pending').replace('{count}',String(board.pendingMessages))),
                         tasks.filter(task => task.status !== 'deleted').map(task => h('article', { key: task.id, style: { padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 } },
                             h('strong', null, task.subject), h('p', null, task.description),
                             h('div', null, `${ownerName(task.ownerId)} · ${t(`team.status.${task.status}`)}`),
                             task.blockedBy.length > 0 && h('div', null, `${t('team.dependencies')}: ${task.blockedBy.join(', ')}`),
                             task.writeScopes.length > 0 && h('div', null, `${t('team.writeScopes')}: ${task.writeScopes.join(', ')}`))),
-                        h('p', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('team.scopeNote')))));
+                        h('p', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, enabled ? t('team.scopeNote') : t('team.disabled')))));
         }
+        function TeamSettings({scope,t}) {
+            const h=react.createElement;
+            const [snapshot,setSnapshot]=react.useState(()=>scope?.getSnapshot()), [saving,setSaving]=react.useState(false), [error,setError]=react.useState(null), [saved,setSaved]=react.useState(false);
+            react.useEffect(()=>{if(!scope)return;setSnapshot(scope.getSnapshot());return scope.subscribe(()=>setSnapshot(scope.getSnapshot()));},[scope]);
+            const change=async(field,value)=>{if(saving)return;setSaving(true);setError(null);setSaved(false);try{await scope.setChecked(field,value);setSaved(true);}catch(cause){setError(String(cause.message||cause));}finally{setSaving(false)}};
+            const unavailable=!snapshot?.writable||snapshot?.mode==='memory'||saving;
+            return h('section',{className:'dshTeamSettings','data-team-settings':true},
+                h('p',{className:'dshTeamHint'},t('team.settingsDescription')),
+                h('label',{className:'dshTeamSetting'},h('span',null,t('team.enable')),h('input',{type:'checkbox',role:'switch',checked:snapshot?.value?.enabled===true,disabled:unavailable,onChange:e=>void change('enabled',e.target.checked)})),
+                h('label',{className:'dshTeamSetting'},h('span',null,t('team.limit')),h('select',{value:snapshot?.value?.maxMembers??8,disabled:unavailable,onChange:e=>void change('maxMembers',Number(e.target.value))},...[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(value=>h('option',{key:value,value},value)))),
+                saved&&h('p',{role:'status',className:'dshTeamHint'},t('team.restart')),
+                error&&h('p',{role:'alert'},error));
+        }
+
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, {
 				zh,
 				en
 			}), "ui-subagent: dictionaries");
+            const teamSettings=ctx.settingsScope.bind({namespace:"agent-teams"});
+            ctx.slots.inject("settings.section",()=>ctx.slots.register({name:"settings.section",id:"agent-teams",order:23,locale:NS,label:()=>ctx.locale.bind(NS)("team.title"),inject:()=>({scope:teamSettings})},TeamSettings));
 			const sessions = ctx.sessions;
 			const childLabels = (session, query) => {
 				const { byId } = sessions.list.getSnapshot();
@@ -917,7 +962,13 @@ window.__ModuleLoader__.load({
 				return response.result.value;
 			};
 			const catalogActions = (parentSessionId) => ({
-				parentSessionId,
+                parentSessionId,
+                teamSettings,
+                prepareTeam(text) {
+                    const shell=ctx.get("conversation").input.shell(parentSessionId);
+                    const existing=shell.snapshot.draft;
+                    shell.setDraft(existing ? existing+"\n\n"+text : text);
+                },
 				sessionsStore: sessions.list,
 				loadProgress,
 				openChild(address) {

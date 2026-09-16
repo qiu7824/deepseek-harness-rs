@@ -2453,6 +2453,47 @@ window.__ModuleLoader__.load({
                 if (this.root[HINT_DISPLAY_OWNER] === this) { delete this.root[HINT_DISPLAY_OWNER]; delete this.root.dataset.replyHintDisplay; }
             }
         }
+        const COMPOSER_TIP_OWNER=Symbol.for("dsh.composer-tips.owner"), COMPOSER_TIP_FIELD="composerTips", COMPOSER_TIP_MODES=["on","off"];
+        class ComposerTipPreference {
+            store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({ mode: "on", writable: false, saving: false, error: null });
+            saving = false;
+            disposed = false;
+            constructor(host, root = document.documentElement) {
+                this.host = host; this.root = root; root[COMPOSER_TIP_OWNER] = this;
+                const style = root.ownerDocument.querySelector("style[data-dsh-reply-hints]");
+                if (style) root.ownerDocument.head.appendChild(style);
+                this.unsubscribe = host.subscribe(() => this.adopt()); this.adopt();
+            }
+            publish(value) {
+                if (this.disposed) return;
+                if (this.root[COMPOSER_TIP_OWNER] === this) this.root.dataset.composerTips = value.mode;
+                this.store.set(value);
+            }
+            adopt() {
+                if (this.disposed) return;
+                const accepted = this.host.getSnapshot(), previous = this.store.getSnapshot();
+                this.publish({ mode: this.saving ? previous.mode : COMPOSER_TIP_MODES.includes(accepted.value?.composerTips) ? accepted.value.composerTips : "on", writable: accepted.writable === true && accepted.mode !== "memory", saving: this.saving, error: previous.error });
+            }
+            async set(mode) {
+                if (!COMPOSER_TIP_MODES.includes(mode)) throw new Error("Invalid composer tips mode");
+                const previous = this.store.getSnapshot();
+                if (this.disposed || this.saving || !previous.writable || previous.mode === mode) return;
+                this.saving = true; this.publish({ ...previous, mode, saving: true, error: null });
+                let failure = null;
+                try {
+                    if (typeof this.host.setChecked !== "function") throw new Error("settings.hints.unavailable");
+                    await this.host.setChecked(COMPOSER_TIP_FIELD, mode);
+                } catch (error) { failure = error instanceof Error ? error.message : String(error); }
+                finally {
+                    this.saving = false;
+                    if (!this.disposed) { this.publish({ ...this.store.getSnapshot(), error: failure, saving: false }); this.adopt(); }
+                }
+            }
+            dispose() {
+                this.disposed = true; this.unsubscribe();
+                if (this.root[COMPOSER_TIP_OWNER] === this) { delete this.root[COMPOSER_TIP_OWNER]; delete this.root.dataset.composerTips; }
+            }
+        }
 		//#region lib/types/client/input/submission-policy.js
 		/**
 		* Composer submission policy. It owns the live busy-Enter
@@ -3672,7 +3713,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-conversation\src\client\skeleton\InputBar.module.css.mjs
-		const css$17 = "@font-face{font-family:DshChipCell;src:url(data:font/ttf;base64,AAEAAAAKAIAAAwAgT1MvMkT8SmIAAAEoAAAAYGNtYXAADQBPAAABkAAAADRnbHlmAAAAAAAAAcwAAAABaGVhZCwtPGoAAACsAAAANmhoZWEDIg7bAAAA5AAAACRobXR4EZQAAAAAAYgAAAAIbG9jYQAAAAAAAAHEAAAABm1heHAAAwACAAABCAAAACBuYW1lvljk2gAAAdAAAABscG9zdNNweNQAAAI8AAAALQABAAAAAQAAdia1tV8PPPUAAwPoAAAAAOaLfcUAAAAA5ot9xQAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAA+gAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwjKAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAPz8/PwAA//z//AMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAD6AAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAD//P//AAD//P//AAUAAQAAAAAAAAAAAAAAAAAAAAAAAAAEADYAAQAAAAAAAQALAAAAAQAAAAAAAgAHAAsAAwABBAkAAQAWABIAAwABBAkAAgAOAChEc2hDaGlwQ2VsbFJlZ3VsYXIARABzAGgAQwBoAGkAcABDAGUAbABsAFIAZQBnAHUAbABhAHIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAABAgZvYmpyZXAAAAA=)format(\"truetype\")}.Uzx--a_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.Uzx--a_hero{padding:0 var(--dsh-composer-side-clearance)}.Uzx--a_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.Uzx--a_noticeError{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.Uzx--a_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.Uzx--a_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.Uzx--a_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.Uzx--a_cardWorkspaceTrigger :disabled{pointer-events:none}.Uzx--a_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.Uzx--a_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.Uzx--a_attachments{min-width:0;padding:4px 12px 0}.Uzx--a_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.Uzx--a_scroll{max-height:var(--dsh-composer-text-max-height);margin-right:4px;overflow-y:auto}.Uzx--a_scroll::-webkit-scrollbar-track{margin-top:8px}.Uzx--a_grow{position:relative}.Uzx--a_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.Uzx--a_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.Uzx--a_hint{color:var(--dsw-alias-label-caption)}.Uzx--a_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate Uzx--a_input-pending}@keyframes Uzx--a_input-pending{0%{opacity:.35}to{opacity:1}}.Uzx--a_input{resize:none;color:var(--dsw-alias-label-primary);width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_input,.Uzx--a_mirror,.Uzx--a_backdrop{box-sizing:border-box;font-family:\"DshChipCell\", var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.Uzx--a_input::placeholder{color:var(--dsw-alias-label-caption);user-select:none}.Uzx--a_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.Uzx--a_input[aria-haspopup=menu]{cursor:pointer}.Uzx--a_mirror{visibility:hidden;pointer-events:none}.Uzx--a_hero .Uzx--a_mirror{min-height:52px}.Uzx--a_row{justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.Uzx--a_tools,.Uzx--a_modes,.Uzx--a_trailing{align-items:center;min-width:0;display:flex}.Uzx--a_tools{gap:16px}.Uzx--a_modes{gap:12px}.Uzx--a_trailing{flex:none;gap:12px}.Uzx--a_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.Uzx--a_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.Uzx--a_add:disabled{opacity:.5;cursor:default}.Uzx--a_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.Uzx--a_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.Uzx--a_select:disabled{opacity:.5;cursor:default}.Uzx--a_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.Uzx--a_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.Uzx--a_primary:disabled{opacity:.4;cursor:default}.Uzx--a_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.Uzx--a_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.Uzx--a_textRef:after{display:none}.Uzx--a_chip{background:#6187d838;border-radius:6px;position:relative}.Uzx--a_chip:before{content:\"￼\";color:#0000}.Uzx--a_chipLabel{width:calc(138.889% - 10px);color:var(--dsw-alias-label-primary);white-space:nowrap;justify-content:center;align-items:center;display:flex;position:absolute;top:50%;left:50%;overflow:hidden;transform:translate(-50%,-50%)scale(.72)}.Uzx--a_chipInvalid{opacity:.7;background:#d8616133;text-decoration:line-through}";
+		const css$17 = "@font-face{font-family:DshChipCell;src:url(data:font/ttf;base64,AAEAAAAKAIAAAwAgT1MvMkT8SmIAAAEoAAAAYGNtYXAADQBPAAABkAAAADRnbHlmAAAAAAAAAcwAAAABaGVhZCwtPGoAAACsAAAANmhoZWEDIg7bAAAA5AAAACRobXR4EZQAAAAAAYgAAAAIbG9jYQAAAAAAAAHEAAAABm1heHAAAwACAAABCAAAACBuYW1lvljk2gAAAdAAAABscG9zdNNweNQAAAI8AAAALQABAAAAAQAAdia1tV8PPPUAAwPoAAAAAOaLfcUAAAAA5ot9xQAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAA+gAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwjKAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAPz8/PwAA//z//AMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAD6AAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAD//P//AAD//P//AAUAAQAAAAAAAAAAAAAAAAAAAAAAAAAEADYAAQAAAAAAAQALAAAAAQAAAAAAAgAHAAsAAwABBAkAAQAWABIAAwABBAkAAgAOAChEc2hDaGlwQ2VsbFJlZ3VsYXIARABzAGgAQwBoAGkAcABDAGUAbABsAFIAZQBnAHUAbABhAHIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAABAgZvYmpyZXAAAAA=)format(\"truetype\")}.dshComposerTip{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);padding:6px 14px 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;overflow-wrap:anywhere}.Uzx--a_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.Uzx--a_hero{padding:0 var(--dsh-composer-side-clearance)}.Uzx--a_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.Uzx--a_noticeError{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.Uzx--a_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.Uzx--a_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.Uzx--a_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.Uzx--a_cardWorkspaceTrigger :disabled{pointer-events:none}.Uzx--a_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.Uzx--a_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.Uzx--a_attachments{min-width:0;padding:4px 12px 0}.Uzx--a_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.Uzx--a_scroll{max-height:var(--dsh-composer-text-max-height);margin-right:4px;overflow-y:auto}.Uzx--a_scroll::-webkit-scrollbar-track{margin-top:8px}.Uzx--a_grow{position:relative}.Uzx--a_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.Uzx--a_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.Uzx--a_hint{color:var(--dsw-alias-label-caption)}.Uzx--a_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate Uzx--a_input-pending}@keyframes Uzx--a_input-pending{0%{opacity:.35}to{opacity:1}}.Uzx--a_input{resize:none;color:var(--dsw-alias-label-primary);width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.Uzx--a_input,.Uzx--a_mirror,.Uzx--a_backdrop{box-sizing:border-box;font-family:\"DshChipCell\", var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.Uzx--a_input::placeholder{color:var(--dsw-alias-label-caption);user-select:none}.Uzx--a_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.Uzx--a_input[aria-haspopup=menu]{cursor:pointer}.Uzx--a_mirror{visibility:hidden;pointer-events:none}.Uzx--a_hero .Uzx--a_mirror{min-height:52px}.Uzx--a_row{justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.Uzx--a_tools,.Uzx--a_modes,.Uzx--a_trailing{align-items:center;min-width:0;display:flex}.Uzx--a_tools{gap:16px}.Uzx--a_modes{gap:12px}.Uzx--a_trailing{flex:none;gap:12px}.Uzx--a_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.Uzx--a_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.Uzx--a_add:disabled{opacity:.5;cursor:default}.Uzx--a_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.Uzx--a_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.Uzx--a_select:disabled{opacity:.5;cursor:default}.Uzx--a_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.Uzx--a_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.Uzx--a_primary:disabled{opacity:.4;cursor:default}.Uzx--a_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.Uzx--a_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.Uzx--a_textRef:after{display:none}.Uzx--a_chip{background:#6187d838;border-radius:6px;position:relative}.Uzx--a_chip:before{content:\"￼\";color:#0000}.Uzx--a_chipLabel{width:calc(138.889% - 10px);color:var(--dsw-alias-label-primary);white-space:nowrap;justify-content:center;align-items:center;display:flex;position:absolute;top:50%;left:50%;overflow:hidden;transform:translate(-50%,-50%)scale(.72)}.Uzx--a_chipInvalid{opacity:.7;background:#d8616133;text-decoration:line-through}";
 		const tagId$17 = "@deepseek-ai/dsh-client-ui-conversation/InputBar.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$17) + "]") === null) {
 			const tag = document.createElement("style");
@@ -3738,7 +3779,7 @@ window.__ModuleLoader__.load({
 			const inserted = "\n" + match[1] + (Number(match[2]) + 1) + match[3] + (match[4] || " ");
 			return { text: text.slice(0, start) + inserted + text.slice(end), caret: start + inserted.length, insertedLength: inserted.length };
 		}
-		function InputBar({ useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages, resolveSubmitMode, toggleCommandMenu, toggleReferenceMenu, stop, command, t, renderSlot, useNotices, useLexicon, useMenuLauncher, useProjection, sessionId, variant, disabled: inert = false, blocked, workspacePickerOpen = false, onRequestWorkspace, placeholder, accessory, overlay, leftItems, rightItems, footer }) {
+		function InputBar({ useComposerTips = () => ({mode:"on"}), useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages, resolveSubmitMode, toggleCommandMenu, toggleReferenceMenu, stop, command, t, renderSlot, useNotices, useLexicon, useMenuLauncher, useProjection, sessionId, variant, disabled: inert = false, blocked, workspacePickerOpen = false, onRequestWorkspace, placeholder, accessory, overlay, leftItems, rightItems, footer }) {
 			const input = useInput((s) => s);
 			const notice = useNotices((s) => s);
 			const lexicon = useLexicon((s) => s);
@@ -4099,13 +4140,13 @@ window.__ModuleLoader__.load({
 			}, sessionId);
 			const deco = input === void 0 ? INERT_DECORATIONS : deriveDecorations(input, lexicon);
             const decoratedInput = deco.token !== null || deco.chips.length > 0 || deco.textRefs.length > 0 || deco.hint !== null;
-            const [tipIndex, setTipIndex] = react.useState(0);
-            const hadDraft = react.useRef(false);
-            react.useEffect(() => {
-                if (draft === "" && hadDraft.current) setTipIndex(index => (index + 1) % 3);
-                hadDraft.current = draft !== "";
-            }, [draft]);
-			const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t(["placeholder.default", "placeholder.tipNewline", "placeholder.tipImage"][tipIndex]));
+            const tipPreference = useComposerTips(value => value);
+            const [tipIndex, setTipIndex] = react.useState(0), [tipFocused, setTipFocused] = react.useState(false);
+            const tipKeys = ["placeholder.tipNumbered", "placeholder.tipNewline", "placeholder.tipImage", "placeholder.tipReference", "placeholder.tipCommands", "placeholder.tipTeam"];
+            const focusTip = () => { setTipFocused(true); setTipIndex(previous => (previous + 1 + Math.floor(Math.random() * (tipKeys.length - 1))) % tipKeys.length); };
+            const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t("placeholder.default"));
+            const showTip = tipFocused && tipPreference.mode !== "off" && !disabled && !workspaceTrigger && !parentOffline && !running;
+
 			const backdrop = [];
 			{
 				let cursor = 0;
@@ -4250,6 +4291,7 @@ window.__ModuleLoader__.load({
 											"aria-expanded": workspaceTrigger ? workspacePickerOpen : void 0,
 											"data-phase": input?.phase ?? "inert",
 											placeholder: input?.claim == null ? placeholderText : "",
+                                            onPointerDown: focusTip, onFocus: event => { if(event.relatedTarget) focusTip(); }, onBlur: () => setTipFocused(false),
 											rows: 2,
 											onChange,
 											onKeyDown,
@@ -4395,6 +4437,7 @@ window.__ModuleLoader__.load({
 						labels: lightboxLabels(t),
 						onClose: closePreview
 					}),
+                    showTip && (0,react_jsx_runtime.jsx)("div", {className:"dshComposerTip", "data-composer-tip":true, children:t(tipKeys[tipIndex])}),
 					footer
 				]
 			});
@@ -4430,6 +4473,20 @@ window.__ModuleLoader__.load({
                 ] }),
                 (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, { open: open && !unavailable, onClose: () => setOpen(false), items: ["both", "icons", "text"].map(id => ({ id, label: t("settings.hints." + id) })), selectedId: value.mode, onSelect: id => { setOpen(false); setHintDisplay(id); }, align: "end", portal: true,
                     anchor: (0, react_jsx_runtime.jsxs)("button", { type: "button", className: EnterBehaviorRow_module_css_default.selector, disabled: unavailable, "aria-label": t("settings.hints.title"), "aria-haspopup": "menu", "aria-expanded": open && !unavailable, onClick: () => setOpen(current => !current), children: [t("settings.hints." + value.mode), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, { className: EnterBehaviorRow_module_css_default.chevron })] })
+                })
+            ] });
+        }
+        function ComposerTipRow({ useComposerTips, setComposerTips, t }) {
+            const value = useComposerTips(snapshot => snapshot), [open, setOpen] = (0, react.useState)(false);
+            const unavailable = !value.writable || value.saving;
+            return (0, react_jsx_runtime.jsxs)("div", { className: EnterBehaviorRow_module_css_default.row, "data-composer-tip-setting": true, children: [
+                (0, react_jsx_runtime.jsxs)("div", { className: EnterBehaviorRow_module_css_default.rowText, children: [
+                    (0, react_jsx_runtime.jsx)("div", { className: EnterBehaviorRow_module_css_default.title, children: t("settings.tips.title") }),
+                    (0, react_jsx_runtime.jsx)("div", { className: EnterBehaviorRow_module_css_default.desc, children: t("settings.tips.description") }),
+                    value.error && (0, react_jsx_runtime.jsx)("div", { className: "dshReplyHintSettingError", role: "alert", children: value.error.startsWith("settings.hints.") ? t(value.error) : value.error })
+                ] }),
+                (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, { open: open && !unavailable, onClose: () => setOpen(false), items: ["on", "off"].map(id => ({ id, label: t("settings.tips." + id) })), selectedId: value.mode, onSelect: id => { setOpen(false); setComposerTips(id); }, align: "end", portal: true,
+                    anchor: (0, react_jsx_runtime.jsxs)("button", { type: "button", className: EnterBehaviorRow_module_css_default.selector, disabled: unavailable, "aria-label": t("settings.tips.title"), "aria-haspopup": "menu", "aria-expanded": open && !unavailable, onClick: () => setOpen(current => !current), children: [t("settings.tips." + value.mode), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, { className: EnterBehaviorRow_module_css_default.chevron })] })
                 })
             ] });
         }
@@ -6549,7 +6606,16 @@ window.__ModuleLoader__.load({
 			"hint.goal": "输入目标，智能体将持续执行",
 			"hint.goal.active": "当前目标进行中。可输入 edit 修改 / pause 暂停 / resume 继续 / clear 清除",
 			"placeholder.plan": PLAN_NEXT_ACTION_ZH,
-			"placeholder.default": "给智能体发消息（Ctrl+Enter 可自动续写序号）",
+			"placeholder.default": "给智能体发消息",
+            "settings.tips.title": "输入提示",
+            "settings.tips.description": "输入框获得焦点时显示一条随机使用提示，可随时关闭。",
+            "settings.tips.on": "开启",
+            "settings.tips.off": "关闭",
+            "placeholder.tipNumbered": "Ctrl+Enter 可继续当前编号列表。",
+            "placeholder.tipReference": "输入 @ 可引用其他对话。",
+            "placeholder.tipCommands": "输入 / 可查看可用命令。",
+            "placeholder.tipTeam": "点击会话顶部的团队，可查看成员与共享任务。",
+
             "placeholder.tipNewline": "Shift+Enter 换行，Enter 发送",
             "placeholder.tipImage": "粘贴或拖入图片，再输入你想修改的内容",
             "error.notGit": "当前目录不是 Git 仓库，Git 命令未执行成功。",
@@ -6857,7 +6923,16 @@ window.__ModuleLoader__.load({
 			"hint.goal": "describe the objective for a long-running task",
 			"hint.goal.active": "goal active — edit / pause / resume / clear",
 			"placeholder.plan": PLAN_NEXT_ACTION_EN,
-			"placeholder.default": "Message the agent (Ctrl+Enter continues numbered lists)",
+			"placeholder.default": "Message the agent",
+            "settings.tips.title": "Composer tips",
+            "settings.tips.description": "Show a random usage tip when the message field is focused.",
+            "settings.tips.on": "On",
+            "settings.tips.off": "Off",
+            "placeholder.tipNumbered": "Ctrl+Enter continues the current numbered list.",
+            "placeholder.tipReference": "Type @ to reference another conversation.",
+            "placeholder.tipCommands": "Type / to browse available commands.",
+            "placeholder.tipTeam": "Open Team above the conversation to view members and shared tasks.",
+
             "placeholder.tipNewline": "Shift+Enter for a new line; Enter to send",
             "placeholder.tipImage": "Paste or drop an image, then describe your changes",
             "error.notGit": "This directory is not a Git repository; the Git command failed.",
@@ -10818,6 +10893,9 @@ window.__ModuleLoader__.load({
 			const conversationSettings = ctx.settingsScope.bind({ namespace: CONVERSATION_SETTINGS_NAMESPACE });
             const submissionPolicy = new ComposerSubmissionPolicy(conversationSettings);
             const hintDisplay = new ReplyHintPreference(conversationSettings);
+            const composerTips = new ComposerTipPreference(conversationSettings);
+            ctx.effect(() => () => composerTips.dispose(), "composer tips preference");
+            ctx.slots.inject("settings.general.item", () => ctx.slots.register({name:"settings.general.item",id:"composer-tips",order:22,locale:NS,inject:()=>({hooks:{composerTips:composerTips.store},setComposerTips:mode=>composerTips.set(mode)})}, ComposerTipRow));
             ctx.effect(() => () => hintDisplay.dispose(), "conversation reply hint display");
             ctx.slots.inject("settings.general.item", () => ctx.slots.register({ name: "settings.general.item", id: "reply-hint-display", order: 21, locale: NS, inject: () => ({ hooks: { hintDisplay: hintDisplay.store }, setHintDisplay: mode => hintDisplay.set(mode) }) }, ReplyHintDisplayRow));
 			ctx.slots.inject("settings.general.item", () => ctx.slots.register({
@@ -11063,7 +11141,8 @@ window.__ModuleLoader__.load({
 							return result.ok && result.value.matched;
 						},
 						hooks: {
-							notices: shell.notices,
+							composerTips: composerTips.store,
+                            notices: shell.notices,
 							lexicon: shell.lexicon,
 							menuLauncher: inputTriggers?.launcher ?? ABSENT_MENU_LAUNCHER
 						}

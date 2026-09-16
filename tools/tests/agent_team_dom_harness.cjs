@@ -20,7 +20,9 @@ const render=id=>root.render(React.createElement(context.TeamBoardAction,{parent
 const answer=(request,value)=>act(()=>request.resolve({ok:true,json:async()=>value}));
 (async()=>{
  await act(()=>render('a'));assert.equal(JSON.parse(requests[0].options.body).sessionId,'a');
- await answer(requests[0],{enabled:false});assert.equal(document.querySelector('button'),null,'disabled teams add no header action');
+ await answer(requests[0],{enabled:false});assert.ok(document.querySelector('button'),'disabled teams remain discoverable');
+ await act(()=>document.querySelector('button').click());await answer(requests.at(-1),{enabled:false});
+ assert.ok(document.querySelector('[data-team-settings]'),'disabled teams expose settings');
  await act(()=>render('b'));await answer(requests.at(-1),{enabled:true,board:{...board,teamId:'b'}});
  await act(()=>document.querySelector('button').click());await answer(requests.at(-1),{enabled:true,board:{...board,teamId:'b'}});
  assert.match(document.querySelector('[role=dialog]').textContent,/Review module/);assert.match(document.body.textContent,/team.status.running/);
@@ -30,7 +32,13 @@ const answer=(request,value)=>act(()=>request.resolve({ok:true,json:async()=>val
  assert.equal(document.querySelector('[role=dialog]'),null);
  const stale=requests.at(-1);await act(()=>render('c'));const current=requests.at(-1);
  assert.equal(stale.options.signal.aborted,true);await answer(stale,{enabled:true,board});await answer(current,{enabled:false});
- assert.equal(document.querySelector('[data-agent-team-board]'),null);assert.equal(document.querySelector('button'),null,'late responses do not reopen another team');
+ assert.equal(document.querySelector('[data-agent-team-board]'),null);assert.ok(document.querySelector('button'),'late responses preserve the closed team entry');
+ const listeners=new Set();let settings={writable:true,mode:'host',value:{enabled:false,maxMembers:8}},fail=false;const writes=[];
+ const scope={getSnapshot:()=>settings,subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener)},setChecked:async(field,value)=>{writes.push({field,value});if(fail)throw Error('write failed');settings={...settings,value:{...settings.value,[field]:value}};for(const listener of listeners)listener()}};
+ await act(()=>root.render(React.createElement(context.TeamSettings,{scope,t})));
+ await act(()=>document.querySelector('[role=switch]').click());assert.equal(settings.value.enabled,true);assert.match(document.body.textContent,/team.restart/);
+ fail=true;await act(()=>document.querySelector('[role=switch]').click());assert.equal(document.querySelector('[role=switch]').checked,true);assert.match(document.querySelector('[role=alert]').textContent,/write failed/);
+ assert.equal(settings.value.maxMembers,8,'enable changes preserve member limit');assert.equal(writes.length,2);
  await act(()=>root.unmount());assert.equal(timers.size,0);dom.window.close();
  console.log('PASS team board: opt-in visibility, tasks, actual activity, child addressing and stale response isolation');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close();});
