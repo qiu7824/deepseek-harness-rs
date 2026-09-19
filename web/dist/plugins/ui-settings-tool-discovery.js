@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
       React.useEffect(()=>{mounted.current=true;controller.current=new AbortController();load().catch(e=>{if(mounted.current)setError(e.message);});return()=>{mounted.current=false;generation.current++;controller.current.abort();};},[load]);
       const save=async event=>{event.preventDefault();if(busy||!draft)return;setBusy(true);setError("");setNotice("");try{const value=await request({configuration:draft,expectedRevision:state.revision});if(mounted.current){setState(value);setDraft(value.configuration);setNotice(value.restartRequired?"设置已保存，重启 Host 后生效。":"设置已保存。");}}catch(e){if(mounted.current)setError(e.message);}finally{if(mounted.current)setBusy(false);}};
       const number=(key,label,min,max)=>jsxs("label",{style:{display:"flex",flexDirection:"column",gap:5},children:[label,jsx("input",{type:"number",min,max,required:true,value:draft[key],onChange:e=>setDraft({...draft,[key]:Number(e.target.value)})})]},key);
-      return jsxs("section",{style:{display:"flex",flexDirection:"column",gap:14,paddingBottom:24},children:[
+      return jsxs("section",{className:"dshToolDiscovery",style:{display:"flex",flexDirection:"column",gap:14,paddingBottom:24},children:[
         jsx("h2",{children:"工具发现"}),jsx("p",{children:"按需展示工具参数，减少重复搜索与上下文占用。运行环境缓存和权限检查始终独立工作。"}),
         error&&jsx("p",{role:"alert",children:error}),notice&&jsx("p",{role:"status",children:notice}),
         draft&&jsxs("form",{onSubmit:save,style:{display:"flex",flexDirection:"column",gap:12},children:[
