@@ -4271,18 +4271,6 @@ fn compose_host_in_fiber(
     )?;
     let code_index = dsh_code_graph::BackgroundIndex::new();
     code_intelligence::install(ctx, tools.clone(), code_index.clone())?;
-    let web_preview_route = web_preview::register(
-        &web_server,
-        workspace_registry.clone(),
-        agents.clone(),
-        terminals.clone(),
-        jobs.clone(),
-        subprocess.clone(),
-        sandbox.clone(),
-        code_index,
-        turn_changes,
-        bind_host == BindHost::AllInterfaces,
-    );
     let boot_profile = profile.map(|profile| data_root.join("profiles").join(profile));
     let _ = web_server.tap_index(Arc::new(move |html| {
         let mut payload = boot_payload.clone();
@@ -4442,6 +4430,19 @@ fn compose_host_in_fiber(
         ctx,
         &data_root,
         settings.clone(),
+        allow_remote_host,
+    );
+    let web_preview_route = web_preview::register(
+        &web_server,
+        workspace_registry.clone(),
+        agents.clone(),
+        api_proxy.clone(),
+        terminals.clone(),
+        jobs.clone(),
+        subprocess.clone(),
+        sandbox.clone(),
+        code_index,
+        turn_changes,
         allow_remote_host,
     );
     let agent_team_route = agent_team_http::register(

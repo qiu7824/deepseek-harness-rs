@@ -898,7 +898,7 @@ mod idle_retirement_tests {
     }
 
     #[tokio::test]
-    async fn live_terminal_defers_retirement_and_last_close_retries_it() {
+    async fn terminal_admission_defers_retirement_until_last_close() {
         let ctx = Context::root();
         let sessions = dsh_session::SessionStore::install(&ctx);
         let agents = dsh_agent::AgentRegistry::install(&ctx);
@@ -913,6 +913,7 @@ mod idle_retirement_tests {
             .expect("register terminal backend");
         let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
         let id = session_id("terminal-retirement");
+        let idle_observed = Arc::new(AtomicBool::new(false));
         let session = sessions.create(&ctx, Some(id.clone()), None).await.unwrap();
         let concrete = Arc::new(StatusAgent {
             id,
@@ -923,7 +924,7 @@ mod idle_retirement_tests {
             scope_key: ScopeKey::new(),
             running: AtomicBool::new(false),
             idle_wait: None,
-            idle_observed: None,
+            idle_observed: Some(idle_observed.clone()),
         });
         let agent: Arc<dyn Agent> = concrete;
         let detach = agents.enter(agent.clone(), None).unwrap();
@@ -934,6 +935,19 @@ mod idle_retirement_tests {
             agent: agent.clone(),
             dispose: Box::pin(async move { complete.store(true, Ordering::SeqCst) }),
         });
+        let opening = service
+            .resolve_control_agent(agent.id().as_str())
+            .await
+            .unwrap();
+        service.spawn_idle_retirement(agent.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !idle_observed.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retirement observes the idle owner during terminal setup");
+        assert!(!disposed.load(Ordering::SeqCst));
         let terminal = terminals
             .spawn(
                 agent.clone(),
@@ -947,8 +961,9 @@ mod idle_retirement_tests {
             .unwrap()
             .await
             .unwrap();
+        drop(opening);
 
-        service.retire_idle_agent_for_test(agent.clone()).await;
+        tokio::task::yield_now().await;
         assert!(!disposed.load(Ordering::SeqCst));
         assert!(terminals.has_owner_activity(&agent));
         assert_eq!(

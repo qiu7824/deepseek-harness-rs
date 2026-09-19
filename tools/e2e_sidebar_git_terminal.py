@@ -212,7 +212,16 @@ def main() -> int:
         else:
             os.kill(shutdown_pid, 9)
         raise AssertionError(f"Host shutdown left terminal pid {shutdown_pid} alive")
-    print(json.dumps({"status": "passed", "workspace": str(workspace), "withoutNode": args.without_node, "gitRepositories": 2, "terminal": "native-pty-unicode-input-resize-sigint-exit-shutdown"}, ensure_ascii=False))
+    # No live Agent exists after restart. Opening must resume the durable
+    # session and retain admission until PTY activity protects its owner.
+    with running_fixture_host(args.binary.resolve(), run, env, None, "cold-terminal") as port:
+        for index in range(8):
+            opened = request(port, "terminal-action", body={"sessionId": shutdown_session, "action": "open", "name": f"Cold owner {index}"})
+            entries = request(port, "terminal-list", query={"sessionId": shutdown_session})["entries"]
+            assert any(entry["id"] == opened["id"] for entry in entries), entries
+            request(port, "terminal-action", body={"sessionId": shutdown_session, "action": "close", "terminalId": opened["id"]})
+            time.sleep(0.05)
+    print(json.dumps({"status": "passed", "workspace": str(workspace), "withoutNode": args.without_node, "gitRepositories": 2, "terminal": "native-pty-unicode-input-resize-sigint-exit-shutdown", "coldTerminalReopens": 8}, ensure_ascii=False))
     return 0
 
 

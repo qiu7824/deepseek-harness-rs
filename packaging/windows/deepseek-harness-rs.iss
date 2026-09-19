@@ -1,8 +1,8 @@
 ﻿#ifndef MyAppVersion
-#define MyAppVersion "0.1.3-alpha.27"
+#define MyAppVersion "0.1.3-alpha.28"
 #endif
 #ifndef SourceDir
-#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.27-windows-x86_64-core"
+#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.28-windows-x86_64-core"
 #endif
 #ifndef OutputDir
 #define OutputDir "dist"

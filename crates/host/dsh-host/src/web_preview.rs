@@ -312,6 +312,7 @@ struct PreviewService {
     office: crate::office_preview::OfficePreview,
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
+    api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
     terminals: Arc<TerminalSessionService>,
     jobs: Arc<dyn JobRegistry>,
     subprocess: Arc<dyn SubprocessRuntime>,
@@ -1403,6 +1404,7 @@ impl PreviewService {
     fn new(
         registry: Arc<WorkspaceRegistry>,
         agents: Arc<AgentRegistry>,
+        api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
         terminals: Arc<TerminalSessionService>,
         jobs: Arc<dyn JobRegistry>,
         subprocess: Arc<dyn SubprocessRuntime>,
@@ -1414,6 +1416,7 @@ impl PreviewService {
             office: Default::default(),
             registry,
             agents,
+            api,
             terminals,
             jobs,
             subprocess,
@@ -1795,9 +1798,25 @@ impl PreviewService {
             Ok(value) => value,
             Err(response) => return response,
         };
-        let owner = match self.terminal_owner(&action.session_id) {
-            Ok(owner) => owner,
-            Err(response) => return response,
+        // Opening can await workspace resolution and PTY startup while an idle
+        // owner is retiring. Use the same admission/resume boundary as session
+        // RPCs and hold it until the terminal has published its activity.
+        let owner_lease = if action.action == "open" {
+            match self.api.resolve_control_agent(&action.session_id).await {
+                Ok(lease) => Some(lease),
+                Err(failure) => {
+                    return error(StatusCode::CONFLICT, "agent-not-live", failure);
+                }
+            }
+        } else {
+            None
+        };
+        let owner = match owner_lease.as_ref() {
+            Some(lease) => lease.agent.clone(),
+            None => match self.terminal_owner(&action.session_id) {
+                Ok(owner) => owner,
+                Err(response) => return response,
+            },
         };
         match action.action.as_str() {
             "open" => {
@@ -3092,6 +3111,7 @@ pub fn register(
     web_server: &Arc<WebServer>,
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
+    api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
     terminals: Arc<TerminalSessionService>,
     jobs: Arc<dyn JobRegistry>,
     subprocess: Arc<dyn SubprocessRuntime>,
@@ -3101,7 +3121,7 @@ pub fn register(
     allow_remote_host: bool,
 ) -> RouteDisposer {
     let mut service = PreviewService::new(
-        registry, agents, terminals, jobs, subprocess, sandbox, code_index,
+        registry, agents, api, terminals, jobs, subprocess, sandbox, code_index,
     );
     Arc::get_mut(&mut service)
         .expect("new preview service")

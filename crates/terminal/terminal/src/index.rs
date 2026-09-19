@@ -17,8 +17,8 @@
 //!   registration) require a live tokio runtime.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use std::sync::{Arc, Weak};
 
 use cordis::{Context, Disposer, EventOptions, Listener, Service, downcast, make_disposer};
 use dsh_agent::{Agent, AgentRegistry};
@@ -133,7 +133,7 @@ pub struct TerminalSessionService {
     /// callers. Generic callers are not limited, but participate in the gate
     /// so a limited GUI admission cannot race their pending publication.
     spawn_admission: Mutex<()>,
-    disposed: Mutex<HashSet<usize>>,
+    disposed: Mutex<HashMap<usize, Weak<dyn Agent>>>,
     next_id: AtomicU64,
     disposing: AtomicBool,
 }
@@ -167,7 +167,7 @@ impl TerminalSessionService {
             owners: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             spawn_admission: Mutex::new(()),
-            disposed: Mutex::new(HashSet::new()),
+            disposed: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
             disposing: AtomicBool::new(false),
         });
@@ -336,8 +336,7 @@ impl TerminalSessionService {
     }
 
     fn is_live_owner(&self, owner: &Arc<dyn Agent>) -> bool {
-        let key = owner_key(owner);
-        if self.disposed.lock().contains(&key) {
+        if self.is_disposed_owner(owner) {
             return false;
         }
         let Some(registry) = self
@@ -373,7 +372,7 @@ impl TerminalSessionService {
                     let owned = owned.clone();
                     Box::pin(async move {
                         let key = owner_key(&owned);
-                        service.disposed.lock().insert(key);
+                        service.mark_owner_disposed(&owned);
                         service.owners.lock().remove(&key);
                         let _ = service.dispose_owned(&owned).await;
                     })
@@ -789,7 +788,7 @@ impl TerminalSessionService {
 
     fn notify_owner_idle(&self, owner: &Arc<dyn Agent>) {
         if !self.disposing.load(SeqCst)
-            && !self.disposed.lock().contains(&owner_key(owner))
+            && !self.is_disposed_owner(owner)
             && !self.has_owner_activity(owner)
         {
             self.ctx
@@ -1242,7 +1241,17 @@ impl TerminalSessionService {
     /// Mark an exact owner as disposed (the TS `disposedOwners` weak set).
     #[doc(hidden)]
     pub fn mark_owner_disposed(&self, owner: &Arc<dyn Agent>) {
-        self.disposed.lock().insert(owner_key(owner));
+        let mut disposed = self.disposed.lock();
+        disposed.retain(|_, previous| previous.strong_count() > 0);
+        disposed.insert(owner_key(owner), Arc::downgrade(owner));
+    }
+
+    fn is_disposed_owner(&self, owner: &Arc<dyn Agent>) -> bool {
+        let mut disposed = self.disposed.lock();
+        disposed.retain(|_, previous| previous.strong_count() > 0);
+        disposed
+            .get(&owner_key(owner))
+            .is_some_and(|previous| Weak::ptr_eq(previous, &Arc::downgrade(owner)))
     }
 
     /// Live session records (the TS `sessions` map values).
@@ -1378,6 +1387,39 @@ mod limit_tests {
             ctx: ctx.clone(),
             scope_key: ScopeKey::new(),
         })
+    }
+
+    #[tokio::test]
+    async fn disposed_owner_identity_does_not_poison_a_reused_address_bucket() {
+        let ctx = Context::root();
+        let registry = AgentRegistry::install(&ctx);
+        let service = TerminalSessionService::install(&ctx);
+        let current = agent(&ctx).await;
+        let detach = registry.enter(current.clone(), None).unwrap();
+        let previous = agent(&Context::root()).await;
+        // Reproduce an obsolete numeric tombstone colliding with a new owner.
+        service
+            .disposed
+            .lock()
+            .insert(owner_key(&current), Arc::downgrade(&previous));
+        assert!(service.is_live_owner(&current));
+        service.mark_owner_disposed(&current);
+        assert!(!service.is_live_owner(&current));
+        detach().await;
+    }
+
+    #[tokio::test]
+    async fn disposed_markers_neither_retain_owners_nor_accumulate_dead_generations() {
+        let ctx = Context::root();
+        let service = TerminalSessionService::install(&ctx);
+        for _ in 0..64 {
+            let owner = agent(&Context::root()).await;
+            let weak = Arc::downgrade(&owner);
+            service.mark_owner_disposed(&owner);
+            assert_eq!(service.disposed.lock().len(), 1);
+            drop(owner);
+            assert!(weak.upgrade().is_none());
+        }
     }
 
     struct FakeSession {
