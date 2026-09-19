@@ -1116,6 +1116,17 @@ impl ExecutionProfiles {
 
     async fn handle(self: &Arc<Self>, args: Value) -> Result<Value, String> {
         let session = args["sessionId"].as_str().filter(|s| !s.is_empty());
+        // Settings requests can arrive after automatic idle retirement. Use
+        // the same admission/resume boundary as control RPCs, and release the
+        // lease after the response instead of retaining a generation forever.
+        let _lease = match (
+            session,
+            self.ctx
+                .get_typed::<Arc<dsh_host_apiproxy::ApiProxyService>>("apiProxy", false),
+        ) {
+            (Some(id), Some(api)) => Some(api.resolve_control_agent(id).await?),
+            _ => None,
+        };
         let default_cwd = session
             .and_then(|id| {
                 self.ctx
