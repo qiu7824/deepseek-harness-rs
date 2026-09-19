@@ -68,6 +68,8 @@ def verify_pkg(package: pathlib.Path, stage: pathlib.Path, variant: str) -> None
 
 
 def verify_windows(package: pathlib.Path, stage: pathlib.Path) -> None:
+    from verify_release_package import verify_windows_embedded_icon
+    verify_windows_embedded_icon(package, ROOT / "packaging/windows/deepseek-black.ico")
     # Inno Setup emits a deterministic compiled-code manifest. `innounp` is
     # installed by the workflow and extracts without executing the installer.
     innounp = shutil.which("innounp") or shutil.which("innounp.exe")

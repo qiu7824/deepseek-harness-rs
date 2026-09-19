@@ -19,6 +19,44 @@ use parking_lot::Mutex;
 use tokio::sync::{Notify, OnceCell};
 
 const MAX_CACHED_PREPARED_EVENTS: u64 = 4096;
+const MAX_CACHED_PREPARED_BYTES: usize = 8 * 1024 * 1024;
+
+/// Estimate retained JSON storage without serializing or cloning the log.
+/// Stop at the budget: a single image or tool result can outweigh thousands
+/// of ordinary events, so an event-count limit alone is insufficient.
+fn fits_prepared_cache(session: &Session) -> bool {
+    fn charge(remaining: &mut usize, bytes: usize) -> bool {
+        match remaining.checked_sub(bytes) {
+            Some(next) => { *remaining = next; true }
+            None => false,
+        }
+    }
+    fn json_fits(value: &serde_json::Value, remaining: &mut usize) -> bool {
+        use serde_json::Value;
+        match value {
+            Value::String(text) => charge(remaining, text.capacity()),
+            Value::Array(items) => {
+                charge(remaining, items.capacity().saturating_mul(std::mem::size_of::<Value>()))
+                    && items.iter().all(|item| json_fits(item, remaining))
+            }
+            Value::Object(items) => {
+                charge(remaining, items.len().saturating_mul(std::mem::size_of::<(String, Value)>()))
+                    && items.iter().all(|(key, value)| charge(remaining, key.capacity()) && json_fits(value, remaining))
+            }
+            _ => true,
+        }
+    }
+    session.with_events(|events| {
+        if events.len() as u64 > MAX_CACHED_PREPARED_EVENTS { return false; }
+        let mut remaining = MAX_CACHED_PREPARED_BYTES;
+        charge(&mut remaining, events.len().saturating_mul(std::mem::size_of::<dsh_session::SessionEvent>()))
+            && events.iter().all(|event| {
+                charge(&mut remaining, event.type_.capacity())
+                    && charge(&mut remaining, event.source_event_seqs.as_ref().map_or(0, |seqs| seqs.capacity().saturating_mul(std::mem::size_of::<u64>())))
+                    && json_fits(&event.data, &mut remaining)
+            })
+    })
+}
 
 /// One prepared source exposing its exact unpublished Session.
 pub trait PreparedSource: Send + Sync + 'static {
@@ -89,7 +127,7 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
             state.source.clone().unwrap_or(loaded.clone())
         };
         if self.is_current(&entry, id) && entry.state.lock().phase == PreparationPhase::Ready {
-            if source.session().seq().get() > MAX_CACHED_PREPARED_EVENTS {
+            if !fits_prepared_cache(source.session()) {
                 self.discard_ready(id, &source);
             } else {
                 self.touch(&entry);
@@ -388,7 +426,7 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
         entry.notify.notify_waiters();
         let source = entry.state.lock().source.clone();
         if let Some(source) = source
-            && source.session().seq().get() > MAX_CACHED_PREPARED_EVENTS
+            && !fits_prepared_cache(source.session())
         {
             self.discard_ready(&entry.id, &source);
             return;
@@ -553,5 +591,32 @@ mod retention_tests {
             .await
             .unwrap();
         assert!(pool.has(source.session().id()));
+    }
+
+    #[tokio::test]
+    async fn a_single_large_payload_is_not_retained_after_inspect_or_release() {
+        for reserve in [false, true] {
+            let source = source(1);
+            source.session().append("large-tool-result", serde_json::json!({
+                "output": "x".repeat(MAX_CACHED_PREPARED_BYTES)
+            }), None).unwrap();
+            let weak = Arc::downgrade(&source);
+            let pool = SessionPreparations::<Source, ()>::new(5);
+            if reserve {
+                let reservation = pool.reserve(source.session().id(), loader(&source),
+                    Arc::new(|source| Box::pin(async move { Ok(Some((source, ()))) })))
+                    .await.unwrap().unwrap();
+                let inspected = pool.inspect(source.session().id(), loader(&source)).await.unwrap();
+                assert!(pool.has(source.session().id()), "inspection must preserve a reserved source");
+                drop(inspected);
+                pool.release(&reservation, true);
+                drop(reservation);
+            } else {
+                drop(pool.inspect(source.session().id(), loader(&source)).await.unwrap());
+            }
+            assert!(!pool.has(source.session().id()));
+            drop(source);
+            assert!(weak.upgrade().is_none(), "large payload remains owned by the cache");
+        }
     }
 }

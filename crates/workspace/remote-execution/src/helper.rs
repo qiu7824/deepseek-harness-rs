@@ -352,7 +352,15 @@ impl Helper {
         tokio::fs::create_dir_all(dir.parent().unwrap())
             .await
             .map_err(|e| e.to_string())?;
-        if !dir.exists() && std::fs::read_dir(dir.parent().unwrap()).map_err(|e|e.to_string())?.take(128).count()>=128 {return Err("remote execution record budget reached; archive completed helper records on the remote host".into());}
+        if !dir.exists()
+            && std::fs::read_dir(dir.parent().unwrap())
+                .map_err(|e| e.to_string())?
+                .take(128)
+                .count()
+                >= 128
+        {
+            return Err("remote execution record budget reached; archive completed helper records on the remote host".into());
+        }
         match tokio::fs::create_dir(&dir).await {
             Ok(()) => (),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -598,9 +606,13 @@ pub async fn worker(root: PathBuf, id: &str) -> Result<(), String> {
         tokio::time::Instant::now() + std::time::Duration::from_millis(execution.timeout_ms);
     let done = child.done();
     struct KillChild(Arc<dyn dsh_subprocess::SubprocessHandle>);
-    impl Drop for KillChild {fn drop(&mut self){self.0.terminate();}}
-    let _kill=KillChild(child.clone());
-    let mut ending:Option<&str>=None;
+    impl Drop for KillChild {
+        fn drop(&mut self) {
+            self.0.terminate();
+        }
+    }
+    let _kill = KillChild(child.clone());
+    let mut ending: Option<&str> = None;
     tokio::pin!(done);
     loop {
         state.updated_at = now();

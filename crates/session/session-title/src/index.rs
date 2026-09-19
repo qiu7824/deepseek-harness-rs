@@ -516,13 +516,24 @@ pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {
                 value["blank"] = JsonValue::Bool(false);
                 arc(value)
             }
-            "team/config" if event.data["config"]["explicit"]==true && event.data["config"]["mode"]!="off" => {
-                let mut value=downcast::<JsonValue>(state).cloned().unwrap_or_else(||serde_json::json!({"blank":true,"updatedAt":null}));
-                value["blank"]=JsonValue::Bool(false);value["updatedAt"]=JsonValue::from(event.time);arc(value)
+            "team/config"
+                if event.data["config"]["explicit"] == true
+                    && event.data["config"]["mode"] != "off" =>
+            {
+                let mut value = downcast::<JsonValue>(state)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({"blank":true,"updatedAt":null}));
+                value["blank"] = JsonValue::Bool(false);
+                value["updatedAt"] = JsonValue::from(event.time);
+                arc(value)
             }
             "team/member" | "team/task" | "team/message/queued" => {
-                let mut value=downcast::<JsonValue>(state).cloned().unwrap_or_else(||serde_json::json!({"blank":true,"updatedAt":null}));
-                value["blank"]=JsonValue::Bool(false);value["updatedAt"]=JsonValue::from(event.time);arc(value)
+                let mut value = downcast::<JsonValue>(state)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({"blank":true,"updatedAt":null}));
+                value["blank"] = JsonValue::Bool(false);
+                value["updatedAt"] = JsonValue::from(event.time);
+                arc(value)
             }
             "user/message" => {
                 let mut value = downcast::<JsonValue>(state)

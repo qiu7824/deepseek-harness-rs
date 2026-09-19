@@ -135,7 +135,8 @@ pub fn check_bytes(check: &AcceptanceCheck, bytes: &[u8]) -> AcceptanceResult {
                     .map_err(|_| format!("Office package missing {name}"))?;
                 let mut xml = String::new();
                 entry.read_to_string(&mut xml).map_err(|e| e.to_string())?;
-                roxmltree::Document::parse(&xml).map_err(|e|format!("Invalid XML content in {name}: {e}"))?;
+                roxmltree::Document::parse(&xml)
+                    .map_err(|e| format!("Invalid XML content in {name}: {e}"))?;
             }
             Ok("Office ZIP and required XML parts are readable; page layout, formula correctness and application rendering require separate acceptance checks.".into())
         }

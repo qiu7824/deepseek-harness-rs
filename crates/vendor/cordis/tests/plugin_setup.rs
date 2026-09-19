@@ -14,11 +14,14 @@ async fn panicking_effect_setup_releases_all_disposal_waiters() {
     let ctx = Context::root();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let dispose = ctx.effect("panicking setup", Box::pin(async move {
-        started_tx.send(()).unwrap();
-        release_rx.await.unwrap();
-        panic!("controlled effect setup failure");
-    }));
+    let dispose = ctx.effect(
+        "panicking setup",
+        Box::pin(async move {
+            started_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            panic!("controlled effect setup failure");
+        }),
+    );
     started_rx.await.unwrap();
     let first = tokio::spawn(dispose());
     tokio::task::yield_now().await;
@@ -28,7 +31,9 @@ async fn panicking_effect_setup_releases_all_disposal_waiters() {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         first.await.unwrap();
         second.await.unwrap();
-    }).await.expect("a setup panic must not strand any cleanup waiter");
+    })
+    .await
+    .expect("a setup panic must not strand any cleanup waiter");
 }
 #[async_trait::async_trait]
 impl Plugin for RequiresOwner {

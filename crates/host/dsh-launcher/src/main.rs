@@ -53,7 +53,10 @@ const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const UPDATE_RELEASES_API: &str =
     "https://api.github.com/repos/qiu7824/deepseek-harness-rs/releases?per_page=20";
 const UPDATE_RELEASES_URL: &str = "https://github.com/qiu7824/deepseek-harness-rs/releases";
+#[cfg(windows)]
 const LAUNCHER_ICON_FILE: &str = "deepseek-black.ico";
+#[cfg(not(windows))]
+const LAUNCHER_ICON_FILE: &str = "deepseek-black.png";
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\DeepSeekHarnessRsLauncher";
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_VALUE_NAME: &str = "DeepSeek Harness-rs Launcher";

@@ -44,8 +44,10 @@ pub struct Task {
     pub owner_id: Option<String>,
     pub blocked_by: Vec<String>,
     pub write_scopes: Vec<String>,
-    #[serde(default)] pub acceptance: String,
-    #[serde(default)] pub result: String,
+    #[serde(default)]
+    pub acceptance: String,
+    #[serde(default)]
+    pub result: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,17 +92,31 @@ fn fold(team: &str, events: &[SessionEvent]) -> Result<Board, String> {
         }
         match event.type_.as_str() {
             "team/config" => {
-                let config: SessionConfig=serde_json::from_value(event.data["config"].clone()).map_err(|_| "invalid collaboration configuration")?;
-                if config.revision != state.config.as_ref().map_or(1, |old|old.revision+1)
-                    || !matches!(config.mode.as_str(),"off"|"auto"|"custom") { return Err("invalid collaboration configuration revision or mode".into()); }
-                if config.mode=="custom"&&config.profile.is_none(){return Err("custom collaboration profile missing".into());}
-                if let Some(profile)=&config.profile{Config{profiles:vec![profile.clone()],..Default::default()}.validate()?;}
-                state.config=Some(config);
+                let config: SessionConfig = serde_json::from_value(event.data["config"].clone())
+                    .map_err(|_| "invalid collaboration configuration")?;
+                if config.revision != state.config.as_ref().map_or(1, |old| old.revision + 1)
+                    || !matches!(config.mode.as_str(), "off" | "auto" | "custom")
+                {
+                    return Err("invalid collaboration configuration revision or mode".into());
+                }
+                if config.mode == "custom" && config.profile.is_none() {
+                    return Err("custom collaboration profile missing".into());
+                }
+                if let Some(profile) = &config.profile {
+                    Config {
+                        profiles: vec![profile.clone()],
+                        ..Default::default()
+                    }
+                    .validate()?;
+                }
+                state.config = Some(config);
             }
             "team/member" => {
                 let member: Member = serde_json::from_value(event.data["member"].clone())
                     .map_err(|_| "invalid team member record")?;
-                if let Some(role)=&member.role{role.validate()?;}
+                if let Some(role) = &member.role {
+                    role.validate()?;
+                }
                 if !name(&member.name)
                     || member.name == "lead"
                     || !matches!(member.phase.as_str(), "provisioning" | "active" | "failed")
@@ -177,8 +193,11 @@ fn fold(team: &str, events: &[SessionEvent]) -> Result<Board, String> {
                 {
                     return Err("delivery receipt has no matching queued target".into());
                 }
-                if event.type_=="team/message/cancelled" {state.cancelled.insert(id.into());}
-                else {state.delivered.insert(id.into());}
+                if event.type_ == "team/message/cancelled" {
+                    state.cancelled.insert(id.into());
+                } else {
+                    state.delivered.insert(id.into());
+                }
             }
             _ => {}
         }
@@ -199,7 +218,8 @@ fn validate_task(state: &Board, task: &Task) -> Result<(), String> {
         || task.subject.trim().is_empty()
         || task.subject.len() > 512
         || task.description.len() > 16_384
-        || task.acceptance.len() > 16_384 || task.result.len() > 32_768
+        || task.acceptance.len() > 16_384
+        || task.result.len() > 32_768
         || task.write_scopes.len() > 32
         || task
             .write_scopes
@@ -211,7 +231,14 @@ fn validate_task(state: &Board, task: &Task) -> Result<(), String> {
     }
     if !matches!(
         task.status.as_str(),
-        "pending" | "queued" | "in_progress" | "review" | "blocked" | "completed" | "cancelled" | "deleted"
+        "pending"
+            | "queued"
+            | "in_progress"
+            | "review"
+            | "blocked"
+            | "completed"
+            | "cancelled"
+            | "deleted"
     ) {
         return Err("invalid task status".into());
     }
@@ -230,7 +257,11 @@ fn validate_task(state: &Board, task: &Task) -> Result<(), String> {
             .ok_or("task dependency does not exist")?;
         pending.extend(dependency.blocked_by.clone());
     }
-    if matches!(task.status.as_str(),"queued"|"in_progress"|"review"|"completed") && !ready(state, task) {
+    if matches!(
+        task.status.as_str(),
+        "queued" | "in_progress" | "review" | "completed"
+    ) && !ready(state, task)
+    {
         return Err("task dependencies are not completed".into());
     }
     Ok(())
@@ -243,18 +274,22 @@ pub struct AgentTeams {
     subagents: Arc<SubagentRuntime>,
     jobs: Option<Arc<dyn dsh_jobs::JobRegistry>>,
     tools: std::sync::Weak<ToolRuntime>,
-    gates: std::sync::Mutex<BTreeMap<String,Arc<tokio::sync::Mutex<()>>>>,
-    cancellation: Arc<std::sync::Mutex<BTreeMap<String,(u64,bool)>>>,
+    gates: std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    cancellation: Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     config: std::sync::RwLock<Config>,
 }
 struct StoppingGuard {
     key: String,
     generation: u64,
-    state: Arc<std::sync::Mutex<BTreeMap<String,(u64,bool)>>>,
+    state: Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
 }
 impl Drop for StoppingGuard {
     fn drop(&mut self) {
-        if let Some(state)=self.state.lock().unwrap().get_mut(&self.key) {if state.0==self.generation {state.1=false;}}
+        if let Some(state) = self.state.lock().unwrap().get_mut(&self.key) {
+            if state.0 == self.generation {
+                state.1 = false;
+            }
+        }
     }
 }
 impl cordis::Service for AgentTeams {
@@ -266,94 +301,251 @@ impl cordis::Service for AgentTeams {
 impl AgentTeams {
     pub fn configure(&self, config: Config) -> Result<(), String> {
         config.validate()?;
-        *self.config.write().unwrap()=config;
+        *self.config.write().unwrap() = config;
         Ok(())
     }
-    pub fn settings(&self) -> Config { self.config.read().unwrap().clone() }
+    pub fn settings(&self) -> Config {
+        self.config.read().unwrap().clone()
+    }
     fn gate(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.gates.lock().unwrap().entry(id.into()).or_insert_with(||Arc::new(tokio::sync::Mutex::new(()))).clone()
+        self.gates
+            .lock()
+            .unwrap()
+            .entry(id.into())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
     fn effective_config(&self, board: &Board) -> SessionConfig {
-        board.config.clone().unwrap_or_else(||SessionConfig{revision:0,mode:"off".into(),profile:None,explicit:false})
+        board.config.clone().unwrap_or_else(|| SessionConfig {
+            revision: 0,
+            mode: "off".into(),
+            profile: None,
+            explicit: false,
+        })
     }
-    pub async fn initialize_session(&self, caller: Arc<dyn Agent>) -> Result<(),String> {
-        if caller.session().header().origin.as_deref()==Some("subagent"){return Ok(());}
-        let gate=self.gate(caller.id().as_str());let _guard=gate.lock().await;
-        if self.read(caller.id().as_str()).await?.config.is_some(){return Ok(());}
-        let defaults=self.settings();
+    pub async fn initialize_session(&self, caller: Arc<dyn Agent>) -> Result<(), String> {
+        if caller.session().header().origin.as_deref() == Some("subagent") {
+            return Ok(());
+        }
+        let gate = self.gate(caller.id().as_str());
+        let _guard = gate.lock().await;
+        if self.read(caller.id().as_str()).await?.config.is_some() {
+            return Ok(());
+        }
+        let defaults = self.settings();
         self.append(&caller,"team/config",json!({"config":SessionConfig{revision:1,mode:defaults.default_mode,profile:defaults.profiles.into_iter().find(|profile|profile.id==defaults.default_profile),explicit:false}})).await
     }
     pub fn manages_cancellation(&self, caller: &Arc<dyn Agent>) -> bool {
-        let Ok(board)=fold(caller.id().as_str(),&caller.session().events()) else{return false;};
-        self.effective_config(&board).mode!="off" || board.members.values().any(|member|self.agents.get(&session_id(&member.id)).is_some_and(|agent|agent.status()==dsh_agent::AgentStatus::Running||self.jobs.as_ref().is_some_and(|jobs|jobs.has_owner_activity(&agent))))
+        let Ok(board) = fold(caller.id().as_str(), &caller.session().events()) else {
+            return false;
+        };
+        self.effective_config(&board).mode != "off"
+            || board.members.values().any(|member| {
+                self.agents
+                    .get(&session_id(&member.id))
+                    .is_some_and(|agent| {
+                        agent.status() == dsh_agent::AgentStatus::Running
+                            || self
+                                .jobs
+                                .as_ref()
+                                .is_some_and(|jobs| jobs.has_owner_activity(&agent))
+                    })
+            })
     }
     /// Resolve controls through the same service as model tools. The HTTP owner
     /// has already resolved a top-level session through the normal API resolver.
-    pub async fn control(&self, caller: Arc<dyn Agent>, args: Value) -> Result<Value,String> {
-        if caller.session().header().origin.as_deref()==Some("subagent") { return Err("member controls require the main conversation".into()); }
-        if args["action"]=="interrupt" || args["action"]=="stopAll" {
-            let board=self.read(caller.id().as_str()).await?;
-            let all=args["action"]=="stopAll";
-            let target=if all {board.team_id.as_str()} else {self.target(&board,args["target"].as_str().ok_or("choose a member")?)?};
-            if !all && target==board.team_id {return Err("use stopAll for the main conversation".into());}
-            let _stopping=if all {
-                let mut cancellation=self.cancellation.lock().unwrap();let state=cancellation.entry(board.team_id.clone()).or_default();state.0+=1;state.1=true;
-                Some(StoppingGuard{key:board.team_id.clone(),generation:state.0,state:self.cancellation.clone()})
-            } else {None};
-            let mut stopped=BTreeSet::from([target.to_owned()]);
-            let live=self.agents.list();
-            loop {let before=stopped.len();for agent in &live {if agent.session().header().parent_session.as_ref().is_some_and(|id|stopped.contains(id.as_str())) {stopped.insert(agent.id().to_string());}}if before==stopped.len(){break;}}
-            let mut suppression_errors=Vec::new();
-            if all {for id in &stopped {if let Err(error)=self.subagents.suppress_settlement(&session_id(id),&caller){suppression_errors.push(error.to_string());}}}
-            for agent in &live {if stopped.contains(agent.id().as_str()){agent.cancel(dsh_session::AgentCancelCause::User,None);}}
-            let gate=self.gate(&board.team_id);let _guard=gate.lock().await;
-            let outcome=async {
-                let current=self.read(&board.team_id).await?;
-                for mail in current.messages.iter().filter(|mail|stopped.contains(&mail.target_id)&&!current.delivered.contains(&mail.id)&&!current.cancelled.contains(&mail.id)) {
-                    self.append(&caller,"team/message/cancelled",json!({"messageId":mail.id,"targetId":mail.target_id})).await?;
-                }
-                for task in current.tasks.values().filter(|task|task.owner_id.as_ref().is_some_and(|id|stopped.contains(id))&&matches!(task.status.as_str(),"queued"|"in_progress")) {
-                    let mut updated=task.clone();updated.status="blocked".into();updated.revision+=1;
-                    self.append(&caller,"team/task",json!({"task":updated})).await?;
-                }
-                let mut errors=suppression_errors;
-                for agent in &live {if stopped.contains(agent.id().as_str()) {
-                    if tokio::time::timeout(std::time::Duration::from_secs(5),agent.when_idle()).await.is_err(){errors.push(format!("{} cancellation did not settle",agent.id()));}
-                    if let Some(jobs)=&self.jobs {
-                        let owned=jobs.list(Some(agent)).into_iter().filter(|job|job.owner_session.as_ref()==Some(agent.id())&&!job.status.is_terminal()).collect::<Vec<_>>();
-                        for job in &owned {if let Err(error)=jobs.kill(&job.id,Some(agent),Some("collaboration stopped".into())){errors.push(error);}}
-                        for job in owned {match jobs.wait(&job.id,5000,Some(agent),None).await {
-                            Ok(snapshot) if snapshot.status.is_terminal()=>{},
-                            Ok(_)=>errors.push(format!("{} background work is still stopping",job.id)),
-                            Err(error)=>errors.push(error),
-                        }}
+    pub async fn control(&self, caller: Arc<dyn Agent>, args: Value) -> Result<Value, String> {
+        if caller.session().header().origin.as_deref() == Some("subagent") {
+            return Err("member controls require the main conversation".into());
+        }
+        if args["action"] == "interrupt" || args["action"] == "stopAll" {
+            let board = self.read(caller.id().as_str()).await?;
+            let all = args["action"] == "stopAll";
+            let target = if all {
+                board.team_id.as_str()
+            } else {
+                self.target(&board, args["target"].as_str().ok_or("choose a member")?)?
+            };
+            if !all && target == board.team_id {
+                return Err("use stopAll for the main conversation".into());
+            }
+            let _stopping = if all {
+                let mut cancellation = self.cancellation.lock().unwrap();
+                let state = cancellation.entry(board.team_id.clone()).or_default();
+                state.0 += 1;
+                state.1 = true;
+                Some(StoppingGuard {
+                    key: board.team_id.clone(),
+                    generation: state.0,
+                    state: self.cancellation.clone(),
+                })
+            } else {
+                None
+            };
+            let mut stopped = BTreeSet::from([target.to_owned()]);
+            let live = self.agents.list();
+            loop {
+                let before = stopped.len();
+                for agent in &live {
+                    if agent
+                        .session()
+                        .header()
+                        .parent_session
+                        .as_ref()
+                        .is_some_and(|id| stopped.contains(id.as_str()))
+                    {
+                        stopped.insert(agent.id().to_string());
                     }
-                    if self.sessions.get(agent.id()).is_some_and(|session|session.identity()==agent.session().identity()) {
-                        match self.sessions.flush(agent.session()).await {
-                            Ok(true)=>{},Ok(false)=>errors.push(format!("{} cancellation has no durability listener",agent.id())),Err(error)=>errors.push(error),
+                }
+                if before == stopped.len() {
+                    break;
+                }
+            }
+            let mut suppression_errors = Vec::new();
+            if all {
+                for id in &stopped {
+                    if let Err(error) = self.subagents.suppress_settlement(&session_id(id), &caller)
+                    {
+                        suppression_errors.push(error.to_string());
+                    }
+                }
+            }
+            for agent in &live {
+                if stopped.contains(agent.id().as_str()) {
+                    agent.cancel(dsh_session::AgentCancelCause::User, None);
+                }
+            }
+            let gate = self.gate(&board.team_id);
+            let _guard = gate.lock().await;
+            let outcome =
+                async {
+                    let current = self.read(&board.team_id).await?;
+                    for mail in current.messages.iter().filter(|mail| {
+                        stopped.contains(&mail.target_id)
+                            && !current.delivered.contains(&mail.id)
+                            && !current.cancelled.contains(&mail.id)
+                    }) {
+                        self.append(
+                            &caller,
+                            "team/message/cancelled",
+                            json!({"messageId":mail.id,"targetId":mail.target_id}),
+                        )
+                        .await?;
+                    }
+                    for task in current.tasks.values().filter(|task| {
+                        task.owner_id
+                            .as_ref()
+                            .is_some_and(|id| stopped.contains(id))
+                            && matches!(task.status.as_str(), "queued" | "in_progress")
+                    }) {
+                        let mut updated = task.clone();
+                        updated.status = "blocked".into();
+                        updated.revision += 1;
+                        self.append(&caller, "team/task", json!({"task":updated}))
+                            .await?;
+                    }
+                    let mut errors = suppression_errors;
+                    for agent in &live {
+                        if stopped.contains(agent.id().as_str()) {
+                            if tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                agent.when_idle(),
+                            )
+                            .await
+                            .is_err()
+                            {
+                                errors.push(format!("{} cancellation did not settle", agent.id()));
+                            }
+                            if let Some(jobs) = &self.jobs {
+                                let owned = jobs
+                                    .list(Some(agent))
+                                    .into_iter()
+                                    .filter(|job| {
+                                        job.owner_session.as_ref() == Some(agent.id())
+                                            && !job.status.is_terminal()
+                                    })
+                                    .collect::<Vec<_>>();
+                                for job in &owned {
+                                    if let Err(error) = jobs.kill(
+                                        &job.id,
+                                        Some(agent),
+                                        Some("collaboration stopped".into()),
+                                    ) {
+                                        errors.push(error);
+                                    }
+                                }
+                                for job in owned {
+                                    match jobs.wait(&job.id, 5000, Some(agent), None).await {
+                                        Ok(snapshot) if snapshot.status.is_terminal() => {}
+                                        Ok(_) => errors.push(format!(
+                                            "{} background work is still stopping",
+                                            job.id
+                                        )),
+                                        Err(error) => errors.push(error),
+                                    }
+                                }
+                            }
+                            if self.sessions.get(agent.id()).is_some_and(|session| {
+                                session.identity() == agent.session().identity()
+                            }) {
+                                match self.sessions.flush(agent.session()).await {
+                                    Ok(true) => {}
+                                    Ok(false) => errors.push(format!(
+                                        "{} cancellation has no durability listener",
+                                        agent.id()
+                                    )),
+                                    Err(error) => errors.push(error),
+                                }
+                            }
                         }
                     }
-                }}
-                if !errors.is_empty(){return Err(errors.join("; "));}
-                self.view(&board.team_id).await
-            }.await;
+                    if !errors.is_empty() {
+                        return Err(errors.join("; "));
+                    }
+                    self.view(&board.team_id).await
+                }
+                .await;
             return outcome;
         }
-        if !matches!(args["action"].as_str(),Some("configure"|"create"|"message"|"task"|"dispatch"|"status")) { return Err("unknown collaboration control".into()); }
-        let id=caller.id().to_string();
-        let result=self.execute(caller,args,Arc::new(||false)).await?;
-        let mut view=self.view(&id).await?;
-        for key in ["receipt","pendingErrors"] {if let Some(value)=result.get(key){view[key]=value.clone();}}
+        if !matches!(
+            args["action"].as_str(),
+            Some("configure" | "create" | "message" | "task" | "dispatch" | "status")
+        ) {
+            return Err("unknown collaboration control".into());
+        }
+        let id = caller.id().to_string();
+        let result = self.execute(caller, args, Arc::new(|| false)).await?;
+        let mut view = self.view(&id).await?;
+        for key in ["receipt", "pendingErrors"] {
+            if let Some(value) = result.get(key) {
+                view[key] = value.clone();
+            }
+        }
         Ok(view)
     }
     pub fn prompt_context(&self, id: &str) -> String {
-        if !self.settings().enabled { return "Collaboration is disabled. Do not create team members.".into(); }
-        let Some(session)=self.sessions.get(&session_id(id)) else { return String::new(); };
-        if session.header().origin.as_deref()==Some("subagent") { return String::new(); }
-        let Ok(board)=fold(id,&session.events()) else { return "Collaboration state cannot be read; report the error before delegation.".into(); };
-        let config=self.effective_config(&board);
-        if config.mode=="off" { return "Use the current agent for this conversation. Only create teammates when the user explicitly requests them; an explicitly disabled collaboration configuration rejects new members.".into(); }
-        format!("The user enabled collaboration in this main conversation. You remain responsible for the goal and final acceptance. Use agent_team to maintain one task board, delegate bounded work only when useful, and open fresh member contexts with relevant files and acceptance criteria. Use roleId from this saved profile when present: {}. Do not create a fixed planner/supervisor hierarchy. Reuse member conversations via message, preserve task revisions, await required results using agent_team action wait rather than repeatedly polling models, and inspect evidence before marking work completed. Tools and permission approvals remain enforced by the runtime. Member model and tool settings are enforced at creation. Config revision: {}.",serde_json::to_string(&config.profile).unwrap_or_default(),config.revision)
+        if !self.settings().enabled {
+            return "Collaboration is disabled. Do not create team members.".into();
+        }
+        let Some(session) = self.sessions.get(&session_id(id)) else {
+            return String::new();
+        };
+        if session.header().origin.as_deref() == Some("subagent") {
+            return String::new();
+        }
+        let Ok(board) = fold(id, &session.events()) else {
+            return "Collaboration state cannot be read; report the error before delegation."
+                .into();
+        };
+        let config = self.effective_config(&board);
+        if config.mode == "off" {
+            return "Use the current agent for this conversation. Only create teammates when the user explicitly requests them; an explicitly disabled collaboration configuration rejects new members.".into();
+        }
+        format!(
+            "The user enabled collaboration in this main conversation. You remain responsible for the goal and final acceptance. Use agent_team to maintain one task board, delegate bounded work only when useful, and open fresh member contexts with relevant files and acceptance criteria. Use roleId from this saved profile when present: {}. Do not create a fixed planner/supervisor hierarchy. Reuse member conversations via message, preserve task revisions, await required results using agent_team action wait rather than repeatedly polling models, and inspect evidence before marking work completed. Tools and permission approvals remain enforced by the runtime. Member model and tool settings are enforced at creation. Config revision: {}.",
+            serde_json::to_string(&config.profile).unwrap_or_default(),
+            config.revision
+        )
     }
     async fn events(
         &self,
@@ -388,29 +580,72 @@ impl AgentTeams {
     pub async fn view(&self, id: &str) -> Result<Value, String> {
         let board = self.read(id).await?;
         let mut view = serde_json::to_value(&board).map_err(|error| error.to_string())?;
-        view["config"]=json!(self.effective_config(&board));
-        view["leadRunning"]=json!(self.agents.get(&session_id(&board.team_id)).is_some_and(|a|a.status()==dsh_agent::AgentStatus::Running||self.jobs.as_ref().is_some_and(|jobs|jobs.has_owner_activity(&a))));
+        view["config"] = json!(self.effective_config(&board));
+        view["leadRunning"] = json!(self.agents.get(&session_id(&board.team_id)).is_some_and(
+            |a| {
+                a.status() == dsh_agent::AgentStatus::Running
+                    || self
+                        .jobs
+                        .as_ref()
+                        .is_some_and(|jobs| jobs.has_owner_activity(&a))
+            }
+        ));
         for member in board.members.values() {
             let status = if member.phase != "active" {
                 member.phase.clone()
             } else {
                 self.agents
                     .get(&session_id(&member.id))
-                    .map(|agent| if self.jobs.as_ref().is_some_and(|jobs|jobs.has_owner_activity(&agent)){"running".into()}else{format!("{:?}", agent.status()).to_ascii_lowercase()})
+                    .map(|agent| {
+                        if self
+                            .jobs
+                            .as_ref()
+                            .is_some_and(|jobs| jobs.has_owner_activity(&agent))
+                        {
+                            "running".into()
+                        } else {
+                            format!("{:?}", agent.status()).to_ascii_lowercase()
+                        }
+                    })
                     .unwrap_or("inactive".into())
             };
             view["members"][&member.name]["status"] = json!(status);
-            view["members"][&member.name]["jobs"]=json!(self.jobs.as_ref().map(|jobs|jobs.list_for_session(&session_id(&member.id)).into_iter().filter(|job|job.owner_session.as_ref().is_some_and(|owner|owner.as_str()==member.id)).map(|job|json!({"id":job.id,"status":job.status.as_str()})).collect::<Vec<_>>()).unwrap_or_default());
-            if member.phase=="active" && status!="running" {
-                if let Ok((_,events))=self.events(&member.id).await {
-                    if let Some(end)=events.iter().rev().find(|e|e.type_=="turn/end") {
-                        let reason=&end.data["reason"];view["members"][&member.name]["lastOutcome"]=reason.clone();
-                        if reason["kind"]=="error" {view["members"][&member.name]["status"]=json!("failed");view["members"][&member.name]["error"]=reason["error"]["message"].clone();}
-                        else if matches!(reason["kind"].as_str(),Some("aborted"|"interrupted"|"blocked"|"max-tokens")){view["members"][&member.name]["status"]=json!("blocked");}
+            view["members"][&member.name]["jobs"] = json!(
+                self.jobs
+                    .as_ref()
+                    .map(|jobs| jobs
+                        .list_for_session(&session_id(&member.id))
+                        .into_iter()
+                        .filter(|job| job
+                            .owner_session
+                            .as_ref()
+                            .is_some_and(|owner| owner.as_str() == member.id))
+                        .map(|job| json!({"id":job.id,"status":job.status.as_str()}))
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()
+            );
+            if member.phase == "active" && status != "running" {
+                if let Ok((_, events)) = self.events(&member.id).await {
+                    if let Some(end) = events.iter().rev().find(|e| e.type_ == "turn/end") {
+                        let reason = &end.data["reason"];
+                        view["members"][&member.name]["lastOutcome"] = reason.clone();
+                        if reason["kind"] == "error" {
+                            view["members"][&member.name]["status"] = json!("failed");
+                            view["members"][&member.name]["error"] =
+                                reason["error"]["message"].clone();
+                        } else if matches!(
+                            reason["kind"].as_str(),
+                            Some("aborted" | "interrupted" | "blocked" | "max-tokens")
+                        ) {
+                            view["members"][&member.name]["status"] = json!("blocked");
+                        }
                     }
                 }
             }
-            view["members"][&member.name].as_object_mut().unwrap().remove("creationRequest");
+            view["members"][&member.name]
+                .as_object_mut()
+                .unwrap()
+                .remove("creationRequest");
         }
         view.as_object_mut().unwrap().remove("messages");
         view["mailbox"]=json!(board.messages.iter().rev().take(50).map(|mail|json!({"id":mail.id,"sender":mail.sender_name,"targetId":mail.target_id,"content":mail.content,"delivered":board.delivered.contains(&mail.id),"cancelled":board.cancelled.contains(&mail.id)})).collect::<Vec<_>>());
@@ -420,7 +655,8 @@ impl AgentTeams {
             board
                 .messages
                 .iter()
-                .filter(|mail| !board.delivered.contains(&mail.id)&&!board.cancelled.contains(&mail.id))
+                .filter(|mail| !board.delivered.contains(&mail.id)
+                    && !board.cancelled.contains(&mail.id))
                 .count()
         );
         Ok(view)
@@ -588,11 +824,9 @@ impl AgentTeams {
         }
         let mut errors = Vec::new();
         let mut blocked = BTreeSet::new();
-        for mail in board
-            .messages
-            .iter()
-            .filter(|mail| !board.delivered.contains(&mail.id)&&!board.cancelled.contains(&mail.id))
-        {
+        for mail in board.messages.iter().filter(|mail| {
+            !board.delivered.contains(&mail.id) && !board.cancelled.contains(&mail.id)
+        }) {
             if blocked.contains(&mail.target_id) {
                 continue;
             }
@@ -609,29 +843,81 @@ impl AgentTeams {
         args: Value,
         signal: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Value, String> {
-        if args["action"]=="interrupt" {return Box::pin(self.control(caller,args)).await;}
-        if args["action"]=="wait" {
-            let board=self.read(caller.id().as_str()).await?;
-            self.actor(&board,&caller)?;
-            let target=args["target"].as_str().filter(|target|*target!="all");
-            let target=target.map(|target|self.target(&board,target).map(str::to_owned)).transpose()?;
-            if target.as_deref()==Some(caller.id().as_str()){return Err("a member cannot wait for itself".into());}
-            let timeout=args.get("timeoutMs").map(|v|v.as_u64().filter(|n|(100..=50_000).contains(n)).ok_or("timeoutMs must be 100 to 50000")).transpose()?.unwrap_or(30_000);
-            let members=board.members.values().filter(|m|m.id!=caller.id().as_str()&&target.as_ref().is_none_or(|id|id==&m.id)).filter_map(|m|self.agents.get(&session_id(&m.id))).collect::<Vec<_>>();
-            let waiting=async {for member in members {member.when_idle().await;}};
-            let cancelled=async {loop {if signal(){break;}tokio::time::sleep(std::time::Duration::from_millis(25)).await;}};
-            let timed_out=tokio::select! {
+        if args["action"] == "interrupt" {
+            return Box::pin(self.control(caller, args)).await;
+        }
+        if args["action"] == "wait" {
+            let board = self.read(caller.id().as_str()).await?;
+            self.actor(&board, &caller)?;
+            let target = args["target"].as_str().filter(|target| *target != "all");
+            let target = target
+                .map(|target| self.target(&board, target).map(str::to_owned))
+                .transpose()?;
+            if target.as_deref() == Some(caller.id().as_str()) {
+                return Err("a member cannot wait for itself".into());
+            }
+            let timeout = args
+                .get("timeoutMs")
+                .map(|v| {
+                    v.as_u64()
+                        .filter(|n| (100..=50_000).contains(n))
+                        .ok_or("timeoutMs must be 100 to 50000")
+                })
+                .transpose()?
+                .unwrap_or(30_000);
+            let members = board
+                .members
+                .values()
+                .filter(|m| {
+                    m.id != caller.id().as_str() && target.as_ref().is_none_or(|id| id == &m.id)
+                })
+                .filter_map(|m| self.agents.get(&session_id(&m.id)))
+                .collect::<Vec<_>>();
+            let waiting = async {
+                for member in members {
+                    member.when_idle().await;
+                }
+            };
+            let cancelled = async {
+                loop {
+                    if signal() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            };
+            let timed_out = tokio::select! {
                 _=cancelled=>return Err("collaboration wait cancelled".into()),
                 outcome=tokio::time::timeout(std::time::Duration::from_millis(timeout),waiting)=>outcome.is_err(),
             };
-            let mut result=self.view(&board.team_id).await?;result.as_object_mut().unwrap().remove("mailbox");result["waitTimedOut"]=json!(timed_out);return Ok(result);
+            let mut result = self.view(&board.team_id).await?;
+            result.as_object_mut().unwrap().remove("mailbox");
+            result["waitTimedOut"] = json!(timed_out);
+            return Ok(result);
         }
-        let team=self.read(caller.id().as_str()).await?.team_id;
-        let (generation,stopping)=self.cancellation.lock().unwrap().get(&team).copied().unwrap_or_default();
-        if stopping{return Err("collaboration is stopping; wait before submitting more work".into());}
-        let epochs=self.cancellation.clone();let owner=team.clone();
-        let signal:Arc<dyn Fn()->bool+Send+Sync>=Arc::new(move||signal()||epochs.lock().unwrap().get(&owner).is_some_and(|s|s.0!=generation||s.1));
-        let gate=self.gate(&team);let _gate=gate.lock().await;
+        let team = self.read(caller.id().as_str()).await?.team_id;
+        let (generation, stopping) = self
+            .cancellation
+            .lock()
+            .unwrap()
+            .get(&team)
+            .copied()
+            .unwrap_or_default();
+        if stopping {
+            return Err("collaboration is stopping; wait before submitting more work".into());
+        }
+        let epochs = self.cancellation.clone();
+        let owner = team.clone();
+        let signal: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+            signal()
+                || epochs
+                    .lock()
+                    .unwrap()
+                    .get(&owner)
+                    .is_some_and(|s| s.0 != generation || s.1)
+        });
+        let gate = self.gate(&team);
+        let _gate = gate.lock().await;
         let mut board = self.read(caller.id().as_str()).await?;
         let actor = self.actor(&board, &caller)?.to_owned();
         let lead = self
@@ -641,10 +927,16 @@ impl AgentTeams {
         if signal() {
             return Err("team action cancelled".into());
         }
-        let settings=self.settings();
-        let action=args["action"].as_str().unwrap_or("status");
-        if !settings.enabled && matches!(action,"create"|"configure"|"dispatch") { return Err("collaboration is disabled in settings".into()); }
-        let pending_errors = if settings.enabled && matches!(action,"status"|"message") { self.recover(&lead, &board, signal.clone()).await? } else {vec![]};
+        let settings = self.settings();
+        let action = args["action"].as_str().unwrap_or("status");
+        if !settings.enabled && matches!(action, "create" | "configure" | "dispatch") {
+            return Err("collaboration is disabled in settings".into());
+        }
+        let pending_errors = if settings.enabled && matches!(action, "status" | "message") {
+            self.recover(&lead, &board, signal.clone()).await?
+        } else {
+            vec![]
+        };
         let mut receipt = None;
         if signal() {
             return Err("team action cancelled".into());
@@ -653,16 +945,50 @@ impl AgentTeams {
         match args["action"].as_str().unwrap_or("status") {
             "status" => {}
             "configure" => {
-                if actor!="lead" { return Err("only the main conversation may configure collaboration".into()); }
-                if lead.status()==dsh_agent::AgentStatus::Running || self.jobs.as_ref().is_some_and(|jobs|jobs.has_owner_activity(&lead)) || board.members.values().any(|m|self.agents.get(&session_id(&m.id)).is_some_and(|a|a.status()==dsh_agent::AgentStatus::Running||self.jobs.as_ref().is_some_and(|jobs|jobs.has_owner_activity(&a)))) {
+                if actor != "lead" {
+                    return Err("only the main conversation may configure collaboration".into());
+                }
+                if lead.status() == dsh_agent::AgentStatus::Running
+                    || self
+                        .jobs
+                        .as_ref()
+                        .is_some_and(|jobs| jobs.has_owner_activity(&lead))
+                    || board.members.values().any(|m| {
+                        self.agents.get(&session_id(&m.id)).is_some_and(|a| {
+                            a.status() == dsh_agent::AgentStatus::Running
+                                || self
+                                    .jobs
+                                    .as_ref()
+                                    .is_some_and(|jobs| jobs.has_owner_activity(&a))
+                        })
+                    })
+                {
                     return Err("请先停止或等待当前执行完成，再更改协作方式。".into());
                 }
-                let old=board.config.as_ref().map_or(0,|c|c.revision);
-                if args["expectedRevision"].as_u64()!=Some(old) { return Err("collaboration configuration conflict; refresh and retry".into()); }
-                let mode=args["mode"].as_str().filter(|s|matches!(*s,"off"|"auto"|"custom")).ok_or("invalid collaboration mode")?;
-                let profile_id=args["profileId"].as_str().unwrap_or("");
-                let profile=if profile_id.is_empty(){None}else{Some(settings.profiles.iter().find(|p|p.id==profile_id).cloned().ok_or("collaboration profile no longer exists")?)};
-                if mode=="custom" && profile.is_none(){return Err("choose a collaboration profile".into());}
+                let old = board.config.as_ref().map_or(0, |c| c.revision);
+                if args["expectedRevision"].as_u64() != Some(old) {
+                    return Err("collaboration configuration conflict; refresh and retry".into());
+                }
+                let mode = args["mode"]
+                    .as_str()
+                    .filter(|s| matches!(*s, "off" | "auto" | "custom"))
+                    .ok_or("invalid collaboration mode")?;
+                let profile_id = args["profileId"].as_str().unwrap_or("");
+                let profile = if profile_id.is_empty() {
+                    None
+                } else {
+                    Some(
+                        settings
+                            .profiles
+                            .iter()
+                            .find(|p| p.id == profile_id)
+                            .cloned()
+                            .ok_or("collaboration profile no longer exists")?,
+                    )
+                };
+                if mode == "custom" && profile.is_none() {
+                    return Err("choose a collaboration profile".into());
+                }
                 self.append(&lead,"team/config",json!({"config":SessionConfig{revision:old+1,mode:mode.into(),profile,explicit:true}})).await?;
             }
             "create" => {
@@ -670,19 +996,41 @@ impl AgentTeams {
                     return Err("only the lead may create teammates".into());
                 }
                 let label = args["name"].as_str().ok_or("teammate name is required")?;
-                if let Some(existing)=board.members.get(label) {
-                    if args["requestId"].as_str().is_some_and(|id|!id.is_empty()) && existing.creation_request.as_ref()==Some(&args) {
-                        if existing.phase=="failed"{return Err(existing.error.clone().unwrap_or_else(||"member creation failed; revise the request before creating a replacement".into()));}
+                if let Some(existing) = board.members.get(label) {
+                    if args["requestId"].as_str().is_some_and(|id| !id.is_empty())
+                        && existing.creation_request.as_ref() == Some(&args)
+                    {
+                        if existing.phase == "failed" {
+                            return Err(existing.error.clone().unwrap_or_else(||"member creation failed; revise the request before creating a replacement".into()));
+                        }
                         return self.view(lead.id().as_str()).await;
                     }
                 }
-                if args.get("requestId").is_some_and(|v|v.as_str().is_none_or(|s|s.is_empty()||s.len()>200)){return Err("invalid create request identity".into());}
-                if board.config.as_ref().is_some_and(|c|c.mode=="off"&&c.explicit){return Err("enable collaboration in this conversation before creating members".into());}
+                if args
+                    .get("requestId")
+                    .is_some_and(|v| v.as_str().is_none_or(|s| s.is_empty() || s.len() > 200))
+                {
+                    return Err("invalid create request identity".into());
+                }
+                if board
+                    .config
+                    .as_ref()
+                    .is_some_and(|c| c.mode == "off" && c.explicit)
+                {
+                    return Err(
+                        "enable collaboration in this conversation before creating members".into(),
+                    );
+                }
                 if !name(label)
                     || label == "lead"
                     || board.members.contains_key(label)
-                    || board.members.values().filter(|m|m.phase!="failed").count() >= settings.max_members
-                    || board.members.len()>=256
+                    || board
+                        .members
+                        .values()
+                        .filter(|m| m.phase != "failed")
+                        .count()
+                        >= settings.max_members
+                    || board.members.len() >= 256
                 {
                     return Err(
                         "invalid, reserved or duplicate teammate name, or member limit reached"
@@ -706,20 +1054,46 @@ impl AgentTeams {
                     return Err("member description exceeds 2048 bytes".into());
                 }
                 let id = uuid::Uuid::new_v4().to_string();
-                let mut config=self.effective_config(&board);
-                if config.mode=="off"&&!config.explicit{config.mode="auto".into();}
-                let role=match args["roleId"].as_str().filter(|s|!s.is_empty()) {
-                    Some(role_id)=>Some(config.profile.as_ref().and_then(|p|p.roles.iter().find(|r|r.id==role_id)).cloned().ok_or("role is not in the current collaboration profile")?),
-                    None=>None,
-                };
-                if config.mode=="custom" && role.is_none(){return Err("choose a role from the configured profile".into());}
-                if let Some(role)=&role {
-                    let tools=self.tools.upgrade().ok_or("tool registry is unavailable")?;
-                    for tool in &role.allow_tools {if tool=="run_code"||tools.get(tool,Some(lead.scope_key())).is_none(){return Err(format!("role tool is unavailable in the parent scope: {tool}"));}}
+                let mut config = self.effective_config(&board);
+                if config.mode == "off" && !config.explicit {
+                    config.mode = "auto".into();
                 }
-                if board.config.is_none() || board.config.as_ref().is_some_and(|previous|previous.mode!=config.mode) {
-                    config.revision=board.config.as_ref().map_or(1,|previous|previous.revision+1);
-                    self.append(&lead,"team/config",json!({"config":config})).await?;
+                let role = match args["roleId"].as_str().filter(|s| !s.is_empty()) {
+                    Some(role_id) => Some(
+                        config
+                            .profile
+                            .as_ref()
+                            .and_then(|p| p.roles.iter().find(|r| r.id == role_id))
+                            .cloned()
+                            .ok_or("role is not in the current collaboration profile")?,
+                    ),
+                    None => None,
+                };
+                if config.mode == "custom" && role.is_none() {
+                    return Err("choose a role from the configured profile".into());
+                }
+                if let Some(role) = &role {
+                    let tools = self.tools.upgrade().ok_or("tool registry is unavailable")?;
+                    for tool in &role.allow_tools {
+                        if tool == "run_code" || tools.get(tool, Some(lead.scope_key())).is_none() {
+                            return Err(format!(
+                                "role tool is unavailable in the parent scope: {tool}"
+                            ));
+                        }
+                    }
+                }
+                if board.config.is_none()
+                    || board
+                        .config
+                        .as_ref()
+                        .is_some_and(|previous| previous.mode != config.mode)
+                {
+                    config.revision = board
+                        .config
+                        .as_ref()
+                        .map_or(1, |previous| previous.revision + 1);
+                    self.append(&lead, "team/config", json!({"config":config}))
+                        .await?;
                 }
                 let mut member = Member {
                     id: id.clone(),
@@ -730,7 +1104,7 @@ impl AgentTeams {
                     phase: "provisioning".into(),
                     error: None,
                     role: role.clone(),
-                    creation_request: args.get("requestId").map(|_|args.clone()),
+                    creation_request: args.get("requestId").map(|_| args.clone()),
                 };
                 self.append(&lead, "team/member", json!({"member":member}))
                     .await?;
@@ -739,14 +1113,19 @@ impl AgentTeams {
                     prompt: vec![ContentBlock::Text {
                         text: format!(
                             "{prompt}\nRole instructions: {}\nTeam member identity: {id}\nYour team lead is {}. Your teammate name is {label}. Use agent_team for the shared task board and peer messages. Task ownership and write scopes do not lock shared files.",
-                            role.as_ref().map(|r|r.instructions.as_str()).unwrap_or(""),lead.id()
+                            role.as_ref().map(|r| r.instructions.as_str()).unwrap_or(""),
+                            lead.id()
                         ),
                     }],
                     parent: lead.clone(),
                     signal: signal.clone(),
                     agent_options: role.as_ref().map(Role::agent_options),
                     output_schema: None,
-                    max_depth: Some(if role.as_ref().is_none_or(|r|r.can_spawn) {3} else {lead.options().subagent_depth.unwrap_or(0)+1}),
+                    max_depth: Some(if role.as_ref().is_none_or(|r| r.can_spawn) {
+                        3
+                    } else {
+                        lead.options().subagent_depth.unwrap_or(0) + 1
+                    }),
                     tool_filter: role.as_ref().and_then(Role::tool_filter),
                     persona: None,
                 };
@@ -801,7 +1180,11 @@ impl AgentTeams {
                     return Err("invalid message identity".into());
                 }
                 let content = vec![ContentBlock::Text { text: text.into() }];
-                if board.cancelled.contains(&id){return Err("message was cancelled; use a new message identity for new work".into());}
+                if board.cancelled.contains(&id) {
+                    return Err(
+                        "message was cancelled; use a new message identity for new work".into(),
+                    );
+                }
                 let mail = if let Some(existing) = board.messages.iter().find(|mail| mail.id == id)
                 {
                     if existing.sender_id != caller.id().as_str()
@@ -816,7 +1199,9 @@ impl AgentTeams {
                         .messages
                         .iter()
                         .filter(|mail| {
-                            mail.target_id == target && !board.delivered.contains(&mail.id)&&!board.cancelled.contains(&mail.id)
+                            mail.target_id == target
+                                && !board.delivered.contains(&mail.id)
+                                && !board.cancelled.contains(&mail.id)
                         })
                         .count()
                         >= 32
@@ -851,28 +1236,78 @@ impl AgentTeams {
                 }
             }
             "dispatch" => {
-                if actor!="lead" {return Err("only the main conversation may dispatch tasks".into());}
-                let id=args["taskId"].as_str().ok_or("taskId is required")?;
-                let expected=args["expectedRevision"].as_u64().ok_or("expectedRevision is required")?;
-                let mail_id=format!("dispatch-{id}-{expected}");
-                if board.messages.iter().any(|m|m.id==mail_id) { return self.view(&board.team_id).await; }
-                let mut task=board.tasks.get(id).cloned().ok_or("task does not exist")?;
-                if task.revision!=expected {return Err("task revision conflict; refresh and retry".into());}
-                if !matches!(task.status.as_str(),"pending"|"blocked"|"cancelled") || !ready(&board,&task) {return Err("task is already dispatched or its dependencies are incomplete".into());}
-                let target=task.owner_id.as_deref().ok_or("assign a member before dispatch")?;
-                if target==board.team_id {return Err("dispatch requires a member; the main conversation executes its own work directly".into());}
-                let target=self.target(&board,target)?.to_owned();
-                if board.tasks.values().any(|other|other.id!=id&&other.owner_id.as_deref()==Some(&target)&&matches!(other.status.as_str(),"queued"|"in_progress"))
-                    || self.agents.get(&session_id(&target)).is_some_and(|a|a.status()==dsh_agent::AgentStatus::Running||self.jobs.as_ref().is_some_and(|jobs|jobs.has_owner_activity(&a))) {return Err("member is busy; wait or stop its current work before dispatch".into());}
-                task.status="queued".into(); task.revision+=1;
-                validate_task(&board,&task)?;
-                self.append(&lead,"team/task",json!({"task":task})).await?;
-                let mail=Mail{id:mail_id.clone(),sender_id:lead.id().to_string(),sender_name:"lead".into(),target_id:target,
-                    content:vec![ContentBlock::Text{text:format!("Task {}: {}\n{}\nAcceptance: {}\nCoordinate writes within: {} (these are coordination scopes, not permission grants).\nWhen finished, record concrete results with agent_team task, expectedRevision {}, status review. Do not claim final acceptance yourself.",task.id,task.subject,task.description,task.acceptance,task.write_scopes.join(", "),task.revision)}]};
-                self.append(&lead,"team/message/queued",json!({"message":mail})).await?;
-                receipt=Some(match self.dispatch(&lead,&mail,signal.clone()).await {
-                    Ok(())=>json!({"messageId":mail_id,"status":"delivered"}),
-                    Err(error)=>json!({"messageId":mail_id,"status":"queued","error":error}),
+                if actor != "lead" {
+                    return Err("only the main conversation may dispatch tasks".into());
+                }
+                let id = args["taskId"].as_str().ok_or("taskId is required")?;
+                let expected = args["expectedRevision"]
+                    .as_u64()
+                    .ok_or("expectedRevision is required")?;
+                let mail_id = format!("dispatch-{id}-{expected}");
+                if board.messages.iter().any(|m| m.id == mail_id) {
+                    return self.view(&board.team_id).await;
+                }
+                let mut task = board.tasks.get(id).cloned().ok_or("task does not exist")?;
+                if task.revision != expected {
+                    return Err("task revision conflict; refresh and retry".into());
+                }
+                if !matches!(task.status.as_str(), "pending" | "blocked" | "cancelled")
+                    || !ready(&board, &task)
+                {
+                    return Err(
+                        "task is already dispatched or its dependencies are incomplete".into(),
+                    );
+                }
+                let target = task
+                    .owner_id
+                    .as_deref()
+                    .ok_or("assign a member before dispatch")?;
+                if target == board.team_id {
+                    return Err("dispatch requires a member; the main conversation executes its own work directly".into());
+                }
+                let target = self.target(&board, target)?.to_owned();
+                if board.tasks.values().any(|other| {
+                    other.id != id
+                        && other.owner_id.as_deref() == Some(&target)
+                        && matches!(other.status.as_str(), "queued" | "in_progress")
+                }) || self.agents.get(&session_id(&target)).is_some_and(|a| {
+                    a.status() == dsh_agent::AgentStatus::Running
+                        || self
+                            .jobs
+                            .as_ref()
+                            .is_some_and(|jobs| jobs.has_owner_activity(&a))
+                }) {
+                    return Err(
+                        "member is busy; wait or stop its current work before dispatch".into(),
+                    );
+                }
+                task.status = "queued".into();
+                task.revision += 1;
+                validate_task(&board, &task)?;
+                self.append(&lead, "team/task", json!({"task":task}))
+                    .await?;
+                let mail = Mail {
+                    id: mail_id.clone(),
+                    sender_id: lead.id().to_string(),
+                    sender_name: "lead".into(),
+                    target_id: target,
+                    content: vec![ContentBlock::Text {
+                        text: format!(
+                            "Task {}: {}\n{}\nAcceptance: {}\nCoordinate writes within: {} (these are coordination scopes, not permission grants).\nWhen finished, record concrete results with agent_team task, expectedRevision {}, status review. Do not claim final acceptance yourself.",
+                            task.id,
+                            task.subject,
+                            task.description,
+                            task.acceptance,
+                            task.write_scopes.join(", "),
+                            task.revision
+                        ),
+                    }],
+                };
+                self.append(&lead, "team/message/queued", json!({"message":mail}))
+                    .await?;
+                receipt = Some(match self.dispatch(&lead, &mail, signal.clone()).await {
+                    Ok(()) => json!({"messageId":mail_id,"status":"delivered"}),
+                    Err(error) => json!({"messageId":mail_id,"status":"queued","error":error}),
                 });
             }
             "task" => {
@@ -935,11 +1370,22 @@ impl AgentTeams {
                         .unwrap_or_else(|| old.map(|t| t.blocked_by.clone()).unwrap_or_default()),
                     write_scopes: strings(&args, "writeScopes")?
                         .unwrap_or_else(|| old.map(|t| t.write_scopes.clone()).unwrap_or_default()),
-                    acceptance: args["acceptance"].as_str().map(str::to_owned).or_else(||old.map(|t|t.acceptance.clone())).unwrap_or_default(),
-                    result: args["result"].as_str().map(str::to_owned).or_else(||old.map(|t|t.result.clone())).unwrap_or_default(),
+                    acceptance: args["acceptance"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| old.map(|t| t.acceptance.clone()))
+                        .unwrap_or_default(),
+                    result: args["result"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| old.map(|t| t.result.clone()))
+                        .unwrap_or_default(),
                 };
                 if actor != "lead"
-                    && matches!(task.status.as_str(), "queued" | "in_progress" | "review" | "blocked" | "completed" | "cancelled")
+                    && matches!(
+                        task.status.as_str(),
+                        "queued" | "in_progress" | "review" | "blocked" | "completed" | "cancelled"
+                    )
                     && task.owner_id.as_deref() != Some(caller.id().as_str())
                 {
                     return Err("claim the task before starting or completing it".into());
@@ -947,9 +1393,28 @@ impl AgentTeams {
                 if actor != "lead" && task.status == "deleted" {
                     return Err("only the lead may delete tasks".into());
                 }
-                if actor!="lead" && task.status=="completed" {task.status="review".into();}
-                if old.is_some_and(|old|matches!(old.status.as_str(),"queued"|"in_progress") && (old.owner_id!=task.owner_id||old.subject!=task.subject||old.description!=task.description||old.acceptance!=task.acceptance||old.blocked_by!=task.blocked_by||old.write_scopes!=task.write_scopes)) {return Err("stop the assigned member before changing active task requirements".into());}
-                if task.status=="completed" && !task.acceptance.trim().is_empty() && task.result.trim().is_empty() {return Err("record acceptance evidence before completing this task".into());}
+                if actor != "lead" && task.status == "completed" {
+                    task.status = "review".into();
+                }
+                if old.is_some_and(|old| {
+                    matches!(old.status.as_str(), "queued" | "in_progress")
+                        && (old.owner_id != task.owner_id
+                            || old.subject != task.subject
+                            || old.description != task.description
+                            || old.acceptance != task.acceptance
+                            || old.blocked_by != task.blocked_by
+                            || old.write_scopes != task.write_scopes)
+                }) {
+                    return Err(
+                        "stop the assigned member before changing active task requirements".into(),
+                    );
+                }
+                if task.status == "completed"
+                    && !task.acceptance.trim().is_empty()
+                    && task.result.trim().is_empty()
+                {
+                    return Err("record acceptance evidence before completing this task".into());
+                }
                 validate_task(&board, &task)?;
                 self.append(&lead, "team/task", json!({"task":task}))
                     .await?;
@@ -976,9 +1441,12 @@ impl AgentTeams {
         }
         let state = self.read(caller.id().as_str()).await?;
         let mut output = serde_json::to_value(&state).map_err(|e| e.to_string())?;
-        output["config"]=json!(self.effective_config(&state));
+        output["config"] = json!(self.effective_config(&state));
         for member in state.members.values() {
-            output["members"][&member.name].as_object_mut().unwrap().remove("creationRequest");
+            output["members"][&member.name]
+                .as_object_mut()
+                .unwrap()
+                .remove("creationRequest");
             output["members"][&member.name]["status"] = json!(if member.phase != "active" {
                 member.phase.clone()
             } else {
@@ -1002,7 +1470,8 @@ impl AgentTeams {
             state
                 .messages
                 .iter()
-                .filter(|mail| !state.delivered.contains(&mail.id)&&!state.cancelled.contains(&mail.id))
+                .filter(|mail| !state.delivered.contains(&mail.id)
+                    && !state.cancelled.contains(&mail.id))
                 .count()
         );
         output["readyTasks"] = json!(
@@ -1049,7 +1518,8 @@ mod tests {
             owner_id: None,
             blocked_by: vec![],
             write_scopes: vec![],
-            acceptance:String::new(), result:String::new(),
+            acceptance: String::new(),
+            result: String::new(),
         }
     }
     #[test]
@@ -1167,11 +1637,17 @@ pub fn install(ctx: &Context, max_members: usize) -> Result<Arc<AgentTeams>, Str
         agents,
         persistence,
         subagents,
-        jobs: ctx.get_typed::<Arc<dyn dsh_jobs::JobRegistry>>("jobs",false).map(|slot|slot.as_ref().clone()),
+        jobs: ctx
+            .get_typed::<Arc<dyn dsh_jobs::JobRegistry>>("jobs", false)
+            .map(|slot| slot.as_ref().clone()),
         tools: Arc::downgrade(&tools),
         gates: std::sync::Mutex::new(BTreeMap::new()),
         cancellation: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
-        config: std::sync::RwLock::new(Config{enabled:true,max_members:max_members.clamp(1,16),..Default::default()}),
+        config: std::sync::RwLock::new(Config {
+            enabled: true,
+            max_members: max_members.clamp(1, 16),
+            ..Default::default()
+        }),
     });
     let runtime = service.clone();
     tools.register(ctx,ToolDefinition{

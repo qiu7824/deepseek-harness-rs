@@ -414,10 +414,17 @@ impl NativeBrowserAdapter {
         let session_id = session_id(&request.arguments)?;
         let owner_id = request.owner_id.as_deref().unwrap_or("host");
         let action = request.action.as_str();
-        if let Some(expected)=&request.permission_target {
-            let observed=self.permission_identity(&request,signal.clone()).await?;
-            if observed.application_id!=expected.application_id || observed.application_revision!=expected.application_revision || observed.origin!=expected.origin || observed.target_revision!=expected.target_revision {
-                return Err(AdapterError::new("COMPUTER_USE_APP_IDENTITY_CHANGED","Browser target changed after application authorization"));
+        if let Some(expected) = &request.permission_target {
+            let observed = self.permission_identity(&request, signal.clone()).await?;
+            if observed.application_id != expected.application_id
+                || observed.application_revision != expected.application_revision
+                || observed.origin != expected.origin
+                || observed.target_revision != expected.target_revision
+            {
+                return Err(AdapterError::new(
+                    "COMPUTER_USE_APP_IDENTITY_CHANGED",
+                    "Browser target changed after application authorization",
+                ));
             }
         }
         if action == "list_sessions" {
@@ -466,29 +473,72 @@ impl NativeBrowserAdapter {
 
 #[async_trait]
 impl ComputerUseAdapter for NativeBrowserAdapter {
-    async fn permission_identity(&self,request:&AdapterRequest,signal:AbortPredicate)->Result<crate::ComputerTargetIdentity,AdapterError>{
-        let executable=self.prepare()?;
-        let owner=request.owner_id.as_deref().unwrap_or("host");
-        let id=session_id(&request.arguments)?;
-        let session=self.sessions.lock().await.get(&(owner.into(),id.clone())).cloned();
-        let mut target_revision=format!("new:{owner}:{id}");
-        let mut observed_origin=None;
-        if let Some(session)=session {
-            let mut session=session.lock().await;session.ensure_alive()?;
-            target_revision=session.page_websocket.clone();
-            if request.action=="select_tab" {
-                let tab=required_string(&request.arguments,"tabId",128)?;
-                let tabs=session.tabs(&signal).await?;
-                let url=tabs.as_array().unwrap().iter().find(|item|item["id"]==tab).and_then(|item|item["url"].as_str()).ok_or_else(||AdapterError::new("COMPUTER_USE_TAB_NOT_FOUND","Tab does not belong to the current browser session"))?;
-                observed_origin=Some(crate::permissions::browser_origin(url)?);
-            }else if !session.page_websocket.is_empty(){
-                observed_origin=Some(session.permission_origin(&signal).await?);
+    async fn permission_identity(
+        &self,
+        request: &AdapterRequest,
+        signal: AbortPredicate,
+    ) -> Result<crate::ComputerTargetIdentity, AdapterError> {
+        let executable = self.prepare()?;
+        let owner = request.owner_id.as_deref().unwrap_or("host");
+        let id = session_id(&request.arguments)?;
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .get(&(owner.into(), id.clone()))
+            .cloned();
+        let mut target_revision = format!("new:{owner}:{id}");
+        let mut observed_origin = None;
+        if let Some(session) = session {
+            let mut session = session.lock().await;
+            session.ensure_alive()?;
+            target_revision = session.page_websocket.clone();
+            if request.action == "select_tab" {
+                let tab = required_string(&request.arguments, "tabId", 128)?;
+                let tabs = session.tabs(&signal).await?;
+                let url = tabs
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["id"] == tab)
+                    .and_then(|item| item["url"].as_str())
+                    .ok_or_else(|| {
+                        AdapterError::new(
+                            "COMPUTER_USE_TAB_NOT_FOUND",
+                            "Tab does not belong to the current browser session",
+                        )
+                    })?;
+                observed_origin = Some(crate::permissions::browser_origin(url)?);
+            } else if !session.page_websocket.is_empty() {
+                observed_origin = Some(session.permission_origin(&signal).await?);
             }
         }
-        let origin=if matches!(request.action.as_str(),"start"|"navigate"|"new_tab") {
-            Some(crate::permissions::browser_origin(request.arguments["url"].as_str().unwrap_or(observed_origin.as_deref().unwrap_or("about:blank")))?)
-        }else if matches!(request.action.as_str(),"list_sessions"|"list_tabs"|"close_tab") {None}else{observed_origin};
-        Ok(crate::ComputerTargetIdentity{host_id:"local".into(),device_id:"isolated-browser".into(),application_id:executable.to_string_lossy().into_owned(),application_revision:crate::permissions::executable_revision(&executable)?,origin:origin.clone(),target_revision,label:format!("隔离浏览器 · {}",origin.as_deref().unwrap_or("浏览器会话与标签页"))})
+        let origin = if matches!(request.action.as_str(), "start" | "navigate" | "new_tab") {
+            Some(crate::permissions::browser_origin(
+                request.arguments["url"]
+                    .as_str()
+                    .unwrap_or(observed_origin.as_deref().unwrap_or("about:blank")),
+            )?)
+        } else if matches!(
+            request.action.as_str(),
+            "list_sessions" | "list_tabs" | "close_tab"
+        ) {
+            None
+        } else {
+            observed_origin
+        };
+        Ok(crate::ComputerTargetIdentity {
+            host_id: "local".into(),
+            device_id: "isolated-browser".into(),
+            application_id: executable.to_string_lossy().into_owned(),
+            application_revision: crate::permissions::executable_revision(&executable)?,
+            origin: origin.clone(),
+            target_revision,
+            label: format!(
+                "隔离浏览器 · {}",
+                origin.as_deref().unwrap_or("浏览器会话与标签页")
+            ),
+        })
     }
     fn adapter_id(&self) -> &'static str {
         "native-browser"
@@ -601,10 +651,17 @@ struct BrowserSession {
 }
 
 impl BrowserSession {
-    async fn permission_origin(&self,signal:&AbortPredicate)->Result<String,AdapterError>{
-        let target=self.page_websocket.rsplit('/').next().unwrap_or("");
-        let info=self.cdp("Target.getTargetInfo",json!({"targetId":target}),signal).await?;
-        crate::permissions::browser_origin(info["targetInfo"]["url"].as_str().ok_or_else(||AdapterError::new("COMPUTER_USE_IDENTITY_UNAVAILABLE","Browser target has no observable URL"))?)
+    async fn permission_origin(&self, signal: &AbortPredicate) -> Result<String, AdapterError> {
+        let target = self.page_websocket.rsplit('/').next().unwrap_or("");
+        let info = self
+            .cdp("Target.getTargetInfo", json!({"targetId":target}), signal)
+            .await?;
+        crate::permissions::browser_origin(info["targetInfo"]["url"].as_str().ok_or_else(|| {
+            AdapterError::new(
+                "COMPUTER_USE_IDENTITY_UNAVAILABLE",
+                "Browser target has no observable URL",
+            )
+        })?)
     }
     fn ensure_alive(&mut self) -> Result<(), AdapterError> {
         match self.child.try_wait() {
@@ -628,10 +685,22 @@ impl BrowserSession {
     ) -> Result<AdapterOutput, AdapterError> {
         self.ensure_alive()?;
         let action = request.action.as_str();
-        if let Some(expected)=&request.permission_target {
-            if !created && expected.target_revision!=self.page_websocket {return Err(AdapterError::new("COMPUTER_USE_APP_IDENTITY_CHANGED","Active browser target changed before action dispatch"));}
-            if !matches!(action,"start"|"navigate"|"new_tab"|"select_tab") && let Some(origin)=&expected.origin {
-                if &self.permission_origin(signal).await?!=origin{return Err(AdapterError::new("COMPUTER_USE_APP_IDENTITY_CHANGED","Browser origin changed before action dispatch"));}
+        if let Some(expected) = &request.permission_target {
+            if !created && expected.target_revision != self.page_websocket {
+                return Err(AdapterError::new(
+                    "COMPUTER_USE_APP_IDENTITY_CHANGED",
+                    "Active browser target changed before action dispatch",
+                ));
+            }
+            if !matches!(action, "start" | "navigate" | "new_tab" | "select_tab")
+                && let Some(origin) = &expected.origin
+            {
+                if &self.permission_origin(signal).await? != origin {
+                    return Err(AdapterError::new(
+                        "COMPUTER_USE_APP_IDENTITY_CHANGED",
+                        "Browser origin changed before action dispatch",
+                    ));
+                }
             }
         }
         let session_id = session_id(&request.arguments)?;
@@ -645,17 +714,42 @@ impl BrowserSession {
 
         match action {
             "clipboard_read" | "clipboard_write" => {
-                let expression=if action=="clipboard_read" {"navigator.clipboard.readText()".to_string()}else{
-                    let text=required_string(&request.arguments,"text",65536)?;
-                    format!("navigator.clipboard.writeText({})",json!(text))
+                let expression = if action == "clipboard_read" {
+                    "navigator.clipboard.readText()".to_string()
+                } else {
+                    let text = required_string(&request.arguments, "text", 65536)?;
+                    format!("navigator.clipboard.writeText({})", json!(text))
                 };
-                let value=self.cdp("Runtime.evaluate",json!({"expression":expression,"returnByValue":true,"awaitPromise":true}),signal).await?;
-                if value.get("exceptionDetails").is_some(){return Err(AdapterError::new("COMPUTER_USE_CLIPBOARD_UNAVAILABLE","Browser clipboard operation was denied or is unavailable for this origin"));}
-                if action=="clipboard_read" {
-                    let text=value["result"]["value"].as_str().ok_or_else(||AdapterError::new("COMPUTER_USE_CLIPBOARD_UNAVAILABLE","Browser returned no clipboard text"))?;
-                    if text.len()>65536{return Err(AdapterError::new("COMPUTER_USE_CLIPBOARD_TOO_LARGE","Clipboard exceeds 64 KiB"));}
-                    result["text"]=json!(text);
-                }else{result["written"]=json!(true);}
+                let value = self
+                    .cdp(
+                        "Runtime.evaluate",
+                        json!({"expression":expression,"returnByValue":true,"awaitPromise":true}),
+                        signal,
+                    )
+                    .await?;
+                if value.get("exceptionDetails").is_some() {
+                    return Err(AdapterError::new(
+                        "COMPUTER_USE_CLIPBOARD_UNAVAILABLE",
+                        "Browser clipboard operation was denied or is unavailable for this origin",
+                    ));
+                }
+                if action == "clipboard_read" {
+                    let text = value["result"]["value"].as_str().ok_or_else(|| {
+                        AdapterError::new(
+                            "COMPUTER_USE_CLIPBOARD_UNAVAILABLE",
+                            "Browser returned no clipboard text",
+                        )
+                    })?;
+                    if text.len() > 65536 {
+                        return Err(AdapterError::new(
+                            "COMPUTER_USE_CLIPBOARD_TOO_LARGE",
+                            "Clipboard exceeds 64 KiB",
+                        ));
+                    }
+                    result["text"] = json!(text);
+                } else {
+                    result["written"] = json!(true);
+                }
                 return Ok(AdapterOutput::json(result));
             }
             "start" => {
@@ -906,8 +1000,15 @@ impl BrowserSession {
             result["tabs"] = self.tabs(signal).await?;
             return Ok(AdapterOutput::json(result));
         }
-        if let Some(expected)=&request.permission_target && let Some(origin)=&expected.origin {
-            if &self.permission_origin(signal).await?!=origin{return Err(AdapterError::new("COMPUTER_USE_APP_IDENTITY_CHANGED","Browser navigated to another origin; no page content or screenshot was returned. The preceding action may have effects."));}
+        if let Some(expected) = &request.permission_target
+            && let Some(origin) = &expected.origin
+        {
+            if &self.permission_origin(signal).await? != origin {
+                return Err(AdapterError::new(
+                    "COMPUTER_USE_APP_IDENTITY_CHANGED",
+                    "Browser navigated to another origin; no page content or screenshot was returned. The preceding action may have effects.",
+                ));
+            }
         }
         result["state"] = self.state(signal).await?;
         result["state"]["activeTabId"] = json!(self.page_websocket.rsplit('/').next());

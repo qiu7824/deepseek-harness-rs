@@ -6,10 +6,15 @@
 /// all resolved. This is the ONE uniqueness canon of the package. A path
 /// that does not exist rejects with the original error.
 pub async fn realpath_normalize(path: &str) -> std::io::Result<String> {
-    if let Some(rest)=path.strip_prefix("dsh-remote://") {
-        let id=rest.strip_suffix('/').unwrap_or(rest);
-        if let Ok(id)=uuid::Uuid::parse_str(id) {return Ok(format!("dsh-remote://{id}/"));}
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"invalid remote workspace identity"));
+    if let Some(rest) = path.strip_prefix("dsh-remote://") {
+        let id = rest.strip_suffix('/').unwrap_or(rest);
+        if let Ok(id) = uuid::Uuid::parse_str(id) {
+            return Ok(format!("dsh-remote://{id}/"));
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid remote workspace identity",
+        ));
     }
     if !std::path::Path::new(path).is_absolute() {
         return Err(std::io::Error::new(

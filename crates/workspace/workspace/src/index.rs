@@ -419,8 +419,16 @@ impl WorkspaceRegistry {
             .await
             .map_err(|error| format!("cannot create a workspace at '{path}': {error}"))?;
         if canonical.starts_with("dsh-remote://") {
-            let provider=self.ctx.get_typed::<Arc<dyn crate::WorkspaceExecutionProvider>>("workspaceExecutionProvider",false).ok_or("remote workspace execution provider is not installed")?;
-            if provider.verify(canonical.clone()).await?!=canonical{return Err("remote workspace identity mismatch".into());}
+            let provider = self
+                .ctx
+                .get_typed::<Arc<dyn crate::WorkspaceExecutionProvider>>(
+                    "workspaceExecutionProvider",
+                    false,
+                )
+                .ok_or("remote workspace execution provider is not installed")?;
+            if provider.verify(canonical.clone()).await? != canonical {
+                return Err("remote workspace identity mismatch".into());
+            }
         } else if !tokio::fs::metadata(&canonical)
             .await
             .is_ok_and(|meta| meta.is_dir())

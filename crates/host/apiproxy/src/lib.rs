@@ -7,7 +7,6 @@
 pub mod agent_lookup;
 pub mod api;
 pub mod capabilities;
-pub mod skill_lifecycle;
 pub mod fetch;
 mod interactions;
 mod learning_preview;
@@ -18,6 +17,7 @@ mod public_event;
 mod queue_projection;
 mod remote_payload;
 pub mod session_export;
+pub mod skill_lifecycle;
 mod workspace_git;
 
 pub use agent_lookup::{

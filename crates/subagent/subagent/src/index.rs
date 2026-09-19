@@ -437,8 +437,12 @@ impl SubagentRuntime {
         self.manager().interrupt(target_session_id, authority)
     }
 
-    pub fn suppress_settlement(&self, target: &dsh_session::SessionId, ancestor: &Arc<dyn dsh_agent::Agent>) -> Result<(),SubagentError> {
-        self.manager().suppress_settlement(target,ancestor)
+    pub fn suppress_settlement(
+        &self,
+        target: &dsh_session::SessionId,
+        ancestor: &Arc<dyn dsh_agent::Agent>,
+    ) -> Result<(), SubagentError> {
+        self.manager().suppress_settlement(target, ancestor)
     }
 
     /// Close admission below exact live parent Agents (TS

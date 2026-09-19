@@ -136,6 +136,7 @@ def main() -> None:
         ROOT / "packaging" / "windows" / "deepseek-black.ico",
         stage / "deepseek-black.ico",
     )
+    shutil.copy2(ROOT / "packaging" / "windows" / "deepseek-black.png", stage / "deepseek-black.png")
     skin_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-skin-installer")
     if args.platform != "windows":
         for executable in (stage / core_output, stage / launcher_output):

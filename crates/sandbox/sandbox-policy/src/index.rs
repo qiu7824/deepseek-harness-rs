@@ -45,7 +45,9 @@ pub struct SandboxPolicyRequest {
 fn resolve_workspace_root(path: &str) -> String {
     // Execution-world URIs are resolved and enforced by their remote provider.
     // Never make a local filesystem path out of a remote workspace identity.
-    if path.starts_with("dsh-remote://") {return path.into();}
+    if path.starts_with("dsh-remote://") {
+        return path.into();
+    }
     let canonical = canonical_path(path);
     std::path::absolute(&canonical)
         .unwrap_or_else(|_| std::path::PathBuf::from(canonical))

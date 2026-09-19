@@ -145,7 +145,7 @@ pub async fn start_in_process_run(
             handle.dispose.await;
             return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
         }
-        if let Err(error)=apply_child_composition(
+        if let Err(error) = apply_child_composition(
             child.ctx(),
             parent.as_ref(),
             &ChildComposition {
@@ -154,7 +154,7 @@ pub async fn start_in_process_run(
             },
         ) {
             handle.dispose.await;
-            return Err(SubagentError::new("CHILD_COMPOSE_FAILED",error));
+            return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
         }
     }
 

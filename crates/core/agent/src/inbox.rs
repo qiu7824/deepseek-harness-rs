@@ -121,8 +121,13 @@ impl Inbox {
 
     /// Capture a cancellation boundary without including later admissions.
     pub fn pending_ids(&self) -> Vec<MessageId> {
-        let state=self.state.lock();
-        state.next_turn.iter().chain(state.next_step.iter()).map(|message|message.id.clone()).collect()
+        let state = self.state.lock();
+        state
+            .next_turn
+            .iter()
+            .chain(state.next_step.iter())
+            .map(|message| message.id.clone())
+            .collect()
     }
 
     /// Stable acknowledgement for a browser request, including messages that
@@ -132,8 +137,11 @@ impl Inbox {
     }
 
     pub fn request_was_cancelled(&self, request_id: &str) -> bool {
-        let state=self.state.lock();
-        state.accepted_requests.get(request_id).is_some_and(|id|state.cancelled_messages.contains(id))
+        let state = self.state.lock();
+        state
+            .accepted_requests
+            .get(request_id)
+            .is_some_and(|id| state.cancelled_messages.contains(id))
     }
 
     /// Durably cancel all pending input, clearing next-step before
@@ -494,7 +502,7 @@ impl Inbox {
                     logged.inserted.clone(),
                 )
                 .collect();
-            remember_cancellations(&mut state,&logged,&removed);
+            remember_cancellations(&mut state, &logged, &removed);
             prune_context(&mut state);
             removed
         };
@@ -535,7 +543,7 @@ impl Inbox {
         let removed: Vec<UserMessage> = list
             .splice(start..start + removed_count, splice.inserted.clone())
             .collect();
-        remember_cancellations(&mut state,splice,&removed);
+        remember_cancellations(&mut state, splice, &removed);
         prune_context(&mut state);
         Ok(removed)
     }
@@ -622,9 +630,15 @@ fn remember_requests(state: &mut InboxState, messages: &[UserMessage]) {
 }
 
 fn remember_cancellations(state: &mut InboxState, splice: &InboxSplice, removed: &[UserMessage]) {
-    if splice.outcome==Some(InboxSpliceOutcome::Canceled) {
+    if splice.outcome == Some(InboxSpliceOutcome::Canceled) {
         for message in removed {
-            if !splice.inserted.iter().any(|inserted|inserted.id==message.id){state.cancelled_messages.insert(message.id.clone());}
+            if !splice
+                .inserted
+                .iter()
+                .any(|inserted| inserted.id == message.id)
+            {
+                state.cancelled_messages.insert(message.id.clone());
+            }
         }
     }
 }
@@ -762,17 +776,36 @@ mod tests {
 
     #[test]
     fn cancellation_receipts_survive_replay_without_marking_edits_cancelled() {
-        let session=Session::create(dsh_session::session_id("cancelled-receipts"),None,None,None).unwrap();
-        let inbox=Inbox::new(&session,InboxNotifications::default()).unwrap();
-        let prompt=dsh_llm::create_user_message(vec![dsh_llm::ContentBlock::Text{text:"queued".into()}],dsh_llm::MessageSource::User{rpc_id:Some("cancel-id".into()),client_time_zone:None});
-        inbox.append(InboxTarget::NextTurn,prompt.clone()).unwrap();
-        inbox.splice(InboxTarget::NextTurn,0.0,1.0,vec![prompt.clone()]).unwrap();
+        let session = Session::create(
+            dsh_session::session_id("cancelled-receipts"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        let prompt = dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text {
+                text: "queued".into(),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: Some("cancel-id".into()),
+                client_time_zone: None,
+            },
+        );
+        inbox.append(InboxTarget::NextTurn, prompt.clone()).unwrap();
+        inbox
+            .splice(InboxTarget::NextTurn, 0.0, 1.0, vec![prompt.clone()])
+            .unwrap();
         assert!(!inbox.request_was_cancelled("cancel-id"));
         inbox.remove(&prompt.id).unwrap();
         assert!(inbox.request_was_cancelled("cancel-id"));
-        let restored=Inbox::new(&session,InboxNotifications::default()).unwrap();
+        let restored = Inbox::new(&session, InboxNotifications::default()).unwrap();
         assert!(restored.request_was_cancelled("cancel-id"));
-        assert!(restored.message_for_request("cancel-id").is_some(),"receipt identity remains stable while its outcome is explicit");
+        assert!(
+            restored.message_for_request("cancel-id").is_some(),
+            "receipt identity remains stable while its outcome is explicit"
+        );
     }
 
     #[test]

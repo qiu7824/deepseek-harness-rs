@@ -6,17 +6,23 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.23`.
+Current release line: `0.1.3-alpha.24`.
 
-Development version: `0.1.3-alpha.23`; see the [change notes](release/notes/v0.1.3-alpha.23.md).
+Development version: `0.1.3-alpha.24`; see the [change notes](release/notes/v0.1.3-alpha.24.md).
 
-See the [alpha.23 release notes](release/notes/v0.1.3-alpha.23.md) for the complete changes.
+See the [alpha.24 release notes](release/notes/v0.1.3-alpha.24.md) for the complete changes.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
 Teams are available from the conversation header and Settings. Model search keeps its full height, model rows expose a compact delete action, and focus-only composer tips can be switched off in General settings. Computer Use compatibility is documented in [the capability matrix](docs/computer-use-compatibility.zh.md).
 
 The `glob` and `grep` tools require [ripgrep (rg)](https://github.com/BurntSushi/ripgrep#installation) on PATH. DEB packages declare the dependency; install ripgrep separately for Windows, macOS and portable Linux setups, then check `rg --version`.
+
+## 0.1.3-alpha.24 icon and interface fixes
+
+- Use the standard whale icon consistently across launchers, shortcuts and installers; refresh shell icons after installation and verify embedded resources.
+- Style account-provider switches consistently while preserving sign-in and account controls.
+- Update Office viewer registration and disposal coverage in cross-platform release gates.
 
 ## 0.1.3-alpha.23 reliability and workbench
 

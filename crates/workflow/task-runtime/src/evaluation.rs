@@ -507,7 +507,9 @@ impl ReleaseEvidence {
         }
         summary.blockers.sort();
         summary.blockers.dedup();
-        if summary.executed == 0 {summary.disclosed_cost_usd=None;}
+        if summary.executed == 0 {
+            summary.disclosed_cost_usd = None;
+        }
         summary.release_allowed = summary.blockers.is_empty();
         Ok(summary)
     }

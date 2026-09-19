@@ -21,6 +21,72 @@ SKIN_MARKER = b"\n__DSH_SKIN_PAYLOAD_V1_4F92C3A7__\n"
 SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
 
 
+def verify_windows_embedded_icon(binary: pathlib.Path, icon: pathlib.Path) -> None:
+    """Read PE resources without executing code or using the Explorer icon cache."""
+    import ctypes
+    import struct
+    from collections import Counter
+    from ctypes import wintypes
+
+    data = icon.read_bytes()
+    reserved, kind, count = struct.unpack_from("<HHH", data)
+    if reserved or kind != 1 or not 1 <= count <= 256:
+        raise ValueError(f"invalid standard icon: {icon}")
+    expected = Counter()
+    for index in range(count):
+        width, height, _, _, _, _, size, offset = struct.unpack_from("<BBBBHHII", data, 6 + index * 16)
+        if not size or offset + size > len(data):
+            raise ValueError("truncated standard icon frame")
+        expected[(width or 256, height or 256, hashlib.sha256(data[offset:offset + size]).digest())] += 1
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMODULE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ssize_t)
+    kernel.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
+    kernel.LoadLibraryExW.restype = wintypes.HMODULE
+    kernel.FreeLibrary.argtypes = [wintypes.HMODULE]
+    kernel.EnumResourceNamesW.argtypes = [wintypes.HMODULE, ctypes.c_void_p, callback_type, ctypes.c_ssize_t]
+    kernel.FindResourceW.argtypes = [wintypes.HMODULE, ctypes.c_void_p, ctypes.c_void_p]
+    kernel.FindResourceW.restype = wintypes.HANDLE
+    kernel.SizeofResource.argtypes = [wintypes.HMODULE, wintypes.HANDLE]
+    kernel.SizeofResource.restype = wintypes.DWORD
+    kernel.LoadResource.argtypes = [wintypes.HMODULE, wintypes.HANDLE]
+    kernel.LoadResource.restype = wintypes.HANDLE
+    kernel.LockResource.argtypes = [wintypes.HANDLE]
+    kernel.LockResource.restype = ctypes.c_void_p
+    module = kernel.LoadLibraryExW(str(binary.resolve()), None, 0x2 | 0x20)
+    if not module:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        def resource(name: int | str, resource_type: int) -> bytes:
+            identity = name if isinstance(name, int) else ctypes.cast(ctypes.c_wchar_p(name), ctypes.c_void_p)
+            found = kernel.FindResourceW(module, identity, resource_type)
+            if not found:
+                raise ValueError(f"missing icon resource in {binary.name}")
+            size = kernel.SizeofResource(module, found)
+            pointer = kernel.LockResource(kernel.LoadResource(module, found))
+            if not pointer or not size:
+                raise ValueError(f"empty icon resource in {binary.name}")
+            return ctypes.string_at(pointer, size)
+
+        names = []
+        callback = callback_type(lambda _module, _type, name, _param: names.append(name if name <= 65535 else ctypes.wstring_at(name)) or True)
+        kernel.EnumResourceNamesW(module, 14, callback, 0)
+        for name in names:
+            group = resource(name, 14)
+            _, group_kind, group_count = struct.unpack_from("<HHH", group)
+            if group_kind != 1 or group_count != count:
+                continue
+            actual = Counter()
+            for index in range(group_count):
+                width, height, _, _, _, _, _, image_id = struct.unpack_from("<BBBBHHIH", group, 6 + index * 14)
+                actual[(width or 256, height or 256, hashlib.sha256(resource(image_id, 3)).digest())] += 1
+            if actual == expected:
+                return
+        raise ValueError(f"{binary.name} does not embed every standard tray icon frame")
+    finally:
+        kernel.FreeLibrary(module)
+
+
 def validated_release_component(field: str, value: str) -> str:
     if SAFE_RELEASE_COMPONENT.fullmatch(value) is None or value in {".", ".."}:
         raise ValueError(f"invalid {field}: {value!r}")
@@ -132,6 +198,7 @@ def main() -> None:
         launcher,
         host,
         prefix + "deepseek-black.ico",
+        prefix + "deepseek-black.png",
         prefix + "PACKAGE.json",
         prefix + "PLUGIN_SECURITY.md",
         prefix + "web/dist/index.html",
@@ -149,6 +216,9 @@ def main() -> None:
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"archive is missing required entries: {missing}")
+    for icon_name in ("deepseek-black.ico", "deepseek-black.png"):
+        if read_archive_file(archive, prefix + icon_name) != (ROOT / "packaging/windows" / icon_name).read_bytes():
+            raise SystemExit(f"archive {icon_name} differs from the standard tray icon")
 
     forbidden_launchers = {
         prefix + "dsh-desktop.exe",
@@ -268,6 +338,8 @@ def main() -> None:
     if hashlib.sha256(archived_host).digest() != hashlib.sha256(release_host.read_bytes()).digest():
         raise SystemExit("archive host does not match target/release host")
     if args.platform == "windows":
+        for executable in (staged_host, staged_root / "dsh-launcher.exe"):
+            verify_windows_embedded_icon(executable, ROOT / "packaging/windows/deepseek-black.ico")
         with tempfile.TemporaryDirectory() as temporary:
             extracted_parent = pathlib.Path(temporary)
             extract_portable_archive(archive, extracted_parent)

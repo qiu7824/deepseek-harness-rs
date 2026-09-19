@@ -275,7 +275,7 @@ impl CommandAdapter {
         let mut failed = HashSet::new();
         for client_session_id in sessions {
             let request = AdapterRequest {
-                permission_target:None,
+                permission_target: None,
                 action: "close".to_string(),
                 arguments: serde_json::json!({
                     "action": "close",

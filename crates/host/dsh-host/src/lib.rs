@@ -96,34 +96,38 @@ pub fn collect_allocator_on_park() {
     });
 }
 
-struct CollectAfterBytesInner<F: FnOnce()> {
-    bytes: Vec<u8>,
+struct CollectAfterBytesInner<B: AsRef<[u8]>, F: FnOnce()> {
+    bytes: Option<B>,
     collect: parking_lot::Mutex<Option<F>>,
 }
 
-impl<F: FnOnce()> AsRef<[u8]> for CollectAfterBytesInner<F> {
+impl<B: AsRef<[u8]>, F: FnOnce()> AsRef<[u8]> for CollectAfterBytesInner<B, F> {
     fn as_ref(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_ref().expect("live response buffer").as_ref()
     }
 }
 
-impl<F: FnOnce()> Drop for CollectAfterBytesInner<F> {
+impl<B: AsRef<[u8]>, F: FnOnce()> Drop for CollectAfterBytesInner<B, F> {
     fn drop(&mut self) {
+        // Fields are normally destroyed after Drop returns. Release the
+        // allocation first so collection can actually reclaim its pages.
+        drop(self.bytes.take());
         if let Some(collect) = self.collect.get_mut().take() {
             collect();
         }
     }
 }
 
-fn bytes_then_collect_stream<F>(
-    bytes: Vec<u8>,
+fn bytes_then_collect_stream<B, F>(
+    bytes: B,
     collect: F,
 ) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>>
 where
+    B: AsRef<[u8]> + Send + 'static,
     F: FnOnce() + Send + 'static,
 {
     let bytes = axum::body::Bytes::from_owner(CollectAfterBytesInner {
-        bytes,
+        bytes: Some(bytes),
         collect: parking_lot::Mutex::new(Some(collect)),
     });
     futures::stream::once(async move { Ok(bytes) })
@@ -133,8 +137,8 @@ where
 fn collect_allocator_after_response() {
     // The response byte buffer has reached body EOS or was dropped. Collect
     // the current HTTP worker, notify every Tokio worker through the park
-    // epoch, and also run one collection on the blocking pool where JSONL /
-    // SQLite work may have allocated transient pages.
+    // epoch. mi_collect operates on the calling thread's heap; it does not
+    // collect every worker or the blocking pool from this thread.
     unsafe { libmimalloc_sys::mi_collect(true) };
     request_allocator_collect();
 }
@@ -145,6 +149,39 @@ mod allocator_response_lifecycle_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use futures::StreamExt;
+
+    #[tokio::test]
+    async fn collection_runs_after_storage_is_freed_and_last_body_clone_is_dropped() {
+        struct Buffer(Vec<u8>, Arc<AtomicUsize>);
+        impl AsRef<[u8]> for Buffer {
+            fn as_ref(&self) -> &[u8] { &self.0 }
+        }
+        impl Drop for Buffer {
+            fn drop(&mut self) {
+                drop(std::mem::take(&mut self.0));
+                self.1.store(1, Ordering::SeqCst);
+            }
+        }
+        let freed = Arc::new(AtomicUsize::new(0));
+        let observed = freed.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let mut stream = Box::pin(super::bytes_then_collect_stream(
+            Buffer(vec![7; 1024 * 1024], freed.clone()),
+            move || {
+                assert_eq!(observed.load(Ordering::SeqCst), 1, "collector ran before buffer destruction");
+                counted.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+        let bytes = stream.next().await.unwrap().unwrap();
+        let retained = bytes.clone();
+        drop(stream);
+        drop(bytes);
+        assert_eq!(freed.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(retained);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[tokio::test]
     async fn history_body_requests_collection_only_after_end_of_stream() {
@@ -1645,7 +1682,7 @@ async fn bridge_api_request(
         CarrierBody::Bytes(bytes) => {
             #[cfg(windows)]
             {
-                if collect_after_response {
+                if collect_after_response || bytes.len() >= 256 * 1024 {
                     return WebResponse::from_parts(
                         parts,
                         WebBody::from_stream(bytes_then_collect_stream(
@@ -1653,10 +1690,6 @@ async fn bridge_api_request(
                             collect_allocator_after_response,
                         )),
                     );
-                } else if bytes.len() >= 256 * 1024 {
-                    // SAFETY: the typed RPC tree has already been serialized
-                    // and dropped; collect this worker's transient pages.
-                    unsafe { libmimalloc_sys::mi_collect(true) };
                 }
             }
             WebBody::from(bytes)

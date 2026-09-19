@@ -82,22 +82,67 @@ pub fn register(
 }
 
 pub fn settings_schema() -> dsh_schemastery::Schema {
-    use dsh_schemastery::{Data,Schema};
-    let text=||Schema::string().default(Data::String(String::new()));
-    let role=Schema::object(indexmap::IndexMap::from([
-        ("id".into(),Schema::string()),("name".into(),Schema::string()),("instructions".into(),text()),
-        ("provider".into(),text()),("model".into(),text()),("reasoningEffort".into(),text()),
-        ("maxTokens".into(),Schema::union(vec![Schema::number().min(1.0).max(1_000_000.0).step(1.0),Schema::constant(Data::Null)]).default(Data::Null)),
-        ("allowTools".into(),Schema::array(Schema::string()).default(Data::Array(vec![]))),
-        ("canSpawn".into(),Schema::boolean().default(Data::Bool(false))),
+    use dsh_schemastery::{Data, Schema};
+    let text = || Schema::string().default(Data::String(String::new()));
+    let role = Schema::object(indexmap::IndexMap::from([
+        ("id".into(), Schema::string()),
+        ("name".into(), Schema::string()),
+        ("instructions".into(), text()),
+        ("provider".into(), text()),
+        ("model".into(), text()),
+        ("reasoningEffort".into(), text()),
+        (
+            "maxTokens".into(),
+            Schema::union(vec![
+                Schema::number().min(1.0).max(1_000_000.0).step(1.0),
+                Schema::constant(Data::Null),
+            ])
+            .default(Data::Null),
+        ),
+        (
+            "allowTools".into(),
+            Schema::array(Schema::string()).default(Data::Array(vec![])),
+        ),
+        (
+            "canSpawn".into(),
+            Schema::boolean().default(Data::Bool(false)),
+        ),
     ]));
-    let profile=Schema::object(indexmap::IndexMap::from([("id".into(),Schema::string()),("name".into(),Schema::string()),("roles".into(),Schema::array(role))]));
+    let profile = Schema::object(indexmap::IndexMap::from([
+        ("id".into(), Schema::string()),
+        ("name".into(), Schema::string()),
+        ("roles".into(), Schema::array(role)),
+    ]));
     Schema::object(indexmap::IndexMap::from([
-        ("enabled".into(),Schema::boolean().default(Data::Bool(false))),
-        ("maxMembers".into(),Schema::number().min(1.0).max(16.0).step(1.0).default(Data::Number(8.0))),
-        ("showButton".into(),Schema::boolean().default(Data::Bool(true))),
-        ("defaultMode".into(),Schema::union(["off","auto","custom"].map(|v|Schema::constant(Data::String(v.into()))).to_vec()).default(Data::String("off".into()))),
-        ("defaultProfile".into(),text()),
-        ("profiles".into(),Schema::array(profile).default(Data::Array(vec![]))),
+        (
+            "enabled".into(),
+            Schema::boolean().default(Data::Bool(false)),
+        ),
+        (
+            "maxMembers".into(),
+            Schema::number()
+                .min(1.0)
+                .max(16.0)
+                .step(1.0)
+                .default(Data::Number(8.0)),
+        ),
+        (
+            "showButton".into(),
+            Schema::boolean().default(Data::Bool(true)),
+        ),
+        (
+            "defaultMode".into(),
+            Schema::union(
+                ["off", "auto", "custom"]
+                    .map(|v| Schema::constant(Data::String(v.into())))
+                    .to_vec(),
+            )
+            .default(Data::String("off".into())),
+        ),
+        ("defaultProfile".into(), text()),
+        (
+            "profiles".into(),
+            Schema::array(profile).default(Data::Array(vec![])),
+        ),
     ]))
 }

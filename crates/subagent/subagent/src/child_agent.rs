@@ -400,9 +400,12 @@ pub fn apply_child_composition(
     parent: &dyn Agent,
     composition: &ChildComposition,
 ) -> Result<(), String> {
-    if let Some(tools)=child_ctx.get_typed::<Arc<dsh_tools::ToolRuntime>>("tools",false) {
-        let source=parent.ctx().get_typed::<Arc<dsh_tools::ToolRuntime>>("tools",false).ok_or("parent tools are unavailable")?;
-        tools.inherit_visible(child_ctx,source.as_ref().as_ref(),parent.scope_key())?;
+    if let Some(tools) = child_ctx.get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false) {
+        let source = parent
+            .ctx()
+            .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+            .ok_or("parent tools are unavailable")?;
+        tools.inherit_visible(child_ctx, source.as_ref().as_ref(), parent.scope_key())?;
     }
     if let Some(system_prompt) = child_ctx
         .get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)

@@ -7541,6 +7541,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			}
 			/** First open: pull the tail page (idempotent — in-flight/already-open returns the existing promise). */
 			open() {
+				this.options?.onHistoryAccess?.(this);
 				if (this.openState === "open") return Promise.resolve();
 				if (this.openPromise !== null) return this.openPromise;
 				const promise = this.doOpen(this.openGeneration).finally(() => {
@@ -7564,6 +7565,20 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.jumpTargetSeq = null; this.jumpPromise = null;
 				this.loadingOlder = false; this.loadingNewer = false;
 				this.notifier.markDirty();
+			}
+			/** Release reconstructible history while keeping drafts, queues and answerable requests. */
+			releaseHistory() {
+				this.openGeneration++;
+				this.beginHistoryNavigation("suspend");
+				this.navigationRequest = null;
+				this.openPromise = null;
+				this.openState = "cold";
+				this.openError = null;
+				this.events = []; this.views = []; this.historyPages = []; this.liveBuffer = [];
+				this.tailRepairNeeded = false;
+				this.conversation.replaceWindow([], []);
+				// Replace the cached snapshot too; otherwise its assembled nodes retain the old window.
+				this.notifier.notifyNow();
 			}
 			beginHistoryNavigation(reason = "around") {
                 if (this.gapRetryTimer != null) clearTimeout(this.gapRetryTimer);
@@ -7819,7 +7834,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @returns the unsubscribe function.
 			*/
 			subscribe(listener) {
-				return this.notifier.subscribe(listener);
+				const unsubscribe = this.notifier.subscribe(listener);
+				return () => {
+					unsubscribe();
+					this.options?.onHistoryUnobserved?.();
+				};
 			}
 			/**
 			* Cached conversation snapshot (rebuilt lazily when dirty with no listeners).
@@ -7935,11 +7954,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.lastAgentError = message;
 				this.notifier.markDirty();
 			}
-			/** No-op because session instances remain resident. */
+			/** Cancel pending history work before the owning scope drops the instance. */
 			dispose() {
                 this.disposed = true;
                 if (this.gapRetryTimer != null) clearTimeout(this.gapRetryTimer);
                 this.gapRetryTimer = null;
+                this.releaseHistory();
             }
 			/** Rebuild the current window after a low-frequency Definition or view registration change. */
 			rebuildConversationRegistry() {
@@ -7985,7 +8005,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
                     this.openState = "error";
                     const folded = transportError(error);
                     this.openError = folded.ok ? null : folded.error;
-                } finally { if (current()) this.notifier.markDirty(); }
+                } finally {
+                    if (current()) {
+                        this.notifier.markDirty();
+                        this.options?.onHistoryAccess?.(this);
+                    }
+                }
             }
 
 			/** Install the history window + stitch the liveBuffer (seq is the sole dedup key).
@@ -8231,6 +8256,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			remote;
 			conversation;
 			sessions = /* @__PURE__ */ new Map();
+			historyRecency = /* @__PURE__ */ new Map();
 			/** Pre-instantiation buffer for answerable requests and the queued-turn snapshot, which history
 			*  cannot reconstruct on open. Live requests remain until resolution; queue and replay duplicates
 			*  compact by identity. Instantiation replays and clears it, while removal drops it. */
@@ -8361,7 +8387,28 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @param sessionId - the session to drop.
 			*/
 			drop(sessionId) {
+				this.sessions.get(sessionId)?.dispose();
 				this.sessions.delete(sessionId);
+				this.historyRecency.delete(sessionId);
+			}
+			touchHistory(session) {
+				this.historyRecency.delete(session.sessionId);
+				this.historyRecency.set(session.sessionId, true);
+				this.trimInactiveHistory();
+			}
+			/** A process-wide budget for reconstructible, unobserved windows across visited sessions. */
+			trimInactiveHistory() {
+				const inactive = [...this.historyRecency.keys()].map(id => this.sessions.get(id)).filter(session =>
+					session && session.sessionId !== this.selected && !session.running && !session.promptInFlight.length &&
+					!session.notifier.listeners.size && session.openState === "open" && session.events.length);
+				let bytes = inactive.reduce((sum, session) => sum + session.historyPages.reduce((n, page) => n + (page.bytes || 0), 0), 0);
+				let count = inactive.length;
+				for (const session of inactive) {
+					if (count <= 8 && bytes <= 32 * 1024 * 1024) break;
+					bytes -= session.historyPages.reduce((n, page) => n + (page.bytes || 0), 0);
+					count--;
+					session.releaseHistory();
+				}
 			}
 			/**
 			* Lazy build: return the existing instance or construct one (no auto-open —
@@ -8401,6 +8448,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			createSession(sessionId) {
 				const address = this.addresses.get(sessionId);
 				return new Session(sessionId, this.api, this.remote, {
+					onHistoryAccess: session => this.touchHistory(session),
+					onHistoryUnobserved: () => this.trimInactiveHistory(),
 					...address === void 0 ? {} : {
 						address,
 						parentAvailable: this.canContinueSubagent(address.parentSessionId)

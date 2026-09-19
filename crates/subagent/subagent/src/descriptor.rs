@@ -55,7 +55,11 @@ pub enum SubagentDescriptorData {
         )]
         agent_reasoning_effort: Option<String>,
         /// Resolved output limit, retained rather than inherited again on resume.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentMaxTokens")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "agentMaxTokens"
+        )]
         agent_max_tokens: Option<u64>,
         /// Per-child persona that shadows the deployment persona on resume.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,7 +216,14 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
     let agent_provider = optional_string(map, "agentProvider")?;
     let agent_model = optional_string(map, "agentModel")?;
     let agent_reasoning_effort = optional_string(map, "agentReasoningEffort")?;
-    let agent_max_tokens = map.get("agentMaxTokens").map(|value|value.as_u64().filter(|n|*n>0).ok_or("persisted subagent descriptor agentMaxTokens must be a positive integer")).transpose()?;
+    let agent_max_tokens =
+        map.get("agentMaxTokens")
+            .map(|value| {
+                value.as_u64().filter(|n| *n > 0).ok_or(
+                    "persisted subagent descriptor agentMaxTokens must be a positive integer",
+                )
+            })
+            .transpose()?;
     let persona = optional_string(map, "persona")?;
     let tool_filter = match map.get("toolFilter") {
         None => None,
@@ -290,20 +301,26 @@ mod tests {
     use super::*;
     #[test]
     fn old_descriptors_remain_readable_and_new_limits_survive_round_trip() {
-        for version in [2,3,4] {
+        for version in [2, 3, 4] {
             let descriptor=parse_subagent_descriptor(&serde_json::json!({"version":version,"mode":"continuable","provider":"spawn","label":"worker","agentProvider":"route","agentModel":"model"})).unwrap().unwrap();
             assert!(descriptor.is_continuable());
         }
-        let input=serde_json::json!({"version":4,"mode":"continuable","provider":"spawn","label":"worker","agentProvider":"route","agentModel":"model","agentMaxTokens":1024,"toolFilter":{"deny":["subagent"]}});
-        let parsed=parse_subagent_descriptor(&input).unwrap().unwrap();
-        let saved=serde_json::to_value(snapshot_subagent_descriptor(&parsed).unwrap()).unwrap();
-        assert_eq!(saved["agentMaxTokens"],1024);
-        assert_eq!(saved["toolFilter"]["deny"],serde_json::json!(["subagent"]));
-        for value in [serde_json::json!(0),serde_json::json!(1.5),serde_json::json!("1024")] {
-            let mut invalid=input.clone();invalid["agentMaxTokens"]=value;
+        let input = serde_json::json!({"version":4,"mode":"continuable","provider":"spawn","label":"worker","agentProvider":"route","agentModel":"model","agentMaxTokens":1024,"toolFilter":{"deny":["subagent"]}});
+        let parsed = parse_subagent_descriptor(&input).unwrap().unwrap();
+        let saved = serde_json::to_value(snapshot_subagent_descriptor(&parsed).unwrap()).unwrap();
+        assert_eq!(saved["agentMaxTokens"], 1024);
+        assert_eq!(saved["toolFilter"]["deny"], serde_json::json!(["subagent"]));
+        for value in [
+            serde_json::json!(0),
+            serde_json::json!(1.5),
+            serde_json::json!("1024"),
+        ] {
+            let mut invalid = input.clone();
+            invalid["agentMaxTokens"] = value;
             assert!(parse_subagent_descriptor(&invalid).is_err());
         }
-        let mut future=input;future["version"]=serde_json::json!(4_294_967_300u64);
+        let mut future = input;
+        future["version"] = serde_json::json!(4_294_967_300u64);
         assert!(parse_subagent_descriptor(&future).unwrap().is_none());
     }
 }

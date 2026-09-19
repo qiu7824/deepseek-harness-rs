@@ -7,9 +7,12 @@ mod browser;
 mod command;
 mod control;
 mod desktop;
-mod routing;
 mod permissions;
-pub use permissions::{ComputerTargetIdentity,ComputerPermissionRequest,ComputerPermissionLease,ComputerPermissionService,COMPUTER_PERMISSION_SCOPES,action_scopes};
+mod routing;
+pub use permissions::{
+    COMPUTER_PERMISSION_SCOPES, ComputerPermissionLease, ComputerPermissionRequest,
+    ComputerPermissionService, ComputerTargetIdentity, action_scopes,
+};
 pub use routing::TargetRouter;
 mod js;
 pub use js::install_js;
@@ -543,8 +546,10 @@ pub fn install_adapter(
         .get_typed::<Arc<dyn AttachmentStore>>("attachments", false)
         .map(|slot| slot.as_ref().clone());
 
-    let permission_service=ctx.get_typed::<Arc<dyn ComputerPermissionService>>("computerPermissions",false).map(|slot|slot.as_ref().clone());
-    let scoped_permissions=permission_service.is_some();
+    let permission_service = ctx
+        .get_typed::<Arc<dyn ComputerPermissionService>>("computerPermissions", false)
+        .map(|slot| slot.as_ref().clone());
+    let scoped_permissions = permission_service.is_some();
     let listener: Arc<Listener> = Arc::new(move |_ctx, args| {
         let execution = args
             .first()
@@ -581,7 +586,11 @@ pub fn install_adapter(
         EventOptions::default().global(true),
     ));
 
-    let adapter=match permission_service {Some(service)=>Arc::new(permissions::PermissionedAdapter::new(adapter,service)) as Arc<dyn ComputerUseAdapter>,None=>adapter};
+    let adapter = match permission_service {
+        Some(service) => Arc::new(permissions::PermissionedAdapter::new(adapter, service))
+            as Arc<dyn ComputerUseAdapter>,
+        None => adapter,
+    };
     let adapter: Arc<dyn ComputerUseAdapter> = Arc::new(control::ControlledAdapter::new(adapter));
     let runtime = Arc::new(ComputerUseRuntime {
         ctx: ctx.clone(),

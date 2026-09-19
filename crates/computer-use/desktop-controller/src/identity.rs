@@ -1,14 +1,31 @@
 //! Window handles are reusable; bind observations to a process lifetime.
+use sha2::{Digest, Sha256};
 use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMessaging::*};
-use sha2::{Digest,Sha256};
 
-pub fn executable_revision(path:&str)->Result<String,String>{
+pub fn executable_revision(path: &str) -> Result<String, String> {
     use std::io::Read;
-    let mut file=std::fs::File::open(path).map_err(|_|"COMPUTER_USE_APP_IDENTITY_UNAVAILABLE")?;
-    if file.metadata().map_err(|_|"COMPUTER_USE_APP_IDENTITY_UNAVAILABLE")?.len()>512*1024*1024{return Err("COMPUTER_USE_APP_IDENTITY_TOO_LARGE".into());}
-    let mut digest=Sha256::new();let mut buffer=[0u8;65536];
-    loop {let length=file.read(&mut buffer).map_err(|_|"COMPUTER_USE_APP_IDENTITY_UNAVAILABLE")?;if length==0{break;}digest.update(&buffer[..length]);}
-    Ok(format!("sha256:{:x}",digest.finalize()))
+    let mut file =
+        std::fs::File::open(path).map_err(|_| "COMPUTER_USE_APP_IDENTITY_UNAVAILABLE")?;
+    if file
+        .metadata()
+        .map_err(|_| "COMPUTER_USE_APP_IDENTITY_UNAVAILABLE")?
+        .len()
+        > 512 * 1024 * 1024
+    {
+        return Err("COMPUTER_USE_APP_IDENTITY_TOO_LARGE".into());
+    }
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let length = file
+            .read(&mut buffer)
+            .map_err(|_| "COMPUTER_USE_APP_IDENTITY_UNAVAILABLE")?;
+        if length == 0 {
+            break;
+        }
+        digest.update(&buffer[..length]);
+    }
+    Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,9 +36,11 @@ pub struct WindowIdentity {
     pub executable: String,
 }
 impl WindowIdentity {
-    pub fn permission_identity(&self)->Result<serde_json::Value,String>{
+    pub fn permission_identity(&self) -> Result<serde_json::Value, String> {
         self.validate()?;
-        Ok(serde_json::json!({"applicationId":self.executable.to_ascii_lowercase(),"applicationRevision":executable_revision(&self.executable)?,"targetRevision":self.window_ref(),"label":self.executable}))
+        Ok(
+            serde_json::json!({"applicationId":self.executable.to_ascii_lowercase(),"applicationRevision":executable_revision(&self.executable)?,"targetRevision":self.window_ref(),"label":self.executable}),
+        )
     }
     pub fn read(window: usize) -> Result<Self, String> {
         unsafe {

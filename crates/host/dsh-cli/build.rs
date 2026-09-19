@@ -17,7 +17,7 @@ fn main() {
         resource.set_icon(icon.to_string_lossy().as_ref());
         resource.set("ProductName", "DeepSeek Harness-rs");
         resource.set("FileDescription", "DeepSeek Harness-rs Web Agent");
-        resource.set("OriginalFilename", "deepseek harness-rs.exe");
+        resource.set("OriginalFilename", "deepseek-harness-rs.exe");
         resource.set("InternalName", "deepseek-harness-rs");
         resource.compile().expect("compile Windows resources");
     }

@@ -463,9 +463,13 @@ impl SubagentContinuationManager {
         }
         let child_depth = resolve_child_depth(parent.as_ref(), request.max_depth)
             .map_err(|error| SubagentError::new("DEPTH_EXCEEDED", error.message))?;
-        let mut frozen_request=request.clone();
-        frozen_request.agent_options=Some(resolve_child_agent_options(parent.as_ref(),request.agent_options.as_ref(),child_depth));
-        let request=&frozen_request;
+        let mut frozen_request = request.clone();
+        frozen_request.agent_options = Some(resolve_child_agent_options(
+            parent.as_ref(),
+            request.agent_options.as_ref(),
+            child_depth,
+        ));
+        let request = &frozen_request;
         let agent_provider = request
             .agent_options
             .as_ref()
@@ -487,7 +491,10 @@ impl SubagentContinuationManager {
                 .as_ref()
                 .and_then(|options| options.reasoning_effort.as_ref())
                 .map(ToString::to_string),
-            agent_max_tokens: request.agent_options.as_ref().and_then(|options|options.max_tokens),
+            agent_max_tokens: request
+                .agent_options
+                .as_ref()
+                .and_then(|options| options.max_tokens),
             persona: request.persona.clone(),
             tool_filter: request.tool_filter.clone(),
         })
@@ -982,13 +989,22 @@ impl SubagentContinuationManager {
         Ok(())
     }
 
-    pub fn suppress_settlement(&self, target: &SessionId, ancestor: &Arc<dyn Agent>) -> Result<(),SubagentError> {
-        let activation=self.activations.lock().get(target.as_str()).cloned();
-        if let Some(activation)=activation {
-            let mut activation=activation.lock();
-            let key=Arc::as_ptr(ancestor).cast::<()>() as usize;
-            if !activation.ancestry.contains(&key){return Err(SubagentError::new("UNAUTHORIZED","settlement control requires the exact live ancestor"));}
-            activation.notify_on_settlement=false;
+    pub fn suppress_settlement(
+        &self,
+        target: &SessionId,
+        ancestor: &Arc<dyn Agent>,
+    ) -> Result<(), SubagentError> {
+        let activation = self.activations.lock().get(target.as_str()).cloned();
+        if let Some(activation) = activation {
+            let mut activation = activation.lock();
+            let key = Arc::as_ptr(ancestor).cast::<()>() as usize;
+            if !activation.ancestry.contains(&key) {
+                return Err(SubagentError::new(
+                    "UNAUTHORIZED",
+                    "settlement control requires the exact live ancestor",
+                ));
+            }
+            activation.notify_on_settlement = false;
         }
         Ok(())
     }
@@ -1192,10 +1208,12 @@ impl SubagentContinuationManager {
                 handle.dispose.await;
                 return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
             }
-            if let Err(error)=apply_child_composition(handle.agent.ctx(), parent_for_setup.as_ref(), &composition) {
+            if let Err(error) =
+                apply_child_composition(handle.agent.ctx(), parent_for_setup.as_ref(), &composition)
+            {
                 eprintln!("subagent composition failed before activation: {error}");
                 handle.dispose.await;
-                return Err(SubagentError::new("CHILD_COMPOSE_FAILED",error));
+                return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
             }
             handle
         };
@@ -1404,7 +1422,11 @@ impl SubagentContinuationManager {
         }
         let message = create_user_message(content.to_vec(), source.clone());
         let message_id = message.id.clone();
-        {let mut state=activation.lock();state.announced=true;state.notify_on_settlement=true;}
+        {
+            let mut state = activation.lock();
+            state.announced = true;
+            state.notify_on_settlement = true;
+        }
         Self::send_waking(activation, &message_id, || {
             child_agent.send_with_context(
                 message,
@@ -1461,7 +1483,11 @@ impl SubagentContinuationManager {
         let message = Self::agent_message(sender, content);
         let message_id = message.id.clone();
         let child_agent = activation.lock().handle().agent.clone();
-        {let mut state=activation.lock();state.announced=true;state.notify_on_settlement=true;}
+        {
+            let mut state = activation.lock();
+            state.announced = true;
+            state.notify_on_settlement = true;
+        }
         Self::send_waking(activation, &message_id, || child_agent.steer(message));
         message_id
     }

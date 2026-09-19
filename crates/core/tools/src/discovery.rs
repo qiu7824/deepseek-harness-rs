@@ -1,7 +1,7 @@
 //! Provider-independent progressive tool disclosure. Discovery never changes permissions.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 
 use cordis::Context;
 use dsh_llm::{ContentBlock, ToolSchema};
@@ -235,7 +235,18 @@ impl ToolDiscovery {
     }
 
     fn deferred(&self, tool: &ToolSchema, count: usize) -> bool {
-        if [SEARCH, DESCRIBE, "environment_probe", "environment_validate", "execute_native", "execute_steps", "execute_script", "task_execution", "run_code"].contains(&tool.name.as_str())
+        if [
+            SEARCH,
+            DESCRIBE,
+            "environment_probe",
+            "environment_validate",
+            "execute_native",
+            "execute_steps",
+            "execute_script",
+            "task_execution",
+            "run_code",
+        ]
+        .contains(&tool.name.as_str())
             || self.config.eager_tools.contains(&tool.name)
         {
             return false;
@@ -505,7 +516,9 @@ impl ToolRuntime {
                 "describeRequests":service.describe_requests.load(Ordering::Relaxed),
                 "searchHits":service.search_hits.load(Ordering::Relaxed),
                 "discoveryMicros":service.discovery_micros.load(Ordering::Relaxed)}),
-            None => json!({"enabled":false,"cachedSessions":0,"searchRequests":0,"describeRequests":0,"searchHits":0,"discoveryMicros":0}),
+            None => {
+                json!({"enabled":false,"cachedSessions":0,"searchRequests":0,"describeRequests":0,"searchHits":0,"discoveryMicros":0})
+            }
         }
     }
 }

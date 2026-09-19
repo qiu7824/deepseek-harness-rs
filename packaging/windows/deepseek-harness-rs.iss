@@ -1,8 +1,8 @@
 ﻿#ifndef MyAppVersion
-#define MyAppVersion "0.1.3-alpha.23"
+#define MyAppVersion "0.1.3-alpha.24"
 #endif
 #ifndef SourceDir
-#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.23-windows-x86_64-core"
+#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.24-windows-x86_64-core"
 #endif
 #ifndef OutputDir
 #define OutputDir "dist"
@@ -21,6 +21,9 @@
 #endif
 #if !FileExists(SourceDir + "\deepseek-harness-rs.exe")
 #error The installer payload is missing deepseek-harness-rs.exe
+#endif
+#if !FileExists(SourceDir + "\deepseek-black.ico")
+#error The installer payload is missing its standard tray icon
 #endif
 #if !FileExists(SourceDir + "\PACKAGE.json")
 #error The installer payload is missing PACKAGE.json
@@ -56,7 +59,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 SetupIconFile={#IconFile}
-UninstallDisplayIcon={app}\dsh-launcher.exe
+UninstallDisplayIcon={app}\deepseek-black.ico
 ShowLanguageDialog=auto
 LanguageDetectionMethod=uilanguage
 [Languages]
@@ -82,13 +85,22 @@ Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\deepseek-black.ico"; IconIndex: 0
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\deepseek-black.ico"; IconIndex: 0; Tasks: desktopicon
+Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"; IconFilename: "{app}\deepseek-black.ico"; IconIndex: 0
 [Run]
 Filename: "{app}\dsh-launcher.exe"; Description: "{cm:LaunchAfterInstall}"; Flags: postinstall nowait skipifsilent; Check: InstalledRuntimeReady
 
 [Code]
+procedure SHChangeNotify(EventId: Integer; Flags: Cardinal; Item1, Item2: Integer);
+  external 'SHChangeNotify@shell32.dll stdcall';
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    SHChangeNotify($08000000, 0, 0, 0);
+end;
+
 function InstalledRuntimeReady: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\dsh-launcher.exe')) and

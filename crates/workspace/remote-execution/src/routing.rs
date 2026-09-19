@@ -541,8 +541,12 @@ async fn collect(
             return Ok(ShellRunResult {
                 execution_context_id: Some(execution.context_id.clone()),
                 executable: execution.argv.first().cloned().unwrap_or_default(),
-                stdout_total_bytes: value["stdout"]["totalBytes"].as_u64().unwrap_or(stdout.len() as u64),
-                stderr_total_bytes: value["stderr"]["totalBytes"].as_u64().unwrap_or(stderr.len() as u64),
+                stdout_total_bytes: value["stdout"]["totalBytes"]
+                    .as_u64()
+                    .unwrap_or(stdout.len() as u64),
+                stderr_total_bytes: value["stderr"]["totalBytes"]
+                    .as_u64()
+                    .unwrap_or(stderr.len() as u64),
                 exit_code: value["exitCode"].as_i64().map(|n| n as i32),
                 signal: value["signal"].as_str().map(str::to_string),
                 timed_out: state == "timed_out",
