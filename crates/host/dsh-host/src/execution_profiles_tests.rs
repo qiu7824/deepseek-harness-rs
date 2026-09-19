@@ -4,6 +4,45 @@ use dsh_subprocess::{
     SubprocessOutputReader, SubprocessTerminalHandle, SubprocessTerminalSpawnSpec,
 };
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn environment_controls_resume_and_release_an_idle_persistent_session() {
+    use dsh_agent::{AgentFactory, CreateAgentOptions};
+    let fixture = Fixture::new(SandboxMode::WorkspaceWrite);
+    let ctx = Context::root();
+    let host = crate::compose_persistent_host_at(&ctx, &fixture.root.join("host"), None).unwrap();
+    let service = ExecutionProfiles::install(
+        &ctx,
+        fixture.runtime.clone(),
+        fixture.paths.clone(),
+        fixture.service.host.clone(),
+    );
+    let handle = host
+        .agent_loop
+        .create_agent(&ctx, CreateAgentOptions::default())
+        .await
+        .unwrap();
+    let id = handle.agent.id().clone();
+    host.sessions.flush(handle.agent.session()).await.unwrap();
+    handle.dispose.await;
+    drop(handle.agent);
+    assert!(host.sessions.get(&id).is_none());
+    let snapshot = service
+        .handle(json!({"action":"describe","sessionId":id,"cwd":fixture.cwd()}))
+        .await
+        .unwrap();
+    assert_eq!(snapshot["revision"], 0);
+    let saved = service.handle(json!({"action":"save","scope":"session","sessionId":id,"cwd":fixture.cwd(),"expectedRevision":0,"preferences":Preferences::default()})).await.unwrap();
+    assert_eq!(saved["revision"], 1);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while host.sessions.get(&id).is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("environment lease must release the resumed session");
+    host.shutdown().await.unwrap();
+}
+
 struct Reader;
 #[test]
 fn windows_app_aliases_are_distinct_from_real_packaged_executables() {
