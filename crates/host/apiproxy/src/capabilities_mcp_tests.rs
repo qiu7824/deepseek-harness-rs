@@ -111,7 +111,12 @@ async fn failed_mcp_startup_or_catalog_activation_preserves_the_working_connecti
         Connection::Http(client) => client.clone(),
         _ => panic!("HTTP fixture"),
     };
-    let original_name = tools.schemas(None)[0].name.clone();
+    let original_name = tools
+        .schemas(None)
+        .into_iter()
+        .find(|tool| tool.name == "mcp__fixture__old")
+        .unwrap()
+        .name;
     for path in ["/broken", "/invalid"] {
         let rejected = manager
             .invoke("capabilities.serverSave", json!({"server":config(path)}))
@@ -124,7 +129,12 @@ async fn failed_mcp_startup_or_catalog_activation_preserves_the_working_connecti
             panic!("HTTP fixture")
         };
         assert!(Arc::ptr_eq(current, &original));
-        assert_eq!(tools.schemas(None)[0].name, original_name);
+        assert!(
+            tools
+                .schemas(None)
+                .iter()
+                .any(|tool| tool.name == original_name)
+        );
     }
     let extra = RemoteHttpClient::connect(
         &ctx,
@@ -146,7 +156,11 @@ async fn failed_mcp_startup_or_catalog_activation_preserves_the_working_connecti
         .unwrap();
     assert!(rejected["error"].as_str().unwrap().contains("保留原有"));
     assert_eq!(
-        tools.schemas(None).len(),
+        tools
+            .schemas(None)
+            .iter()
+            .filter(|tool| tool.name.starts_with("mcp__fixture__"))
+            .count(),
         2,
         "partial candidate registrations were retracted"
     );
@@ -176,7 +190,12 @@ async fn failed_mcp_startup_or_catalog_activation_preserves_the_working_connecti
         .await
         .unwrap();
     extra.close().await.unwrap();
-    assert!(tools.schemas(None).is_empty());
+    assert!(
+        tools
+            .schemas(None)
+            .iter()
+            .all(|tool| !tool.name.starts_with("mcp__fixture__"))
+    );
     server.abort();
     drop(manager);
     std::fs::remove_dir_all(directory).unwrap();

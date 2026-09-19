@@ -498,6 +498,7 @@ impl ToolPwshService {
                     let signal = run.execution.signal.lock().clone();
                     let owner = run.execution.agent.clone();
                     let call_id = run.execution.call_id.to_string();
+                    let mark_effects=run.track_requested_effects();
                     Box::pin(async move {
                         let command = args
                             .get("command")
@@ -609,6 +610,7 @@ impl ToolPwshService {
                                 sandbox.prepare(policy).await.map_err(shell_runtime_failure)?;
                             }
                             let spec = shell.resolve(request);
+                            mark_effects();
                             let process_shell = shell.clone();
                             let id = jobs
                                 .start(JobStart {
@@ -653,6 +655,8 @@ impl ToolPwshService {
                         authorize_execution_directory(&mut request,owner.as_ref(),approval.as_ref(),&call_id).await?;
                         validate_profile(&request, profiles.as_ref(), "shell", request.shell_path.clone(), Some("powershell".into())).await?;
                         let context_id = request.execution_context_id.clone();
+                        if let (Some(sandbox),Some(policy))=(&sandbox,&request.sandbox_policy){sandbox.prepare(policy).await.map_err(shell_runtime_failure)?;}
+                        mark_effects();
                         let result = shell
                             .run(shell.resolve(request))
                             .await

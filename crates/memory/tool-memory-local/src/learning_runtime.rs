@@ -70,6 +70,7 @@ pub fn resource_fingerprint(cwd: &str, tool: &str, arguments: &Value) -> Option<
         "pattern",
         "action",
         "operation",
+        "program",
     ] {
         if let Some(value) = arguments.get(key).and_then(Value::as_str) {
             if value.is_empty() || value.len() > 4096 {
@@ -78,13 +79,23 @@ pub fn resource_fingerprint(cwd: &str, tool: &str, arguments: &Value) -> Option<
             if !matches!(key, "action" | "operation") {
                 target = true;
             }
-            let fingerprint = if matches!(key, "file_path" | "path" | "directory" | "cwd") {
-                normalized_path(cwd, value)
-            } else {
-                digest(value.as_bytes())
-            };
+            let fingerprint =
+                if matches!(key, "file_path" | "path" | "directory" | "cwd" | "program") {
+                    normalized_path(cwd, value)
+                } else {
+                    digest(value.as_bytes())
+                };
             parts.push(format!("{key}:{fingerprint}"));
         }
+    }
+    // The executable alone is not the resource identity: two Python scripts or
+    // two native targets must never verify one another's recovery.
+    if let Some(argv) = arguments.get("argv") {
+        let bytes = serde_json::to_vec(argv).ok()?;
+        if !argv.is_array() || bytes.len() > 16384 {
+            return None;
+        }
+        parts.push(format!("argv:{}", digest(&bytes)));
     }
     target.then(|| digest(parts.join("\0").as_bytes()))
 }

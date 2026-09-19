@@ -148,6 +148,7 @@ pub struct ConfinedArgv {
 pub struct SandboxStartup {
     ready: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
     timed_out: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
+    phase: Arc<dyn Fn() -> Result<String, String> + Send + Sync>,
 }
 
 impl SandboxStartup {
@@ -158,10 +159,21 @@ impl SandboxStartup {
         Self {
             ready: Arc::new(ready),
             timed_out: Arc::new(timed_out),
+            phase: Arc::new(|| Ok("runner_initialization".into())),
         }
     }
     pub fn is_ready(&self) -> Result<bool, String> {
         (self.ready)()
+    }
+    pub fn with_phase(
+        mut self,
+        phase: impl Fn() -> Result<String, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.phase = Arc::new(phase);
+        self
+    }
+    pub fn phase(&self) -> String {
+        (self.phase)().unwrap_or_else(|_| "phase_unavailable".into())
     }
     pub fn timed_out(&self) -> Result<bool, String> {
         (self.timed_out)()

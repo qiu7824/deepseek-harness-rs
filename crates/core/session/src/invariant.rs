@@ -319,7 +319,7 @@ fn apply_transition(trace: &mut SessionTrace, transition: SessionTraceTransition
 /// One staged pre-commit validation awaiting its publication.
 #[derive(Debug, Clone)]
 struct StagedTransition {
-    session: Session,
+    session: Weak<crate::store::SessionInner>,
     /// Installation/reconciliation gaps rebuild after publication, when the
     /// session lock is no longer held. The steady state validates in O(1).
     rebuild_after_publish: bool,
@@ -396,7 +396,12 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                 let key = (session_ptr(&session), event.seq.get());
                 let entry = { staged.lock().remove(&key) };
                 match entry {
-                    Some(entry) if session_ptr(&entry.session) == session_ptr(&session) => {
+                    Some(entry)
+                        if entry
+                            .session
+                            .upgrade()
+                            .is_some_and(|inner| Arc::ptr_eq(&inner, &session.inner)) =>
+                    {
                         if entry.rebuild_after_publish {
                             seed_after_publish(&session, &|message| panic!("{message}"));
                         } else {
@@ -474,7 +479,7 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
                 staged.lock().insert(
                     (ptr, event.seq.get()),
                     StagedTransition {
-                        session,
+                        session: Arc::downgrade(&session.inner),
                         rebuild_after_publish,
                     },
                 );
@@ -488,6 +493,24 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
         )
         .await;
     }
+    let retired_traces = traces.clone();
+    let retired_staged = staged.clone();
+    ctx.on(
+        "session/disposed",
+        Arc::new(move |_, args| {
+            let session = downcast::<Session>(&args[0]).expect("session arg").clone();
+            let traces = retired_traces.clone();
+            let staged = retired_staged.clone();
+            Box::pin(async move {
+                let identity = session_ptr(&session);
+                traces.lock().remove(&identity);
+                staged.lock().retain(|(ptr, _), _| *ptr != identity);
+                None
+            })
+        }),
+        EventOptions::default().global(true),
+    )
+    .await;
 }
 
 /// Register the session invariant companion (TS `apply`).
@@ -509,4 +532,47 @@ pub fn apply(ctx: &Context) -> BoxFuture<'static, Disposer> {
             },
         )
     })
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    #[tokio::test]
+    async fn abandoned_precommit_observation_does_not_own_retired_history() {
+        let ctx = Context::root();
+        let store = SessionStore::install(&ctx);
+        install_inner(&ctx, &|message| panic!("{message}")).await;
+        let session =
+            Session::create(crate::session_id("abandoned-precommit"), None, None, None).unwrap();
+        let detach = store.enter(&session).unwrap();
+        store.announce(&session).await.unwrap();
+        session
+            .append("turn/start", serde_json::json!({"turn":1}), None)
+            .unwrap();
+        session
+            .append(
+                "tools/discovery",
+                serde_json::json!({"data":"x".repeat(1024*1024)}),
+                None,
+            )
+            .unwrap();
+        let weak = Arc::downgrade(&session.events());
+        let mut candidate = session.events()[0].clone();
+        candidate.seq = crate::SessionSeq::new(2).unwrap();
+        candidate.type_ = "turn/end".into();
+        candidate.data = serde_json::json!({"turn":1,"reason":{"kind":"completed"}});
+        let _listeners = ctx.collect(
+            cordis::DispatchMode::Emit,
+            "session/event",
+            &[cordis::arc(session.clone()), cordis::arc(candidate)],
+        );
+        detach().await;
+        drop(detach);
+        drop(session);
+        assert!(
+            weak.upgrade().is_none(),
+            "precommit bookkeeping must not retain historical payloads"
+        );
+        ctx.fiber.dispose().await;
+    }
 }

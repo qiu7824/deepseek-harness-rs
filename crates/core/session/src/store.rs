@@ -495,6 +495,19 @@ impl Session {
         std::sync::Arc::as_ptr(&self.inner) as *const () as usize
     }
 
+    /// Only attached sessions emit lifecycle events that can retire service
+    /// caches. Detached snapshots must not acquire persistent observer state.
+    pub fn is_attached_to_store(&self) -> bool {
+        attachment_of(self).is_some()
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn debug_lifetime(&self) -> std::sync::Weak<dyn std::any::Any + Send + Sync> {
+        let value: Arc<dyn std::any::Any + Send + Sync> = self.inner.clone();
+        Arc::downgrade(&value)
+    }
+
     /// Detached, deep-frozen creation metadata.
     pub fn header(&self) -> &SessionHeader {
         &self.inner.header

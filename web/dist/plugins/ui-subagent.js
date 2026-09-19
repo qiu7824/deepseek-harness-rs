@@ -1253,6 +1253,8 @@ window.__ModuleLoader__.load({
 				sessionsStore: sessions.list,
 				loadProgress,
 				openChild(address) {
+					const sidebar=ctx.get("betterSidebar");
+					if(sidebar?.getTab("suite:child-chat")){sidebar.openTab({type:"suite:child-chat",id:`child:${address.parentSessionId}:${address.childSessionId}`,title:sessions.list.getSnapshot().byId[address.childSessionId]?.displayTitle||address.childSessionId,meta:{address}},{sessionId:parentSessionId});return;}
 					sessions.openSubagent(address);
 				},
 				refresh(parentSessionId) {

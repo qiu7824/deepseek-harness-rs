@@ -12,6 +12,7 @@ use dsh_tools::{
     ToolExecution, ToolOutputDefinition, ToolResultView,
 };
 use futures::{FutureExt, StreamExt};
+mod read_window;
 use std::sync::Arc;
 
 pub const NAME: &str = "tool-fs";
@@ -223,8 +224,8 @@ impl Service {
         let service = self.clone();
         ToolDefinition {
             name: "read".into(),
-            description: "Read a UTF-8 text file and return line-numbered content.".into(),
-            parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"}},"required":["file_path"]}),
+            description: "Read a text file with line numbers. UTF-8 by default; explicitly select gb18030/gbk or UTF-16 for legacy logs. PDF, Office and images require document/image tools.".into(),
+            parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"},"encoding":{"type":"string","enum":["utf-8","gb18030","gbk","utf-16le","utf-16be"]}},"required":["file_path"]}),
             output: output_object(
                 |args, value| {
                     let offset = value["offset"].as_u64().unwrap_or(1);
@@ -320,59 +321,18 @@ impl Service {
                             FsErrorCode::FsNotRegularFile,
                         )));
                     }
-                    let content =
-                        if info.size.is_none() || info.size.unwrap_or(0) >= STREAM_MIN_SIZE {
-                            let mut stream =
-                                s.fs.stream_text(&target, Some(signal))
-                                    .await
-                                    .map_err(body_error)?;
-                            let mut out = String::new();
-                            while let Some(chunk) = stream.next().await {
-                                out.push_str(&chunk.map_err(body_error)?);
-                            }
-                            out
-                        } else {
-                            s.fs.read_text(&target, Some(signal))
-                                .await
-                                .map_err(body_error)?
-                        };
-                    let mut all: Vec<&str> = content.split_terminator('\n').collect();
-                    if content.is_empty() {
-                        all.clear();
-                    }
-                    let total = all.len() as u64;
-                    if offset > total && !(total == 0 && offset == 1) {
-                        return Err(body_error(FsError::new(
-                            format!(
-                                "offset {offset} is out of range for \"{}\" ({total} lines)",
-                                target.display_path
-                            ),
-                            FsErrorCode::FsNotFound,
-                        )));
-                    }
-                    let mut bytes = 0usize;
-                    let mut lines = Vec::new();
-                    for (i, raw) in all
-                        .iter()
-                        .enumerate()
-                        .skip((offset - 1) as usize)
-                        .take(limit as usize)
-                    {
-                        let raw = raw.strip_suffix('\r').unwrap_or(raw);
-                        let mut text: String = raw.chars().take(READ_MAX_LINE_LENGTH + 1).collect();
-                        if text.chars().count() > READ_MAX_LINE_LENGTH {
-                            text = format!(
-                                "{}... (line truncated to {READ_MAX_LINE_LENGTH} chars)",
-                                text.chars().take(READ_MAX_LINE_LENGTH).collect::<String>()
-                            );
-                        }
-                        let extra = text.len() + usize::from(!lines.is_empty());
-                        if bytes + extra > READ_MAX_BYTES {
-                            break;
-                        }
-                        bytes += extra;
-                        lines.push(serde_json::json!({"number":i+1,"text":text}));
-                    }
+                    let mut window=read_window::ReadWindow::new(offset,limit);
+                    let encoding=args["encoding"].as_str().unwrap_or("utf-8");
+                    if encoding!="utf-8" {
+                        let data=s.fs.read_bytes(&target,Some(signal),16*1024*1024).await.map_err(body_error)?;
+                        let text=read_window::decode(&data,encoding).map_err(|message|ToolBodyError::coded(message,"TextEncodingError","FS_NOT_TEXT"))?;
+                        window.push(&text);
+                    } else if info.size.is_none()||info.size.unwrap_or(0)>=STREAM_MIN_SIZE {
+                        let mut stream=s.fs.stream_text(&target,Some(signal)).await.map_err(body_error)?;
+                        while let Some(chunk)=stream.next().await {window.push(&chunk.map_err(body_error)?);}
+                    } else {window.push(&s.fs.read_text(&target,Some(signal)).await.map_err(body_error)?);}
+                    let(total,lines)=window.finish();
+                    if offset>total&&!(total==0&&offset==1){return Err(body_error(FsError::new(format!("offset {offset} is out of range for \"{}\" ({total} lines)",target.display_path),FsErrorCode::FsNotFound)));}
                     emit_observed(
                         &s.ctx,
                         &target,
@@ -456,6 +416,7 @@ impl Service {
                     let attachments = service.ctx.get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false).map(|slot| slot.as_ref().clone()).ok_or_else(|| ToolBodyError::plain("read_image requires the attachments service"))?;
                     let limits = attachments.image_limits();
                     let data = service.fs.read_bytes(&target, Some(signal(&exec)), limits.max_image_bytes.min(limits.max_message_image_bytes)).await.map_err(body_error)?;
+                    if data.starts_with(b"%PDF-"){return Err(ToolBodyError::coded("PDF is a document; render its pages with the PDF workflow before using read_image. Do not retry the PDF as an image.","ImageFormatError","IMAGE_FORMAT_UNSUPPORTED"));}
                     let media_type = image_media_type_for_path(path).or_else(|| sniff_image_media_type(&data)).ok_or_else(|| ToolBodyError::plain(format!("cannot read \"{}\": the file content is not a supported PNG/JPEG/WebP/GIF image", target.display_path)))?;
                     if !limits.media_types.contains(&media_type) { return Err(ToolBodyError::plain(format!("cannot read \"{}\": {} images are not accepted by this deployment", target.display_path, media_type.as_str()))); }
                     let saved = attachments.save_image(&dsh_attachment::SaveImageAttachment { data, media_type, name: std::path::Path::new(&target.display_path).file_name().map(|name| name.to_string_lossy().into_owned()) }).await.map_err(|error| ToolBodyError::plain(error.to_string()))?;

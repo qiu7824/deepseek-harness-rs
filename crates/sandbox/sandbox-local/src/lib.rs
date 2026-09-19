@@ -62,16 +62,21 @@ pub struct LocalSandboxProvider {
     runtime_cache: Option<std::path::PathBuf>,
     #[cfg(windows)]
     preparation: Arc<std::sync::Mutex<RuntimePreparation>>,
+    #[cfg(windows)]
+    preparation_gate: Arc<tokio::sync::Semaphore>,
 }
 
 #[cfg(windows)]
 #[derive(Default)]
 struct RuntimePreparation {
     generation: u64,
-    active: Option<(
-        u64,
-        futures::future::Shared<futures::future::BoxFuture<'static, Result<(), String>>>,
-    )>,
+    active: std::collections::HashMap<
+        String,
+        (
+            u64,
+            futures::future::Shared<futures::future::BoxFuture<'static, Result<(), String>>>,
+        ),
+    >,
 }
 
 impl LocalSandboxProvider {
@@ -82,6 +87,8 @@ impl LocalSandboxProvider {
             runtime_cache: None,
             #[cfg(windows)]
             preparation: Default::default(),
+            #[cfg(windows)]
+            preparation_gate: Arc::new(tokio::sync::Semaphore::new(2)),
         })
     }
 
@@ -104,6 +111,8 @@ impl LocalSandboxProvider {
             runtime_cache: Some(cache),
             #[cfg(windows)]
             preparation: Default::default(),
+            #[cfg(windows)]
+            preparation_gate: Arc::new(tokio::sync::Semaphore::new(2)),
         });
         let erased: Arc<dyn SandboxProvider> = provider.clone();
         ctx.register_service(erased);
@@ -172,13 +181,22 @@ impl SandboxProvider for LocalSandboxProvider {
         #[cfg(windows)]
         if self.platform == "win32"
             && policy.mode != SandboxMode::DangerFullAccess
-            && !self.runtime_roots.is_empty()
+            && self.runtime_cache.is_some()
         {
             use futures::FutureExt;
             let roots = self.runtime_roots.clone();
             let cache = self.runtime_cache.clone();
-            let candidate: futures::future::BoxFuture<'static, Result<(), String>> = Box::pin(
-                async move {
+            let workspace = std::path::PathBuf::from(&policy.workspace_root);
+            let writable = policy.mode == SandboxMode::WorkspaceWrite;
+            let preparation_key =
+                format!("{}:{writable}", policy.workspace_root.to_ascii_lowercase());
+            let gate = self.preparation_gate.clone();
+            let candidate: futures::future::BoxFuture<'static, Result<(), String>> =
+                Box::pin(async move {
+                    let permit = gate
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| "[SANDBOX_SETUP_FAILED] permission worker closed")?;
                     let cache = cache.ok_or(
                         "[SANDBOX_SETUP_FAILED] runtime permission state is not configured",
                     )?;
@@ -186,42 +204,61 @@ impl SandboxProvider for LocalSandboxProvider {
                     // prompt budget. Complete its cached read-only preparation once
                     // outside that budget; cancellation never launches user code.
                     let preparation = tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        embedded_windows_runner::windows_runner::prepare_workspace_permissions(
+                            &workspace, &cache, writable,
+                        )?;
                         embedded_windows_runner::windows_runner::prepare_runtime_permissions(
                             &roots, &cache,
                         )
                     });
-                    match tokio::time::timeout(std::time::Duration::from_secs(120), preparation).await {
-                    Ok(Ok(Ok(()))) => Ok(()),
-                    Ok(Ok(Err(error))) => Err(format!("[SANDBOX_SETUP_FAILED] {error}")),
-                    Ok(Err(error)) => Err(format!("[SANDBOX_SETUP_FAILED] runtime preparation task failed: {error}")),
-                    Err(_) => Err("[SANDBOX_SETUP_TIMEOUT] Runtime access preparation exceeded 120 seconds; the command was not started. Check runtime permissions before retrying.".into()),
-                }
-                },
-            );
+                    match preparation.await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(error)) => Err(format!("[SANDBOX_SETUP_FAILED] {error}")),
+                        Err(error) => Err(format!(
+                            "[SANDBOX_SETUP_FAILED] runtime preparation task failed: {error}"
+                        )),
+                    }
+                });
             let state = self.preparation.clone();
             let (generation, preparation) = {
                 let mut state = state.lock().unwrap();
-                if let Some(active) = &state.active {
+                if let Some(active) = state.active.get(&preparation_key) {
                     active.clone()
                 } else {
+                    if state.active.len() >= 64 {
+                        state
+                            .active
+                            .retain(|_, (_, flight)| flight.peek().is_none());
+                    }
+                    if state.active.len() >= 64 {
+                        return Box::pin(async {
+                            Err("[SANDBOX_SETUP_FAILED] workspace preparation limit reached".into())
+                        });
+                    }
                     state.generation = state.generation.wrapping_add(1);
                     let active = (state.generation, candidate.shared());
-                    state.active = Some(active.clone());
+                    state.active.insert(preparation_key.clone(), active.clone());
                     active
                 }
             };
             return Box::pin(async move {
                 // Retaining one shared attempt prevents cancelled or concurrent
                 // callers from creating an unbounded set of blocking ACL workers.
-                let result = preparation.await;
+                // A timed-out spawn_blocking job keeps running. Retain its shared
+                // join handle so retries cannot start duplicate ACL walks.
+                let result = match tokio::time::timeout(std::time::Duration::from_secs(120), preparation).await {
+                    Ok(result) => result,
+                    Err(_) => return Err("[SANDBOX_SETUP_TIMEOUT] phase=permission_preparation; the shared workspace/runtime ACL preparation is still tracked; command not started. Subsequent checks join this preparation rather than restarting it.".into()),
+                };
                 if result.is_err() {
                     let mut state = state.lock().unwrap();
                     if state
                         .active
-                        .as_ref()
+                        .get(&preparation_key)
                         .is_some_and(|active| active.0 == generation)
                     {
-                        state.active = None;
+                        state.active.remove(&preparation_key);
                     }
                 }
                 result
@@ -270,7 +307,7 @@ impl SandboxProvider for LocalSandboxProvider {
             ),
             _ => return Err(SandboxUnavailableError::new(policy.mode, None)),
         };
-        if self.platform == "win32" && !self.runtime_roots.is_empty() {
+        if self.platform == "win32" {
             if let Some(cache) = &self.runtime_cache {
                 wrapped.extend([
                     "--runtime-cache".into(),
@@ -355,7 +392,26 @@ fn windows_startup_signal() -> Result<(String, dsh_sandbox::SandboxStartup), Str
     }
     let ready = event(&name)?;
     let timed_out = event(&format!("{name}-timeout"))?;
-    let signal = dsh_sandbox::SandboxStartup::new(move || poll(&ready), move || poll(&timed_out));
+    let phases = [
+        "ancestors",
+        "workspace_permissions",
+        "read_permissions",
+        "runtime_permissions",
+        "process_creation",
+        "cleanup",
+    ]
+    .into_iter()
+    .map(|phase| Ok((phase, event(&format!("{name}-stage-{phase}"))?)))
+    .collect::<Result<Vec<_>, String>>()?;
+    let signal = dsh_sandbox::SandboxStartup::new(move || poll(&ready), move || poll(&timed_out))
+        .with_phase(move || {
+            for (phase, event) in phases.iter().rev() {
+                if poll(event)? {
+                    return Ok((*phase).into());
+                }
+            }
+            Ok("runner_initialization".into())
+        });
     Ok((name, signal))
 }
 

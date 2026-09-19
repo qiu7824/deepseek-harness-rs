@@ -88,10 +88,10 @@ fn setup() -> (Context, Arc<ToolRuntime>, Arc<Mutex<Vec<Vec<String>>>>) {
 }
 
 async fn execute(
-    tools: &ToolRuntime,
+    tools: &Arc<ToolRuntime>,
     name: &str,
     arguments: Value,
-) -> dsh_tools::ToolExecutionResult {
+) -> Arc<dsh_tools::ToolExecutionResult> {
     tools
         .execute(ToolExecutionInput {
             call_id: dsh_llm::call_id(format!("test-{name}")),
@@ -119,13 +119,16 @@ async fn first_failed_step_stops_dependent_writes_even_in_diagnostic_mode() {
         .await;
         assert_eq!(calls.lock().unwrap().len(), 1);
         if diagnostic {
-            let value = result.value.unwrap();
+            let value = result.value.as_ref().unwrap();
             assert_eq!(value["exitCode"], 7);
             assert_eq!(value["completion"], "failed");
             assert_eq!(value["steps"].as_array().unwrap().len(), 1);
         } else {
             assert!(result.is_error);
-            assert_eq!(result.error.unwrap().info.unwrap().code, "SHELL_FAILED");
+            assert_eq!(
+                result.error.as_ref().unwrap().info.as_ref().unwrap().code,
+                "SHELL_FAILED"
+            );
         }
     }
 }
@@ -142,7 +145,7 @@ async fn native_arguments_and_successful_stderr_are_preserved_without_false_deni
     .await;
     assert!(!result.is_error, "{:?}", result.error);
     assert_eq!(&calls.lock().unwrap()[0][1..], &arguments);
-    let value = result.value.unwrap();
+    let value = result.value.as_ref().unwrap();
     assert_eq!(value["completion"], "succeeded");
     assert_eq!(value["diagnostics"], json!([]));
     assert!(
@@ -166,14 +169,32 @@ async fn trusted_startup_failure_keeps_its_error_code_and_prevents_dispatch() {
     .await;
     assert_eq!(calls.lock().unwrap().len(), 1);
     assert_eq!(
-        result.error.unwrap().info.unwrap().code,
+        result.error.as_ref().unwrap().info.as_ref().unwrap().code,
         "SANDBOX_SETUP_FAILED"
     );
 }
 
 #[tokio::test]
 async fn invalid_later_step_is_rejected_before_any_effect() {
-    let (_ctx, tools, calls) = setup();
+    let (ctx, tools, calls) = setup();
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let captured = observations.clone();
+    ctx.on(
+        "tools/result",
+        Arc::new(move |_, args| {
+            let captured = captured.clone();
+            let started = args
+                .get(3)
+                .and_then(cordis::downcast_arc::<Option<bool>>)
+                .and_then(|value| *value);
+            Box::pin(async move {
+                captured.lock().unwrap().push(started);
+                None
+            })
+        }),
+        cordis::EventOptions::default().global(true),
+    )
+    .await;
     let result = execute(
         &tools,
         "execute_steps",
@@ -184,4 +205,5 @@ async fn invalid_later_step_is_rejected_before_any_effect() {
     .await;
     assert!(result.is_error);
     assert!(calls.lock().unwrap().is_empty());
+    assert_eq!(*observations.lock().unwrap(), vec![Some(false)]);
 }

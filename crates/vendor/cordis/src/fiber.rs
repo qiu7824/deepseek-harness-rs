@@ -173,6 +173,31 @@ mod transition_tests {
     use crate::{EventOptions, Plugin};
     use std::sync::atomic::AtomicUsize;
 
+    struct CapturingPlugin(Arc<Vec<u8>>);
+    #[async_trait::async_trait]
+    impl Plugin for CapturingPlugin {
+        async fn apply(&self, _: &Context, _: ArcValue) -> Result<(), PluginError> {
+            let _ = &self.0;
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn disposed_child_plugin_releases_factory_capture_before_parent_shutdown() {
+        let ctx = Context::root();
+        let payload = Arc::new(vec![0u8; 1024 * 1024]);
+        let weak = Arc::downgrade(&payload);
+        let fiber = ctx.plugin(Arc::new(CapturingPlugin(payload.clone())), arc(()));
+        fiber.settle().await.unwrap();
+        drop(payload);
+        fiber.dispose().await;
+        drop(fiber);
+        assert!(
+            weak.upgrade().is_none(),
+            "parent cleanup must not retain disposed plugin factories"
+        );
+        ctx.fiber.dispose().await;
+    }
+
     struct CountedPlugin(Arc<AtomicUsize>);
     #[async_trait::async_trait]
     impl Plugin for CountedPlugin {
@@ -384,12 +409,15 @@ impl FiberCore {
 
         // 2. Register the disposer with the parent fiber (mirrors TS ctor).
         let _ = runtime.fibers.push(core.clone());
-        let core_for_dispose = core.clone();
-        let runtime_for_dispose = runtime.clone();
+        // The registry owns live fibers. Keeping a strong core here would make
+        // the parent's shutdown effect retain an already disposed plugin and
+        // everything captured by its factory until the parent shuts down.
+        let core_for_dispose = Arc::downgrade(&core);
         let disposer: Disposer = make_disposer(move || {
-            let core = core_for_dispose.clone();
-            let runtime = runtime_for_dispose.clone();
+            let core = core_for_dispose.upgrade();
             Box::pin(async move {
+                let Some(core) = core else { return };
+                let runtime = core.runtime.as_ref().expect("plugin runtime").clone();
                 if core.uid.lock().is_none() {
                     return; // already disposed
                 }

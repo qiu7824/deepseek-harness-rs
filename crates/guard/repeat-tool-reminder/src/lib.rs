@@ -339,6 +339,9 @@ fn observe(
             matches!(
                 *code,
                 "SANDBOX_SETUP_FAILED"
+                    | "ENVIRONMENT_VALIDATION_FAILED"
+                    | "ENVIRONMENT_PROBE_TIMEOUT"
+                    | "APP_EXECUTION_ALIAS_UNSUPPORTED"
                     | "SANDBOX_SETUP_TIMEOUT"
                     | "SANDBOX_RUNNER_FAILED"
                     | "SANDBOX_RUNNER_TIMEOUT"

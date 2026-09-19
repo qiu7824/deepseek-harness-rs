@@ -259,6 +259,32 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
         };
     }
     match code {
+        "FS_NOT_TEXT" | "IMAGE_FORMAT_UNSUPPORTED" => (
+            "file-format-routing",
+            "file-format",
+            "先核对文件类型和编码；GBK/UTF-16 日志使用显式 encoding，PDF 先渲染页面，Office 通过 WPS 检查。不要原样重复错误的读取方式。",
+            false,
+        ),
+        "COM_ACCESS_DENIED" => (
+            "office-automation-access",
+            "office-runtime",
+            "区分 COM 激活、文档打开、文件写入与导出阶段，检查 WPS 实例和目标权限；仅凭拒绝访问不能判定文件占用，也不能直接扩大权限。",
+            false,
+        ),
+        "NATIVE_TOOL_UNSUPPORTED" => (
+            "provider-tool-capability",
+            "tool-availability",
+            "当前连接未提供所需原生能力；检查连接能力并发现已配置的替代工具，不要用相同参数重复调用。",
+            false,
+        ),
+        "ENVIRONMENT_VALIDATION_FAILED"
+        | "ENVIRONMENT_PROBE_TIMEOUT"
+        | "APP_EXECUTION_ALIAS_UNSUPPORTED" => (
+            "environment-validation",
+            "runtime",
+            "核对所选程序路径、执行身份和沙箱就绪阶段；宿主可运行不代表沙箱可运行，启动失败不能判定程序未安装。修复环境后重新验证，勿原样反复重试。",
+            false,
+        ),
         "SANDBOX_SETUP_FAILED"
         | "SANDBOX_SETUP_TIMEOUT"
         | "SANDBOX_RUNNER_FAILED"
@@ -348,7 +374,12 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
             "执行前核对当前工具前置条件和权限；满足条件或获得授权后再执行，不绕过现行限制。",
             false,
         ),
-        _ => ("unclassified-tool-failure", "tool-error", "", false),
+        _ => (
+            "unclassified-tool-failure",
+            "tool-error",
+            "保留结构化错误码、执行阶段和会话证据；先核对失败对象及现有工具能力，无新证据时停止原样重试。",
+            false,
+        ),
     }
 }
 

@@ -10,8 +10,8 @@
 //!   omitted; [`apply_goal_projection`] ships as the pure last-wins fold the
 //!   unit runs.
 //! - The config schema validation collapses into [`Config`] field checks.
-//! - The session cache is a strong map keyed by session identity (the TS
-//!   `WeakMap` weak-key semantics collapse; entries live with the service).
+//! - Session caches use exact object identity and are retired on
+//!   `session/disposed`, preserving the TS WeakMap lifetime boundary.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -259,6 +259,36 @@ impl GoalService {
         let _ = futures::executor::block_on(ctx.on(
             "agent/created",
             listener,
+            EventOptions::default().global(true),
+        ));
+        let weak_service = Arc::downgrade(&service);
+        let disposed: Arc<cordis::Listener> = Arc::new(move |_, args| {
+            let service = weak_service.upgrade();
+            Box::pin(async move {
+                if let Some(service) = service
+                    && let Some(session) = args
+                        .first()
+                        .and_then(|value| value.downcast_ref::<Session>())
+                {
+                    let removed = {
+                        let mut states = service.caches.lock();
+                        if states
+                            .get(&session.identity())
+                            .is_some_and(|state| state.session.ptr_eq(session))
+                        {
+                            states.remove(&session.identity())
+                        } else {
+                            None
+                        }
+                    };
+                    drop(removed);
+                }
+                None
+            })
+        });
+        let _ = futures::executor::block_on(ctx.on(
+            "session/disposed",
+            disposed,
             EventOptions::default().global(true),
         ));
         ctx.register_service(service.clone());
@@ -552,7 +582,10 @@ impl GoalService {
     /// Return the stable state owned by one exact Session object, folding a
     /// seed once with continuation authority disarmed.
     fn state_for(&self, agent: &Arc<dyn Agent>) -> Arc<SessionGoalState> {
-        let session = agent.session().clone();
+        self.state_for_session(agent.session().clone())
+    }
+
+    fn state_for_session(&self, session: Session) -> Arc<SessionGoalState> {
         let key = session.identity();
         let mut states = self.caches.lock();
         if let Some(state) = states.get(&key)
@@ -576,7 +609,11 @@ impl GoalService {
             mutating: AtomicBool::new(false),
             disarm_requested: AtomicBool::new(false),
         });
-        states.insert(key, state.clone());
+        // Check under the same lock used by disposal so a racing late reader
+        // cannot revive a cache after the session has left the store.
+        if state.session.is_attached_to_store() {
+            states.insert(key, state.clone());
+        }
         state
     }
 
@@ -859,5 +896,33 @@ fn change_to_json(change: &GoalChangeMeta) -> Value {
             object.insert("clearedAt".to_string(), Value::from(clear.cleared_at));
             Value::Object(object)
         }
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn retired_session_generations_release_goal_caches_and_late_reads_do_not_revive_them() {
+        let ctx = Context::root();
+        let store = dsh_session::SessionStore::install(&ctx);
+        let goals = GoalService::install(&ctx, Config::default());
+        for _ in 0..100 {
+            let session =
+                Session::create(dsh_session::session_id("same-session"), None, None, None).unwrap();
+            let detach = store.enter(&session).unwrap();
+            store.announce(&session).await.unwrap();
+            let state = goals.state_for_session(session.clone());
+            let weak = Arc::downgrade(&state);
+            drop(state);
+            assert_eq!(goals.caches.lock().len(), 1);
+            detach().await;
+            assert!(goals.caches.lock().is_empty());
+            assert!(weak.upgrade().is_none());
+            drop(goals.state_for_session(session));
+            assert!(goals.caches.lock().is_empty());
+        }
+        ctx.fiber.dispose().await;
     }
 }

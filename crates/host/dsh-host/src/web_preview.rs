@@ -308,6 +308,8 @@ struct PreviewState {
 }
 
 struct PreviewService {
+    turn_changes: Option<Arc<crate::turn_changes::TurnChanges>>,
+    office: crate::office_preview::OfficePreview,
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
     terminals: Arc<TerminalSessionService>,
@@ -1365,6 +1367,39 @@ fn sanitize_file_name(name: &str) -> String {
 }
 
 impl PreviewService {
+    async fn office_preview(&self, request: WebRequest) -> WebResponse {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Input {
+            session_id: String,
+            path: String,
+        }
+        let input: Input = match Self::parse_json(request).await {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let (_, _, target) =
+            match authorized_path(&self.registry, &session_id(input.session_id), &input.path).await
+            {
+                Ok(path) => path,
+                Err(response) => return response,
+            };
+        match self.office.export(&target).await {
+            Ok((identity, pdf)) => Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/pdf")
+                .header(header::CACHE_CONTROL, "no-store")
+                .header("x-dsh-source-sha256", identity)
+                .body(Body::from(pdf.as_ref().clone()))
+                .expect("Office preview response"),
+            Err(message) => error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "office-preview-failed",
+                message,
+            ),
+        }
+    }
+
     fn new(
         registry: Arc<WorkspaceRegistry>,
         agents: Arc<AgentRegistry>,
@@ -1375,6 +1410,8 @@ impl PreviewService {
         code_index: BackgroundIndex,
     ) -> Arc<Self> {
         Arc::new(Self {
+            turn_changes: None,
+            office: Default::default(),
             registry,
             agents,
             terminals,
@@ -2540,6 +2577,7 @@ impl PreviewService {
                     Ok(control) => self.stop_project(control).await,
                     Err(response) => response,
                 },
+                "office" => self.office_preview(request).await,
                 "upload" => self.upload(request).await,
                 "file-save" => self.save_file(request).await,
                 "file-action" => self.file_action(request).await,
@@ -2572,7 +2610,26 @@ impl PreviewService {
             Ok(value) => value.unwrap_or_default(),
             Err(()) => return error(StatusCode::BAD_REQUEST, "invalid-query", "查询参数编码无效"),
         };
+        if operation == "turn-changes" {
+            if let Err(response) = workspace_root(&self.registry, &session).await {
+                return response;
+            }
+            return match &self.turn_changes {
+                Some(changes) => match changes.latest(session.as_str()).await {
+                    Ok(value) => json_response(StatusCode::OK, &value),
+                    Err(message) => {
+                        error(StatusCode::BAD_REQUEST, "turn-changes-unavailable", message)
+                    }
+                },
+                None => error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "turn-changes-unavailable",
+                    "回合审阅服务未启动",
+                ),
+            };
+        }
         if operation == "job-list" {
+            // Job observations remain independent from file-review snapshots.
             let jobs = self
                 .jobs
                 .list_for_session(&session)
@@ -3040,11 +3097,15 @@ pub fn register(
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
     code_index: BackgroundIndex,
+    turn_changes: Arc<crate::turn_changes::TurnChanges>,
     allow_remote_host: bool,
 ) -> RouteDisposer {
-    let service = PreviewService::new(
+    let mut service = PreviewService::new(
         registry, agents, terminals, jobs, subprocess, sandbox, code_index,
     );
+    Arc::get_mut(&mut service)
+        .expect("new preview service")
+        .turn_changes = Some(turn_changes);
     web_server.register(WebRoute {
         kind: WebRouteKind::Prefix,
         path: ROUTE.to_string(),

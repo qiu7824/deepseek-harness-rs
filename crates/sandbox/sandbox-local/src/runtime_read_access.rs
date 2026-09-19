@@ -1,5 +1,5 @@
-//! Installed runtimes receive a read-only capability; workspace writes always
-//! use the runner's fresh AppContainer SID. No cached SID grants write access.
+//! Exact-root capabilities avoid repeated NTFS inheritance walks. Runtime
+//! capabilities are read-only; workspace capabilities are separate for each mode.
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
@@ -91,7 +91,7 @@ impl RuntimeReadAccess {
         }
         fs::create_dir_all(cache).map_err(|e| e.to_string())?;
         let cache = fs::canonicalize(cache).map_err(|e| e.to_string())?;
-        let (identity, _, _) = root_state(&root, null_mut())?;
+        let (identity, _, _, _) = root_state(&root, null_mut())?;
         let key = format!(
             "{:x}",
             Sha256::digest(
@@ -131,7 +131,7 @@ impl RuntimeReadAccess {
         {
             return Err("read-only runtime permission state limit reached".into());
         }
-        let (current, present, writable) = root_state(&root, access.raw())?;
+        let (current, present, writable, _) = root_state(&root, access.raw())?;
         if current != identity || writable {
             return Err("runtime identity or read-only capability changed unexpectedly".into());
         }
@@ -149,7 +149,7 @@ impl RuntimeReadAccess {
             });
         if !present || marker.as_deref() != Some(identity.as_str()) {
             grant(&root, access.raw())?;
-            let (after, present, writable) = root_state(&root, access.raw())?;
+            let (after, present, writable, _) = root_state(&root, access.raw())?;
             if after != identity || !present || writable {
                 return Err("read-only runtime permission verification failed".into());
             }
@@ -159,9 +159,107 @@ impl RuntimeReadAccess {
         }
         Ok(access)
     }
+
+    pub fn workspace(
+        root: &Path,
+        cache: &Path,
+        writable: bool,
+        grant: impl FnOnce(&Path, PSID) -> Result<(), String>,
+    ) -> Result<Self, String> {
+        let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+        if root.parent().is_none()
+            || std::env::var_os("USERPROFILE")
+                .and_then(|p| fs::canonicalize(p).ok())
+                .is_some_and(|p| p == root)
+        {
+            return Err("workspace capability cannot cover a drive or user profile root".into());
+        }
+        if !cache.is_absolute() {
+            return Err("workspace permission cache must be absolute".into());
+        }
+        let cache = cache.join("workspaces");
+        fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
+        let cache = fs::canonicalize(cache).map_err(|e| e.to_string())?;
+        let (identity, _, _, _) = root_state(&root, null_mut())?;
+        let key = format!(
+            "{:x}",
+            Sha256::digest(
+                format!(
+                    "workspace-v1\n{}\n{}\n{identity}\n{writable}",
+                    cache.display(),
+                    root.display()
+                )
+                .to_lowercase()
+                .as_bytes()
+            )
+        );
+        let access = Self::derive(&format!("DeepSeekHarness.Workspace.{key}"))?;
+        let root_lock_key = format!(
+            "{:x}",
+            Sha256::digest(
+                format!("{}:{identity}", root.display())
+                    .to_lowercase()
+                    .as_bytes()
+            )
+        );
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(cache.join(format!("{root_lock_key}.lock")))
+            .map_err(|e| e.to_string())?;
+        fs2::FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+        let ready = cache.join(format!("{key}.ready"));
+        if !ready.exists()
+            && fs::read_dir(&cache)
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "ready"))
+                .take(256)
+                .count()
+                >= 256
+        {
+            return Err("workspace permission cache limit reached".into());
+        }
+        let expected = FILE_GENERIC_READ
+            | FILE_GENERIC_EXECUTE
+            | if writable {
+                FILE_GENERIC_WRITE | DELETE
+            } else {
+                0
+            };
+        let (current, present, _, rights) = root_state(&root, access.raw())?;
+        if current != identity || rights & !expected != 0 {
+            return Err("workspace capability identity or access mask changed unexpectedly".into());
+        }
+        let marker = fs::symlink_metadata(&ready)
+            .ok()
+            .filter(|m| m.is_file() && !m.file_type().is_symlink() && m.len() < 256)
+            .and_then(|_| {
+                let mut text = String::new();
+                fs::File::open(&ready)
+                    .ok()?
+                    .take(256)
+                    .read_to_string(&mut text)
+                    .ok()?;
+                Some(text)
+            });
+        if !present || rights & expected != expected || marker.as_deref() != Some(&identity) {
+            grant(&root, access.raw())?;
+            let (after, present, _, rights) = root_state(&root, access.raw())?;
+            if after != identity || !present || rights != expected {
+                return Err("workspace capability verification failed".into());
+            }
+            let temporary = ready.with_extension(format!("{}.tmp", std::process::id()));
+            fs::write(&temporary, &identity).map_err(|e| e.to_string())?;
+            fs::rename(&temporary, &ready).map_err(|e| e.to_string())?;
+        }
+        Ok(access)
+    }
 }
 
-fn root_state(path: &Path, sid: PSID) -> Result<(String, bool, bool), String> {
+fn root_state(path: &Path, sid: PSID) -> Result<(String, bool, bool, u32), String> {
     let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     unsafe {
         let handle = CreateFileW(
@@ -204,6 +302,7 @@ fn root_state(path: &Path, sid: PSID) -> Result<(String, bool, bool), String> {
         }
         let mut readable = false;
         let mut writable = false;
+        let mut actual_rights = 0;
         if !sid.is_null() && !acl.is_null() {
             for i in 0..(*acl).AceCount as u32 {
                 let mut ace = null_mut();
@@ -218,6 +317,7 @@ fn root_state(path: &Path, sid: PSID) -> Result<(String, bool, bool), String> {
                 if EqualSid((&entry.SidStart as *const u32).cast_mut().cast(), sid) == 0 {
                     continue;
                 }
+                actual_rights |= entry.Mask;
                 // Only write-bearing bits: FILE_GENERIC_WRITE also contains read
                 // control/synchronize bits and must not be used as this mask.
                 writable |= entry.Mask
@@ -243,6 +343,6 @@ fn root_state(path: &Path, sid: PSID) -> Result<(String, bool, bool), String> {
         if !descriptor.is_null() {
             LocalFree(descriptor);
         }
-        Ok((identity, readable, writable))
+        Ok((identity, readable, writable, actual_rights))
     }
 }

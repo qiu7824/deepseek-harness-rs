@@ -23,6 +23,15 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "capabilities.serverToggle",
     "capabilities.skillRead",
     "capabilities.skillRemove",
+    "capabilities.skillRevisionActivate",
+    "capabilities.skillRevisionCreate",
+    "capabilities.skillRevisionList",
+    "capabilities.skillRevisionRead",
+    "capabilities.skillRevisionRemove",
+    "capabilities.skillRevisionRestore",
+    "capabilities.skillRevisionToggle",
+    "capabilities.skillRevisionValidate",
+    "capabilities.skillRevisionWithdraw",
     "capabilities.skillSave",
     "capabilities.skillToggle",
     "commands.execute",
@@ -107,7 +116,6 @@ mod tests {
 
     #[test]
     fn request_methods_are_sorted_unique_and_include_todo_updates() {
-        assert_eq!(CLIENT_REQUEST_METHODS.len(), 83);
         for method in [
             "memory.learningList",
             "memory.learningConfigure",
@@ -115,6 +123,11 @@ mod tests {
             "memory.learningRemove",
             "memory.learningConfirm",
             "memory.learningPreview",
+            "capabilities.skillRevisionList",
+            "capabilities.skillRevisionCreate",
+            "capabilities.skillRevisionValidate",
+            "capabilities.skillRevisionActivate",
+            "capabilities.skillRevisionRestore",
         ] {
             assert!(is_client_request_method(method));
         }

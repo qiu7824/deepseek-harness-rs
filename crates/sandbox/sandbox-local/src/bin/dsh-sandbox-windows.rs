@@ -976,6 +976,62 @@ pub mod windows_runner {
         }
         Ok(())
     }
+    pub fn prepare_workspace_permissions(
+        root: &Path,
+        cache: &Path,
+        writable: bool,
+    ) -> Result<(), String> {
+        super::runtime_read_access::RuntimeReadAccess::workspace(
+            root,
+            cache,
+            writable,
+            |root, sid| update_workspace_acl_native(root, sid, true, writable),
+        )
+        .map(|_| ())
+    }
+    #[test]
+    fn workspace_capability_reuse_preserves_mode_and_exact_root() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root = std::env::temp_dir().join(format!(
+            "dsh-capability-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("file.txt"), "content").unwrap();
+        let calls = AtomicUsize::new(0);
+        let acquire = |writable| {
+            super::runtime_read_access::RuntimeReadAccess::workspace(
+                &workspace,
+                &cache,
+                writable,
+                |root, sid| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    update_workspace_acl_native(root, sid, true, writable)
+                },
+            )
+            .unwrap()
+        };
+        let read = acquire(false);
+        let again = acquire(false);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sid_string(read.raw()).unwrap(),
+            sid_string(again.raw()).unwrap()
+        );
+        let write = acquire(true);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_ne!(
+            sid_string(read.raw()).unwrap(),
+            sid_string(write.raw()).unwrap()
+        );
+        drop((read, again, write));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     pub fn run_args(args: impl Iterator<Item = String>) -> Result<i32, String> {
         let (
@@ -1066,9 +1122,31 @@ pub mod windows_runner {
                 )
             })
             .transpose()?;
+        signal_phase(ready_event.as_deref(), "ancestors");
         let mut ancestor_access = AncestorAccess::grant(&ancestor_roots, profile.sid.0)?;
-        let mut workspace_grant =
-            AclGrant::grant(&workspace, &sid_text, mode == "workspace-write")?;
+        signal_phase(ready_event.as_deref(), "workspace_permissions");
+        let workspace_capability = runtime_cache
+            .as_ref()
+            .map(|cache| {
+                super::runtime_read_access::RuntimeReadAccess::workspace(
+                    &workspace,
+                    cache,
+                    mode == "workspace-write",
+                    |root, sid| {
+                        update_workspace_acl_native(root, sid, true, mode == "workspace-write")
+                    },
+                )
+            })
+            .transpose()?;
+        let mut workspace_grant = if workspace_capability.is_none() {
+            Some(AclGrant::grant(
+                &workspace,
+                &sid_text,
+                mode == "workspace-write",
+            )?)
+        } else {
+            None
+        };
         let mut temporary_grants = Vec::new();
         for root in temp_roots {
             if mode != "workspace-write" || !root.is_absolute() || !root.is_dir() {
@@ -1082,6 +1160,7 @@ pub mod windows_runner {
             }
             temporary_grants.push(AclGrant::grant(&redirect.target, &sid_text, true)?);
         }
+        signal_phase(ready_event.as_deref(), "read_permissions");
         let mut read_grants = Vec::new();
         for root in read_roots {
             if !root.is_absolute() || !root.is_dir() {
@@ -1089,6 +1168,7 @@ pub mod windows_runner {
             }
             read_grants.push(AclGrant::grant(&root, &sid_text, false)?);
         }
+        signal_phase(ready_event.as_deref(), "runtime_permissions");
         let mut runtime_access = Vec::new();
         for root in &runtime_roots {
             if !root.is_absolute()
@@ -1131,6 +1211,15 @@ pub mod windows_runner {
             Sid: access.raw(),
             Attributes: 4,
         }));
+        capabilities.extend(
+            workspace_capability
+                .iter()
+                .map(|access| SID_AND_ATTRIBUTES {
+                    Sid: access.raw(),
+                    Attributes: 4,
+                }),
+        );
+        signal_phase(ready_event.as_deref(), "process_creation");
         let exit = spawn_appcontainer(
             profile.sid.0,
             &capabilities,
@@ -1140,7 +1229,10 @@ pub mod windows_runner {
             timed_out.as_ref(),
             command_timeout,
         )?;
-        workspace_grant.revoke()?;
+        signal_phase(ready_event.as_deref(), "cleanup");
+        if let Some(grant) = workspace_grant.as_mut() {
+            grant.revoke()?;
+        }
         for grant in temporary_grants.iter_mut().chain(read_grants.iter_mut()) {
             grant.revoke()?;
         }
@@ -1151,6 +1243,25 @@ pub mod windows_runner {
             journal.complete()?;
         }
         Ok(exit as i32)
+    }
+
+    fn signal_phase(ready: Option<&str>, phase: &str) {
+        use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
+        if let Some(ready) = ready {
+            // Optional telemetry is compatible with hosts predating phase events.
+            let raw = unsafe {
+                OpenEventW(
+                    EVENT_MODIFY_STATE,
+                    0,
+                    wide(format!("{ready}-stage-{phase}")).as_ptr(),
+                )
+            };
+            if let Ok(event) = Handle::new(raw, "open phase event") {
+                unsafe {
+                    SetEvent(event.0);
+                }
+            }
+        }
     }
 
     fn parse_args(

@@ -334,7 +334,10 @@ impl TaskRuntime {
                 .ok_or("Step not found")?;
             if matches!(
                 step.state,
-                StepState::Verified | StepState::Committed | StepState::Failed
+                StepState::Verified
+                    | StepState::Committed
+                    | StepState::Failed
+                    | StepState::NotDispatched
             ) {
                 return Err("A terminal execution result cannot be overwritten".into());
             }
@@ -371,6 +374,87 @@ impl TaskRuntime {
             Ok(())
         })
     }
+    /// Registry/adapter evidence that the requested operation was never dispatched.
+    pub fn observe_not_dispatched(
+        &self,
+        owner: &str,
+        id: &str,
+        step_id: &str,
+        key: &str,
+        evidence: Vec<String>,
+    ) -> Result<TaskContract> {
+        self.mutate(
+            owner,
+            id,
+            key,
+            &serde_json::json!({"notDispatched":step_id,"evidence":evidence}),
+            None,
+            |task| {
+                let step = task
+                    .steps
+                    .iter_mut()
+                    .find(|step| step.id == step_id)
+                    .ok_or("Step not found")?;
+                if !matches!(step.state, StepState::Prepared | StepState::Dispatched) {
+                    return Err("Execution may already have effects".into());
+                }
+                step.state = StepState::NotDispatched;
+                step.updated_at = now();
+                step.failure_reason = Some(
+                    "Registry or adapter verified that the requested operation was not dispatched"
+                        .into(),
+                );
+                step.evidence_refs = evidence;
+                if task.state != TaskState::Cancelled {
+                    task.state = TaskState::ValidationFailed;
+                }
+                task.validation_identity = None;
+                Ok(())
+            },
+        )
+    }
+
+    /// A user-approved environment transition preserves requirements and effect history.
+    pub fn migrate_environment_by_user(
+        &self,
+        owner: &str,
+        id: &str,
+        key: &str,
+        revision: u64,
+        fingerprint: &str,
+    ) -> Result<TaskContract> {
+        self.mutate(
+            owner,
+            id,
+            key,
+            &serde_json::json!({"environment":fingerprint,"revision":revision}),
+            Some(revision),
+            |task| {
+                if fingerprint.is_empty()
+                    || matches!(task.state, TaskState::Completed | TaskState::Cancelled)
+                {
+                    return Err("Only an active task may change environment".into());
+                }
+                if task
+                    .steps
+                    .iter()
+                    .any(|step| matches!(step.state, StepState::Dispatched | StepState::Running))
+                {
+                    return Err(
+                        "Wait for in-flight operations before migrating the environment".into(),
+                    );
+                }
+                task.spec.environment_fingerprint = fingerprint.into();
+                task.acceptance_results.clear();
+                task.validation_identity = None;
+                task.output_identities.clear();
+                task.validation_subject_evidence = None;
+                task.state = TaskState::Blocked;
+                Ok(())
+            },
+        )
+    }
+
     /// Trusted reconciliation only after an adapter inspected the result identity/effects.
     /// It preserves the original operation key and never replays a command.
     pub fn reconcile(

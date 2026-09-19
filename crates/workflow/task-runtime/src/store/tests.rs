@@ -1,5 +1,60 @@
 use super::*;
 
+#[test]
+fn undispatched_write_is_failed_and_migration_preserves_unknown_effects() {
+    let fixture = Fixture::new();
+    let runtime = fixture.open();
+    runtime.create("owner", "task", spec()).unwrap();
+    runtime.prepare("owner", "task", step("s1")).unwrap();
+    runtime.dispatch("owner", "task", "s1").unwrap();
+    let task = runtime
+        .observe_not_dispatched(
+            "owner",
+            "task",
+            "s1",
+            "denied",
+            vec!["registry:no-body".into()],
+        )
+        .unwrap();
+    assert_eq!(task.steps[0].state, StepState::NotDispatched);
+    runtime.prepare("owner", "task", step("s2")).unwrap();
+    runtime.dispatch("owner", "task", "s2").unwrap();
+    let task = runtime.get("owner", "task").unwrap();
+    assert!(
+        runtime
+            .migrate_environment_by_user("owner", "task", "moving", task.revision, "host2")
+            .is_err()
+    );
+    runtime
+        .observe(
+            "owner",
+            "task",
+            "s2",
+            "uncertain",
+            false,
+            false,
+            None,
+            vec![],
+        )
+        .unwrap();
+    let before = validate_answer(&runtime, br#"{"answer":42}"#);
+    let after = runtime
+        .migrate_environment_by_user("owner", "task", "migrate", before.revision, "host2")
+        .unwrap();
+    assert_eq!(after.steps, before.steps);
+    assert_eq!(after.steps[1].state, StepState::Unknown);
+    assert_eq!(after.spec.acceptance_checks, before.spec.acceptance_checks);
+    assert_eq!(after.spec.environment_fingerprint, "host2");
+    assert!(after.acceptance_results.is_empty());
+    assert!(after.validation_identity.is_none());
+    assert!(!after.completion_blockers().is_empty());
+    assert!(
+        runtime
+            .migrate_environment_by_user("owner", "task", "stale", before.revision, "host3")
+            .is_err()
+    );
+}
+
 struct Fixture(std::path::PathBuf);
 impl Fixture {
     fn new() -> Self {

@@ -41,6 +41,7 @@ pub enum StepState {
     Committed,
     Failed,
     Unknown,
+    NotDispatched,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -275,8 +276,10 @@ impl TaskContract {
                             result.check_id == check.id && result.status == AcceptanceStatus::Passed
                         })
                 });
-            if !matches!(step.state, StepState::Verified | StepState::Committed)
-                && !expected_readonly_failure
+            if !matches!(
+                step.state,
+                StepState::Verified | StepState::Committed | StepState::NotDispatched
+            ) && !expected_readonly_failure
                 && !safely_superseded
             {
                 failures.push(format!("Step {} is {:?}", step.id, step.state));

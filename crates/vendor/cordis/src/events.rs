@@ -416,13 +416,18 @@ impl EventsService {
         let name = name.to_string();
         let options = options.clone();
         let hooks = self.hooks.clone();
-        let callback_for_dispose = callback.clone();
+        // The event bus owns the callback. A manually stopped listener must not
+        // remain alive through the parent's shutdown disposer list.
+        let callback_for_dispose = Arc::downgrade(&callback);
         let name_for_dispose = name.clone();
         let disposer = make_disposer(move || {
             let hooks = hooks.clone();
             let name = name_for_dispose.clone();
             let callback = callback_for_dispose.clone();
             Box::pin(async move {
+                let Some(callback) = callback.upgrade() else {
+                    return;
+                };
                 let mut hooks = hooks.lock();
                 if let Some(list) = hooks.get_mut(&name) {
                     list.retain(|h| !Arc::ptr_eq(&h.callback, &callback));
@@ -512,6 +517,34 @@ impl EventsService {
         let disposer = self.on(caller, name, wrapper, options).await;
         *slot.lock() = Some(disposer.clone());
         disposer
+    }
+}
+
+#[cfg(test)]
+mod listener_retention_tests {
+    use super::*;
+    #[tokio::test]
+    async fn stopped_listener_releases_captures_while_owner_and_disposer_remain_alive() {
+        let ctx = Context::root();
+        let payload = Arc::new(vec![0u8; 1024 * 1024]);
+        let weak = Arc::downgrade(&payload);
+        let captured = payload.clone();
+        let listener: Arc<Listener> = Arc::new(move |_, _| {
+            let captured = captured.clone();
+            Box::pin(async move {
+                let _ = &captured;
+                None
+            })
+        });
+        let stop = ctx
+            .on("retention-test", listener, EventOptions::default())
+            .await;
+        drop(payload);
+        assert!(weak.upgrade().is_some());
+        stop().await;
+        assert!(weak.upgrade().is_none());
+        stop().await;
+        ctx.fiber.dispose().await;
     }
 }
 

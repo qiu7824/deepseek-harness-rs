@@ -212,7 +212,6 @@ pub struct ReactLoopAgent {
     scope: Scope,
     scope_key: dsh_scope::ScopeKey,
     ctx: Context,
-    dispatch: Mutex<Option<AgentEventDispatch>>,
     weak: Weak<Self>,
     phase: Mutex<Phase>,
     activity: Arc<Mutex<Activity>>,
@@ -299,7 +298,6 @@ impl ReactLoopAgent {
                 scope,
                 scope_key,
                 ctx: scope_ctx,
-                dispatch: Mutex::new(None),
                 weak: agent_ref.clone(),
                 phase: Mutex::new(Phase::Idle { last_turn }),
                 activity: Arc::new(Mutex::new(Activity::resolved())),
@@ -312,17 +310,11 @@ impl ReactLoopAgent {
         Ok(agent)
     }
 
-    /// The fused dispatcher, built on first need so the cyclic construction
-    /// can stay weak-only (the TS constructor builds it eagerly with the
-    /// `this` reference).
+    /// Dispatch holds the agent only for the lifetime of the current event.
+    /// Caching it here would create an Agent -> dispatch -> Agent strong cycle.
     fn dispatcher(&self) -> AgentEventDispatch {
-        if let Some(dispatch) = self.dispatch.lock().as_ref() {
-            return dispatch.clone();
-        }
         let agent: Arc<dyn Agent> = self.weak.upgrade().expect("live agent");
-        let dispatch = AgentEventDispatch::new(&self.loop_ctx, agent);
-        *self.dispatch.lock() = Some(dispatch.clone());
-        dispatch
+        AgentEventDispatch::new(&self.loop_ctx, agent)
     }
 
     pub fn scope(&self) -> &Scope {
@@ -469,8 +461,10 @@ impl ReactLoopAgent {
     }
 
     fn clear_cancelled_inbox(&self) {
-        let captured=std::mem::take(&mut *self.cancelled_inbox.lock());
-        for id in captured {self.inbox.remove(&id).expect("cancel captured inbox item");}
+        let captured = std::mem::take(&mut *self.cancelled_inbox.lock());
+        for id in captured {
+            self.inbox.remove(&id).expect("cancel captured inbox item");
+        }
     }
 
     fn finish_driver(&self, activity_token: u64) {
@@ -736,6 +730,14 @@ impl ReactLoopAgent {
                 None,
             )
             .expect("turn/end");
+        self.dispatcher()
+            .serial("agent/turn-finished", |agent| {
+                arc(AgentTurnStoppingPayload {
+                    agent: Arc::clone(agent),
+                    turn,
+                })
+            })
+            .await;
         // Remove only input captured by cancel, before deciding whether to
         // start another turn. Fresh input admitted after cancel must survive.
         self.clear_cancelled_inbox();
@@ -1574,7 +1576,9 @@ impl Agent for ReactLoopAgent {
         let keep_inbox = options.map(|options| options.keep_inbox).unwrap_or(false);
         let clear_now = {
             let mut phase = self.phase.lock();
-            if !keep_inbox {self.cancelled_inbox.lock().extend(self.inbox.pending_ids());}
+            if !keep_inbox {
+                self.cancelled_inbox.lock().extend(self.inbox.pending_ids());
+            }
             match &mut *phase {
                 Phase::Maintenance {
                     abort,

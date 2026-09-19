@@ -113,6 +113,7 @@ impl TaskExecution {
             return Ok(());
         };
         if !exempt(&execution.name)
+            && effect(&execution.name) != EffectKind::ReadOnly
             && self.environment(owner, cwd)? != task.spec.environment_fingerprint
         {
             return Err("The task execution environment changed; review the contract and its acceptance evidence before continuing".into());
@@ -387,11 +388,23 @@ impl TaskExecution {
             "validate" => self.validate(owner, id, key, cwd, signal).await?,
             "complete" => {
                 let current = self.runtime.get(owner, id)?;
+                if self.environment(owner, cwd)? != current.spec.environment_fingerprint {
+                    return Err(
+                        "Task environment changed; migrate and revalidate before completion".into(),
+                    );
+                }
                 let (_, identities) = self.inputs(&current, cwd, signal).await?;
                 self.runtime
                     .complete(owner, id, key, current.revision, &identities)?
             }
             "cancel" if user_control => self.runtime.cancel(owner, id, key)?,
+            "migrate_environment" if user_control => self.runtime.migrate_environment_by_user(
+                owner,
+                id,
+                key,
+                args["revision"].as_u64().ok_or("Missing revision")?,
+                &self.environment(owner, cwd)?,
+            )?,
             "confirm" if user_control => self.runtime.confirm_manual_by_user(
                 owner,
                 id,
@@ -512,6 +525,8 @@ pub(crate) async fn install(
                 .get(1)
                 .and_then(downcast_arc::<Arc<ToolExecutionResult>>)
                 .map(|v| v.as_ref().clone());
+            let body_invoked = args.get(2).and_then(downcast_arc::<bool>).map(|value| *value);
+            let effects_started=args.get(3).and_then(downcast_arc::<Option<bool>>).and_then(|value|*value);
             Box::pin(async move {
                 if let (Some(execution), Some(result)) = (execution, result)
                     && !exempt(&execution.name)
@@ -531,7 +546,9 @@ pub(crate) async fn install(
                             "session:{owner}:call:{}",
                             execution.call_id.as_str()
                         )];
-                        if let Err(error) = runtime.observe(
+                        let observed = if result.is_error && (body_invoked == Some(false)||effects_started==Some(false)) {
+                            runtime.observe_not_dispatched(owner, &task.task_id, &id, &format!("result-{}", digest(id.as_bytes())), evidence)
+                        } else { runtime.observe(
                             owner,
                             &task.task_id,
                             &id,
@@ -540,7 +557,8 @@ pub(crate) async fn install(
                             running,
                             value.clone(),
                             evidence,
-                        ) {
+                        ) };
+                        if let Err(error) = observed {
                             ctx.named_logger(Some("task-execution"))
                                 .warn(vec![cordis::arc(format!(
                                     "Durable task result could not be recorded: {error}"
@@ -641,6 +659,13 @@ pub(crate) fn register_route(
                         let args: Value =
                             serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
                         let owner = text(&args, "sessionId")?;
+                        // Reading durable contracts must not resurrect an idle
+                        // Agent just to populate a recovery panel.
+                        if args["action"]=="list" {return Ok::<_,String>(json!({"tasks":service.runtime.list(owner)?}));}
+                        if matches!(args["action"].as_str(),Some("get"|"recover")){
+                            let task=service.runtime.get(owner,text(&args,"taskId")?)?;
+                            return Ok(json!({"recovery":task.recovery(),"blockers":task.completion_blockers(),"task":task}));
+                        }
                         let lease = api.resolve_control_agent(owner).await?;
                         let cwd = lease
                             .agent

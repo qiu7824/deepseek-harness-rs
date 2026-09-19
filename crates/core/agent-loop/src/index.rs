@@ -27,6 +27,7 @@ use dsh_agent::{
 };
 use dsh_session::{Session, SessionId, SessionPreparation, SessionPreparationOptions, session_id};
 use dsh_settings::{install_settings_section, settings_namespace};
+use futures::FutureExt;
 use indexmap::IndexMap;
 use schemastery::{Data, Schema};
 
@@ -157,11 +158,14 @@ impl FactoryOwnership {
         self.accepting.load(Ordering::SeqCst) && !self.teardown.aborted()
     }
 
-    /// Track one live agent's shared teardown until it has run. Dispose
-    /// futures are memoized and idempotent, so the TS untrack pair collapses
-    /// to no-op.
-    fn track(&self, prepared: Arc<PreparedAgent>) {
-        self.live_agents.lock().push(prepared);
+    fn untrack(&self, prepared: &Arc<PreparedAgent>) {
+        let removed = {
+            let mut live = self.live_agents.lock();
+            live.iter()
+                .position(|entry| Arc::ptr_eq(entry, prepared))
+                .map(|index| live.swap_remove(index))
+        };
+        drop(removed);
     }
 
     fn owned(&self, agent: &Arc<dyn Agent>) -> Option<Arc<PreparedAgent>> {
@@ -178,10 +182,13 @@ impl FactoryOwnership {
     }
 
     async fn dispose(&self) {
-        self.accepting.store(false, Ordering::SeqCst);
+        let live = {
+            let live = self.live_agents.lock();
+            self.accepting.store(false, Ordering::SeqCst);
+            live.clone()
+        };
         self.teardown
             .abort_with(dsh_agent::AgentCancelCause::Disposed);
-        let live = std::mem::take(&mut *self.live_agents.lock());
         let startup = std::mem::take(&mut *self.startup_tasks.lock());
         for prepared in live {
             prepared.dispose().await;
@@ -194,13 +201,14 @@ impl FactoryOwnership {
 
 /// Prepared-but-unpublished agent resources sharing one memoized teardown.
 struct PreparedAgent {
+    ownership: std::sync::Weak<FactoryOwnership>,
     agent: Arc<ReactLoopAgent>,
     session: Session,
     loop_ctx: Context,
     owner_agent: Option<Arc<dyn Agent>>,
     lifecycle: parking_lot::Mutex<PreparedLifecycle>,
     dispose_started: AtomicBool,
-    dispose_done: tokio::sync::watch::Sender<bool>,
+    dispose_done: tokio::sync::watch::Sender<Option<Result<(), String>>>,
 }
 
 #[derive(Default)]
@@ -210,53 +218,84 @@ struct PreparedLifecycle {
     detach_session: Option<Disposer>,
 }
 
-struct DisposeCompletion {
-    done: tokio::sync::watch::Sender<bool>,
-}
+/// Cancellation of create/resume must start the same owned rollback as errors.
+struct PublicationGuard(Option<Arc<PreparedAgent>>);
 
-impl Drop for DisposeCompletion {
+impl Drop for PublicationGuard {
     fn drop(&mut self) {
-        self.done.send_replace(true);
+        if let Some(prepared) = self.0.take() {
+            prepared.start_dispose();
+        }
     }
 }
 
 impl PreparedAgent {
+    fn start_dispose(self: &Arc<Self>) {
+        if self.dispose_done.send_if_modified(|status| {
+            if matches!(status, Some(Err(_))) {
+                *status = None;
+                true
+            } else {
+                false
+            }
+        }) {
+            self.dispose_started.store(false, Ordering::SeqCst);
+        }
+        if self.dispose_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let task = Arc::clone(self);
+        tokio::spawn(async move {
+            let result = std::panic::AssertUnwindSafe(async {
+                task.lifecycle.lock().closing = true;
+                task.agent.cancel(
+                    dsh_agent::AgentCancelCause::Disposed,
+                    Some(&dsh_agent::CancelOptions { keep_inbox: false }),
+                );
+                task.agent.when_idle().await;
+                (task.agent.scope().dispose)().await;
+                let (detach_agent, detach_session) = {
+                    let lifecycle = task.lifecycle.lock();
+                    (
+                        lifecycle.detach_agent.clone(),
+                        lifecycle.detach_session.clone(),
+                    )
+                };
+                if let Some(detach) = detach_agent {
+                    detach().await;
+                }
+                if let Some(detach) = detach_session {
+                    detach().await;
+                }
+                {
+                    let mut lifecycle = task.lifecycle.lock();
+                    lifecycle.detach_agent = None;
+                    lifecycle.detach_session = None;
+                }
+                if let Some(ownership) = task.ownership.upgrade() {
+                    ownership.untrack(&task);
+                }
+            })
+            .catch_unwind()
+            .await
+            .map_err(|_| "agent teardown panicked; ownership retained".to_string());
+            if let Err(error) = &result {
+                task.loop_ctx
+                    .named_logger(Some("agentLoop"))
+                    .warn(vec![arc(error.clone())]);
+            }
+            task.dispose_done.send_replace(Some(result));
+        });
+    }
+
     /// Reverse teardown: stop the machine, unregister, unwind the scope.
     /// Memoized.
     fn dispose(self: &Arc<Self>) -> BoxFuture<'static, ()> {
         let prepared = Arc::clone(self);
         Box::pin(async move {
             let mut done = prepared.dispose_done.subscribe();
-            if !prepared.dispose_started.swap(true, Ordering::SeqCst) {
-                let task = Arc::clone(&prepared);
-                tokio::spawn(async move {
-                    let _completion = DisposeCompletion {
-                        done: task.dispose_done.clone(),
-                    };
-                    let agent = Arc::clone(&task.agent);
-                    let (detach_agent, detach_session) = {
-                        let mut lifecycle = task.lifecycle.lock();
-                        lifecycle.closing = true;
-                        (
-                            lifecycle.detach_agent.take(),
-                            lifecycle.detach_session.take(),
-                        )
-                    };
-                    agent.cancel(
-                        dsh_agent::AgentCancelCause::Disposed,
-                        Some(&dsh_agent::CancelOptions { keep_inbox: false }),
-                    );
-                    agent.when_idle().await;
-                    (agent.scope().dispose)().await;
-                    if let Some(detach_agent) = detach_agent {
-                        detach_agent().await;
-                    }
-                    if let Some(detach_session) = detach_session {
-                        detach_session().await;
-                    }
-                });
-            }
-            while !*done.borrow() {
+            prepared.start_dispose();
+            while done.borrow().is_none() {
                 if done.changed().await.is_err() {
                     break;
                 }
@@ -525,15 +564,31 @@ impl AgentLoop {
     ) -> Result<AgentHandle, String> {
         let session = preparation.session.clone();
         let prepared = self.prepare(owner_ctx, id, agent_options, session)?;
+        let mut rollback = PublicationGuard(Some(prepared.clone()));
         if let Some(setup) = setup {
             let exact_agent: Arc<dyn Agent> = prepared.agent.clone();
-            let commit = setup(prepared.agent.ctx(), exact_agent).await?;
+            let commit = match setup(prepared.agent.ctx(), exact_agent).await {
+                Ok(commit) => commit,
+                Err(error) => {
+                    prepared.dispose().await;
+                    return Err(error);
+                }
+            };
             if let Some(commit) = commit {
                 commit.commit();
             }
         }
         preparation.dispose();
-        prepared.publish(source).await
+        match prepared.publish(source).await {
+            Ok(handle) => {
+                rollback.0 = None;
+                Ok(handle)
+            }
+            Err(error) => {
+                prepared.dispose().await;
+                Err(error)
+            }
+        }
     }
 
     async fn resume_with(
@@ -583,13 +638,15 @@ impl AgentLoop {
         session: Session,
     ) -> Result<Arc<PreparedAgent>, String> {
         assert_agent_options(options)?;
+        let mut live = self.ownership.live_agents.lock();
         if !self.ownership.is_active() {
             return Err("agent loop is not active".to_string());
         }
         let agent = ReactLoopAgent::new(&self.ctx, id.clone(), options.clone(), session.clone())?;
         agent.hold_publication();
-        let (dispose_done, _) = tokio::sync::watch::channel(false);
+        let (dispose_done, _) = tokio::sync::watch::channel(None);
         let prepared = Arc::new(PreparedAgent {
+            ownership: Arc::downgrade(&self.ownership),
             agent,
             session,
             loop_ctx: self.ctx.clone(),
@@ -600,7 +657,7 @@ impl AgentLoop {
             dispose_started: AtomicBool::new(false),
             dispose_done,
         });
-        self.ownership.track(prepared.clone());
+        live.push(prepared.clone());
         Ok(prepared)
     }
 }
@@ -625,39 +682,19 @@ impl PreparedAgent {
             if lifecycle.closing {
                 return Err("agent loop disposed while publishing an agent".to_string());
             }
-            let detach_session = sessions.enter(&self.session)?;
-            let detach_agent = match agents.enter(Arc::clone(&agent_dyn), self.owner_agent.clone())
-            {
-                Ok(detach) => detach,
-                Err(error) => {
-                    futures::executor::block_on(detach_session());
-                    return Err(error);
-                }
-            };
-            lifecycle.detach_session = Some(detach_session);
-            lifecycle.detach_agent = Some(detach_agent);
+            lifecycle.detach_session = Some(sessions.enter(&self.session)?);
+            lifecycle.detach_agent =
+                Some(agents.enter(Arc::clone(&agent_dyn), self.owner_agent.clone())?);
         }
-        if let Err(error) = sessions.announce(&self.session).await {
-            let (detach_agent, detach_session) = {
-                let mut lifecycle = self.lifecycle.lock();
-                (
-                    lifecycle.detach_agent.take(),
-                    lifecycle.detach_session.take(),
-                )
-            };
-            if let Some(detach) = detach_agent {
-                detach().await;
+        sessions.announce(&self.session).await?;
+        agents.announce(&agent_dyn).await?;
+        {
+            let lifecycle = self.lifecycle.lock();
+            if lifecycle.closing {
+                return Err("agent closed during publication".into());
             }
-            if let Some(detach) = detach_session {
-                detach().await;
-            }
-            return Err(error);
+            self.agent.release_publication();
         }
-        if let Err(error) = agents.announce(&agent_dyn).await {
-            self.dispose().await;
-            return Err(error);
-        }
-        self.agent.release_publication();
         let prepared = Arc::clone(self);
         Ok(AgentHandle {
             agent: Arc::clone(&agent_dyn),
@@ -677,6 +714,11 @@ impl AgentFactory for AgentLoop {
             return Ok(false);
         };
         prepared.dispose().await;
+        match prepared.dispose_done.borrow().as_ref() {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(error.clone()),
+            None => return Err("agent teardown retry is still in progress".into()),
+        }
         Ok(true)
     }
 

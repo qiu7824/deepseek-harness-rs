@@ -495,6 +495,26 @@ window.__ModuleLoader__.load({
     function DownloadViewer(props) {
       return h("section", { className: "dswSuite" }, h("div", { className: "dswSuiteDownload" }, h("h3", null, props.title), h("p", null, "可下载后使用系统关联的本地应用打开。"), h("a", { href: endpoint("file", props.scope.sessionId, props.path), download: props.title }, "下载文件")));
     }
+    function OfficeViewer(props) {
+      const [pdf,setPdf]=React.useState(null),[error,setError]=React.useState(""),[revision,setRevision]=React.useState(0),[changed,setChanged]=React.useState(false);
+      const previous=React.useRef("");
+      React.useEffect(()=>{
+        const controller=new AbortController();setPdf(null);setError("");
+        fetch("/__dsh-preview/office",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:props.scope.sessionId,path:props.path}),signal:controller.signal}).then(async response=>{
+          if(!response.ok){const value=await response.json();throw new Error(value.message||"WPS 转换失败");}
+          const identity=response.headers.get("x-dsh-source-sha256"),data=new Uint8Array(await response.arrayBuffer());
+          if(data.byteLength>64*1024*1024)throw new Error("PDF 超过预览上限");
+          if(!controller.signal.aborted){setChanged(Boolean(previous.current&&previous.current!==identity));previous.current=identity;setPdf(data);}
+        }).catch(error=>{if(!controller.signal.aborted)setError(error.message)});
+        return()=>controller.abort();
+      },[props.scope.sessionId,props.path,revision]);
+      const open=()=>json("/__dsh-preview/file-action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:props.scope.sessionId,path:props.path,intent:"office"})}).catch(error=>setError(error.message));
+      return h("section",{className:"dswSuite","data-preview-kind":"office"},
+        h("div",{className:"dswSuiteBar"},h(Button,{variant:"outline",size:"sm",onClick:open},"用 WPS 打开"),h(Button,{variant:"outline",size:"sm",onClick:()=>setRevision(value=>value+1)},"检查源文件并刷新")),
+        h("p",{className:"dswSuiteMeta"},"WPS 转换预览；字体替代、打印设置及分页以当前 WPS 环境为准。"),
+        changed&&h("p",{role:"status"},"源文件已更新，当前显示新版本。"),
+        error?h("div",{role:"alert"},error,h(DownloadViewer,props)):pdf?h(PdfViewer,{...props,customData:pdf}):h("p",{role:"status"},"正在通过 WPS 转换文档…"));
+    }
     function visiblePoll(run, initialDelay=1500) {
       let live=true,timer=0,inflight=false,controller=null,delay=initialDelay;
       const tick=async()=>{
@@ -1041,7 +1061,8 @@ window.__ModuleLoader__.load({
       const disposers = [
         sidebar.registerFileViewer({ id: "suite:markdown", title: "Markdown 工作台", exts: ["md", "mdx", "markdown"], priority: 120, fetchStrategy: "fsRead", settings: { pluginToggles: [{ key: "outline", title: "显示 Markdown 大纲", type: "switch", defaultValue: true }, { key: "mermaid", title: "渲染 Mermaid 图表", type: "switch", defaultValue: true }] }, component: MarkdownWorkbench }),
         sidebar.registerFileViewer({ id: "suite:structured", title: "结构化数据表", exts: ["json", "csv", "tsv"], priority: 110, fetchStrategy: "fsRead", component: StructuredViewer }),
-        sidebar.registerFileViewer({ id: "suite:office", title: "本地文档", exts: ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "zip", "7z", "rar"], priority: 100, fetchStrategy: "binary-download", component: DownloadViewer }),
+        sidebar.registerFileViewer({ id: "suite:office", title: "Office 预览", exts: ["docx", "xlsx", "pptx"], priority: 100, fetchStrategy: "binary-download", component: OfficeViewer }),
+        sidebar.registerFileViewer({ id: "suite:download", title: "本地文档", exts: ["doc", "xls", "ppt", "odt", "ods", "odp", "zip", "7z", "rar"], priority: 100, fetchStrategy: "binary-download", component: DownloadViewer }),
         sidebar.registerFileViewer({ id: "suite:code", title: "CodeMirror 文本编辑器", exts: ["", "txt", "log", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "rs", "py", "go", "java", "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "sh", "bash", "zsh", "ps1", "sql", "yaml", "yml", "toml", "ini", "conf", "env", "xml", "css", "scss", "less", "html", "htm", "svg", "dockerfile", "makefile"], priority: 90, fetchStrategy: "fsRead", component: CodeWorkbench }),
         sidebar.registerFileViewer({id:"suite:pdf",title:"PDF 预览",exts:["pdf"],priority:130,fetchStrategy:"custom",load:loadPdfBytes,component:PdfViewer}),
         sidebar.registerFileViewer({id:"suite:image",title:"图片预览",exts:["png","jpg","jpeg","webp","gif","bmp","avif","ico"],priority:130,fetchStrategy:"mediaUrl",component:ImageViewer}),

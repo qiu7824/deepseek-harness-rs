@@ -1,5 +1,5 @@
 {
-  "rev": "rust-v0.1.3-alpha.22",
+  "rev": "rust-v0.1.3-alpha.23",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-client-ui-file-actions",
@@ -124,7 +124,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-general",
       "url": "/plugins/ui-settings-general.js",
-      "rev": "7fbc9f5081b67a5d",
+      "rev": "03dc3a55d71cfc6c",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -150,7 +150,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-plugin-inventory",
       "url": "/plugins/ui-settings-plugin-inventory.js",
-      "rev": "c4d45de546795603",
+      "rev": "f0e909b08180fd6e",
       "inject": [
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-runtime",
@@ -271,7 +271,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-subagent",
       "url": "/plugins/ui-subagent.js",
-      "rev": "3282d8ee1ea6f897",
+      "rev": "75f8c5eb4eef5fe6",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -350,7 +350,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-plugins",
       "url": "/plugins/ui-settings-plugins.js",
-      "rev": "c6fc72cbd4d53720",
+      "rev": "4d2b40f4c3b69a9f",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -462,6 +462,45 @@
         "locale"
       ],
       "immediately": true
+    },
+    {
+      "id": "@deepseek-ai/dsh-client-ui-settings-tool-discovery",
+      "url": "/plugins/ui-settings-tool-discovery.js",
+      "rev": "6ee01b0a2fbab81e",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ],
+      "immediately": false
+    },
+    {
+      "id": "@deepseek-ai/dsh-client-ui-settings-skill-revisions",
+      "url": "/plugins/ui-settings-skill-revisions.js",
+      "rev": "f3bb911c8a224023",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ],
+      "immediately": false
+    },
+    {
+      "id": "@deepseek-ai/dsh-client-ui-task-execution",
+      "url": "/plugins/ui-task-execution.js",
+      "rev": "f5f8c08f2a4e5dfd",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "immediately": false
+    },
+    {
+      "id": "@deepseek-ai/dsh-client-ui-workbench-previews",
+      "url": "/plugins/ui-workbench-previews.js",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-subagent",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "immediately": false,
+      "rev": "b86fd92369dddfbc"
     }
   ]
 }

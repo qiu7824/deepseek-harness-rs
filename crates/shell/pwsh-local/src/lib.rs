@@ -464,7 +464,7 @@ impl ShellExecutor for LocalPwshExecutor {
                     }
                 };
                 let setup = tokio::time::timeout(std::time::Duration::from_secs(120), ready).await
-                    .unwrap_or_else(|_| Err("[SANDBOX_SETUP_TIMEOUT] Sandbox startup exceeded 120 seconds before readiness was confirmed. Inspect the execution state before retrying.".into()));
+                    .unwrap_or_else(|_| Err(format!("[SANDBOX_SETUP_TIMEOUT] phase={}; Sandbox startup exceeded 120 seconds before readiness was confirmed. Inspect the execution state before retrying.", startup.phase())));
                 if let Err(error) = setup {
                     handle.terminate();
                     let _ = tokio::time::timeout(

@@ -192,8 +192,20 @@ pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Composition inputs supplied by the host app (TS `ApiProxyDefaults`).
 pub struct ApiProxyDefaults {
-    pub initialize_session: Option<Arc<dyn Fn(Arc<dyn dsh_agent::Agent>) -> BoxFuture<'static,Result<(),String>> + Send + Sync>>,
-    pub cancel_collaboration: Option<Arc<dyn Fn(Arc<dyn dsh_agent::Agent>) -> BoxFuture<'static,Result<bool,String>> + Send + Sync>>,
+    pub initialize_session: Option<
+        Arc<
+            dyn Fn(Arc<dyn dsh_agent::Agent>) -> BoxFuture<'static, Result<(), String>>
+                + Send
+                + Sync,
+        >,
+    >,
+    pub cancel_collaboration: Option<
+        Arc<
+            dyn Fn(Arc<dyn dsh_agent::Agent>) -> BoxFuture<'static, Result<bool, String>>
+                + Send
+                + Sync,
+        >,
+    >,
     /// The model selection a session starts from when its own log names
     /// none. Read on every access rather than captured.
     pub default_model_selection: Arc<dyn Fn() -> ModelSelection + Send + Sync>,
@@ -361,13 +373,15 @@ fn model_selection_setup(defaults: Arc<ApiProxyDefaults>, selections: SelectionM
                         existing.clone()
                     } else {
                         entries.remove(&id);
-                        let session = agent.session().clone();
+                        let resolver_agent = Arc::downgrade(&agent);
                         let defaults = defaults.clone();
                         let entry = Arc::new(SelectionEntry {
                             agent: weak.clone(),
                             state: Arc::new(Mutex::new(ModelSelectionRef::with_resolver(
                                 Arc::new(move || {
-                                    if let Some(selected) = persisted_model_selection(&session) {
+                                    let agent = resolver_agent.upgrade()?;
+                                    let session = agent.session();
+                                    if let Some(selected) = persisted_model_selection(session) {
                                         return Some(selected);
                                     }
                                     if let Some(header) = session.request_header() {
@@ -387,13 +401,15 @@ fn model_selection_setup(defaults: Arc<ApiProxyDefaults>, selections: SelectionM
                         entry
                     }
                 } else {
-                    let session = agent.session().clone();
+                    let resolver_agent = Arc::downgrade(&agent);
                     let defaults = defaults.clone();
                     let entry = Arc::new(SelectionEntry {
                         agent: weak.clone(),
                         state: Arc::new(Mutex::new(ModelSelectionRef::with_resolver(Arc::new(
                             move || {
-                                if let Some(selected) = persisted_model_selection(&session) {
+                                let agent = resolver_agent.upgrade()?;
+                                let session = agent.session();
+                                if let Some(selected) = persisted_model_selection(session) {
                                     return Some(selected);
                                 }
                                 if let Some(header) = session.request_header() {
@@ -1122,16 +1138,36 @@ impl cordis::Service for ApiProxyService {
 pub struct ControlAgentLease {
     pub agent: Arc<dyn dsh_agent::Agent>,
     _admission: tokio::sync::OwnedMutexGuard<()>,
+    owner: std::sync::Weak<ApiProxyService>,
+}
+
+impl Drop for ControlAgentLease {
+    fn drop(&mut self) {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            if let Some(owner) = self.owner.upgrade() {
+                owner.spawn_idle_retirement(self.agent.clone());
+            }
+        }
+    }
 }
 
 impl ApiProxyService {
     /// Same ownership and single-flight resume boundary used by session RPCs.
-    pub async fn resolve_control_agent(&self, id: &str) -> Result<ControlAgentLease, String> {
-        let id=dsh_session::session_id(id);
-        let admission=self.resolver.admission(&id).lock_owned().await;
+    pub async fn resolve_control_agent(
+        self: &Arc<Self>,
+        id: &str,
+    ) -> Result<ControlAgentLease, String> {
+        let id = dsh_session::session_id(id);
+        let admission = self.resolver.admission(&id).lock_owned().await;
         match self.resolver.resolve(&id).await {
-            crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => Ok(ControlAgentLease{agent,_admission:admission}),
-            crate::agent_lookup::ApiRemoteAgentResult::Error(error) => Err(error.message().to_owned()),
+            crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => Ok(ControlAgentLease {
+                agent,
+                _admission: admission,
+                owner: Arc::downgrade(self),
+            }),
+            crate::agent_lookup::ApiRemoteAgentResult::Error(error) => {
+                Err(error.message().to_owned())
+            }
         }
     }
     /// Construct and register the `apiProxy` service (TS
@@ -3196,11 +3232,22 @@ impl ApiProxyService {
                     }),
                 );
             }
-            if kind=="ssh-execution" {
-                let Some(connection)=request.payload.source.as_deref().filter(|id|uuid::Uuid::parse_str(id).is_ok()) else {
-                    return err(request.rpc_id,RpcError::WorkspaceInvalidPath(RpcErrorBody{message:"a verified remote execution connection id is required".into(),details:crate::api::rpc::PathDetails{path}}));
+            if kind == "ssh-execution" {
+                let Some(connection) = request
+                    .payload
+                    .source
+                    .as_deref()
+                    .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                else {
+                    return err(
+                        request.rpc_id,
+                        RpcError::WorkspaceInvalidPath(RpcErrorBody {
+                            message: "a verified remote execution connection id is required".into(),
+                            details: crate::api::rpc::PathDetails { path },
+                        }),
+                    );
                 };
-                path=format!("dsh-remote://{connection}/");
+                path = format!("dsh-remote://{connection}/");
             }
         }
         if matches!(request.payload.kind.as_deref(), Some("git" | "cloud")) {
@@ -3998,10 +4045,16 @@ impl ApiProxyService {
                         }),
                     );
                 }
-                if let Some(initialize)=&self.defaults.initialize_session {
-                    if let Err(error)=initialize(handle.agent.clone()).await {
+                if let Some(initialize) = &self.defaults.initialize_session {
+                    if let Err(error) = initialize(handle.agent.clone()).await {
                         handle.dispose.await;
-                        return err(request.rpc_id,RpcError::Internal(RpcErrorBody{message:format!("session initialization failed: {error}"),details:EmptyDetails{}}));
+                        return err(
+                            request.rpc_id,
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!("session initialization failed: {error}"),
+                                details: EmptyDetails {},
+                            }),
+                        );
                     }
                 }
                 let _agent = self.retain_owned_handle(handle);
@@ -4080,7 +4133,11 @@ impl ApiProxyService {
         &self,
         request: RpcRequest<crate::api::sessions::SessionRefRequest>,
     ) -> RpcResponse<serde_json::Value> {
-        let _admission=self.resolver.admission(&request.payload.session_id).lock_owned().await;
+        let _admission = self
+            .resolver
+            .admission(&request.payload.session_id)
+            .lock_owned()
+            .await;
         let Some(agents) = self.agents() else {
             return err(
                 request.rpc_id,
@@ -4122,14 +4179,31 @@ impl ApiProxyService {
                 }),
             );
         }
-        if let Some(cancel)=&self.defaults.cancel_collaboration {
+        if let Some(cancel) = &self.defaults.cancel_collaboration {
             match cancel(agent.clone()).await {
-                Ok(true)=>return ok(request.rpc_id,crate::api::sessions::AcceptedResult{accepted:true}),
-                Ok(false)=>{},
-                Err(error)=>{agent.cancel(dsh_session::AgentCancelCause::User,None);return err(request.rpc_id,RpcError::Internal(RpcErrorBody{message:error,details:EmptyDetails{}}));}
+                Ok(true) => {
+                    return ok(
+                        request.rpc_id,
+                        crate::api::sessions::AcceptedResult { accepted: true },
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    agent.cancel(dsh_session::AgentCancelCause::User, None);
+                    return err(
+                        request.rpc_id,
+                        RpcError::Internal(RpcErrorBody {
+                            message: error,
+                            details: EmptyDetails {},
+                        }),
+                    );
+                }
             }
         }
-        agent.cancel(dsh_session::AgentCancelCause::User,Some(&dsh_agent::CancelOptions { keep_inbox: true }));
+        agent.cancel(
+            dsh_session::AgentCancelCause::User,
+            Some(&dsh_agent::CancelOptions { keep_inbox: true }),
+        );
         if dsh_subagent::ultra::enabled(agent.as_ref()) {
             if let Some(runtime) = self
                 .ctx
@@ -5494,8 +5568,19 @@ impl ApiProxyService {
                 return err(request.rpc_id, error);
             }
         };
-        if request.payload.request_id.as_ref().is_some_and(|id|agent.inbox().request_was_cancelled(id)) {
-            return err(request.rpc_id,RpcError::Cancelled(RpcErrorBody{message:"原请求已经取消，输入内容应保留；请重新发送为一条新请求。".into(),details:EmptyDetails{}}));
+        if request
+            .payload
+            .request_id
+            .as_ref()
+            .is_some_and(|id| agent.inbox().request_was_cancelled(id))
+        {
+            return err(
+                request.rpc_id,
+                RpcError::Cancelled(RpcErrorBody {
+                    message: "原请求已经取消，输入内容应保留；请重新发送为一条新请求。".into(),
+                    details: EmptyDetails {},
+                }),
+            );
         }
         if request
             .payload
@@ -5508,7 +5593,7 @@ impl ApiProxyService {
                 request.rpc_id,
                 crate::api::sessions::SessionPromptResult {
                     accepted: true,
-                    running: Some(agent.status()==dsh_agent::AgentStatus::Running),
+                    running: Some(agent.status() == dsh_agent::AgentStatus::Running),
                     command: None,
                 },
             );
@@ -6067,11 +6152,20 @@ impl ApiProxyService {
         if let Some(session) = self.sessions().and_then(|store| store.get(id)) {
             return resumable(session.header());
         }
-        let Some(persistence) = self.ctx
-            .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>("sessionPersistence", false)
-            .map(|slot| slot.as_ref().clone()) else { return false; };
+        let Some(persistence) = self
+            .ctx
+            .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                "sessionPersistence",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone())
+        else {
+            return false;
+        };
         persistence.list().await.ok().is_some_and(|headers| {
-            headers.iter().any(|header| &header.id == id && resumable(header))
+            headers
+                .iter()
+                .any(|header| &header.id == id && resumable(header))
         })
     }
 
@@ -6187,7 +6281,9 @@ impl ApiProxyService {
                     crate::api::subagents::SubagentCatalog {
                         entries,
                         parent_available,
-                        parent_resumable: self.subagent_parent_resumable(&request.payload.parent_session_id).await,
+                        parent_resumable: self
+                            .subagent_parent_resumable(&request.payload.parent_session_id)
+                            .await,
                     },
                 )
             }
@@ -6375,7 +6471,9 @@ impl ApiProxyService {
             Some(parent) => parent,
             None => match self.resolver.resolve(&parent_id).await {
                 crate::agent_lookup::ApiRemoteAgentResult::Agent(parent) => parent,
-                crate::agent_lookup::ApiRemoteAgentResult::Error(error) => return err(request.rpc_id, error),
+                crate::agent_lookup::ApiRemoteAgentResult::Error(error) => {
+                    return err(request.rpc_id, error);
+                }
             },
         };
         self.spawn_idle_retirement(parent.clone());
@@ -6553,12 +6651,23 @@ impl ApiProxyService {
                 );
             }
         };
-        if request.payload.request_id.as_ref().is_some_and(|id|admission.agent().inbox().request_was_cancelled(id)) {
+        if request
+            .payload
+            .request_id
+            .as_ref()
+            .is_some_and(|id| admission.agent().inbox().request_was_cancelled(id))
+        {
             runtime.abort_followup(admission).await;
-            return err(request.rpc_id,RpcError::Cancelled(RpcErrorBody{message:"原成员消息已经取消，输入内容应保留；请重新发送为一条新请求。".into(),details:EmptyDetails{}}));
+            return err(
+                request.rpc_id,
+                RpcError::Cancelled(RpcErrorBody {
+                    message: "原成员消息已经取消，输入内容应保留；请重新发送为一条新请求。".into(),
+                    details: EmptyDetails {},
+                }),
+            );
         }
         if admission.accepted_message().is_some() {
-            let running=admission.agent().status()==dsh_agent::AgentStatus::Running;
+            let running = admission.agent().status() == dsh_agent::AgentStatus::Running;
             let message_id = runtime.submit_followup(admission, &[]);
             return ok(
                 request.rpc_id,

@@ -627,6 +627,77 @@ window.__ModuleLoader__.load({
 			{ field: "serviceTier", label: "服务等级", type: "text", placeholder: "（无）", hint: "透传给支持 service_tier 的 Provider（OpenAI/Anthropic）" },
 			{ field: "apiRetryCount", label: "API 重试次数", type: "number", hint: "子智能体调用 LLM 失败时的重试次数" }
 		];
+		async function environmentRequest(payload) {
+			const response = await fetch("/__dsh-environment", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify(payload) });
+			const value = await response.json();
+			if (!response.ok || value.error) throw new Error(value.error || "环境请求失败");
+			return value;
+		}
+		function EnvironmentSection({ sessionId }) {
+			const h = react.createElement;
+			const [state, setState] = react.useState(null);
+			const [preferences, setPreferences] = react.useState({});
+			const [scope, setScope] = react.useState(sessionId ? "session" : "global");
+			const [cwd, setCwd] = react.useState("");
+			const [error, setError] = react.useState("");
+			const [busy, setBusy] = react.useState(false);
+			const [result, setResult] = react.useState(null);
+			const generation = react.useRef(0);
+			const load = react.useCallback(async () => {
+				const token = ++generation.current;
+				try { const value = await environmentRequest({ action: "describe", sessionId, cwd }); if (token !== generation.current) return; setState(value); setPreferences(value.preferences); setError(""); }
+				catch (cause) { if (token === generation.current) setError(messageOf(cause)); }
+			}, [sessionId, cwd]);
+			react.useEffect(() => { load(); return () => { generation.current++; }; }, [load]);
+			const action = async (payload, replace = false) => {
+				setBusy(true); setError("");
+				try { const value = await environmentRequest({ sessionId, cwd, ...payload }); if (replace) { setState(value); setPreferences(value.preferences); } else { setResult(value); await load(); } }
+				catch (cause) { setError(messageOf(cause)); }
+				finally { setBusy(false); }
+			};
+			const field = (key, value) => setPreferences(p => ({ ...p, [key]: value || null }));
+			const labels = { ready: "当前环境可运行", located: "已定位，尚未启动验证", missing: "未找到", permission_denied: "权限不足", timed_out: "检查超时", error: "检查失败", unknown: "尚未验证" };
+			const permissionLabels = { "read-only": "仅查看", "workspace-write": "工作区保护", "danger-full-access": "完全访问" };
+			const row = (label, child) => h("label", { style: { display: "grid", gap: 6, margin: "12px 0" } }, h("span", null, label), child);
+			const button = (title, click) => h("button", { type: "button", disabled: busy, onClick: click, style: { marginRight: 8, marginBottom: 8 } }, title);
+			if (!state) return h("section", { className: "dshSub" }, h("h2", null, "工具与运行环境"), h("p", { role: error ? "alert" : "status" }, error || "正在读取环境…"), button("重新加载", load));
+			return h("section", { className: "dshSub" },
+				h("h2", null, "工具与运行环境"),
+				h("p", { className: "dshSubHint" }, `${state.os} / ${state.arch} · 本机 · ${permissionLabels[state.permissionMode] || state.permissionMode}`),
+				h("p", null, `Shell：${state.effective.shellPath || "未找到"}；Python：${state.effective.pythonPath || "未找到"}`),
+				state.effective.error && h("p", { role: "alert" }, state.effective.error),
+				h("p", { className: "dshSubHint" }, "环境选择对后续执行生效；运行中的命令保留原环境，已有终端需重新创建。权限由会话权限设置独立管理。"),
+				row("保存范围", h("select", { value: scope, onChange: e => setScope(e.target.value), disabled: busy }, [ ["global", "全局默认"], ["project", "项目默认"], ...(sessionId ? [["session", "当前会话"]] : []) ].map(([value, label]) => h("option", { value, key: value }, label)))),
+				!sessionId && scope === "project" && row("项目目录", h("input", { value: cwd, placeholder: state.workspace, onChange: e => setCwd(e.target.value), disabled: busy })),
+				row("Shell", h("select", { value: preferences.shellKind || "", onChange: e => { field("shellKind", e.target.value); field("shellPath", ""); }, disabled: busy }, h("option", { value: "" }, "自动推荐"), state.shellCandidates.map(candidate => h("option", { value: candidate.kind, key: candidate.kind }, `${candidate.kind} · ${candidate.path}`)), preferences.shellKind && !state.shellCandidates.some(c => c.kind === preferences.shellKind) ? h("option", { value: preferences.shellKind }, `${preferences.shellKind}（当前不可用）`) : null)),
+				row("指定 Shell 路径（可选）", h("input", { value: preferences.shellPath || "", onChange: e => field("shellPath", e.target.value), disabled: busy, placeholder: "绝对路径" })),
+				row("Python", h("input", { value: preferences.pythonPath || "", onChange: e => field("pythonPath", e.target.value), disabled: busy, placeholder: "自动选择；或填写解释器绝对路径" })),
+				row("信任并使用当前项目 .venv", h("input", { type: "checkbox", checked: !!preferences.useProjectPython, onChange: e => setPreferences(p => ({ ...p, useProjectPython: e.target.checked })), disabled: busy || !!preferences.pythonPath })),
+				row("WPS 路径（可选）", h("input", { value: preferences.wpsPath || "", onChange: e => field("wpsPath", e.target.value), disabled: busy, placeholder: "自动定位；或填写 wps.exe 的绝对路径" })),
+				h("details", null, h("summary", null, "工具链路径"), ["node", "rustc", "git", "rg", "ffmpeg"].map(name => row(name, h("input", { key: name, value: preferences.toolchainPaths?.[name] || "", onChange: e => setPreferences(p => { const paths = { ...p.toolchainPaths }; if (e.target.value) paths[name] = e.target.value; else delete paths[name]; return { ...p, toolchainPaths: paths }; }), placeholder: "自动发现；或填写绝对路径", disabled: busy })))),
+				button("保存", () => action({ action: "save", scope, preferences, expectedRevision: state.revision }, true)),
+				button("移除当前范围覆盖", () => action({ action: "reset", scope, expectedRevision: state.revision }, true)),
+				h("h3", null, "环境检查"),
+				h("p", { className: "dshSubHint" }, "首次需要时自动检查并复用缓存。宿主可运行不代表当前工作区可运行。刷新只清理诊断记录。"),
+				["shell", "python", "rustc", "node", "wps"].map(name => button(`检查 ${name}`, () => action({ action: "probe", name, level: name === "wps" ? "locate" : "launch", refresh: true }))),
+				button("检查宿主 Python", () => action({ action: "probeHost", name: "python" })),
+				button("清空诊断缓存", () => action({ action: "clearCache" }, true)),
+				result && h("p", { role: "status" }, `${result.id || ""} · ${result.executionWorld === "host" ? "宿主" : "所选执行环境"} · ${labels[result.status] || result.status}${result.error ? `：${result.error}` : ""}${result.output ? ` · ${result.output}` : ""}`),
+				error && h("p", { role: "alert" }, error));
+		}
+		function RemoteExecutionSection({ api }) {
+			const h=react.createElement;
+			const [rows,setRows]=react.useState([]),[busy,setBusy]=react.useState(false),[error,setError]=react.useState("");
+			const [form,setForm]=react.useState({host:"",user:"",port:22,workspace:"",helper:"dsh-remote-helper",configFile:""});
+			const request=async data=>{const response=await fetch("/__dsh-remote-execution",{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",body:JSON.stringify(data)});const value=await response.json();if(!response.ok||value.error)throw new Error(value.error||"远端操作失败");return value;};
+			const load=async()=>{try{const result=await request({action:"list"});setRows(result.items||[]);}catch(e){setError(messageOf(e));}};
+			react.useEffect(()=>{load();},[]);
+			const connect=async()=>{setBusy(true);setError("");try{const connection={...form,id:crypto.randomUUID(),port:Number(form.port)};const verified=await request({action:"connect",connection});const reply=await api.workspace.create({kind:"ssh-execution",source:verified.connection.id,path:verified.handshake.workspace});if(!reply.result.ok)throw new Error(reply.result.error.message);await load();}catch(e){setError(messageOf(e));}finally{setBusy(false);}};
+			return h("section",{className:"dshSub"},h("h2",null,"远端执行"),h("p",null,"当前 Agent 在远端工作区执行文件和命令；模型连接保留在本机。远端独立 Harness 的 SSH 隧道入口继续独立使用。"),h("p",{className:"dshSubHint"},"连接前需在远端安装同版本 dsh-remote-helper，并显式授权工作目录；使用已验证的 known_hosts 和现有 SSH 身份，不复制模型凭据或自动安装服务。"),
+				[["host","SSH 主机或配置别名"],["user","用户名（可选）"],["port","SSH 端口"],["workspace","远端工作目录"],["helper","远端 helper 路径"],["configFile","本机 SSH 配置文件（可选）"]].map(([name,label])=>h("label",{key:name,style:{display:"grid",gap:6,margin:"12px 0"}},label,h("input",{disabled:busy,value:form[name],type:name==="port"?"number":"text",onChange:e=>setForm(p=>({...p,[name]:e.target.value}))}))),
+				h("button",{type:"button",disabled:busy,onClick:connect},busy?"正在核验远端…":"核验并添加工作区"),error&&h("p",{role:"alert"},error),
+				rows.map(row=>h("div",{key:row.connection.id,style:{marginTop:16}},h("strong",null,`${row.connection.user?row.connection.user+"@":""}${row.connection.host} · ${row.handshake.os}/${row.handshake.arch}`),h("p",null,row.handshake.workspace),h("p",{className:"dshSubHint"},`协议 ${row.handshake.protocolVersion} · ${row.handshake.permissionCeiling} · 最近核验身份 ${row.handshake.contextId.slice(0,12)}`),h("button",{disabled:busy,onClick:async()=>{setBusy(true);try{await request({action:"connect",connection:row.connection});await load();}catch(e){setError(messageOf(e));}finally{setBusy(false);}}},"重新核验"),h("button",{disabled:busy,onClick:async()=>{setBusy(true);try{await request({action:"remove",id:row.connection.id});await load();}catch(e){setError(messageOf(e));}finally{setBusy(false);}}},"移除连接"))));
+		}
 		function SubagentSection({ api }) {
 			const [state, setState] = (0, react.useState)({ namespace: null, loading: true, error: null });
 			const load = (0, react.useCallback)(async () => {
@@ -1002,6 +1073,9 @@ window.__ModuleLoader__.load({
 				} }
 			}, GeneralSection));
             ctx.slots.inject("conversation.context.experience",()=>ctx.slots.register({name:"conversation.context.experience",inject:sessionId=>({api:connection.api,sessionId})},ExperiencePanel));
+			ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "environment", order: 24, label: "工具与运行环境" }, EnvironmentSection));
+			ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "remote-execution", order: 24.5, label: "远端执行", inject:()=>({api:connection.api}) }, RemoteExecutionSection));
+			ctx.slots.inject("conversation.view", () => ctx.slots.register({ name: "conversation.view", id: "environment", order: 22, label: "运行环境", inject: sessionId => ({ sessionId }) }, EnvironmentSection));
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "memory",

@@ -219,14 +219,28 @@ fn locate(names: &[&str]) -> Option<String> {
             .filter(|p| p.is_absolute())
         {
             let path = dir.join(name);
-            if path.is_file() {
+            if path.is_file() && !is_app_execution_alias(&path) {
                 return Some(path.to_string_lossy().into_owned());
             }
         }
     }
     None
 }
+fn is_app_execution_alias(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    normalized
+        .rsplit_once('/')
+        .is_some_and(|(parent, _)| parent.ends_with("/microsoft/windowsapps"))
+}
 fn ensure_file(path: String, capability: &str) -> Result<String, String> {
+    if is_app_execution_alias(Path::new(&path)) {
+        return Err(format!(
+            "[APP_EXECUTION_ALIAS_UNSUPPORTED] 已选择的 {capability} 是 Windows 应用执行别名：{path}；请选择实际安装目录中的可执行文件，当前选择不会被静默替换"
+        ));
+    }
     if !Path::new(&path).is_absolute() || !Path::new(&path).is_file() {
         return Err(format!(
             "已选择的 {capability} 不可用：{path}；保留当前选择，请检查环境或修改设置"
@@ -755,6 +769,13 @@ impl ExecutionProfiles {
                 .ctx
                 .get_typed::<Arc<dyn SandboxProvider>>("sandbox", false)
                 .ok_or(("unknown", "沙箱服务不可用".into()))?;
+            tokio::select! {
+                result = tokio::time::timeout(Duration::from_secs(120), sandbox.prepare(policy)) => {
+                    result.map_err(|_| ("setup_timeout", "[SANDBOX_SETUP_TIMEOUT] runtime preparation timed out; probe not dispatched".into()))?
+                        .map_err(|error| ("setup_failed", error))?;
+                }
+                _ = cancelled(signal.clone()) => return Err(("cancelled", "环境准备已取消；探测未启动".into())),
+            }
             let confined = sandbox
                 .confine_with_startup(
                     &argv,
@@ -798,8 +819,35 @@ impl ExecutionProfiles {
             })
             .map_err(|e| ("error", e))?;
         let _kill = ChildGuard(child.clone());
+        if let Some(startup) = enforcement
+            .as_ref()
+            .and_then(|confined| confined.startup.as_ref())
+        {
+            let ready = async {
+                loop {
+                    if startup
+                        .is_ready()
+                        .map_err(|error| ("setup_failed", error))?
+                    {
+                        return Ok(());
+                    }
+                    tokio::select! {
+                        result = child.done() => {
+                            // The ready event and exit may become observable together.
+                            if startup.is_ready().map_err(|error| ("setup_failed", error))? { return Ok(()); }
+                            let detail = child.collected().stderr.map(|reader| reader.read_from(0).text).unwrap_or_default();
+                            return Err(("setup_failed", format!("[SANDBOX_SETUP_FAILED] runner exited before readiness ({result:?}): {detail}")));
+                        }
+                        _ = cancelled(signal.clone()) => return Err(("cancelled", "环境启动已取消".into())),
+                        _ = tokio::time::sleep(Duration::from_millis(15)) => {},
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(120), ready).await
+                .map_err(|_| ("setup_timeout", format!("[SANDBOX_SETUP_TIMEOUT] phase={}; runner readiness not confirmed; inspect startup evidence before retrying", startup.phase())))??;
+        }
         let outcome = tokio::select! {
-            output = tokio::time::timeout(Duration::from_secs(5),child.done()) => output.map_err(|_|("timed_out","检查超过五秒".into()))?.map_err(|e|("error",e))?,
+            output = tokio::time::timeout(Duration::from_secs(5),child.done()) => output.map_err(|_|("timed_out","[ENVIRONMENT_PROBE_TIMEOUT] 程序已启动，探测运行超过五秒".into()))?.map_err(|e|("error",e))?,
             _ = cancelled(signal) => return Err(("unknown","环境检查已取消".into())),
         };
         let collected = child.collected();

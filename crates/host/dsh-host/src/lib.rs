@@ -28,12 +28,10 @@ mod computer_use_stream;
 #[cfg(test)]
 mod context_stats_test;
 mod deepseek_settings;
-mod environment_capabilities;
-mod discovery_settings;
-mod execution_profiles;
-mod task_execution;
-mod skill_validation;
 mod devin_auth;
+mod discovery_settings;
+mod environment_capabilities;
+mod execution_profiles;
 mod feedback_delivery;
 mod free_catalog;
 mod free_probe;
@@ -43,7 +41,9 @@ mod learning_bridge;
 mod memory_import;
 mod model_capabilities;
 mod model_discovery;
+mod office_preview;
 mod open_in_app;
+mod plugin_manager;
 mod productivity;
 mod project_tasks;
 mod provider_auth;
@@ -51,8 +51,11 @@ mod provider_auth_catalog;
 mod provider_compatibility;
 pub mod runtime_paths;
 mod sidebar_settings;
+mod skill_validation;
+mod task_execution;
 mod task_models;
 mod tool_present;
+mod turn_changes;
 #[cfg(test)]
 mod ultra_control_tests;
 mod uu_cli;
@@ -1700,6 +1703,7 @@ pub struct HostSpine {
     environment_route: RouteDisposer,
     task_execution_route: RouteDisposer,
     discovery_settings_route: RouteDisposer,
+    plugin_manager_route: RouteDisposer,
     pub runtime_paths: Arc<runtime_paths::RuntimePaths>,
     data_root: std::path::PathBuf,
     owns_data_root: bool,
@@ -1776,6 +1780,7 @@ impl HostSpine {
                 (self.runtime_route)();
                 (self.environment_route)();
                 (self.task_execution_route)();
+                (self.plugin_manager_route)();
                 (self.discovery_settings_route)();
                 (self.api_route)();
 
@@ -2226,14 +2231,22 @@ fn compose_host_in_fiber(
             },
         )
         .map_err(|error| format!("settings storage-paths: {error}"))?;
-    let team_scope = settings.register(
-        ctx, dsh_settings::settings_namespace("agent-teams").map_err(|error|error.to_string())?,
-        agent_team_http::settings_schema(),
-        dsh_settings::SettingsRegisterOptions {
-            validate: Some(Arc::new(|value| dsh_agent_team::config::Config::parse(value.to_json().unwrap_or_else(||serde_json::json!({}))).map(|_|()))),
-            ..Default::default()
-        },
-    ).map_err(|error|format!("settings agent-teams: {error}"))?;
+    let team_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("agent-teams").map_err(|error| error.to_string())?,
+            agent_team_http::settings_schema(),
+            dsh_settings::SettingsRegisterOptions {
+                validate: Some(Arc::new(|value| {
+                    dsh_agent_team::config::Config::parse(
+                        value.to_json().unwrap_or_else(|| serde_json::json!({})),
+                    )
+                    .map(|_| ())
+                })),
+                ..Default::default()
+            },
+        )
+        .map_err(|error| format!("settings agent-teams: {error}"))?;
     let computer_use_scope = settings
         .register(
             ctx,
@@ -3251,9 +3264,24 @@ fn compose_host_in_fiber(
     )
     .map_err(|error| format!("tools: {error}"))?;
     dsh_tools::install_security_policy(ctx, security_policy_state);
-    dsh_tools::discovery::install(ctx, &tools, environment_capabilities::discovery_config(&data_root)?)?;
-    let environment_capabilities = environment_capabilities::install(ctx, &tools, &system_prompt, subprocess.clone(), runtime_paths.clone())?;
-    let execution_profiles = execution_profiles::ExecutionProfiles::install(ctx, subprocess.clone(), runtime_paths.clone(), environment_capabilities);
+    dsh_tools::discovery::install(
+        ctx,
+        &tools,
+        environment_capabilities::discovery_config(&data_root)?,
+    )?;
+    let environment_capabilities = environment_capabilities::install(
+        ctx,
+        &tools,
+        &system_prompt,
+        subprocess.clone(),
+        runtime_paths.clone(),
+    )?;
+    let execution_profiles = execution_profiles::ExecutionProfiles::install(
+        ctx,
+        subprocess.clone(),
+        runtime_paths.clone(),
+        environment_capabilities,
+    );
     execution_profiles.install_tools(ctx, &tools, &system_prompt)?;
     let task_models = task_models::TaskModels::install(ctx, settings.clone(), llm.clone())?;
     let _image_generation =
@@ -3284,19 +3312,32 @@ fn compose_host_in_fiber(
     let _skills = dsh_skill::SkillRegistry::install(ctx, Default::default())
         .map_err(|error| format!("skills: {error}"))?;
     let _skill_badge = dsh_skill_badge::apply(ctx);
-    let capability_manager = futures::executor::block_on(dsh_host_apiproxy::capabilities::CapabilityManager::install(
-        ctx,
-        data_root.clone(),
-        std::env::current_dir()
-            .map_err(|error| error.to_string())?
-            .to_string_lossy()
-            .into_owned(),
-    ))
-    .map_err(|error| format!("capabilities: {error}"))?;
+    let capability_manager =
+        futures::executor::block_on(dsh_host_apiproxy::capabilities::CapabilityManager::install(
+            ctx,
+            data_root.clone(),
+            std::env::current_dir()
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .into_owned(),
+        ))
+        .map_err(|error| format!("capabilities: {error}"))?;
     let task_execution = futures::executor::block_on(task_execution::install(
-        ctx, &tools, &system_prompt, _fs.clone(), Some(resources.clone()), &data_root,
+        ctx,
+        &tools,
+        &system_prompt,
+        _fs.clone(),
+        Some(resources.clone()),
+        &data_root,
     ))?;
-    skill_validation::install(ctx, capability_manager, task_execution.clone(), execution_profiles.clone());
+    skill_validation::install(
+        ctx,
+        capability_manager,
+        task_execution.clone(),
+        execution_profiles.clone(),
+    );
+    let turn_changes =
+        futures::executor::block_on(turn_changes::TurnChanges::install(ctx, &data_root))?;
     {
         let memory_root = data_root.join("memory");
         dsh_tool_memory_local::install(ctx, memory_root.clone())
@@ -4038,18 +4079,35 @@ fn compose_host_in_fiber(
     )
     .map_err(|error| format!("workspace: {error}"))?;
     let team_service = dsh_agent_team::install(ctx, 8)?;
-    team_service.configure(dsh_agent_team::config::Config::parse((team_scope.get)().to_json().unwrap_or_else(||serde_json::json!({})))?)?;
+    team_service.configure(dsh_agent_team::config::Config::parse(
+        (team_scope.get)()
+            .to_json()
+            .unwrap_or_else(|| serde_json::json!({})),
+    )?)?;
     let team_watch = team_service.clone();
-    let _team_settings_watch = (team_scope.watch)(Arc::new(move |next,_previous| {
-        if let Ok(config)=dsh_agent_team::config::Config::parse(next.to_json().unwrap_or_else(||serde_json::json!({}))) { let _=team_watch.configure(config); }
+    let _team_settings_watch = (team_scope.watch)(Arc::new(move |next, _previous| {
+        if let Ok(config) = dsh_agent_team::config::Config::parse(
+            next.to_json().unwrap_or_else(|| serde_json::json!({})),
+        ) {
+            let _ = team_watch.configure(config);
+        }
         async move {}.boxed()
     }));
-    let team_prompt=team_service.clone();
-    let _team_context=system_prompt.context(ctx,dsh_system_prompt::PromptContext {
-        name:"collaboration:policy".into(),order:116.0,
-        text:PromptText::Provider(Arc::new(move |assembly|assembly.field_str("sessionId").map(|id|team_prompt.prompt_context(id)).unwrap_or_default())),
-    });
-    let agent_teams=Some(team_service);
+    let team_prompt = team_service.clone();
+    let _team_context = system_prompt.context(
+        ctx,
+        dsh_system_prompt::PromptContext {
+            name: "collaboration:policy".into(),
+            order: 116.0,
+            text: PromptText::Provider(Arc::new(move |assembly| {
+                assembly
+                    .field_str("sessionId")
+                    .map(|id| team_prompt.prompt_context(id))
+                    .unwrap_or_default()
+            })),
+        },
+    );
+    let agent_teams = Some(team_service);
     // The agent-presets roster: the shipped presets beside this app's
     // config plus the harness-home user root the service appends itself.
     // Anchored to the manifest, not the process cwd (tests and launchers
@@ -4181,6 +4239,7 @@ fn compose_host_in_fiber(
         subprocess.clone(),
         sandbox.clone(),
         code_index,
+        turn_changes,
         bind_host == BindHost::AllInterfaces,
     );
     let boot_profile = profile.map(|profile| data_root.join("profiles").join(profile));
@@ -4238,15 +4297,33 @@ fn compose_host_in_fiber(
         ctx,
         ApiProxyDefaults {
             initialize_session: Some(Arc::new({
-                let teams=agent_teams.clone();
-                move |agent| {let teams=teams.clone();Box::pin(async move {if let Some(teams)=teams{teams.initialize_session(agent).await?;}Ok(())})}
+                let teams = agent_teams.clone();
+                move |agent| {
+                    let teams = teams.clone();
+                    Box::pin(async move {
+                        if let Some(teams) = teams {
+                            teams.initialize_session(agent).await?;
+                        }
+                        Ok(())
+                    })
+                }
             })),
             cancel_collaboration: Some(Arc::new({
-                let teams=agent_teams.clone();
-                move |agent| {let teams=teams.clone();Box::pin(async move {
-                    if let Some(teams)=teams {if teams.manages_cancellation(&agent){teams.control(agent,serde_json::json!({"action":"stopAll"})).await?;return Ok(true);}}
-                    Ok(false)
-                })}
+                let teams = agent_teams.clone();
+                move |agent| {
+                    let teams = teams.clone();
+                    Box::pin(async move {
+                        if let Some(teams) = teams {
+                            if teams.manages_cancellation(&agent) {
+                                teams
+                                    .control(agent, serde_json::json!({"action":"stopAll"}))
+                                    .await?;
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    })
+                }
             })),
             default_model_selection: Arc::new({
                 let default_model = default_model.clone();
@@ -4293,9 +4370,21 @@ fn compose_host_in_fiber(
     );
     let fetch_handler = Arc::new(to_fetch_handler(api_proxy.clone()));
     let allow_remote_host = bind_host == BindHost::AllInterfaces;
-    let discovery_settings_route = discovery_settings::register(&web_server, &data_root, tools.clone(), allow_remote_host);
+    let discovery_settings_route =
+        discovery_settings::register(&web_server, &data_root, tools.clone(), allow_remote_host);
+    let plugin_manager_route = plugin_manager::register(
+        &web_server,
+        data_root.clone(),
+        profile.unwrap_or("web").into(),
+        allow_remote_host,
+    );
     let environment_route = execution_profiles.register(&web_server, allow_remote_host);
-    let task_execution_route = task_execution::register_route(&web_server, task_execution, api_proxy.clone(), allow_remote_host);
+    let task_execution_route = task_execution::register_route(
+        &web_server,
+        task_execution,
+        api_proxy.clone(),
+        allow_remote_host,
+    );
     let task_models_route = task_models.register_http(&web_server);
     let productivity_route = productivity::install(
         ctx,
@@ -4314,7 +4403,12 @@ fn compose_host_in_fiber(
         settings.clone(),
         allow_remote_host,
     );
-    let agent_team_route = agent_team_http::register(&web_server, agent_teams, api_proxy.clone(), allow_remote_host);
+    let agent_team_route = agent_team_http::register(
+        &web_server,
+        agent_teams,
+        api_proxy.clone(),
+        allow_remote_host,
+    );
     let computer_use_route = computer_use_http::register(
         &web_server,
         agents.clone(),
@@ -4393,6 +4487,7 @@ fn compose_host_in_fiber(
         environment_route,
         task_execution_route,
         discovery_settings_route,
+        plugin_manager_route,
         runtime_paths,
         data_root,
         owns_data_root,

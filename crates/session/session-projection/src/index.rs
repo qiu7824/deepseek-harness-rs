@@ -521,6 +521,13 @@ fn build_cell(
 /// (TS `cellFor`).
 fn cell_for(registration: &Registration, session: &Session) -> UnitCell {
     let identity = session.identity();
+    // snapshot/checkpoint callers hold the registration lock, which also
+    // serializes forget_session. A history request may still hold a Session
+    // after the store detached it; never resurrect its strong projection cells.
+    if !session.is_attached_to_store() {
+        registration.cells.lock().remove(&identity);
+        return build_cell(&registration.def, session.header(), &session.events());
+    }
     if let Some(cell) = registration.cells.lock().get(&identity) {
         return UnitCell {
             state: cell.state.clone(),
@@ -553,6 +560,64 @@ impl Default for ProjectionSnapshot {
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn late_history_snapshot_does_not_resurrect_disposed_projection_cells() {
+        let ctx = Context::root();
+        let store = dsh_session::SessionStore::install(&ctx);
+        let registry = SessionProjectionRegistry::install(&ctx);
+        registry
+            .register(
+                &ctx,
+                ProjectionDefinition {
+                    key: "late-history".into(),
+                    state_version: 1,
+                    init: Arc::new(|_| arc(serde_json::json!({"payload":"x".repeat(128*1024)}))),
+                    apply: Arc::new(|state, _| state.clone()),
+                    view: Arc::new(|state| state.clone()),
+                    schema: Arc::new(|value| {
+                        Ok(downcast::<serde_json::Value>(value).unwrap().clone())
+                    }),
+                },
+            )
+            .unwrap();
+        for index in 0..20 {
+            let session = Session::create(
+                dsh_session::session_id(format!("history-race-{index}")),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let detach = store.enter(&session).unwrap();
+            store.announce(&session).await.unwrap();
+            registry.snapshot(&session);
+            assert_eq!(
+                registry.registrations.lock()["late-history"]
+                    .cells
+                    .lock()
+                    .len(),
+                1
+            );
+            detach().await;
+            assert!(!session.is_attached_to_store());
+            let value = registry.snapshot(&session);
+            assert_eq!(
+                value.values["late-history"]["payload"]
+                    .as_str()
+                    .unwrap()
+                    .len(),
+                128 * 1024
+            );
+            assert!(
+                registry.registrations.lock()["late-history"]
+                    .cells
+                    .lock()
+                    .is_empty()
+            );
+        }
+        ctx.fiber.dispose().await;
+    }
 
     #[tokio::test]
     async fn final_checkpoint_cannot_repopulate_retired_session_cells() {

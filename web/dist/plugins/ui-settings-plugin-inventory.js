@@ -716,6 +716,7 @@ window.__ModuleLoader__.load({
 				...controller,
 				presetName
 			});
+            ctx.slots.inject("plugin-center.inventory",()=>ctx.slots.register({name:"plugin-center.inventory",locale:NS,inject:injected},PluginInventorySettingsTab));
 			ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register({
 				name: "settings.plugins.tab",
 				id: "all",

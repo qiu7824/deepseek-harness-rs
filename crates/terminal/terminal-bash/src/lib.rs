@@ -559,7 +559,10 @@ impl LocalPtySession {
                 }
                 if Instant::now() >= deadline {
                     return Err(TerminalBackendSpawnError::coded(
-                        "Sandbox startup exceeded 120 seconds before command readiness was confirmed",
+                        format!(
+                            "Sandbox startup exceeded 120 seconds before command readiness was confirmed; phase={}",
+                            startup.phase()
+                        ),
                         TerminalErrorCode::SandboxSetupTimeout,
                     ));
                 }

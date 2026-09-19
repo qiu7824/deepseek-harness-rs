@@ -5,6 +5,81 @@ use dsh_subprocess::{
 };
 
 struct Reader;
+#[test]
+fn windows_app_aliases_are_distinct_from_real_packaged_executables() {
+    assert!(is_app_execution_alias(Path::new(
+        r"C:\Users\user\AppData\Local\Microsoft\WindowsApps\python.exe"
+    )));
+    assert!(!is_app_execution_alias(Path::new(
+        r"C:\Program Files\WindowsApps\Microsoft.PowerShell_7\pwsh.exe"
+    )));
+    assert!(
+        ensure_file(
+            r"C:\Users\user\AppData\Local\Microsoft\WindowsApps\pwsh.exe".into(),
+            "shell"
+        )
+        .unwrap_err()
+        .contains("APP_EXECUTION_ALIAS_UNSUPPORTED")
+    );
+}
+
+struct SlowSandbox {
+    prepared: Arc<AtomicBool>,
+}
+impl SandboxProvider for SlowSandbox {
+    fn prepare(&self, _: &SandboxExecutionPolicy) -> BoxFuture<'static, Result<(), String>> {
+        let prepared = self.prepared.clone();
+        Box::pin(async move {
+            prepared.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+    fn confine(
+        &self,
+        argv: &[String],
+        _: &SandboxPolicy,
+    ) -> Result<dsh_sandbox::ConfinedArgv, dsh_sandbox::SandboxUnavailableError> {
+        assert!(self.prepared.load(Ordering::SeqCst));
+        let start = tokio::time::Instant::now();
+        Ok(dsh_sandbox::ConfinedArgv {
+            argv: argv.to_vec(),
+            enforcement: dsh_sandbox::SandboxEnforcement::Full,
+            denial_signatures: vec![],
+            runner_failure_rules: vec![],
+            startup: Some(dsh_sandbox::SandboxStartup::new(
+                move || Ok(start.elapsed() >= Duration::from_secs(6)),
+                || Ok(false),
+            )),
+        })
+    }
+}
+
+#[tokio::test]
+async fn sandbox_setup_longer_than_probe_budget_does_not_fail_runtime_validation() {
+    let f = Fixture::new(SandboxMode::WorkspaceWrite);
+    let prepared = Arc::new(AtomicBool::new(false));
+    f.service.ctx.register_service(Arc::new(SlowSandbox {
+        prepared: prepared.clone(),
+    }) as Arc<dyn SandboxProvider>);
+    f.runtime.delay_ms.store(6100, Ordering::SeqCst);
+    f.save().await;
+    let value = f
+        .service
+        .inspect(
+            "python",
+            "launch",
+            None,
+            None,
+            &f.cwd(),
+            false,
+            Arc::new(|| false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(value["status"], "ready", "{value}");
+    assert!(prepared.load(Ordering::SeqCst));
+    assert_eq!(f.runtime.spawns.load(Ordering::SeqCst), 1);
+}
 impl SubprocessOutputReader for Reader {
     fn read_from(&self, _: u64) -> SubprocessOutputRead {
         SubprocessOutputRead {
@@ -15,7 +90,7 @@ impl SubprocessOutputReader for Reader {
         }
     }
 }
-struct Child;
+struct Child(tokio::time::Instant);
 impl SubprocessHandle for Child {
     fn stdin(&self) -> Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>> {
         None
@@ -33,8 +108,9 @@ impl SubprocessHandle for Child {
         }
     }
     fn done(&self) -> BoxFuture<'static, Result<SubprocessOutcome, String>> {
-        Box::pin(async {
-            tokio::time::sleep(Duration::from_millis(60)).await;
+        let deadline = self.0;
+        Box::pin(async move {
+            tokio::time::sleep_until(deadline).await;
             Ok(SubprocessOutcome {
                 exit_code: Some(0),
                 signal: None,
@@ -47,6 +123,7 @@ impl SubprocessHandle for Child {
     }
 }
 struct Runtime {
+    delay_ms: AtomicUsize,
     path: String,
     spawns: AtomicUsize,
     args: Mutex<Vec<Vec<String>>>,
@@ -64,7 +141,10 @@ impl SubprocessRuntime for Runtime {
     fn spawn(&self, spec: SubprocessSpawnSpec) -> Result<Arc<dyn SubprocessHandle>, String> {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         self.args.lock().push(spec.argv);
-        Ok(Arc::new(Child))
+        Ok(Arc::new(Child(
+            tokio::time::Instant::now()
+                + Duration::from_millis(self.delay_ms.load(Ordering::SeqCst) as u64),
+        )))
     }
     fn spawn_terminal(
         &self,
@@ -96,6 +176,7 @@ impl Fixture {
         );
         let paths = RuntimePaths::prepare_with_install_anchor(&root, None).unwrap();
         let runtime = Arc::new(Runtime {
+            delay_ms: AtomicUsize::new(60),
             path: executable.to_string_lossy().into_owned(),
             spawns: AtomicUsize::new(0),
             args: Mutex::new(Vec::new()),
