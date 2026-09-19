@@ -6,7 +6,7 @@ use dsh_subprocess::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn environment_controls_resume_and_release_an_idle_persistent_session() {
-    use dsh_agent::{AgentFactory, CreateAgentOptions};
+    use dsh_host_apiproxy::{Body, CarrierRequest, to_fetch_handler};
     let fixture = Fixture::new(SandboxMode::WorkspaceWrite);
     let ctx = Context::root();
     let host = crate::compose_persistent_host_at(&ctx, &fixture.root.join("host"), None).unwrap();
@@ -16,16 +16,32 @@ async fn environment_controls_resume_and_release_an_idle_persistent_session() {
         fixture.paths.clone(),
         fixture.service.host.clone(),
     );
-    let handle = host
-        .agent_loop
-        .create_agent(&ctx, CreateAgentOptions::default())
-        .await
-        .unwrap();
-    let id = handle.agent.id().clone();
-    host.sessions.flush(handle.agent.session()).await.unwrap();
-    handle.dispose.await;
-    drop(handle.agent);
-    assert!(host.sessions.get(&id).is_none());
+    let response = to_fetch_handler(host.api_proxy.clone()).handle(CarrierRequest {
+        method: http::Method::POST,
+        path: "/api/session.create".into(),
+        query: vec![],
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: Some(json!({"type":"client-request","rpcId":"retired-environment","method":"session.create","payload":{"cwd":fixture.cwd()}}).to_string().into_bytes()),
+    }).await;
+    let value: Value = match response.into_body() {
+        Body::Bytes(bytes) => serde_json::from_slice(&bytes).unwrap(),
+        _ => panic!("expected unary session creation"),
+    };
+    assert_eq!(value["result"]["ok"], true, "{value}");
+    let id = dsh_session::session_id(value["result"]["value"]["sessionId"].as_str().unwrap());
+    drop(
+        host.api_proxy
+            .resolve_control_agent(id.as_str())
+            .await
+            .unwrap(),
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while host.sessions.get(&id).is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("created session must retire before environment access");
     let snapshot = service
         .handle(json!({"action":"describe","sessionId":id,"cwd":fixture.cwd()}))
         .await
