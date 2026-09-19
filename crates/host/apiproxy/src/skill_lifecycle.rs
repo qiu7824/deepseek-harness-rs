@@ -599,7 +599,8 @@ impl SkillProvider for SkillLifecycle {
         // Environment and verification state can change independently of registration.
         Ok(SkillProviderObservation {
             candidates,
-            complete: false,
+            complete: true,
+            volatile: true,
         })
     }
     async fn get(

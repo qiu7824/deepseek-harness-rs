@@ -514,6 +514,7 @@ impl SkillProvider for FileSystemSkillProvider {
         Ok(SkillProviderObservation {
             candidates,
             complete: true,
+            volatile: false,
         })
     }
 

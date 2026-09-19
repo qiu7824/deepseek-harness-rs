@@ -12,6 +12,19 @@ def png(color):
     def part(kind,data):return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data)&0xffffffff)
     return b'\x89PNG\r\n\x1a\n'+part(b'IHDR',struct.pack('>IIBBBBB',64,64,8,6,0,0,0))+part(b'IDAT',zlib.compress((b'\0'+bytes(color)*64)*64))+part(b'IEND',b'')
 
+def fixture_user_index(messages):
+    """Runtime-context user-role messages are not a new fixture request."""
+    markers = ('image-generation-fixture', 'image-edit-fixture:', 'vision-fixture')
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content', '')
+        text = content if isinstance(content, str) else '\n'.join(part.get('text', '') for part in content if part.get('type') == 'text')
+        if text.startswith(markers):
+            return index
+    raise AssertionError('missing explicit image fixture user request')
+
 class Provider(BaseHTTPRequestHandler):
     calls=[]
     image_delay=0
@@ -48,7 +61,7 @@ class Provider(BaseHTTPRequestHandler):
         else:
             # Image rendering metadata must not send unsupported images to a text-only main model.
             assert not any(isinstance(m.get('content'),list) and any(c.get('type')=='image_url' for c in m['content']) for m in messages)
-            user=max(i for i,m in enumerate(messages) if m['role']=='user')
+            user=fixture_user_index(messages) if body.get('tools') else max(i for i,m in enumerate(messages) if m['role']=='user')
             prompt=str(messages[user]['content']);results=[m for m in messages[user+1:] if m['role']=='tool']
             if not body.get('tools'):delta={'content':'Fixture title'};finish='stop'
             elif results:delta={'content':'IMAGE_FIXTURE_DONE'};finish='stop'
@@ -102,7 +115,7 @@ def main():
                     ends=[e for e in history if e['type']=='turn/end']
                     if len(ends)>=turn:assert ends[-1]['data']['reason']['kind']=='completed',ends[-1];break
                     time.sleep(.1)
-                else:raise AssertionError('image fixture did not complete')
+                else:raise AssertionError(f'image fixture did not complete: turn={turn}, provider_calls={len(Provider.calls)}, tail={[event["type"] for event in history[-12:]]}')
             generated=[e for e in history if e['type']=='tool/result' and e['data'].get('meta',{}).get('kind')=='image-generation']
             assert len(generated)==2,[e['data'] for e in history if e['type']=='tool/result']
             ids=[v['attachment']['attachmentId'] for e in generated for v in e['data']['meta']['images']];assert len(set(ids))==3

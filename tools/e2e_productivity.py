@@ -6,6 +6,9 @@ from e2e_http import ThreadingHTTPServer
 from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import rpc,require_ok
 
+def project_tool_results(messages):
+    return [message for message in messages if message.get('role') == 'tool' and message.get('tool_call_id', '').startswith('tasks-')]
+
 class Provider(BaseHTTPRequestHandler):
     seen_context=False
     seen_tool=False
@@ -13,8 +16,11 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         content=json.dumps(body.get('messages',[]),ensure_ascii=False)
+        results=project_tool_results(body.get('messages',[]))
         if not body.get('tools'):delta={'content':'Fixture task'};finish='stop'
-        elif body['messages'][-1]['role']=='tool':Provider.seen_tool=True;delta={'content':'PRODUCTIVITY_FIXTURE_DONE'};finish='stop'
+        elif results:
+            assert 'TASK_FIXTURE' in json.dumps(results),'project task result was not returned'
+            Provider.seen_tool=True;delta={'content':'PRODUCTIVITY_FIXTURE_DONE'};finish='stop'
         else:
             assert 'TASK_FIXTURE' in content,'project state was not included in context'
             assert 'USER_EDIT_MEMORY_FIXTURE' in content,'imported local memory was not included in context'

@@ -79,6 +79,71 @@ fn presented(tools: &Arc<ToolRuntime>, agent: &Arc<dyn dsh_agent::Agent>) -> Vec
 }
 
 #[tokio::test]
+async fn unchanged_tool_views_keep_schema_and_runtime_context_order() {
+    let (ctx, tools, agent) = setup().await;
+    for index in (0..40).rev() {
+        tools
+            .register(
+                &ctx,
+                tool(
+                    &format!("mcp__fixture__tool_{index:02}"),
+                    "Stable tool description",
+                ),
+            )
+            .unwrap();
+    }
+    call(
+        &tools,
+        &agent,
+        DESCRIBE,
+        json!({"names":["mcp__fixture__tool_19","mcp__fixture__tool_02"]}),
+    )
+    .await;
+    let discovery = tools.discovery.lock().clone().unwrap();
+    let assembly = assemble_context_for(&agent);
+    let expected_manifest = discovery.manifest(&assembly);
+    let expected_names: Vec<_> = tools
+        .schemas(Some(agent.scope_key()))
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    assert!(expected_names.windows(2).all(|pair| pair[0] < pair[1]));
+    let prompt = ctx
+        .get_typed::<Arc<SystemPrompt>>("systemPrompt", false)
+        .unwrap();
+    let mut expected_wire = None;
+    for _ in 0..64 {
+        assert_eq!(
+            discovery.manifest(&assembly),
+            expected_manifest,
+            "unchanged tools must not create a fresh runtime-context snapshot"
+        );
+        assert_eq!(
+            tools
+                .schemas(Some(agent.scope_key()))
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+        let names: Vec<_> = prompt
+            .assemble(&ctx, &assembly)
+            .await
+            .unwrap()
+            .tools
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+        if let Some(expected) = &expected_wire {
+            assert_eq!(&names, expected);
+        } else {
+            expected_wire = Some(names);
+        }
+    }
+}
+
+#[tokio::test]
 async fn search_loads_once_restores_after_cache_loss_and_executes_directly() {
     let (ctx, tools, agent) = setup().await;
     assert!(presented(&tools, &agent).contains(&"read".into()));

@@ -2,6 +2,10 @@
 #[path = "../runtime_read_access.rs"]
 mod runtime_read_access;
 
+#[cfg(windows)]
+#[path = "../installed_runtime.rs"]
+mod installed_runtime;
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("dsh-sandbox-windows: Windows only");

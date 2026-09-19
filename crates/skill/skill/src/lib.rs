@@ -298,8 +298,10 @@ pub struct SkillCatalogSnapshot {
 pub struct SkillProviderObservation {
     /// Candidates available from the current provider discovery.
     pub candidates: Vec<SkillCandidate>,
-    /// Whether discovery completed and these candidates may be cached.
+    /// Whether discovery completed authoritatively.
     pub complete: bool,
+    /// Recheck applicability on every lookup even after complete discovery.
+    pub volatile: bool,
 }
 
 /// Provider interface for one source of skills, such as local directories
@@ -449,11 +451,13 @@ impl Clone for IndexedCandidate {
 struct LayerCollectResult {
     entries: Vec<IndexedCandidate>,
     cacheable: bool,
+    complete: bool,
 }
 
 struct CollectResult {
     entries: IndexMap<String, IndexedCandidate>,
     cacheable: bool,
+    complete: bool,
 }
 
 /// Layered registry of skill providers, the host+per-scope shape the tools
@@ -707,7 +711,7 @@ impl SkillRegistry {
         skills.sort_by(|left, right| compare_code_points(&left.name, &right.name));
         Ok(SkillCatalogSnapshot {
             skills,
-            complete: collected.cacheable,
+            complete: collected.complete,
         })
     }
 
@@ -755,6 +759,7 @@ impl SkillRegistry {
                 return Ok(CollectResult {
                     entries: cached,
                     cacheable: true,
+                    complete: true,
                 });
             }
             let result = self.collect_fresh(options).await?;
@@ -767,6 +772,7 @@ impl SkillRegistry {
                 return Ok(CollectResult {
                     entries: result.entries,
                     cacheable: false,
+                    complete: false,
                 });
             }
             if result.cacheable {
@@ -790,8 +796,10 @@ impl SkillRegistry {
         layers.extend(self.layers.chain_layers(options.scope.as_ref()));
         let mut merged: IndexMap<String, IndexedCandidate> = IndexMap::new();
         let mut cacheable = true;
+        let mut complete = true;
         for layer in &layers {
             let collected = self.collect_layer(layer, options).await?;
+            complete &= collected.complete;
             if !collected.cacheable {
                 cacheable = false;
             }
@@ -802,6 +810,7 @@ impl SkillRegistry {
         Ok(CollectResult {
             entries: merged,
             cacheable,
+            complete,
         })
     }
 
@@ -830,6 +839,7 @@ impl SkillRegistry {
         Ok(LayerCollectResult {
             entries: result,
             cacheable: collected.cacheable,
+            complete: collected.complete,
         })
     }
 
@@ -841,6 +851,7 @@ impl SkillRegistry {
         throw_if_aborted(options.signal.as_ref())?;
         let mut candidates: Vec<IndexedCandidate> = Vec::new();
         let mut cacheable = true;
+        let mut complete = true;
         let mut runtime_order = 0;
         let runtime = layer.runtime.lock().clone();
         let mut runtime_skills: Vec<SkillDefinition> = runtime.values().cloned().collect();
@@ -869,6 +880,7 @@ impl SkillRegistry {
                         return Err(error);
                     }
                     cacheable = false;
+                    complete = false;
                     self.ctx.named_logger(None).warn(vec![arc(format!(
                         "skill provider \"{provider_name}\" skipped: {error}"
                     ))]);
@@ -877,7 +889,9 @@ impl SkillRegistry {
             };
             if !observation.complete {
                 cacheable = false;
+                complete = false;
             }
+            cacheable &= !observation.volatile;
             for candidate in observation.candidates {
                 validate_candidate(&candidate, &provider_name)?;
                 candidates.push(IndexedCandidate {
@@ -893,6 +907,7 @@ impl SkillRegistry {
         Ok(LayerCollectResult {
             entries: candidates,
             cacheable,
+            complete,
         })
     }
 
@@ -1106,5 +1121,50 @@ impl Plugin for SkillPlugin {
         SkillRegistry::install(ctx, self.config.clone())
             .map(|_| ())
             .map_err(|message| PluginError::from(anyhow::anyhow!(message)))
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    struct VolatileProvider(AtomicU64);
+    #[async_trait::async_trait]
+    impl SkillProvider for VolatileProvider {
+        fn name(&self) -> &str {
+            "volatile-fixture"
+        }
+        async fn list(&self, _: &SkillLookupOptions) -> Result<SkillProviderObservation, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(SkillProviderObservation {
+                candidates: vec![],
+                complete: true,
+                volatile: true,
+            })
+        }
+        async fn get(
+            &self,
+            _: &SkillCandidate,
+            _: &SkillLookupOptions,
+        ) -> Result<Option<SkillDefinition>, String> {
+            Ok(None)
+        }
+    }
+    #[tokio::test]
+    async fn volatile_provider_is_authoritative_but_rechecked_each_time() {
+        let ctx = Context::root();
+        let skills = SkillRegistry::install(&ctx, Config::default()).unwrap();
+        let provider = Arc::new(VolatileProvider(AtomicU64::new(0)));
+        let registered = provider.clone();
+        let _dispose = skills.register_provider(&ctx, Arc::new(move |_| registered.clone()));
+        for _ in 0..3 {
+            assert!(
+                skills
+                    .snapshot(SkillViewOptions::default())
+                    .await
+                    .unwrap()
+                    .complete
+            );
+        }
+        assert_eq!(provider.0.load(Ordering::SeqCst), 3);
     }
 }

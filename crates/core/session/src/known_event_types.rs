@@ -5,7 +5,7 @@
 /// vocabulary this build understands. The persistence read path refuses to
 /// interpret a log containing a type outside this set unless the event
 /// carries the envelope's `ignorable` marker.
-pub const KNOWN_SESSION_EVENT_TYPES: [&str; 64] = [
+pub const KNOWN_SESSION_EVENT_TYPES: [&str; 71] = [
     "agent-preset/selected",
     "agent/inbox/spliced",
     "approval/asked",
@@ -17,7 +17,10 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 64] = [
     "command/done",
     "command/run",
     "compaction/end",
+    "compaction/error",
     "compaction/prune",
+    "compaction/recovery",
+    "compaction/retry",
     "compaction/start",
     "compaction/summary",
     "deliverables/presented",
@@ -41,6 +44,7 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 64] = [
     "request/header",
     "request/phase",
     "sandbox/mode",
+    "sandbox/roots-revoked",
     "schedule/change",
     "session-log-deepseek/delivery-accepted",
     "session/end-seed",
@@ -58,6 +62,7 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 64] = [
     "team/message/queued",
     "team/task",
     "todo/write",
+    "terminal/permissions-revoked",
     "tool-workflow/agent-end",
     "tool-workflow/agent-start",
     "tool-workflow/run-end",
@@ -66,10 +71,12 @@ pub const KNOWN_SESSION_EVENT_TYPES: [&str; 64] = [
     "tool/code-dispatch",
     "tool/code-dispatch-start",
     "tool/result",
+    "tools/discovery",
     "turn/end",
     "turn/start",
     "user/message",
     "web/deepseek-search-llm-request",
+    "web/hosted-search-request",
 ];
 
 /// Whether a type is in this build's known event vocabulary.

@@ -2343,7 +2343,7 @@ mod history_window_tests {
     }
 
     #[tokio::test]
-    async fn rust_ultra_events_reopen_without_disabling_unknown_event_protection() {
+    async fn rust_runtime_events_reopen_without_disabling_unknown_event_protection() {
         let root = std::env::temp_dir().join(format!("dsh-ultra-log-{}", uuid::Uuid::new_v4()));
         let ctx = Context::root();
         let backend = JsonlSessionPersistence::install(
@@ -2375,6 +2375,12 @@ mod history_window_tests {
             "execution/ultra-admitted",
             "execution/ultra-settled",
             "execution/ultra-budget-exhausted",
+            "compaction/retry",
+            "compaction/error",
+            "compaction/recovery",
+            "sandbox/roots-revoked",
+            "terminal/permissions-revoked",
+            "web/hosted-search-request",
         ];
         let events = kinds
             .iter()
@@ -2398,7 +2404,11 @@ mod history_window_tests {
         SessionPersistenceApi::append(
             backend.as_ref(),
             &id,
-            &[event(4, "execution/unknown-future-mode", false)],
+            &[event(
+                kinds.len() as u64,
+                "execution/unknown-future-mode",
+                false,
+            )],
         )
         .await
         .unwrap();

@@ -947,11 +947,14 @@ impl ToolRuntime {
     /// Project visible definitions onto the allowlisted model-facing schema
     /// fields.
     pub fn schemas(&self, scope: Option<&ScopeKey>) -> Vec<ToolSchema> {
-        self.view(scope)
+        let mut schemas: Vec<_> = self
+            .view(scope)
             .visible
             .values()
             .map(|definition| self.schema_of(definition))
-            .collect()
+            .collect();
+        schemas.sort_by(|left, right| left.name.cmp(&right.name));
+        schemas
     }
 
     /// Classify a pending call through the caller's visible tool definition.
@@ -1759,6 +1762,9 @@ impl ToolRuntime {
             .values()
             .map(|definition| self.schema_of(definition))
             .collect::<Vec<_>>();
+        // A newly built HashMap has a fresh iteration order. Keep both the
+        // model schema prefix and discovery-budget selection deterministic.
+        schemas.sort_by(|left, right| left.name.cmp(&right.name));
         let mut known_names = view.known_names;
         if mode == ToolPresentationMode::Native {
             if let Some(discovery) = self.discovery.lock().clone() {

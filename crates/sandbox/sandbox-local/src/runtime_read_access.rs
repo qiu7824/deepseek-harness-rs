@@ -85,9 +85,13 @@ impl RuntimeReadAccess {
         {
             return Err("the user profile or drive root cannot be a cached runtime".into());
         }
-        if !root.join("python.exe").is_file() || !root.join("Lib").is_dir() || !cache.is_absolute()
+        if (!(root.join("python.exe").is_file() && root.join("Lib").is_dir())
+            && !super::installed_runtime::is_powershell(&root))
+            || !cache.is_absolute()
         {
-            return Err("invalid installed Python runtime or permission-state directory".into());
+            return Err(
+                "invalid installed Python/PowerShell runtime or permission-state directory".into(),
+            );
         }
         fs::create_dir_all(cache).map_err(|e| e.to_string())?;
         let cache = fs::canonicalize(cache).map_err(|e| e.to_string())?;

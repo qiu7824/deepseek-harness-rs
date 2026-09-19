@@ -62,6 +62,7 @@ impl SkillProvider for BadgeProvider {
         Ok(SkillProviderObservation {
             candidates: vec![candidate()],
             complete: true,
+            volatile: false,
         })
     }
 

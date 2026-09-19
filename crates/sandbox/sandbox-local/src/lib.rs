@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 #[cfg(windows)]
+mod installed_runtime;
+
+#[cfg(windows)]
 static EMBEDDED_RUNNER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 /// Register the current host only when its entry point implements the sandbox subcommand.
@@ -331,6 +334,29 @@ impl SandboxProvider for LocalSandboxProvider {
                     "--cleanup-state".into(),
                     cache.join("sandbox-cleanup").to_string_lossy().into_owned(),
                 ]);
+            }
+        }
+        #[cfg(windows)]
+        if self.platform == "win32" {
+            if let Some(root) = argv
+                .first()
+                .and_then(|program| installed_runtime::powershell_root(program))
+            {
+                if !self
+                    .runtime_roots
+                    .iter()
+                    .any(|existing| std::fs::canonicalize(existing).ok().as_ref() == Some(&root))
+                {
+                    wrapped.extend([
+                        if self.runtime_cache.is_some() {
+                            "--runtime-root"
+                        } else {
+                            "--read-root"
+                        }
+                        .into(),
+                        root.to_string_lossy().into_owned(),
+                    ]);
+                }
             }
         }
         wrapped.push("--".to_string());

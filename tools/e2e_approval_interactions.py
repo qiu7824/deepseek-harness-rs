@@ -39,8 +39,13 @@ class ApprovalFixture(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         messages = request.get("messages", [])
+        last_content = messages[-1].get("content", "") if messages else ""
+        last_text = last_content if isinstance(last_content, str) else "\n".join(part.get("text", "") for part in last_content)
+        compacting = last_text.startswith("You are acting as a compaction engine.")
         choice = None
         for index, message in enumerate(messages):
+            if not request.get("tools") or compacting:
+                break
             if message.get("role") != "user":
                 continue
             content = message.get("content", "")
@@ -48,7 +53,7 @@ class ApprovalFixture(BaseHTTPRequestHandler):
                 content = "\n".join(part.get("text", "") for part in content)
             if "approval-e2e:" in content:
                 choice = (index, json.JSONDecoder().raw_decode(content.split("approval-e2e:", 1)[1])[0])
-        delta = {"role": "assistant", "content": "Approval fixture complete."}
+        delta = {"role": "assistant", "content": "Earlier fixture approval interactions have been processed. Follow the latest explicit fixture request." if compacting else "Approval fixture complete."}
         finish = "stop"
         if choice is not None:
             index, spec = choice

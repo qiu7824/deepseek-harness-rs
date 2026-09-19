@@ -425,8 +425,13 @@ async fn inspect_cold(
                 .to_string(),
         ));
     };
-    let inspected = persistence.inspect(session_id).await.map_err(|_| {
-        ResumeFailure::SessionNotFound(format!("session \"{session_id}\" not found"))
+    let inspected = persistence.inspect(session_id).await.map_err(|error| {
+        let missing = format!("session \"{session_id}\" not found");
+        if error == missing {
+            ResumeFailure::SessionNotFound(missing)
+        } else {
+            ResumeFailure::Internal(format!("cannot restore session \"{session_id}\": {error}"))
+        }
     })?;
     if inspected.meta.cwd.is_none() {
         return Err(ResumeFailure::SessionNotFound(format!(
