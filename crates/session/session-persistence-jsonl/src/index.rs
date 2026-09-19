@@ -40,6 +40,47 @@ use crate::zstd::{
 const DEFAULT_PACK_CHUNKS: bool = true;
 const DEFAULT_COMPRESSION: JsonlCompression = JsonlCompression::Zstd;
 
+fn move_history_window(events: Vec<SessionEvent>, start: usize, count: usize) -> Vec<SessionEvent> {
+    // In-place iterator collect can preserve the entire scan Vec's capacity.
+    // Move payloads into an explicitly sized page instead of cloning them or
+    // retaining a large, mostly empty event array until response completion.
+    let mut window = Vec::with_capacity(count);
+    for event in events.into_iter().skip(start).take(count) {
+        window.push(event);
+    }
+    window
+}
+
+#[cfg(test)]
+mod owned_window_tests {
+    use super::*;
+
+    #[test]
+    fn small_page_moves_payloads_without_retaining_scan_capacity() {
+        let events: Vec<_> = (0_u64..10_000)
+            .map(|seq| SessionEvent {
+                type_: "user/message".to_string(),
+                seq: dsh_session::SessionSeq::new(seq).unwrap(),
+                time: 0,
+                data: serde_json::Value::String(format!("payload-{seq}")),
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            })
+            .collect();
+        let address = events[5_000].data.as_str().unwrap().as_ptr();
+        let page = move_history_window(events, 5_000, 4);
+        assert_eq!(page.len(), 4);
+        assert_eq!(page.capacity(), 4, "a small page retained the scan array");
+        assert_eq!(
+            page[0].data.as_str().unwrap().as_ptr(),
+            address,
+            "payload was deep-cloned"
+        );
+        assert_eq!(page[3].seq.get(), 5_003);
+    }
+}
+
 /// Plugin config: where the JSONL backend keeps its session logs, and the
 /// packed-row write switch.
 #[derive(Debug, Clone)]
@@ -755,7 +796,10 @@ impl JsonlSessionPersistence {
                     }));
                 }
                 Ok(selection) => {
-                    let events = candidates[selection.start..selection.end].to_vec();
+                    // Move the selected events out instead of keeping a deep
+                    // clone of the page beside the complete scan buffer.
+                    let events =
+                        move_history_window(candidates, selection.start, selection.event_count());
                     return Ok(Some(SessionReadWindowResult {
                         meta,
                         events,
@@ -1770,7 +1814,11 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                 Ok(selection) => {
                     return Ok(SessionReadWindowResult {
                         meta: whole.meta,
-                        events: whole.events[selection.start..selection.end].to_vec(),
+                        events: move_history_window(
+                            whole.events,
+                            selection.start,
+                            selection.event_count(),
+                        ),
                         has_more: selection.has_more,
                         oversized_event_count: None,
                     });

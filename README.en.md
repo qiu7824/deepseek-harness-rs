@@ -6,17 +6,24 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.24`.
+Current release line: `0.1.3-alpha.25`.
 
-Development version: `0.1.3-alpha.24`; see the [change notes](release/notes/v0.1.3-alpha.24.md).
+Development version: `0.1.3-alpha.25`; see the [change notes](release/notes/v0.1.3-alpha.25.md).
 
-See the [alpha.24 release notes](release/notes/v0.1.3-alpha.24.md) for the complete changes.
+See the [alpha.25 release notes](release/notes/v0.1.3-alpha.25.md) for the complete changes.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
 Teams are available from the conversation header and Settings. Model search keeps its full height, model rows expose a compact delete action, and focus-only composer tips can be switched off in General settings. Computer Use compatibility is documented in [the capability matrix](docs/computer-use-compatibility.zh.md).
 
 The `glob` and `grep` tools require [ripgrep (rg)](https://github.com/BurntSushi/ripgrep#installation) on PATH. DEB packages declare the dependency; install ripgrep separately for Windows, macOS and portable Linux setups, then check `rg --version`.
+
+## 0.1.3-alpha.25 memory reclamation and consistent controls
+
+- Release response storage before collection, collect on the main thread while idle, and bound prepared-session and history-window retention. See the [memory lifecycle audit](docs/memory/lifecycle-audit-20260920.zh.md).
+- Keep the standard whale icon consistent across launchers, shortcuts and installers, with embedded-resource validation.
+- Align account, execution-environment, remote-workspace and skill controls; preserve drafts during diagnostics and reject stale UI responses.
+- Restore cross-platform release gates and add settings-control regressions.
 
 ## 0.1.3-alpha.24 icon and interface fixes
 

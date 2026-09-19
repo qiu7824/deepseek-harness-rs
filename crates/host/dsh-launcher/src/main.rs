@@ -2110,7 +2110,7 @@ mod tests {
 
     #[test]
     fn unix_launcher_inspects_and_stops_the_spawned_host_process() {
-        let source = include_str!("main.rs");
+        let source = include_str!("main.rs").split("mod tests {").next().unwrap();
         assert!(source.contains("/proc/{pid}/exe"));
         assert!(source.contains("linux_pidfd_send_signal(&pidfd, libc::SIGTERM)"));
         assert!(source.contains("libc::syscall"));
@@ -2120,7 +2120,8 @@ mod tests {
         assert!(source.contains("libc::kill(pid, 0)"));
         assert!(source.contains("fn process_creation_time_macos(pid: i32)"));
         assert!(source.contains("let observed = inspect_process(identity.pid)?;"));
-        assert!(source.contains("#[cfg(unix)]\n            stop_process(&identity)"));
+        let normalized = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized.contains("#[cfg(unix)] stop_process(&identity)"));
     }
 
     #[test]

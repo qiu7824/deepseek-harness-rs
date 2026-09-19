@@ -1,0 +1,100 @@
+"use strict";
+const assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
+const modules = path.resolve(process.argv[2]);
+const sourceRoot = process.argv[3] ? path.resolve(process.argv[3]) : path.resolve(__dirname, "../../web/dist/plugins");
+const { JSDOM } = require(path.join(modules, "jsdom"));
+const dom = new JSDOM("<!doctype html><html><head></head><body><main></main></body></html>", { url: "http://localhost/" });
+Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true });
+const React = require(path.join(modules, "react")), jsx = require(path.join(modules, "react/jsx-runtime"));
+const root = require(path.join(modules, "react-dom/client")).createRoot(document.querySelector("main"));
+const h = React.createElement;
+const flush = async () => React.act(async () => { await new Promise(resolve => setImmediate(resolve)); });
+const render = async element => { await React.act(async () => root.render(element)); await flush(); };
+const button = text => [...document.querySelectorAll("button")].find(element => element.textContent === text);
+const click = async element => { assert.ok(element); await React.act(async () => element.click()); await flush(); };
+function load(name, fetch, exports = []) {
+    let result;
+    const primitives = new Proxy({ Button: ({ children, ...props }) => h("button", props, children) }, { get: (object, key) => object[key] || (() => h("svg")) });
+    const runtime = { defineStore: spec => spec, createSnapshotStore: initial => ({ getSnapshot: () => initial, subscribe: () => () => {} }) };
+    const source = fs.readFileSync(path.join(sourceRoot, name), "utf8").replace("return module.exports;", exports.map(name => `exports.${name}=${name};`).join("") + "return module.exports;");
+    vm.runInNewContext(source, { document, console, fetch, AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
+        window: { __ModuleLoader__: { load: definition => result = definition.factory(id => id === "react" ? React : id === "react/jsx-runtime" ? jsx : id.endsWith("/client") ? runtime : id.endsWith("ui-primitives") ? primitives : { Service: class {} }) } }
+    });
+    return result;
+}
+const response = value => ({ ok: true, json: async () => value });
+const snapshot = (sessionId, revision = 1) => ({ revision, preferences: { pythonPath: `${sessionId}-python.exe` }, effective: { shellPath: "shell.exe", pythonPath: `${sessionId}-python.exe` }, shellCandidates: [], os: "windows", arch: "x86_64", permissionMode: "read-only", workspace: "C:/workspace" });
+const requests = [];
+let finishSave, revision = 1;
+const fetchEnvironment = async (_url, options) => {
+    const input = JSON.parse(options.body); requests.push(input);
+    if (input.action === "describe" && input.cwd === "C:/missing") return { ok: false, json: async () => ({ error: "工作区不可用" }) };
+    if (input.action === "save") return new Promise(resolve => { finishSave = () => resolve(response(snapshot(input.sessionId, 2))); });
+    if (input.action === "probe") return response({ id: input.name, status: "ready" });
+    return response({ ...snapshot(input.sessionId, revision), workspace: input.cwd || "C:/workspace" });
+};
+(async () => {
+    const general = load("ui-settings-general.js", fetchEnvironment, ["EnvironmentSection", "RemoteExecutionSection"]);
+    await render(h(general.EnvironmentSection, { sessionId: "first" }));
+    assert.equal(window.getComputedStyle(button("保存")).minHeight, "36px", "environment buttons use their own styles");
+    await click(button("保存"));
+    await render(h(general.EnvironmentSection, { sessionId: "second" }));
+    const python = () => document.querySelector('input[placeholder="自动选择；或填写解释器绝对路径"]');
+    assert.equal(python().value, "second-python.exe");
+    await React.act(async () => finishSave()); await flush();
+    assert.equal(python().value, "second-python.exe", "old saves cannot repaint another session");
+    await React.act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(python(), "unsaved-python.exe");
+        python().dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    revision = 9;
+    await click(button("检查 python"));
+    assert.equal(python().value, "unsaved-python.exe", "probes retain local drafts");
+    await click(button("清空诊断缓存"));
+    assert.equal(python().value, "unsaved-python.exe", "clearing diagnostic cache retains local drafts");
+    await click(button("保存"));
+    assert.equal(requests.at(-1).expectedRevision, 1, "a probe cannot rebase stale drafts onto another writer's revision");
+    await React.act(async () => finishSave()); await flush();
+    await click(button("放弃修改并重新加载"));
+    assert.equal(python().value, "second-python.exe");
+    await render(h(general.EnvironmentSection, {}));
+    await React.act(async () => {
+        const scope = document.querySelector("select");
+        scope.value = "project"; scope.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    const project = () => document.querySelector('input[aria-label="项目目录"]');
+    const editProject = async value => React.act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(project(), value);
+        project().dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    const beforeTyping = requests.length;
+    await editProject("C:/missing");
+    assert.equal(requests.length, beforeTyping, "typing a directory does not reload or remove its editor");
+    await React.act(async () => project().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true })));
+    assert.equal(requests.length, beforeTyping, "IME confirmation does not apply a partial directory");
+    assert.equal(button("保存").disabled, true, "writes wait for the selected project configuration");
+    await click(button("读取项目配置"));
+    assert.equal(project().value, "C:/missing", "failed directory reads remain editable");
+    assert.match(document.querySelector('[role="alert"]').textContent, /工作区不可用/);
+    await editProject("C:/valid"); await click(button("读取项目配置"));
+    assert.equal(button("保存").disabled, false);
+    assert.match(document.body.textContent, /当前读取目录：C:\/valid/);
+    await render(h(general.RemoteExecutionSection, { api: { workspace: {} } }));
+    assert.equal(window.getComputedStyle(button("核验并添加工作区")).minHeight, "36px");
+    const discovery = load("ui-settings-tool-discovery.js", async () => response({ revision: 1, configuration: { enabled: true, eagerLimit: 12, listingChars: 2048, maxLoaded: 20, maxSchemaBytes: 65536 }, runtime: { enabled: true } }));
+    await render(h(discovery.ToolDiscoverySection));
+    assert.equal(window.getComputedStyle(button("保存")).minHeight, "38px", "discovery styles do not require workbench previews");
+    assert.ok(document.querySelector(".dshDiscoveryBudgets"));
+    await render(null);
+    assert.equal(document.querySelector("style[data-tool-discovery-controls]"), null, "discovery releases its owned stylesheet");
+    const skills = load("ui-settings-skill-revisions.js", async () => response({}));
+    await render(h(skills.SkillRevisionSection, { rpc: async () => ({ revision: 1, enabled: true, candidates: [] }) }));
+    assert.equal(window.getComputedStyle(document.querySelector(".dshSkillToggle")).flexDirection, "row");
+    assert.equal(window.getComputedStyle(document.querySelector('.dshSkillToggle input')).width, "16px");
+    const plugins = load("ui-settings-plugins.js", async () => response({}), ["PluginInstallControls"]);
+    await render(h(plugins.PluginInstallControls));
+    assert.equal(window.getComputedStyle(button("检查操作")).minHeight, "36px", "plugin controls do not require workbench previews");
+    await render(null);
+    assert.equal(document.querySelector("style[data-plugin-center-controls]"), null);
+    console.log("PASS settings controls: independent styles, switch alignment, stale-save isolation and revision-safe probe drafts");
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await React.act(async () => root.unmount()); dom.window.close(); });

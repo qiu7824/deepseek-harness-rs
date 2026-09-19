@@ -7568,6 +7568,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			}
 			/** Release reconstructible history while keeping drafts, queues and answerable requests. */
 			releaseHistory() {
+				if (this.readingAwayFromTail && this.historyTargetSeq === null && this.events.length) this.historyTargetSeq = this.baseSeq;
 				this.openGeneration++;
 				this.beginHistoryNavigation("suspend");
 				this.navigationRequest = null;
@@ -7575,8 +7576,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.openState = "cold";
 				this.openError = null;
 				this.events = []; this.views = []; this.historyPages = []; this.liveBuffer = [];
+				this.liveBufferBytes = 0; this.liveBufferDroppedThrough = -1; this.subscribedLastSeq = null;
 				this.tailRepairNeeded = false;
-				this.conversation.replaceWindow([], []);
+				this.conversation.replaceWindow([], false);
 				// Replace the cached snapshot too; otherwise its assembled nodes retain the old window.
 				this.notifier.notifyNow();
 			}
@@ -7905,6 +7907,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				if (this.running === running) return;
 				this.running = running;
 				this.notifier.markDirty();
+				if (!running) this.options?.onHistoryUnobserved?.();
 			}
 			/**
 			* Install or clear the catalog-discovered transport address. A changed

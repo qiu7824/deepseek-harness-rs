@@ -1,0 +1,702 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-20",
+  "baseRevision": "d1d0199f1924da71eb1678406f63d70d66b67201",
+  "unit": "MiB",
+  "pollIntervalMs": 20,
+  "beforeBinarySha256": "213304f716138d19717878a205bb08a340a4bdc14a8e90f511e5cb797451defa",
+  "afterBinarySha256": "917321e4d95907fc8f7aecc2a883250fb86dde0fc0206291ceb2114b0a98e102",
+  "sourceSha256": {
+    "crates/host/dsh-host/src/lib.rs": "e9b42dde2ead53083580f14321f4a85ec13f6fc5ae6023b49b114ba3d635fac1",
+    "crates/host/dsh-cli/src/main.rs": "5726fb6d59065d30f37ec8b71a2cdd09802825605d2b4992d05021d058465525",
+    "crates/host/dsh-cli/src/allocator_idle.rs": "19a18bfbcd4ca0489b7d5083b5ebc4e019c58a37565df11a1c38f374234f4db4",
+    "crates/session/session-persistence/src/preparations.rs": "aa9d37f1c193133e8e75a247bc503f1547bcec68d947d7b79ee6adca95bc1fe5",
+    "crates/session/session-persistence-jsonl/src/index.rs": "b44c446710d37c757c168db9073eb42b2d23fedb01e44c680144037fd87d8466",
+    "crates/schedule/schedule/src/transaction.rs": "c237a642f4b0054f2a72b8f3a7dc0822aeb94915a46159cf4622fa3cd77ceecd",
+    "web/src/runtime-plugins/client-runtime.js": "401fbaf62469ed11af0f9aa280d9709efc1f763e93ce807ad80cd2facf665382",
+    "tools/tests/history_retention_harness.cjs": "071aa30d318f655b9a81950b068e53a306f4b14eb1d489dfb0b4a3d17589aec2"
+  },
+  "beforeStartup": {
+    "Id": 76068,
+    "WorkingSet64": 52731904,
+    "PrivateMemorySize64": 166060032,
+    "HandleCount": 181
+  },
+  "afterStartup": {
+    "Id": 66544,
+    "WorkingSet64": 51843072,
+    "PrivateMemorySize64": 36487168,
+    "HandleCount": 180
+  },
+  "before": [
+    {
+      "label": "list",
+      "method": "session.list",
+      "requests": 5,
+      "before": {
+        "privateMiB": 158.37,
+        "workingSetMiB": 50.29
+      },
+      "after": {
+        "privateMiB": 105.68,
+        "workingSetMiB": 56.72
+      },
+      "peakPrivateMiB": 158.37,
+      "peakWorkingSetMiB": 59.29,
+      "seconds": 1.062,
+      "responseBytes": 358730
+    },
+    {
+      "label": "large-0-143745-tail",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 105.68,
+        "workingSetMiB": 56.72
+      },
+      "after": {
+        "privateMiB": 76.34,
+        "workingSetMiB": 61.83
+      },
+      "peakPrivateMiB": 116.21,
+      "peakWorkingSetMiB": 80.11,
+      "seconds": 2.172,
+      "responseBytes": 126299,
+      "events": 59,
+      "eventDigest": "0be037985c7ae4b44f0d190b1b9f40a2bda9367df25cc190096538cc4942725a",
+      "firstSeq": 136513,
+      "lastSeq": 143745,
+      "hasMore": true
+    },
+    {
+      "label": "large-0-143745-older",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 76.34,
+        "workingSetMiB": 61.83
+      },
+      "after": {
+        "privateMiB": 71.21,
+        "workingSetMiB": 58.84
+      },
+      "peakPrivateMiB": 133.73,
+      "peakWorkingSetMiB": 97.49,
+      "seconds": 2.547,
+      "responseBytes": 278863,
+      "events": 72,
+      "eventDigest": "277531293f39ece76873fc4a56f95ee2ca357499b1ea7ed77cde65222a79dc18",
+      "firstSeq": 122299,
+      "lastSeq": 136512,
+      "hasMore": true
+    },
+    {
+      "label": "large-0-143745-forward",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 71.21,
+        "workingSetMiB": 58.84
+      },
+      "after": {
+        "privateMiB": 72.1,
+        "workingSetMiB": 59.12
+      },
+      "peakPrivateMiB": 135.93,
+      "peakWorkingSetMiB": 95.11,
+      "seconds": 2.843,
+      "responseBytes": 546420,
+      "events": 79,
+      "eventDigest": "27c9e4629759baaed01908714e1a308492d391ee88986c37e5080a46dee44b94",
+      "firstSeq": 30,
+      "lastSeq": 27888,
+      "hasMore": true
+    },
+    {
+      "label": "large-1-114921-tail",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 72.1,
+        "workingSetMiB": 59.12
+      },
+      "after": {
+        "privateMiB": 73.73,
+        "workingSetMiB": 61.16
+      },
+      "peakPrivateMiB": 82.43,
+      "peakWorkingSetMiB": 67.78,
+      "seconds": 1.141,
+      "responseBytes": 164481,
+      "events": 245,
+      "eventDigest": "72104be0fd7b28b347de165b264e069c7e401c28a3f6c06104116568fcccd616",
+      "firstSeq": 112772,
+      "lastSeq": 114921,
+      "hasMore": true
+    },
+    {
+      "label": "large-1-114921-older",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 73.73,
+        "workingSetMiB": 61.16
+      },
+      "after": {
+        "privateMiB": 72.11,
+        "workingSetMiB": 59.88
+      },
+      "peakPrivateMiB": 80.68,
+      "peakWorkingSetMiB": 66.28,
+      "seconds": 0.641,
+      "responseBytes": 184443,
+      "events": 244,
+      "eventDigest": "598952ba2812da8448d9d232d05729bfb3e82803a8250bd5070f85dfbce15d11",
+      "firstSeq": 108956,
+      "lastSeq": 112771,
+      "hasMore": true
+    },
+    {
+      "label": "large-1-114921-forward",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 72.11,
+        "workingSetMiB": 59.88
+      },
+      "after": {
+        "privateMiB": 72.73,
+        "workingSetMiB": 60.15
+      },
+      "peakPrivateMiB": 79.93,
+      "peakWorkingSetMiB": 65.64,
+      "seconds": 0.484,
+      "responseBytes": 140545,
+      "events": 91,
+      "eventDigest": "d3a895922b02bd088cd2373ff03416ecce6f51617615e39c9a9de004ffd5e227",
+      "firstSeq": 30,
+      "lastSeq": 2385,
+      "hasMore": true
+    },
+    {
+      "label": "large-2-75781-tail",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 72.73,
+        "workingSetMiB": 60.15
+      },
+      "after": {
+        "privateMiB": 74.93,
+        "workingSetMiB": 62.48
+      },
+      "peakPrivateMiB": 229.21,
+      "peakWorkingSetMiB": 164.82,
+      "seconds": 5.219,
+      "responseBytes": 82984,
+      "events": 72,
+      "eventDigest": "783979d33439e81a465da5943278dfa35737137db7c2086934f777956c47886c",
+      "firstSeq": 73631,
+      "lastSeq": 75781,
+      "hasMore": true
+    },
+    {
+      "label": "large-2-75781-older",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 74.93,
+        "workingSetMiB": 62.48
+      },
+      "after": {
+        "privateMiB": 81.93,
+        "workingSetMiB": 67.84
+      },
+      "peakPrivateMiB": 229.65,
+      "peakWorkingSetMiB": 164.91,
+      "seconds": 5.031,
+      "responseBytes": 107028,
+      "events": 118,
+      "eventDigest": "e14bacce80c9183b747811cf66bea5acc7197148ab8e567bf2f1304dea99acba",
+      "firstSeq": 72050,
+      "lastSeq": 73630,
+      "hasMore": true
+    },
+    {
+      "label": "large-2-75781-forward",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 81.93,
+        "workingSetMiB": 67.84
+      },
+      "after": {
+        "privateMiB": 73.05,
+        "workingSetMiB": 61.75
+      },
+      "peakPrivateMiB": 84.19,
+      "peakWorkingSetMiB": 68.05,
+      "seconds": 2.812,
+      "responseBytes": 39109,
+      "events": 58,
+      "eventDigest": "22092eb35d9229e5dfa670520ff238b04190eabca18638f59e96e998f74d7a4a",
+      "firstSeq": 30,
+      "lastSeq": 1430,
+      "hasMore": true
+    },
+    {
+      "label": "final-large-response",
+      "method": "session.history",
+      "requests": 1,
+      "before": {
+        "privateMiB": 73.05,
+        "workingSetMiB": 61.75
+      },
+      "after": {
+        "privateMiB": 73.12,
+        "workingSetMiB": 61.75
+      },
+      "peakPrivateMiB": 109.35,
+      "peakWorkingSetMiB": 93.67,
+      "seconds": 0.25,
+      "responseBytes": 546420,
+      "events": 79,
+      "eventDigest": "27c9e4629759baaed01908714e1a308492d391ee88986c37e5080a46dee44b94",
+      "firstSeq": 30,
+      "lastSeq": 27888,
+      "hasMore": true
+    },
+    {
+      "label": "no-rpc-idle-0s",
+      "privateMiB": 73.12,
+      "workingSetMiB": 61.75
+    },
+    {
+      "label": "no-rpc-idle-1s",
+      "privateMiB": 73.12,
+      "workingSetMiB": 61.75
+    },
+    {
+      "label": "no-rpc-idle-3s",
+      "privateMiB": 73.12,
+      "workingSetMiB": 61.75
+    },
+    {
+      "label": "no-rpc-idle-10s",
+      "privateMiB": 65.91,
+      "workingSetMiB": 60.36
+    },
+    {
+      "label": "no-rpc-idle-30s",
+      "privateMiB": 65.88,
+      "workingSetMiB": 60.34
+    }
+  ],
+  "after": [
+    {
+      "label": "list",
+      "method": "session.list",
+      "requests": 5,
+      "before": {
+        "privateMiB": 34.8,
+        "workingSetMiB": 49.44
+      },
+      "after": {
+        "privateMiB": 38.89,
+        "workingSetMiB": 54.85
+      },
+      "peakPrivateMiB": 47.02,
+      "peakWorkingSetMiB": 55.95,
+      "seconds": 0.781,
+      "responseBytes": 358730
+    },
+    {
+      "label": "large-0-143745-tail",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 38.89,
+        "workingSetMiB": 54.85
+      },
+      "after": {
+        "privateMiB": 43.04,
+        "workingSetMiB": 59.21
+      },
+      "peakPrivateMiB": 54.5,
+      "peakWorkingSetMiB": 70.82,
+      "seconds": 1.672,
+      "responseBytes": 126299,
+      "events": 59,
+      "eventDigest": "0be037985c7ae4b44f0d190b1b9f40a2bda9367df25cc190096538cc4942725a",
+      "firstSeq": 136513,
+      "lastSeq": 143745,
+      "hasMore": true
+    },
+    {
+      "label": "large-0-143745-older",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 43.04,
+        "workingSetMiB": 59.21
+      },
+      "after": {
+        "privateMiB": 41.04,
+        "workingSetMiB": 58.54
+      },
+      "peakPrivateMiB": 64.43,
+      "peakWorkingSetMiB": 79.47,
+      "seconds": 1.765,
+      "responseBytes": 278863,
+      "events": 72,
+      "eventDigest": "277531293f39ece76873fc4a56f95ee2ca357499b1ea7ed77cde65222a79dc18",
+      "firstSeq": 122299,
+      "lastSeq": 136512,
+      "hasMore": true
+    },
+    {
+      "label": "large-0-143745-forward",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 41.04,
+        "workingSetMiB": 58.54
+      },
+      "after": {
+        "privateMiB": 46.93,
+        "workingSetMiB": 62.6
+      },
+      "peakPrivateMiB": 106.2,
+      "peakWorkingSetMiB": 94.4,
+      "seconds": 2.235,
+      "responseBytes": 546420,
+      "events": 79,
+      "eventDigest": "27c9e4629759baaed01908714e1a308492d391ee88986c37e5080a46dee44b94",
+      "firstSeq": 30,
+      "lastSeq": 27888,
+      "hasMore": true
+    },
+    {
+      "label": "large-1-114921-tail",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 46.93,
+        "workingSetMiB": 62.6
+      },
+      "after": {
+        "privateMiB": 44.77,
+        "workingSetMiB": 61.23
+      },
+      "peakPrivateMiB": 52.94,
+      "peakWorkingSetMiB": 65.75,
+      "seconds": 1.032,
+      "responseBytes": 164481,
+      "events": 245,
+      "eventDigest": "72104be0fd7b28b347de165b264e069c7e401c28a3f6c06104116568fcccd616",
+      "firstSeq": 112772,
+      "lastSeq": 114921,
+      "hasMore": true
+    },
+    {
+      "label": "large-1-114921-older",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 44.77,
+        "workingSetMiB": 61.23
+      },
+      "after": {
+        "privateMiB": 42.46,
+        "workingSetMiB": 59.68
+      },
+      "peakPrivateMiB": 52.47,
+      "peakWorkingSetMiB": 67.14,
+      "seconds": 0.64,
+      "responseBytes": 184443,
+      "events": 244,
+      "eventDigest": "598952ba2812da8448d9d232d05729bfb3e82803a8250bd5070f85dfbce15d11",
+      "firstSeq": 108956,
+      "lastSeq": 112771,
+      "hasMore": true
+    },
+    {
+      "label": "large-1-114921-forward",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 42.46,
+        "workingSetMiB": 59.68
+      },
+      "after": {
+        "privateMiB": 44.09,
+        "workingSetMiB": 60.59
+      },
+      "peakPrivateMiB": 48.42,
+      "peakWorkingSetMiB": 64.98,
+      "seconds": 0.453,
+      "responseBytes": 140545,
+      "events": 91,
+      "eventDigest": "d3a895922b02bd088cd2373ff03416ecce6f51617615e39c9a9de004ffd5e227",
+      "firstSeq": 30,
+      "lastSeq": 2385,
+      "hasMore": true
+    },
+    {
+      "label": "large-2-75781-tail",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 44.09,
+        "workingSetMiB": 60.59
+      },
+      "after": {
+        "privateMiB": 44.28,
+        "workingSetMiB": 62.06
+      },
+      "peakPrivateMiB": 200.38,
+      "peakWorkingSetMiB": 162.34,
+      "seconds": 4.766,
+      "responseBytes": 82984,
+      "events": 72,
+      "eventDigest": "783979d33439e81a465da5943278dfa35737137db7c2086934f777956c47886c",
+      "firstSeq": 73631,
+      "lastSeq": 75781,
+      "hasMore": true
+    },
+    {
+      "label": "large-2-75781-older",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 44.28,
+        "workingSetMiB": 62.06
+      },
+      "after": {
+        "privateMiB": 49.35,
+        "workingSetMiB": 65.68
+      },
+      "peakPrivateMiB": 202.32,
+      "peakWorkingSetMiB": 163.69,
+      "seconds": 4.375,
+      "responseBytes": 107028,
+      "events": 118,
+      "eventDigest": "e14bacce80c9183b747811cf66bea5acc7197148ab8e567bf2f1304dea99acba",
+      "firstSeq": 72050,
+      "lastSeq": 73630,
+      "hasMore": true
+    },
+    {
+      "label": "large-2-75781-forward",
+      "method": "session.history",
+      "requests": 10,
+      "before": {
+        "privateMiB": 49.35,
+        "workingSetMiB": 65.68
+      },
+      "after": {
+        "privateMiB": 44.79,
+        "workingSetMiB": 61.72
+      },
+      "peakPrivateMiB": 55.48,
+      "peakWorkingSetMiB": 67.88,
+      "seconds": 2.688,
+      "responseBytes": 39109,
+      "events": 58,
+      "eventDigest": "22092eb35d9229e5dfa670520ff238b04190eabca18638f59e96e998f74d7a4a",
+      "firstSeq": 30,
+      "lastSeq": 1430,
+      "hasMore": true
+    },
+    {
+      "label": "final-large-response",
+      "method": "session.history",
+      "requests": 1,
+      "before": {
+        "privateMiB": 44.79,
+        "workingSetMiB": 61.72
+      },
+      "after": {
+        "privateMiB": 50.42,
+        "workingSetMiB": 65.7
+      },
+      "peakPrivateMiB": 82.62,
+      "peakWorkingSetMiB": 96.52,
+      "seconds": 0.234,
+      "responseBytes": 546420,
+      "events": 79,
+      "eventDigest": "27c9e4629759baaed01908714e1a308492d391ee88986c37e5080a46dee44b94",
+      "firstSeq": 30,
+      "lastSeq": 27888,
+      "hasMore": true
+    },
+    {
+      "label": "no-rpc-idle-0s",
+      "privateMiB": 50.42,
+      "workingSetMiB": 65.7
+    },
+    {
+      "label": "no-rpc-idle-1s",
+      "privateMiB": 50.42,
+      "workingSetMiB": 65.7
+    },
+    {
+      "label": "no-rpc-idle-3s",
+      "privateMiB": 50.42,
+      "workingSetMiB": 65.7
+    },
+    {
+      "label": "no-rpc-idle-10s",
+      "privateMiB": 43.46,
+      "workingSetMiB": 64.35
+    },
+    {
+      "label": "no-rpc-idle-30s",
+      "privateMiB": 43.43,
+      "workingSetMiB": 64.33
+    }
+  ],
+  "historyEventDigestsEqual": true,
+  "lifecycle": {
+    "fixedCycles": 100,
+    "sameSessionTurns": 50,
+    "observations": [
+      {
+        "workload": "fixed",
+        "round": 10,
+        "privateBytes": 29638656,
+        "workingSet": 39993344,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 20,
+        "privateBytes": 31076352,
+        "workingSet": 41058304,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 30,
+        "privateBytes": 31674368,
+        "workingSet": 41467904,
+        "handles": 202
+      },
+      {
+        "workload": "fixed",
+        "round": 40,
+        "privateBytes": 33718272,
+        "workingSet": 42479616,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 50,
+        "privateBytes": 33972224,
+        "workingSet": 42721280,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 60,
+        "privateBytes": 34955264,
+        "workingSet": 43163648,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 70,
+        "privateBytes": 36712448,
+        "workingSet": 43880448,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 80,
+        "privateBytes": 36126720,
+        "workingSet": 44044288,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 90,
+        "privateBytes": 37310464,
+        "workingSet": 44732416,
+        "handles": 201
+      },
+      {
+        "workload": "fixed",
+        "round": 100,
+        "privateBytes": 37302272,
+        "workingSet": 44929024,
+        "handles": 202
+      },
+      {
+        "workload": "growing-history",
+        "round": 10,
+        "publicHistoryBytes": 319137,
+        "privateBytes": 46096384,
+        "workingSet": 49860608,
+        "handles": 201
+      },
+      {
+        "workload": "growing-history",
+        "round": 20,
+        "publicHistoryBytes": 631159,
+        "privateBytes": 54255616,
+        "workingSet": 57720832,
+        "handles": 201
+      },
+      {
+        "workload": "growing-history",
+        "round": 30,
+        "publicHistoryBytes": 943193,
+        "privateBytes": 52981760,
+        "workingSet": 57823232,
+        "handles": 201
+      },
+      {
+        "workload": "growing-history",
+        "round": 40,
+        "publicHistoryBytes": 1255233,
+        "privateBytes": 54304768,
+        "workingSet": 58683392,
+        "handles": 201
+      },
+      {
+        "workload": "growing-history",
+        "round": 50,
+        "publicHistoryBytes": 1567329,
+        "privateBytes": 69357568,
+        "workingSet": 71319552,
+        "handles": 201
+      },
+      {
+        "workload": "after-retirement",
+        "privateBytes": 55427072,
+        "workingSet": 60239872,
+        "handles": 201
+      },
+      {
+        "workload": "idle-10s",
+        "elapsedSeconds": 10.0,
+        "cpuSeconds": 0.0,
+        "privateBytes": 38027264,
+        "workingSet": 52682752,
+        "handles": 197
+      }
+    ]
+  },
+  "checks": {
+    "responseLifecycle": 3,
+    "preparedPersistence": 16,
+    "jsonl": 18,
+    "scheduleLeases": 2,
+    "agentLifecycle": 4,
+    "idleRetirement": 5,
+    "composedHost": 2,
+    "mainThreadCollection": 1,
+    "frontendReleaseGates": 47,
+    "subagentResume": 1
+  }
+}

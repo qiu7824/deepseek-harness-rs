@@ -7,6 +7,9 @@
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(windows)]
+mod allocator_idle;
+
 use dsh_host_cli::{
     DshArgsError, DshInvocation, ProfileInterruptLatch, RunProfileRequest, parse_dsh_args,
     run_profile_with_interrupt,
@@ -99,6 +102,12 @@ fn main() {
             eprintln!("dsh: failed to initialize async runtime: {error}");
             std::process::exit(1);
         });
+    #[cfg(windows)]
+    runtime.block_on(allocator_idle::run(
+        async_main(),
+        dsh_host::collect_allocator_on_park,
+    ));
+    #[cfg(not(windows))]
     runtime.block_on(async_main());
 }
 

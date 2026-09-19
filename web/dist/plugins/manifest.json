@@ -1,5 +1,5 @@
 {
-  "rev": "rust-v0.1.3-alpha.24",
+  "rev": "rust-v0.1.3-alpha.25",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-client-ui-file-actions",
@@ -56,7 +56,7 @@
     {
       "id": "@deepseek-ai/dsh-client-runtime",
       "url": "/plugins/client-runtime.js",
-      "rev": "b2ad5ac75299126b",
+      "rev": "401fbaf62469ed11",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-typert-registry",
@@ -124,7 +124,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-general",
       "url": "/plugins/ui-settings-general.js",
-      "rev": "03dc3a55d71cfc6c",
+      "rev": "26ebedfa44345f7f",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -350,7 +350,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-plugins",
       "url": "/plugins/ui-settings-plugins.js",
-      "rev": "d67cd9246283ce51",
+      "rev": "5eef3500551b185c",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -466,7 +466,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-tool-discovery",
       "url": "/plugins/ui-settings-tool-discovery.js",
-      "rev": "6202baa382a2fe43",
+      "rev": "8ec9336695e9afe4",
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings-general"
       ],
@@ -475,7 +475,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-skill-revisions",
       "url": "/plugins/ui-settings-skill-revisions.js",
-      "rev": "f3bb911c8a224023",
+      "rev": "6eb41f0ceb49fe1a",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-ui-settings-general"
@@ -500,7 +500,7 @@
         "@deepseek-ai/dsh-client-connection"
       ],
       "immediately": false,
-      "rev": "6ef3e8b41d90cda1"
+      "rev": "0985bdd0b7b1f7d9"
     }
   ]
 }

@@ -88,10 +88,12 @@ pub fn collect_allocator_on_park() {
     use std::sync::atomic::Ordering;
     let epoch = ALLOCATOR_COLLECT_EPOCH.load(Ordering::Acquire);
     LAST_ALLOCATOR_COLLECT_EPOCH.with(|last| {
-        if last.get() == epoch {
-            return;
-        }
-        unsafe { libmimalloc_sys::mi_collect(true) };
+        // Bootstrap, projections and session retirement also allocate between
+        // HTTP responses. Drain this worker's deferred frees whenever it goes
+        // idle; an unchanged response epoch must not skip that work entirely.
+        // Only explicit response completion requests the more expensive forced
+        // collection of abandoned segments and arenas.
+        unsafe { libmimalloc_sys::mi_collect(last.get() != epoch) };
         last.set(epoch);
     });
 }
@@ -154,7 +156,9 @@ mod allocator_response_lifecycle_tests {
     async fn collection_runs_after_storage_is_freed_and_last_body_clone_is_dropped() {
         struct Buffer(Vec<u8>, Arc<AtomicUsize>);
         impl AsRef<[u8]> for Buffer {
-            fn as_ref(&self) -> &[u8] { &self.0 }
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
         }
         impl Drop for Buffer {
             fn drop(&mut self) {
@@ -169,7 +173,11 @@ mod allocator_response_lifecycle_tests {
         let mut stream = Box::pin(super::bytes_then_collect_stream(
             Buffer(vec![7; 1024 * 1024], freed.clone()),
             move || {
-                assert_eq!(observed.load(Ordering::SeqCst), 1, "collector ran before buffer destruction");
+                assert_eq!(
+                    observed.load(Ordering::SeqCst),
+                    1,
+                    "collector ran before buffer destruction"
+                );
                 counted.fetch_add(1, Ordering::SeqCst);
             },
         ));

@@ -12,6 +12,7 @@
 //! - The shared in-flight result uses `tokio::sync::OnceCell` + `Notify`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dsh_session::{Session, SessionId};
 use indexmap::IndexMap;
@@ -27,7 +28,10 @@ const MAX_CACHED_PREPARED_BYTES: usize = 8 * 1024 * 1024;
 fn fits_prepared_cache(session: &Session) -> bool {
     fn charge(remaining: &mut usize, bytes: usize) -> bool {
         match remaining.checked_sub(bytes) {
-            Some(next) => { *remaining = next; true }
+            Some(next) => {
+                *remaining = next;
+                true
+            }
             None => false,
         }
     }
@@ -36,25 +40,46 @@ fn fits_prepared_cache(session: &Session) -> bool {
         match value {
             Value::String(text) => charge(remaining, text.capacity()),
             Value::Array(items) => {
-                charge(remaining, items.capacity().saturating_mul(std::mem::size_of::<Value>()))
-                    && items.iter().all(|item| json_fits(item, remaining))
+                charge(
+                    remaining,
+                    items
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<Value>()),
+                ) && items.iter().all(|item| json_fits(item, remaining))
             }
             Value::Object(items) => {
-                charge(remaining, items.len().saturating_mul(std::mem::size_of::<(String, Value)>()))
-                    && items.iter().all(|(key, value)| charge(remaining, key.capacity()) && json_fits(value, remaining))
+                charge(
+                    remaining,
+                    items
+                        .len()
+                        .saturating_mul(std::mem::size_of::<(String, Value)>()),
+                ) && items.iter().all(|(key, value)| {
+                    charge(remaining, key.capacity()) && json_fits(value, remaining)
+                })
             }
             _ => true,
         }
     }
     session.with_events(|events| {
-        if events.len() as u64 > MAX_CACHED_PREPARED_EVENTS { return false; }
+        if events.len() as u64 > MAX_CACHED_PREPARED_EVENTS {
+            return false;
+        }
         let mut remaining = MAX_CACHED_PREPARED_BYTES;
-        charge(&mut remaining, events.len().saturating_mul(std::mem::size_of::<dsh_session::SessionEvent>()))
-            && events.iter().all(|event| {
-                charge(&mut remaining, event.type_.capacity())
-                    && charge(&mut remaining, event.source_event_seqs.as_ref().map_or(0, |seqs| seqs.capacity().saturating_mul(std::mem::size_of::<u64>())))
-                    && json_fits(&event.data, &mut remaining)
-            })
+        charge(
+            &mut remaining,
+            events
+                .len()
+                .saturating_mul(std::mem::size_of::<dsh_session::SessionEvent>()),
+        ) && events.iter().all(|event| {
+            charge(&mut remaining, event.type_.capacity())
+                && charge(
+                    &mut remaining,
+                    event.source_event_seqs.as_ref().map_or(0, |seqs| {
+                        seqs.capacity().saturating_mul(std::mem::size_of::<u64>())
+                    }),
+                )
+                && json_fits(&event.data, &mut remaining)
+        })
     })
 }
 
@@ -75,6 +100,7 @@ struct EntryState<S: PreparedSource, C> {
     phase: PreparationPhase,
     source: Option<Arc<S>>,
     reservation: Option<Arc<SessionPreparationReservation<S, C>>>,
+    cacheable: bool,
 }
 
 /// One preparation entry: shared in-flight load plus reservation lifecycle.
@@ -83,6 +109,42 @@ pub struct PreparationEntry<S: PreparedSource, C> {
     result: OnceCell<Result<Arc<S>, String>>,
     notify: Notify,
     state: Mutex<EntryState<S, C>>,
+    readers: AtomicUsize,
+}
+
+/// A cancelled inspect/reserve must release its cache admission as well.
+struct PreparationRead<S: PreparedSource, C> {
+    entries: Arc<Mutex<IndexMap<String, Arc<PreparationEntry<S, C>>>>>,
+    entry: Arc<PreparationEntry<S, C>>,
+}
+
+impl<S: PreparedSource, C> Drop for PreparationRead<S, C> {
+    fn drop(&mut self) {
+        if self.entry.readers.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+        discard_unobserved_large_entry(&self.entries, &self.entry);
+    }
+}
+
+fn discard_unobserved_large_entry<S: PreparedSource, C>(
+    entries: &Arc<Mutex<IndexMap<String, Arc<PreparationEntry<S, C>>>>>,
+    entry: &Arc<PreparationEntry<S, C>>,
+) {
+    let mut entries = entries.lock();
+    if entry.readers.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let state = entry.state.lock();
+    if state.phase == PreparationPhase::Ready
+        && !state.cacheable
+        && entries
+            .get(entry.id.as_str())
+            .is_some_and(|current| Arc::ptr_eq(current, entry))
+    {
+        entries.shift_remove(entry.id.as_str());
+        entry.notify.notify_waiters();
+    }
 }
 
 /// One exclusively held prepared source and its committed persistence state.
@@ -120,7 +182,7 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
 
     /// Observe one prepared source, sharing an in-flight read for the same id.
     pub async fn inspect(&self, id: &SessionId, load: LoadFn<S>) -> Result<Arc<S>, String> {
-        let entry = self.entry_for(id, load);
+        let (entry, _read) = self.entry_for(id, load);
         let loaded = self.await_result(&entry).await?;
         let source = {
             let state = entry.state.lock();
@@ -145,7 +207,7 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
             dyn Fn(Arc<S>) -> crate::coordinator::BoxOpFuture<Option<(Arc<S>, C)>> + Send + Sync,
         >,
     ) -> Result<Option<Arc<SessionPreparationReservation<S, C>>>, String> {
-        let entry = self.entry_for(id, load);
+        let (entry, _read) = self.entry_for(id, load);
         let _ = self.await_result(&entry).await?;
         loop {
             let phase = entry.state.lock().phase;
@@ -351,11 +413,20 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
         Some(source)
     }
 
-    fn entry_for(&self, id: &SessionId, load: LoadFn<S>) -> Arc<PreparationEntry<S, C>> {
+    fn entry_for(
+        &self,
+        id: &SessionId,
+        load: LoadFn<S>,
+    ) -> (Arc<PreparationEntry<S, C>>, PreparationRead<S, C>) {
         let entry = {
             let mut entries = self.entries.lock();
             if let Some(existing) = entries.get(id.as_str()).cloned() {
-                return existing;
+                existing.readers.fetch_add(1, Ordering::Relaxed);
+                let read = PreparationRead {
+                    entries: self.entries.clone(),
+                    entry: existing.clone(),
+                };
+                return (existing, read);
             }
             let entry = Arc::new(PreparationEntry {
                 id: id.clone(),
@@ -365,10 +436,16 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
                     phase: PreparationPhase::Loading,
                     source: None,
                     reservation: None,
+                    cacheable: true,
                 }),
+                readers: AtomicUsize::new(1),
             });
             entries.insert(id.as_str().to_string(), entry.clone());
             entry
+        };
+        let read = PreparationRead {
+            entries: self.entries.clone(),
+            entry: entry.clone(),
         };
         // Start immediately (the TS `entryFor` starts the load synchronously),
         // settling the shared result after the entry becomes ready.
@@ -385,8 +462,13 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
             if current {
                 match &result {
                     Ok(source) => {
-                        entry_for_task.state.lock().source = Some(source.clone());
-                        entry_for_task.state.lock().phase = PreparationPhase::Ready;
+                        let cacheable = fits_prepared_cache(source.session());
+                        {
+                            let mut state = entry_for_task.state.lock();
+                            state.source = Some(source.clone());
+                            state.cacheable = cacheable;
+                            state.phase = PreparationPhase::Ready;
+                        }
                         entry_for_task.notify.notify_waiters();
                         touch_entry(&entries, &entry_for_task, capacity);
                     }
@@ -396,9 +478,10 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
                 }
             }
             let _ = entry_for_task.result.set(result);
+            discard_unobserved_large_entry(&entries, &entry_for_task);
             entry_for_task.notify.notify_waiters();
         });
-        entry
+        (entry, read)
     }
 
     async fn await_result(&self, entry: &Arc<PreparationEntry<S, C>>) -> Result<Arc<S>, String> {
@@ -463,6 +546,13 @@ fn touch_entry<S: PreparedSource, C>(
     capacity: usize,
 ) {
     let mut entries_guard = entries.lock();
+    // A late loader cannot resurrect an invalidated generation.
+    if !entries_guard
+        .get(entry.id.as_str())
+        .is_some_and(|current| Arc::ptr_eq(current, entry))
+    {
+        return;
+    }
     entries_guard.shift_remove(entry.id.as_str());
     entries_guard.insert(entry.id.as_str().to_string(), entry.clone());
     let ready_count = entries_guard
@@ -597,26 +687,99 @@ mod retention_tests {
     async fn a_single_large_payload_is_not_retained_after_inspect_or_release() {
         for reserve in [false, true] {
             let source = source(1);
-            source.session().append("large-tool-result", serde_json::json!({
-                "output": "x".repeat(MAX_CACHED_PREPARED_BYTES)
-            }), None).unwrap();
+            source
+                .session()
+                .append(
+                    "large-tool-result",
+                    serde_json::json!({
+                        "output": "x".repeat(MAX_CACHED_PREPARED_BYTES)
+                    }),
+                    None,
+                )
+                .unwrap();
             let weak = Arc::downgrade(&source);
             let pool = SessionPreparations::<Source, ()>::new(5);
             if reserve {
-                let reservation = pool.reserve(source.session().id(), loader(&source),
-                    Arc::new(|source| Box::pin(async move { Ok(Some((source, ()))) })))
-                    .await.unwrap().unwrap();
-                let inspected = pool.inspect(source.session().id(), loader(&source)).await.unwrap();
-                assert!(pool.has(source.session().id()), "inspection must preserve a reserved source");
+                let reservation = pool
+                    .reserve(
+                        source.session().id(),
+                        loader(&source),
+                        Arc::new(|source| Box::pin(async move { Ok(Some((source, ()))) })),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let inspected = pool
+                    .inspect(source.session().id(), loader(&source))
+                    .await
+                    .unwrap();
+                assert!(
+                    pool.has(source.session().id()),
+                    "inspection must preserve a reserved source"
+                );
                 drop(inspected);
                 pool.release(&reservation, true);
                 drop(reservation);
             } else {
-                drop(pool.inspect(source.session().id(), loader(&source)).await.unwrap());
+                drop(
+                    pool.inspect(source.session().id(), loader(&source))
+                        .await
+                        .unwrap(),
+                );
             }
             assert!(!pool.has(source.session().id()));
             drop(source);
-            assert!(weak.upgrade().is_none(), "large payload remains owned by the cache");
+            assert!(
+                weak.upgrade().is_none(),
+                "large payload remains owned by the cache"
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn cancelling_inspection_during_load_does_not_cache_a_large_source() {
+        let source = source(1);
+        source
+            .session()
+            .append(
+                "large-result",
+                serde_json::json!({
+                    "output": "x".repeat(MAX_CACHED_PREPARED_BYTES)
+                }),
+                None,
+            )
+            .unwrap();
+        let id = source.session().id().clone();
+        let weak = Arc::downgrade(&source);
+        let pool = Arc::new(SessionPreparations::<Source, ()>::new(5));
+        let (started, start) = tokio::sync::oneshot::channel();
+        let (finish, done) = tokio::sync::oneshot::channel();
+        let controls = Arc::new(Mutex::new(Some((started, done))));
+        let load: LoadFn<Source> = Arc::new(move || {
+            let source = source.clone();
+            let (started, done) = controls.lock().take().unwrap();
+            Box::pin(async move {
+                started.send(()).unwrap();
+                done.await.unwrap();
+                Ok(source)
+            })
+        });
+        let task = tokio::spawn({
+            let pool = pool.clone();
+            let id = id.clone();
+            async move { pool.inspect(&id, load).await }
+        });
+        start.await.unwrap();
+        task.abort();
+        assert!(task.await.is_err());
+        finish.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled read retained a large prepared source");
+        assert!(!pool.has(&id));
     }
 }

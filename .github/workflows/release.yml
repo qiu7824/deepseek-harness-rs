@@ -126,6 +126,7 @@ jobs:
           node tools/tests/git_terminal_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
           node tools/tests/xterm_asset_contract.cjs
           node tools/tests/runtime_environment_harness.cjs
+          node tools/tests/settings_controls_dom_harness.cjs "$RUNNER_TEMP/dsh-dom-tests/node_modules"
       - name: Agent 与预设生命周期回归
         timeout-minutes: 35
         shell: bash
