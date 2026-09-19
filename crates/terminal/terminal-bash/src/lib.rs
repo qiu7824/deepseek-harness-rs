@@ -342,28 +342,33 @@ impl BoundedText {
             return;
         }
         self.value.push_str(text);
+        let mut remove = 0;
         if let Some(max_lines) = max_lines {
-            while self.value.lines().count() > max_lines {
-                let remove = self
-                    .value
+            let mut excess = self.value.lines().count().saturating_sub(max_lines);
+            while excess > 0 {
+                remove = self.value[remove..]
                     .find('\n')
-                    .map(|index| index + 1)
+                    .map(|index| remove + index + 1)
                     .unwrap_or(self.value.len());
-                self.value.drain(..remove);
-                self.read_offset = self.read_offset.saturating_sub(remove);
-                self.dropped = true;
+                excess -= 1;
             }
         }
-        while self.value.len() > max_bytes {
-            let remove = self
-                .value
-                .char_indices()
-                .nth(1)
-                .map(|(index, _)| index)
-                .unwrap_or(self.value.len());
+        if self.value.len().saturating_sub(remove) > max_bytes {
+            let mut byte_floor = self.value.len() - max_bytes;
+            while byte_floor < self.value.len() && !self.value.is_char_boundary(byte_floor) {
+                byte_floor += 1;
+            }
+            remove = remove.max(byte_floor);
+        }
+        if remove > 0 {
             self.value.drain(..remove);
             self.read_offset = self.read_offset.saturating_sub(remove);
             self.dropped = true;
+        }
+        // `drain` keeps the old allocation. Return unusually large burst
+        // capacity instead of pinning it for the rest of a persistent shell.
+        if self.value.capacity() > max_bytes.saturating_mul(2) {
+            self.value.shrink_to(max_bytes.max(self.value.len()));
         }
     }
 
@@ -922,5 +927,14 @@ mod tests {
         let (value, truncated) = text.snapshot();
         assert!(truncated);
         assert_eq!(value, "two\nthree\n");
+    }
+
+    #[test]
+    fn oversized_burst_does_not_pin_its_allocation() {
+        let mut text = BoundedText::default();
+        text.append(&"x".repeat(1024 * 1024), 4096, None);
+        assert_eq!(text.value.len(), 4096);
+        assert!(text.value.capacity() <= 8192);
+        assert!(text.dropped);
     }
 }

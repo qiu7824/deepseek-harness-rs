@@ -11,6 +11,12 @@ use dsh_terminal::{
 use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRunContext, ToolRuntime};
 use futures::future::BoxFuture;
 
+/// Keep model-created persistent terminals within the same owner-scoped
+/// bound as the Web terminal workbench. A model can otherwise repeatedly
+/// open shells without closing them, leaving one ConPTY, sandbox runner and
+/// command shell resident for every call until the owning agent is disposed.
+const MAX_TERMINALS_PER_OWNER: usize = 3;
+
 fn terminal_failure(error: dsh_terminal::TerminalFailure) -> ToolBodyError {
     let code = match error.code() {
         Some(code) => code.as_str().to_string(),
@@ -147,7 +153,7 @@ impl ToolTerminalService {
                                 .map(str::to_string),
                         };
                         let created = terminals
-                            .spawn(owner, request, Some(signal))
+                            .spawn_limited(owner, request, Some(signal), MAX_TERMINALS_PER_OWNER)
                             .map_err(terminal_failure)?
                             .await
                             .map_err(terminal_failure)?;

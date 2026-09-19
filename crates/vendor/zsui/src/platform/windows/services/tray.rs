@@ -5,6 +5,7 @@ struct WindowsWin32StatusItemRouteRecord {
     tray_id: u32,
     tooltip: Option<String>,
     icon: Option<isize>,
+    primary_command: Option<crate::Command>,
     menu: MenuSpec,
     menu_provider: Option<crate::tray::TrayMenuProvider>,
 }
@@ -25,25 +26,27 @@ impl WindowsWin32StatusItemRouteRecord {
 struct WindowsWin32StatusItemCallbackTarget {
     tray_id: u32,
     event_message: u32,
+    primary_command: Option<crate::Command>,
     menu: MenuSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WindowsWin32StatusItemCallbackDispatch {
     Ignored,
+    Primary(crate::Command),
     Menu(NativeStatusMenuCommandResult),
     Failed(String),
 }
 
-static WINDOWS_WIN32_STATUS_ITEM_ROUTES: OnceLock<
-    Mutex<Vec<WindowsWin32StatusItemRouteRecord>>,
-> = OnceLock::new();
+static WINDOWS_WIN32_STATUS_ITEM_ROUTES: OnceLock<Mutex<Vec<WindowsWin32StatusItemRouteRecord>>> =
+    OnceLock::new();
 static WINDOWS_WIN32_TASKBAR_CREATED_MESSAGE: OnceLock<u32> = OnceLock::new();
 
 pub struct WindowsWin32OwnedTrayIcon {
     data: NOTIFYICONDATAW,
     icon: Option<WindowsWin32OwnedIcon>,
     tooltip: Option<String>,
+    primary_command: Option<crate::Command>,
     menu: MenuSpec,
     menu_provider: Option<crate::tray::TrayMenuProvider>,
     menu_command_table: WindowsWin32StatusMenuCommandTable,
@@ -93,6 +96,7 @@ impl WindowsWin32OwnedTrayIcon {
             data,
             icon,
             tooltip: request.tooltip,
+            primary_command: request.primary_command,
             menu: request.menu,
             menu_provider: request.menu_provider,
             menu_command_table,
@@ -176,6 +180,7 @@ impl WindowsWin32OwnedTrayIcon {
             tray_id: self.id(),
             tooltip: self.tooltip.clone(),
             icon: self.icon.as_ref().map(|icon| icon.handle() as isize),
+            primary_command: self.primary_command.clone(),
             menu: self.menu.clone(),
             menu_provider: self.menu_provider.clone(),
         }
@@ -369,8 +374,7 @@ impl NativeStatusMenuCommandHost for WindowsWin32StatusItemHost {
     }
 }
 
-fn windows_win32_status_item_routes(
-) -> &'static Mutex<Vec<WindowsWin32StatusItemRouteRecord>> {
+fn windows_win32_status_item_routes() -> &'static Mutex<Vec<WindowsWin32StatusItemRouteRecord>> {
     WINDOWS_WIN32_STATUS_ITEM_ROUTES.get_or_init(|| Mutex::new(Vec::new()))
 }
 
@@ -437,6 +441,7 @@ fn windows_win32_status_item_callback_target(
         .map(|route| WindowsWin32StatusItemCallbackTarget {
             tray_id,
             event_message,
+            primary_command: route.primary_command.clone(),
             menu: route
                 .menu_provider
                 .as_ref()
@@ -451,12 +456,17 @@ fn dispatch_windows_win32_status_item_callback(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<WindowsWin32StatusItemCallbackDispatch> {
-    let target = windows_win32_status_item_callback_target(
-        owner,
-        callback_message,
-        wparam,
-        lparam,
-    )?;
+    let target =
+        windows_win32_status_item_callback_target(owner, callback_message, wparam, lparam)?;
+    if target.event_message == WM_LBUTTONUP {
+        return match target.primary_command {
+            Some(command) => {
+                dispatch_windows_win32_app_command(owner, command.clone());
+                Some(WindowsWin32StatusItemCallbackDispatch::Primary(command))
+            }
+            None => Some(WindowsWin32StatusItemCallbackDispatch::Ignored),
+        };
+    }
     if !matches!(target.event_message, WM_RBUTTONUP | WM_CONTEXTMENU) {
         return Some(WindowsWin32StatusItemCallbackDispatch::Ignored);
     }

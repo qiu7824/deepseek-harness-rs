@@ -1955,6 +1955,7 @@ fn main() -> Result<(), zsui::ZsuiError> {
     let tray = TraySpec::new()
         .tooltip(copy.title)
         .icon_path(icon_path.clone())
+        .primary_command(ZsuiCommand::custom(TRAY_OPEN_HARNESS_COMMAND))
         .menu(tray_menu_spec(
             copy,
             tray_ownership,
@@ -2351,6 +2352,10 @@ mod tests {
         let window_proc = include_str!("../../../vendor/zsui/src/platform/windows/window_proc.rs");
         let menu = include_str!("../../../vendor/zsui/src/platform/windows/services/menu.rs");
         assert!(source.contains(".tray(tray)"));
+        assert!(
+            source.contains(".primary_command(ZsuiCommand::custom(TRAY_OPEN_HARNESS_COMMAND))")
+        );
+        assert!(tray.contains("target.event_message == WM_LBUTTONUP"));
         for required in [
             "Shell_NotifyIconW",
             "dispatch_windows_win32_status_item_callback",

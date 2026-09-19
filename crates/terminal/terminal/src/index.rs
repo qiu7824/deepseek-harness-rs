@@ -31,8 +31,8 @@ use crate::types::{
     TerminalAbort, TerminalBackend, TerminalBackendSession, TerminalBackendSpawnSpec,
     TerminalError, TerminalErrorCode, TerminalFailure, TerminalReadRequest, TerminalReadResult,
     TerminalSendOperation, TerminalSendRequest, TerminalSessionId, TerminalSessionSnapshot,
-    TerminalSignal, TerminalSignalResult, TerminalSpawnRequest, TerminalSpawnResult,
-    terminal_session_id,
+    TerminalSessionStatus, TerminalSignal, TerminalSignalResult, TerminalSpawnRequest,
+    TerminalSpawnResult, terminal_session_id,
 };
 
 /// Exact-owner identity for the registry maps (the TS object-identity
@@ -721,6 +721,7 @@ impl TerminalSessionService {
                         .insert(session_id.clone(), record.clone());
                     service.release_spawn(&reservation, None);
                 }
+                service.watch_published_exit(record.clone());
                 let result = service.snapshot(&record, true);
                 if let Some(release_name) = release_name {
                     release_name.release();
@@ -794,6 +795,52 @@ impl TerminalSessionService {
             self.ctx
                 .emit("terminal/owner-idle", vec![cordis::arc(owner.clone())]);
         }
+    }
+
+    /// Retire a published terminal as soon as its native process exits.
+    ///
+    /// Previously exited records remained in `sessions` until an explicit
+    /// `terminal_close` or owner disposal. Besides consuming an admission
+    /// slot, that retained the backend session, its scrollback, the exact
+    /// owner agent, and native PTY cleanup state indefinitely.
+    fn watch_published_exit(self: &Arc<Self>, record: Arc<SessionRecord>) {
+        let service = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                if !matches!(record.session.status(), TerminalSessionStatus::Running) {
+                    break;
+                }
+                let Some(active_service) = service.upgrade() else {
+                    return;
+                };
+                let still_published = active_service
+                    .sessions
+                    .lock()
+                    .get(&record.id)
+                    .is_some_and(|candidate| Arc::ptr_eq(candidate, &record));
+                if !still_published || record.closing.lock().is_some() {
+                    return;
+                }
+                drop(active_service);
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            let Some(service) = service.upgrade() else {
+                return;
+            };
+            let still_published = service
+                .sessions
+                .lock()
+                .get(&record.id)
+                .is_some_and(|candidate| Arc::ptr_eq(candidate, &record));
+            if !still_published {
+                return;
+            }
+            let owner = record.owner.clone();
+            let _ = service
+                .close_records(vec![record], "PTY process exited".to_string())
+                .await;
+            service.notify_owner_idle(&owner);
+        });
     }
 
     /// Start one exclusive interactive send (TS `startSend`).
@@ -1248,7 +1295,7 @@ impl Service for TerminalSessionService {
 #[cfg(test)]
 mod limit_tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 
     use cordis::Context;
     use dsh_agent::{
@@ -1428,6 +1475,88 @@ mod limit_tests {
         }
     }
 
+    struct ExitSession {
+        exited: Arc<AtomicBool>,
+        closed: Arc<AtomicUsize>,
+    }
+
+    impl TerminalBackendSession for ExitSession {
+        fn motd(&self) -> String {
+            String::new()
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+        fn start_send(&self, _request: &TerminalSendRequest) -> Arc<dyn TerminalSendOperation> {
+            panic!("send is outside the exit fixture")
+        }
+        fn write_input(&self, _data: &str) -> BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn resize(&self, _rows: u16, _cols: u16) -> BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn read(&self, _request: &TerminalReadRequest) -> TerminalReadResult {
+            TerminalReadResult {
+                text: String::new(),
+                total_lines: 0,
+                line_begin: 0,
+                line_end: 0,
+                truncated: false,
+            }
+        }
+        fn signal(
+            &self,
+            _signal: TerminalSignal,
+        ) -> BoxFuture<'static, Result<TerminalSignalResult, String>> {
+            Box::pin(async {
+                Ok(TerminalSignalResult {
+                    delivered: true,
+                    target_pgid: 0,
+                })
+            })
+        }
+        fn status(&self) -> TerminalSessionStatus {
+            if self.exited.load(SeqCst) {
+                TerminalSessionStatus::Exited {
+                    exit_code: Some(0),
+                    signal: None,
+                }
+            } else {
+                TerminalSessionStatus::Running
+            }
+        }
+        fn close(&self, _reason: &str) -> BoxFuture<'static, Result<(), String>> {
+            let closed = self.closed.clone();
+            Box::pin(async move {
+                closed.fetch_add(1, SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    struct ExitBackend {
+        exited: Arc<AtomicBool>,
+        closed: Arc<AtomicUsize>,
+    }
+
+    impl TerminalBackend for ExitBackend {
+        fn type_(&self) -> String {
+            "exit-fixture".to_string()
+        }
+        fn spawn(
+            &self,
+            _spec: TerminalBackendSpawnSpec,
+        ) -> BoxFuture<'static, Result<Arc<dyn TerminalBackendSession>, TerminalBackendSpawnError>>
+        {
+            let session = ExitSession {
+                exited: self.exited.clone(),
+                closed: self.closed.clone(),
+            };
+            Box::pin(async move { Ok(Arc::new(session) as Arc<dyn TerminalBackendSession>) })
+        }
+    }
+
     fn request() -> TerminalSpawnRequest {
         TerminalSpawnRequest {
             type_: "limit-fixture".to_string(),
@@ -1442,6 +1571,45 @@ mod limit_tests {
             name: None,
             cwd: None,
         }
+    }
+
+    #[tokio::test]
+    async fn exited_terminal_is_closed_and_unpublished_automatically() {
+        let ctx = Context::root();
+        let agents = AgentRegistry::install(&ctx);
+        let owner = agent(&ctx).await;
+        let _owner_entry = agents.enter(owner.clone(), None).expect("register owner");
+        let service = TerminalSessionService::install(&ctx);
+        let exited = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(AtomicUsize::new(0));
+        let _backend = service
+            .register_backend(Arc::new(ExitBackend {
+                exited: exited.clone(),
+                closed: closed.clone(),
+            }))
+            .unwrap();
+        let request = TerminalSpawnRequest {
+            type_: "exit-fixture".to_string(),
+            name: None,
+            cwd: None,
+        };
+        service
+            .spawn(owner.clone(), request, None)
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(service.list(&owner).len(), 1);
+
+        exited.store(true, SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !service.list(&owner).is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("exited terminal should be reaped");
+        assert_eq!(closed.load(SeqCst), 1);
+        assert!(!service.has_owner_activity(&owner));
     }
 
     #[tokio::test]

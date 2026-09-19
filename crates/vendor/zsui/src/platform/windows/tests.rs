@@ -3715,6 +3715,7 @@ mod tests {
             tray_id: 41,
             tooltip: Some("ZSUI".to_string()),
             icon: Some(9),
+            primary_command: Some(Command::ShowMainWindow),
             menu: menu.clone(),
             menu_provider: None,
         });
@@ -3729,6 +3730,7 @@ mod tests {
             Some(WindowsWin32StatusItemCallbackTarget {
                 tray_id: 41,
                 event_message: WM_RBUTTONUP,
+                primary_command: Some(Command::ShowMainWindow),
                 menu,
             })
         );
@@ -3746,7 +3748,9 @@ mod tests {
                 41,
                 WM_LBUTTONUP as LPARAM,
             ),
-            Some(WindowsWin32StatusItemCallbackDispatch::Ignored)
+            Some(WindowsWin32StatusItemCallbackDispatch::Primary(
+                Command::ShowMainWindow
+            ))
         );
 
         clear_windows_win32_status_item_routes_for_owner(owner);
@@ -3767,6 +3771,7 @@ mod tests {
             tray_id: 73,
             tooltip: Some("Restored".to_string()),
             icon: Some(27),
+            primary_command: None,
             menu: MenuSpec::new().item("Quit", Command::Quit),
             menu_provider: None,
         };

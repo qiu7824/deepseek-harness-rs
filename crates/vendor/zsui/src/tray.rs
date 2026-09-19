@@ -9,6 +9,8 @@ pub type TrayMenuProvider = Arc<dyn Fn() -> MenuSpec + Send + Sync + 'static>;
 pub struct TraySpec {
     pub tooltip: Option<String>,
     pub icon_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_command: Option<Command>,
     pub menu: MenuSpec,
     #[serde(skip)]
     pub menu_provider: Option<TrayMenuProvider>,
@@ -20,6 +22,7 @@ impl std::fmt::Debug for TraySpec {
             .debug_struct("TraySpec")
             .field("tooltip", &self.tooltip)
             .field("icon_path", &self.icon_path)
+            .field("primary_command", &self.primary_command)
             .field("menu", &self.menu)
             .field("has_menu_provider", &self.menu_provider.is_some())
             .finish()
@@ -30,6 +33,7 @@ impl PartialEq for TraySpec {
     fn eq(&self, other: &Self) -> bool {
         self.tooltip == other.tooltip
             && self.icon_path == other.icon_path
+            && self.primary_command == other.primary_command
             && self.menu == other.menu
             && match (&self.menu_provider, &other.menu_provider) {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
@@ -46,6 +50,7 @@ impl TraySpec {
         Self {
             tooltip: None,
             icon_path: None,
+            primary_command: None,
             menu: MenuSpec::new(),
             menu_provider: None,
         }
@@ -58,6 +63,11 @@ impl TraySpec {
 
     pub fn icon_path(mut self, icon_path: impl Into<String>) -> Self {
         self.icon_path = Some(icon_path.into());
+        self
+    }
+
+    pub fn primary_command(mut self, command: Command) -> Self {
+        self.primary_command = Some(command);
         self
     }
 

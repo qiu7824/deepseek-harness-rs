@@ -15909,6 +15909,7 @@ mod tests {
         let presentation = driver.create_status_item(NativeStatusItemRequest {
             tooltip: Some("Example".to_string()),
             icon_path: None,
+            primary_command: None,
             menu: MenuSpec::new()
                 .item("Open", crate::Command::ShowMainWindow)
                 .separator()

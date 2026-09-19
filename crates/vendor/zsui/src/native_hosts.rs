@@ -324,6 +324,7 @@ pub struct NativeAppIconResource<Icon: Copy + Eq> {
 pub struct NativeStatusItemRequest {
     pub tooltip: Option<String>,
     pub icon_path: Option<String>,
+    pub primary_command: Option<Command>,
     pub menu: MenuSpec,
     pub menu_provider: Option<crate::tray::TrayMenuProvider>,
 }
@@ -334,6 +335,7 @@ impl std::fmt::Debug for NativeStatusItemRequest {
             .debug_struct("NativeStatusItemRequest")
             .field("tooltip", &self.tooltip)
             .field("icon_path", &self.icon_path)
+            .field("primary_command", &self.primary_command)
             .field("menu", &self.menu)
             .field("has_menu_provider", &self.menu_provider.is_some())
             .finish()
@@ -344,6 +346,7 @@ impl PartialEq for NativeStatusItemRequest {
     fn eq(&self, other: &Self) -> bool {
         self.tooltip == other.tooltip
             && self.icon_path == other.icon_path
+            && self.primary_command == other.primary_command
             && self.menu == other.menu
             && match (&self.menu_provider, &other.menu_provider) {
                 (Some(left), Some(right)) => std::sync::Arc::ptr_eq(left, right),
@@ -360,6 +363,7 @@ impl NativeStatusItemRequest {
         Self {
             tooltip: spec.tooltip.clone(),
             icon_path: spec.icon_path.clone(),
+            primary_command: spec.primary_command.clone(),
             menu: spec.menu.clone(),
             menu_provider: spec.menu_provider.clone(),
         }
@@ -369,6 +373,7 @@ impl NativeStatusItemRequest {
         TraySpec {
             tooltip: self.tooltip,
             icon_path: self.icon_path,
+            primary_command: self.primary_command,
             menu: self.menu,
             menu_provider: self.menu_provider,
         }
