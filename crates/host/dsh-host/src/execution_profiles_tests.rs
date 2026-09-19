@@ -11,7 +11,7 @@ async fn environment_controls_resume_and_release_an_idle_persistent_session() {
     let ctx = Context::root();
     let host = crate::compose_persistent_host_at(&ctx, &fixture.root.join("host"), None).unwrap();
     let service = ExecutionProfiles::install(
-        &ctx,
+        &ctx.isolate("executionProfiles"),
         fixture.runtime.clone(),
         fixture.paths.clone(),
         fixture.service.host.clone(),
