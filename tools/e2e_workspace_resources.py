@@ -42,7 +42,7 @@ def main():
         request(port,'file-action',{'sessionId':owner,'action':'rename','path':'report.txt','etag':current['etag'],'newPath':'renamed.txt'});assert (project/'renamed.txt').exists()
         request(port,'file-action',{'sessionId':owner,'action':'rename','path':'../outside.txt','etag':current['etag'],'newPath':'escape.txt'},400)
         opened=preview(port,'terminal-action',body={'sessionId':owner,'action':'open','name':'scratch environment'});terminal=opened['id']
-        command='echo DSH_SCRATCH_IS=%DSH_SCRATCH_DIR% & echo proof> "%TEMP%\\resource-proof.txt"\r' if os.name=='nt' else "printf 'DSH_TEMP_IS=%s\\n' \"$TMPDIR\"; printf proof > \"$TMPDIR/resource-proof.txt\"\r"
+        command="Write-Output ('DSH_SCRATCH_IS=' + $env:DSH_SCRATCH_DIR); [IO.File]::WriteAllText((Join-Path $env:TEMP 'resource-proof.txt'), 'proof')\r" if os.name=='nt' else "printf 'DSH_TEMP_IS=%s\\n' \"$TMPDIR\"; printf proof > \"$TMPDIR/resource-proof.txt\"\r"
         preview(port,'terminal-action',body={'sessionId':owner,'terminalId':terminal,'action':'input','text':command})
         deadline=time.monotonic()+25
         while time.monotonic()<deadline:

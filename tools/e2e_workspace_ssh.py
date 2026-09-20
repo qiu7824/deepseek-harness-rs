@@ -166,7 +166,7 @@ def main():
                 workspace = next(item for item in listed if "project with spaces" in item["path"])
                 session = require_ok(rpc(tunnel_port,"session.create",{"workspaceId":workspace["workspaceId"]},4),"remote session")["sessionId"]
                 terminal = preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"open","name":"SSH acceptance"})["id"]
-                command = "echo ssh-remote-write>ssh-proof.txt\r" if sys.platform == "win32" else "printf ssh-remote-write > ssh-proof.txt\r"
+                command = "[IO.File]::WriteAllText((Join-Path (Get-Location) 'ssh-proof.txt'), 'ssh-remote-write')\r" if sys.platform == "win32" else "printf ssh-remote-write > ssh-proof.txt\r"
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"input","terminalId":terminal,"text":command})
                 for _ in range(100):
                     if (project / "ssh-proof.txt").is_file():
@@ -174,12 +174,12 @@ def main():
                     time.sleep(0.1)
                 assert "ssh-remote-write" in (project / "ssh-proof.txt").read_text()
                 assert not (local / "ssh-proof.txt").exists()
-                long_command="ping -n 30 127.0.0.1 >nul\r" if sys.platform=="win32" else "sleep 30\r"
+                long_command="ping -n 30 127.0.0.1 | Out-Null\r" if sys.platform=="win32" else "sleep 30\r"
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"input","terminalId":terminal,"text":long_command})
                 time.sleep(.5)
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"signal","terminalId":terminal,"signal":"SIGINT"})
                 time.sleep(.5)
-                recover="echo ssh-after-cancel>ssh-after-cancel.txt\r" if sys.platform=="win32" else "printf ssh-after-cancel > ssh-after-cancel.txt\r"
+                recover="[IO.File]::WriteAllText((Join-Path (Get-Location) 'ssh-after-cancel.txt'), 'ssh-after-cancel')\r" if sys.platform=="win32" else "printf ssh-after-cancel > ssh-after-cancel.txt\r"
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"input","terminalId":terminal,"text":recover})
                 for _ in range(100):
                     if (project/'ssh-after-cancel.txt').is_file():break

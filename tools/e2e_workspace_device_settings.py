@@ -20,15 +20,16 @@ def main():
         presets=call('agentPreset.list',{})['presets'];assert {'minimal','cordis','standard','code'}<={p['id'] for p in presets}
         for preset in ['minimal','cordis']:
             created=call('session.create',{'cwd':str(project),'agentPreset':preset});assert created['agentPreset']==preset,created
-        # The backend owns a 20s startup deadline plus rollback. Give the
-        # terminal request enough time to return its actual result or error.
-        terminal_client=PreviewClient(port,session,timeout=35)
+        # Environment validation and sandbox preparation precede the 20s PTY
+        # startup deadline. Wait for their result instead of masking it with
+        # an HTTP timeout, and retain terminalOpenMs in the evidence.
+        terminal_client=PreviewClient(port,session,timeout=180)
         opened_at=time.monotonic()
         opened=terminal_client.ok('terminal-action',body={'sessionId':session,'action':'open','name':'workspace routing'});terminal=opened['id']
         terminal_open_ms=round((time.monotonic()-opened_at)*1000)
         assert opened.get('status')=='running',opened
         import os
-        command='echo route-proof> "%TEMP%\\routing-proof.txt"\r' if os.name=='nt' else 'printf route-proof > "$TMPDIR/routing-proof.txt"\r'
+        command="[IO.File]::WriteAllText((Join-Path $env:TEMP 'routing-proof.txt'), 'route-proof')\r" if os.name=='nt' else 'printf route-proof > "$TMPDIR/routing-proof.txt"\r'
         terminal_client.ok('terminal-action',body={'sessionId':session,'terminalId':terminal,'action':'input','text':command})
         deadline=time.monotonic()+20
         while time.monotonic()<deadline and not list(scratch.rglob('routing-proof.txt')):time.sleep(.1)

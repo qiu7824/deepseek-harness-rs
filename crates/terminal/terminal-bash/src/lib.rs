@@ -237,7 +237,17 @@ impl TerminalBackend for ShellTerminalBackend {
                         "-NoProfile".into(),
                         "-NoExit".into(),
                         "-Command".into(),
-                        "$ProgressPreference='SilentlyContinue'".into(),
+                        if policy.mode == SandboxMode::DangerFullAccess {
+                            "$ProgressPreference='SilentlyContinue'".into()
+                        } else {
+                            // A confined terminal must not write history outside its workspace.
+                            concat!(
+                                "$ProgressPreference='SilentlyContinue'; ",
+                                "if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) { ",
+                                "Set-PSReadLineOption -HistorySaveStyle SaveNothing }"
+                            )
+                            .into()
+                        },
                     ],
                     "bash" => vec!["--noprofile".into(), "--norc".into(), "-i".into()],
                     "zsh" => vec!["-f".into(), "-i".into()],

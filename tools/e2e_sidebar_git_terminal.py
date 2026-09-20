@@ -41,7 +41,8 @@ def request(port: int, operation: str, *, query: dict[str, object] | None = None
     if raw is not None:
         headers["Content-Type"] = "application/json"
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=raw, headers=headers), timeout=40) as response:
+        timeout = 180 if operation == "terminal-action" and body and body.get("action") == "open" else 40
+        with urllib.request.urlopen(urllib.request.Request(url, data=raw, headers=headers), timeout=timeout) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as failure:
         detail = failure.read().decode("utf-8", errors="replace")
@@ -132,11 +133,9 @@ def main() -> int:
         resized = request(port, "terminal-action", body={"sessionId": session_id, "action": "resize", "terminalId": terminal_id, "rows": 24, "cols": 100})
         assert resized == {"cols": 100, "resized": True, "rows": 24}, resized
         if sys.platform == "win32":
-            request(port, "terminal-action", body={"sessionId": session_id, "action": "input", "terminalId": terminal_id, "text": "chcp 65001>nul\r"})
-            time.sleep(0.2)
-            request(port, "terminal-action", body={"sessionId": session_id, "action": "input", "terminalId": terminal_id, "text": "cd\r"})
-            time.sleep(0.2)
-            command = "echo DSH_INTERACTIVE_PTY_O^K_终端_✓\r"
+            # The default execution profile resolves PowerShell on Windows.
+            # Split the marker so an echoed input line cannot satisfy the check.
+            command = "Write-Output ('DSH_INTERACTIVE_PTY_' + 'OK_终端_✓'); (Get-Location).Path\r"
             expected = "DSH_INTERACTIVE_PTY_OK_终端_✓"
         else:
             command = "printf 'DSH_INTERACTIVE_PTY_O''K_终端_✓\\n'\r"
@@ -154,19 +153,20 @@ def main() -> int:
             raise AssertionError(f"interactive PTY output did not arrive: {read!r}")
         if sys.platform == "win32":
             assert str(workspace).lower() in ANSI.sub("", read["text"]).lower(), read
+            assert "Error reading or writing history file" not in read["text"], read
         listed = request(port, "terminal-list", query={"sessionId": session_id})
         assert listed["entries"][0]["status"] == "running", listed
         viewer = call("session.create", {"workspaceId": created["workspaceId"]})["sessionId"]
         assert viewer != session_id
         pinned_read = request(port, "terminal-read", query={"sessionId": session_id, "terminalId": terminal_id, "count": 2000})
         assert expected in pinned_read["text"], pinned_read
-        long_command = "ping -t 127.0.0.1 >nul\r" if sys.platform == "win32" else "sleep 60\r"
+        long_command = "ping -t 127.0.0.1 | Out-Null\r" if sys.platform == "win32" else "sleep 60\r"
         request(port, "terminal-action", body={"sessionId": session_id, "action": "input", "terminalId": terminal_id, "text": long_command})
         time.sleep(0.4)
         interrupted = request(port, "terminal-action", body={"sessionId": session_id, "action": "signal", "terminalId": terminal_id, "signal": "SIGINT"})
         assert interrupted["delivered"] is True, interrupted
         time.sleep(0.3)
-        recovery_command = "echo DSH_AFTER_CTRL_^C\r" if sys.platform == "win32" else "printf 'DSH_AFTER_CTRL_''C\\n'\r"
+        recovery_command = "Write-Output ('DSH_AFTER_CTRL_' + 'C')\r" if sys.platform == "win32" else "printf 'DSH_AFTER_CTRL_''C\\n'\r"
         request(port, "terminal-action", body={"sessionId": session_id, "action": "input", "terminalId": terminal_id, "text": recovery_command})
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
