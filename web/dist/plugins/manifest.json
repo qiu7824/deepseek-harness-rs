@@ -407,7 +407,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-code-graph",
       "url": "/plugins/ui-code-graph.js",
-      "rev": "2a1d23cd4db82dbb",
+      "rev": "082a9d56cab61cc3",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-conversation",
@@ -485,7 +485,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-task-execution",
       "url": "/plugins/ui-task-execution.js",
-      "rev": "ccacf4dd0b2377fe",
+      "rev": "d46cc525590e958a",
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation"
       ],

@@ -81,10 +81,7 @@ window.__ModuleLoader__.load({
         )
       );
     }
-    function apply(ctx) {
-      const style=document.createElement("style");style.dataset.taskExecution="";style.textContent=css;document.head.appendChild(style);ctx.effect(()=>()=>style.remove(),"task execution styles");
-      ctx.slots.inject("conversation.view",()=>ctx.slots.register({name:"conversation.view",id:"task-execution",order:17,label:()=>"任务验收",inject:sessionId=>({sessionId})},props=>h(TaskExecutionView,{...props,key:props.sessionId})));
-    }
+    function apply() {}
     return {apply,inject:["slots"],test:{TaskExecutionView,outcomeLabels:labels,request}};
   }
 });
