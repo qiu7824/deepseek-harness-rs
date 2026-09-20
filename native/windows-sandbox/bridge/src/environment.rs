@@ -48,6 +48,15 @@ fn allowed(name: &str) -> bool {
 
 use crate::launcher::locate;
 
+fn git_workspace(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if let Some(tail) = path.strip_prefix(r"\\?\UNC\") {
+        format!("//{}", tail.replace('\\', "/"))
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(&path).replace('\\', "/")
+    }
+}
+
 pub fn prepare(request: &Request) -> Result<Environment> {
     let mut values: HashMap<_, _> = std::env::vars()
         .filter(|(k, _)| allowed(k))
@@ -96,6 +105,9 @@ pub fn prepare(request: &Request) -> Result<Environment> {
     values.insert("RUSTUP_AUTO_INSTALL".into(), "0".into());
     values.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
     values.insert("GIT_CONFIG_NOSYSTEM".into(), "1".into());
+    values.insert("GIT_CONFIG_COUNT".into(), "1".into());
+    values.insert("GIT_CONFIG_KEY_0".into(), "safe.directory".into());
+    values.insert("GIT_CONFIG_VALUE_0".into(), git_workspace(&request.workspace));
     let mut command = request.command.clone();
     let program = command
         .first()
@@ -219,6 +231,13 @@ pub fn prepare(request: &Request) -> Result<Environment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn git_trust_is_limited_to_the_selected_workspace() {
+        assert_eq!(git_workspace(Path::new(r"\\?\E:\project path")), "E:/project path");
+        assert_eq!(git_workspace(Path::new(r"\\?\UNC\server\share\project")), "//server/share/project");
+        assert!(!allowed("GIT_CONFIG_COUNT"));
+        assert!(!allowed("GIT_CONFIG_VALUE_0"));
+    }
     #[test]
     fn excludes_credentials_and_runtime_injection_variables() {
         for key in [
