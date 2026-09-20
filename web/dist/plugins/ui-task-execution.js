@@ -10,7 +10,14 @@ window.__ModuleLoader__.load({
     const css = ".dshTaskExecution{max-width:1080px;margin:auto;padding:20px 24px;display:grid;gap:14px;color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6}.dshTaskExecution h2,.dshTaskExecution h3,.dshTaskExecution p{margin:0}.dshTaskExecution h2{font-size:18px}.dshTaskExecution h3{font-size:15px}.dshTaskExecution header,.dshTaskExecution .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.dshTaskExecution header{justify-content:space-between}.dshTaskExecution article,.dshTaskExecution fieldset{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:14px;display:grid;gap:10px;min-width:0}.dshTaskExecution button,.dshTaskExecution select{font:inherit;background:var(--dsw-alias-bg-layer-1);color:inherit;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:7px 12px;max-width:100%}.dshTaskExecution button{cursor:pointer}.dshTaskExecution button:disabled{opacity:.45;cursor:default}.dshTaskExecution :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.dshTaskExecution small{color:var(--dsw-alias-label-tertiary)}.dshTaskExecution code,.dshTaskExecution small,.dshTaskExecution p{overflow-wrap:anywhere}.dshTaskExecution [role=alert]{color:var(--dsw-alias-state-error-primary)}.dshTaskExecution [data-state=unknown],.dshTaskExecution [data-state=blocked],.dshTaskExecution [data-state=awaiting_user]{border-color:var(--dsw-alias-state-warning-primary,#b88929)}.dshTaskExecution ul{padding-left:22px;margin:0}.dshTaskExecution pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}.dshTaskExecution label{display:grid;gap:5px}.dshTaskExecution details summary{cursor:pointer}.dshTaskExecution .badge{font-size:12px;padding:2px 7px;border-radius:5px;background:var(--dsw-alias-bg-layer-2)}@media(max-width:640px){.dshTaskExecution{padding:14px 12px}}";
     async function request(sessionId, payload, signal) {
       const response = await fetch("/__dsh-task-execution", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId,...payload}),signal});
-      const value = await response.json();
+      let text;
+      try { text = await response.text(); }
+      catch (e) { if(e.name === "AbortError") throw e; throw new Error(`任务接口响应中断（HTTP ${response.status}）；操作结果未知，请先刷新核实。`); }
+      if (!text.trim()) throw new Error(`任务接口返回空响应（HTTP ${response.status}）；操作结果未知，请先刷新核实。`);
+      let value;
+      try { value = JSON.parse(text); }
+      catch { throw new Error(`任务接口返回无效或不完整 JSON（HTTP ${response.status}）；操作结果未知，请先刷新核实。`); }
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`任务接口响应格式错误（HTTP ${response.status}）`);
       if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
       return value;
     }

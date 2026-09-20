@@ -36,6 +36,7 @@ pub(crate) fn output_text(result: &ShellRunResult) -> String {
             "\n[diagnostic: {} (suspected; application stderr, not a confirmed sandbox decision)]",
             diagnostic.category
         ));
+        text.push_str(&format!("\n[recovery: {}]", diagnostic.recovery()));
     }
     text
 }
@@ -72,11 +73,20 @@ pub(crate) fn result_json(result: &ShellRunResult, execution_id: &str) -> Value 
         },
         "diagnostics": dsh_shell::application_diagnostics(result.exit_code, &result.stderr.text).iter().map(|entry| json!({
             "category":entry.category, "confidence":entry.confidence, "source":entry.source,
+            "recovery":entry.recovery(),
         })).collect::<Vec<_>>(),
     })
 }
 
 pub(crate) fn render_result(value: &Value) -> String {
+    // Step aggregates already contain each child's execution receipt.
+    if value
+        .get("steps")
+        .and_then(Value::as_array)
+        .is_some_and(|steps| !steps.is_empty())
+    {
+        return value["stdout"].as_str().unwrap_or_default().to_string();
+    }
     format!(
         "{}\n[execution: {}; completion: {}; exit: {}; effects: {}]",
         value["stdout"].as_str().unwrap_or_default(),
@@ -103,6 +113,14 @@ pub(crate) fn schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn aggregate_does_not_repeat_the_last_execution_receipt() {
+        let child =
+            json!({"stdout":"failed", "executionId":"call:1", "completion":"failed", "exitCode":1});
+        let text = render_result(&child);
+        let aggregate = json!({"stdout":text, "steps":[child]});
+        assert_eq!(render_result(&aggregate).matches("[execution:").count(), 1);
+    }
     #[test]
     fn truncation_reports_recoverability_without_inventing_full_logs() {
         let output = CollectedOutput {

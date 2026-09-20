@@ -52,6 +52,12 @@ fn resolve_program(
     let reference = arguments[0].strip_prefix('@').unwrap_or(&arguments[0]);
     let reference = match reference {
         "python3" | "python.exe" | "python3.exe" => "python",
+        "cargo.exe" => "cargo",
+        "rustc.exe" => "rustc",
+        "git.exe" => "git",
+        "node.exe" => "node",
+        "rg.exe" => "rg",
+        "ffmpeg.exe" => "ffmpeg",
         other => other,
     };
     if !explicit_reference
@@ -194,7 +200,7 @@ pub(super) fn install(
         tools.register(ctx, ToolDefinition {
             name: name.into(),
             description: if script {
-                "Execute a script using the explicitly selected matching PowerShell, Bash or Zsh environment under the current sandbox. State its language; a mismatch fails before launch. Final shell status does not prove every subcommand succeeded and scripts are not transactions. Use execute_steps for checked dependencies; use execute_native for literal program argv."
+                "Execute a script using the explicitly selected matching PowerShell, Bash or Zsh environment under the current sandbox. State its language; a mismatch fails before launch. Final shell status does not prove every subcommand succeeded and scripts are not transactions. Use execute_steps for checked dependencies; use execute_native for literal program argv. For missing tools or access failures use environment_probe then environment_validate; do not guess installation paths or rotate shell wrappers."
             } else if sequence {
                 "Execute dependent native programs sequentially with literal argv. The first nonzero exit, signal, cancellation, timeout or startup failure stops dispatch of every remaining step. Preserve each executed step's output and status. Earlier effects are not rolled back. Use scripts as files and native interpreters for complex programs."
             } else {

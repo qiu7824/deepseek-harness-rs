@@ -4,6 +4,16 @@ use dsh_subprocess::{
     SubprocessOutputReader, SubprocessTerminalHandle, SubprocessTerminalSpawnSpec,
 };
 
+#[test]
+fn powershell_launch_probe_reports_policy_without_changing_it() {
+    let args = probe_args("shell", ShellKind::Powershell, "launch", None).unwrap();
+    let command = args.last().unwrap();
+    assert!(command.contains("Get-ExecutionPolicy -List"));
+    assert!(command.contains("LanguageMode"));
+    assert!(!command.contains("Set-ExecutionPolicy"));
+    assert!(!args.iter().any(|arg| arg == "-ExecutionPolicy"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn environment_controls_resume_and_release_an_idle_persistent_session() {
     use dsh_host_apiproxy::{Body, CarrierRequest, to_fetch_handler};
@@ -285,6 +295,20 @@ fn profile_input_cannot_grant_permissions_or_run_startup_scripts() {
         })
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn cargo_is_a_selected_validated_capability_and_keeps_explicit_choice() {
+    let f = Fixture::new(SandboxMode::DangerFullAccess);
+    let mut preferences = f.preferences();
+    preferences.toolchain_paths.insert("cargo".into(), f.runtime.path.clone());
+    validate_preferences(&preferences).unwrap();
+    f.service.save("global", None, &f.cwd(), 0, Some(preferences)).await.unwrap();
+    let resolved = f.service.resolve(None, &f.cwd()).unwrap();
+    assert_eq!(resolved.toolchain_paths.get("cargo"), Some(&f.runtime.path));
+    assert_eq!(f.service.selected_path("cargo", None, &f.cwd()).unwrap(), Some(f.runtime.path.clone()));
+    assert!(IDS.contains(&"cargo"));
+    assert_eq!(probe_args("cargo", ShellKind::Powershell, "launch", None).unwrap(), vec!["--version"]);
 }
 
 #[tokio::test]

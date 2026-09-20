@@ -1,6 +1,17 @@
 window.__ModuleLoader__.load({
 	id: "@deepseek-ai/dsh-client-connection",
 	factory: (require) => {
+		async function readRpcJson(response, endpoint) {
+			let text;
+			try { text = await response.text(); }
+			catch (cause) {
+				if (cause?.name === "AbortError") throw cause;
+				throw new Error(`Response body interrupted for ${endpoint} (HTTP ${response.status}); operation outcome unknown; verify before retrying.`, { cause });
+			}
+			if (!text.trim()) throw new Error(`Empty JSON response for ${endpoint} (HTTP ${response.status}); operation outcome unknown; verify before retrying.`);
+			try { return JSON.parse(text); }
+			catch (cause) { throw new Error(`Invalid or incomplete JSON response for ${endpoint} (HTTP ${response.status}); operation outcome unknown; verify before retrying.`, { cause }); }
+		}
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
@@ -6186,7 +6197,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				};
 				this.onEnvelope(message);
 				const response = await this.postJson(`/api/${method}`, message, signal, timeoutPolicy);
-				const full = serverResponseSchema.parse(await response.json());
+				const full = serverResponseSchema.parse(await readRpcJson(response, `/api/${method}`));
 				this.onEnvelope(full);
 				if (full.rpcId !== message.rpcId) throw new Error(`rpcId mismatch for ${method}: sent ${message.rpcId}, got ${full.rpcId}`);
 				if (!full.result.ok) return {
@@ -6373,7 +6384,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			async respond(message, signal) {
 				this.onEnvelope(message);
 				const response = await this.postJson("/api/respond", message, signal);
-				return rpcReceiptSchema.parse(await response.json());
+				return rpcReceiptSchema.parse(await readRpcJson(response, "/api/respond"));
 			}
 		};
 		//#endregion
@@ -10198,7 +10209,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						...signal === void 0 ? {} : { signal }
 					});
 					if (!response.ok) throw new Error(`transport failure for ${channel}/${endpoint}: HTTP ${response.status}`);
-					const full = parseConnectionResponse(await response.json());
+					const full = parseConnectionResponse(await readRpcJson(response, `${channel}/${endpoint}`));
 					if (full.rpcId !== rpcId) throw new Error(`rpcId mismatch for ${endpoint}: sent ${rpcId}, got ${full.rpcId}`);
 					return full.result;
 				},

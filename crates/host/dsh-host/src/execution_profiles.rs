@@ -262,7 +262,7 @@ fn validate_preferences(value: &Preferences) -> Result<(), String> {
     if value
         .toolchain_paths
         .keys()
-        .any(|k| !matches!(k.as_str(), "node" | "rustc" | "git" | "rg" | "ffmpeg"))
+        .any(|k| !matches!(k.as_str(), "node" | "rustc" | "cargo" | "git" | "rg" | "ffmpeg"))
     {
         return Err("未知工具链名称".into());
     }
@@ -336,14 +336,7 @@ impl ExecutionProfiles {
             return Ok((kind, Some(ensure_file(path.clone(), "Shell")?)));
         }
         let found = match kind {
-            ShellKind::Powershell if cfg!(windows) => locate(&["pwsh.exe"]).or_else(|| {
-                std::env::var_os("SystemRoot")
-                    .map(PathBuf::from)
-                    .map(|p| p.join("System32/WindowsPowerShell/v1.0/powershell.exe"))
-                    .filter(|p| p.is_file())
-                    .map(|p| p.to_string_lossy().into_owned())
-            }),
-            ShellKind::Powershell => locate(&["pwsh"]),
+            ShellKind::Powershell => dsh_shell::powershell::locate_powershell(),
             ShellKind::Bash => locate(if cfg!(windows) {
                 &["bash.exe"]
             } else {
@@ -861,7 +854,10 @@ impl ExecutionProfiles {
             });
             return Err((
                 if denied { "permission_denied" } else { "error" },
-                format!("exit={:?}; {}", outcome.exit_code, stderr),
+                format!("exit={:?}; {}{}", outcome.exit_code, stderr,
+                    dsh_shell::application_diagnostics(outcome.exit_code, stderr).iter()
+                        .map(|entry| format!("\n[diagnostic: {}; suspected application stderr]\n[recovery: {}]", entry.category, entry.recovery()))
+                        .collect::<String>()),
             ));
         }
         let out = out.ok_or(("error", "检查没有输出".into()))?;
@@ -911,7 +907,7 @@ fn probe_args(
             "-NoProfile".into(),
             "-NonInteractive".into(),
             "-Command".into(),
-            "$ProgressPreference='SilentlyContinue'; $PSVersionTable.PSVersion.ToString()".into(),
+            "$ProgressPreference='SilentlyContinue'; $PSVersionTable.PSVersion.ToString(); 'LanguageMode=' + $ExecutionContext.SessionState.LanguageMode; Get-ExecutionPolicy -List | ForEach-Object { 'ExecutionPolicy.' + $_.Scope + '=' + $_.ExecutionPolicy }".into(),
         ],
         "shell" | "pwsh" => vec!["--version".into()],
         "python" => {
@@ -1012,8 +1008,15 @@ impl ExecutionProfileResolver for ExecutionProfiles {
         for (name, path) in &mut toolchain_paths {
             *path = ensure_file(path.clone(), name)?;
         }
+        for name in ["node", "rustc", "cargo", "git", "rg", "ffmpeg"] {
+            if !toolchain_paths.contains_key(name) {
+                if let Some(path) = self.selected_path(name, session_id, &cwd)? {
+                    toolchain_paths.insert(name.into(), path);
+                }
+            }
+        }
         let context_id = hash(
-            &json!({"host":self.host.environment(),"profile":profile,"cwd":cwd,"shell":shell_path.as_deref().map(file_stamp),"python":python_path.as_deref().map(file_stamp)}),
+            &json!({"host":self.host.environment(),"profile":profile,"cwd":cwd,"shell":shell_path.as_deref().map(file_stamp),"python":python_path.as_deref().map(file_stamp),"toolchains":toolchain_paths.iter().map(|(name,path)| (name,file_stamp(path))).collect::<BTreeMap<_,_>>()}),
         );
         Ok(ResolvedExecutionProfile {
             context_id,
@@ -1036,7 +1039,7 @@ impl ExecutionProfiles {
         let service = self.clone();
         tools.register(ctx, ToolDefinition {
             name: "environment_validate".into(), description: "Validate selected shell, interpreter or a fixed capability inside the current execution policy. This is separate from environment_probe host facts. Request only needed capabilities, reuse cached facts; use refresh after a relevant failure. Python dependency imports use the selected isolated interpreter; cv2 feature checks an in-memory codec. WPS supports locate only. Never changes permissions or installs software.".into(),
-            parameters: json!({"type":"object","properties":{"name":{"type":"string","enum":["shell","python","node","git","rg","pwsh","ffmpeg","wps","rustc"]},"level":{"type":"string","enum":["locate","launch","dependency","feature"]},"module":{"type":"string","enum":MODULES},"refresh":{"type":"boolean"}},"required":["name"],"additionalProperties":false}),
+            parameters: json!({"type":"object","properties":{"name":{"type":"string","enum":["shell","python","node","git","rg","pwsh","ffmpeg","wps","rustc","cargo"]},"level":{"type":"string","enum":["locate","launch","dependency","feature"]},"module":{"type":"string","enum":MODULES},"refresh":{"type":"boolean"}},"required":["name"],"additionalProperties":false}),
             output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text {text:value.to_string()}])), presentation_meta: None }, timeout_ms: Some(15000), is_concurrency_safe: Some(Arc::new(|_|true)),
             execute: Arc::new(move |args,exec| { let service=service.clone(); let args=args.clone(); let signal=exec.signal.lock().clone(); let agent=exec.agent.clone(); Box::pin(async move {
                 let session=agent.as_ref().map(|a|a.session().header().id.as_str());

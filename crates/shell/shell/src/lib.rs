@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod index;
 pub mod invariant;
 pub mod profiles;
+pub mod powershell;
 pub mod render;
 pub mod types;
 

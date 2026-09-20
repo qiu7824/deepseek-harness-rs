@@ -292,9 +292,35 @@ fn call_key(name: &str, canonical: &str) -> String {
     format!("call:{:016x}", hash.finish())
 }
 
+/// Advisory grouping only: changing wrappers does not resolve an access failure.
+fn execution_access_failure(name: &str, failed: bool, text: &str) -> Option<&'static str> {
+    if !failed || !matches!(name, "pwsh" | "bash" | "execute_script" | "execute_native" | "execute_steps" | "environment_validate") {
+        return None;
+    }
+    let text = text.chars().take(16_384).collect::<String>().to_ascii_lowercase();
+    if text.contains("permission denied") || text.contains("access is denied")
+        || text.contains("unauthorizedaccess") || text.contains("authorizationmanager")
+        || text.contains("拒绝访问") || text.contains("os error 5")
+        || text.contains("detected dubious ownership") {
+        Some("EXECUTION_ACCESS_FAILURE_SUSPECTED")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod key_tests {
     use super::*;
+
+    #[test]
+    fn changed_wrappers_share_advisory_failure_but_success_and_file_text_do_not() {
+        for name in ["pwsh", "execute_native", "execute_script"] {
+            assert_eq!(execution_access_failure(name, true, "Test-Path : Access is denied"), Some("EXECUTION_ACCESS_FAILURE_SUSPECTED"));
+        }
+        assert!(execution_access_failure("read", true, "Access is denied").is_none());
+        assert!(execution_access_failure("pwsh", false, "Access is denied").is_none());
+        assert!(execution_access_failure("pwsh", true, "assertion failed").is_none());
+    }
 
     #[test]
     fn argument_identity_is_order_independent_without_retaining_large_payloads() {
@@ -352,6 +378,13 @@ fn observe(
                     | "TERMINAL_STARTUP_TIMEOUT"
             )
         });
+    let failure = failure.or_else(|| {
+        let result = result?;
+        let failed = result.is_error || result.value.as_ref().is_some_and(|v| v["completion"] == "failed");
+        let text = result.error.as_ref().map(|e| e.message.as_str())
+            .or_else(|| result.value.as_ref().and_then(|v| v["stdout"].as_str())).unwrap_or_default();
+        execution_access_failure(&exec.name, failed, text)
+    });
     let key = failure
         .map(|code| format!("execution-failure:{code}"))
         .unwrap_or_else(|| call_key(&exec.name, &canonical));
@@ -375,7 +408,7 @@ fn observe(
     }
     let text = if let Some(code) = failure {
         format!(
-            "The execution path has failed {count} times with {code}, including calls whose arguments may differ. Identify whether startup, command execution, or cleanup failed before retrying. Changing command text or switching between shell and PTY does not repair a shared runtime failure. Use existing diagnostics and new evidence; do not disable the sandbox or bypass an approval denial. If the operation simply needs more time, use the supported background-job workflow."
+            "The execution path has failed {count} times with {code}, including calls whose arguments may differ. Identify whether startup, command execution, or cleanup failed before retrying. Changing command text or switching between shell and PTY does not repair a shared runtime failure. Use environment_probe for missing host facts, then environment_validate in the selected context; access denied does not prove a missing installation. Check the intended workspace and scoped permission flow instead of guessing paths or writing wrapper/config files. Application-text classification is advisory, not a confirmed sandbox decision. Do not disable the sandbox or bypass an approval denial. If the operation simply needs more time, use the supported background-job workflow."
         )
     } else if count == state.first_threshold {
         GENTLE_REMINDER.to_string()

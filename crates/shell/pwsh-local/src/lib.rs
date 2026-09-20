@@ -183,21 +183,11 @@ fn shell_environment(spec: &ShellExecSpec, executable: &str) -> Vec<(String, Opt
 }
 
 fn default_powershell() -> String {
+    if let Some(path) = dsh_shell::powershell::locate_powershell() {
+        return path;
+    }
     #[cfg(windows)]
     {
-        for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
-            let candidate = directory.join("pwsh.exe");
-            if candidate.is_file() {
-                return candidate.to_string_lossy().into_owned();
-            }
-        }
-        if let Some(windows) = std::env::var_os("SystemRoot") {
-            let candidate = std::path::PathBuf::from(windows)
-                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-            if candidate.is_file() {
-                return candidate.to_string_lossy().into_owned();
-            }
-        }
         return "powershell.exe".into();
     }
     #[cfg(not(windows))]

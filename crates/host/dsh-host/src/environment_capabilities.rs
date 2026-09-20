@@ -24,8 +24,8 @@ use sha2::{Digest, Sha256};
 
 use crate::runtime_paths::RuntimePaths;
 
-pub(super) const IDS: [&str; 8] = [
-    "python", "node", "git", "rg", "pwsh", "ffmpeg", "wps", "rustc",
+pub(super) const IDS: [&str; 9] = [
+    "python", "node", "git", "rg", "pwsh", "ffmpeg", "wps", "rustc", "cargo",
 ];
 const POSITIVE_TTL: u64 = 24 * 60 * 60;
 const NEGATIVE_TTL: u64 = 60;
@@ -399,6 +399,7 @@ impl EnvironmentCapabilities {
             return status;
         }
         let command = match id {
+            "pwsh" => dsh_shell::powershell::locate_powershell().unwrap_or_else(|| "pwsh".into()),
             "python" => std::env::var("DSH_PYTHON_COMMAND")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
@@ -563,6 +564,7 @@ impl EnvironmentCapabilities {
         let mut text = String::from(
             "Host environment capabilities: reuse the paths below while valid. Use environment_probe for missing details or refresh after an execution failure; do not repeat shell discovery for known capabilities. These are host diagnostics, not proof of sandbox/remote access. Actual operations must use normal tools and permissions.\n",
         );
+        text.push_str("For build tasks discover the needed toolchain (including cargo) once, then validate it in the selected execution context before starting a long/background build. Access denied means unknown accessibility, not missing installation. Do not rotate shell wrappers, guess installation directories, or change global settings after repeated failures; follow the diagnostic recovery and permission flow. Background started means running, not passed.\n");
         for (id, record) in records
             .iter()
             .filter(|(_, record)| record.valid(&environment, now()))
@@ -686,8 +688,8 @@ pub(super) fn install(
     let probe = capabilities.clone();
     tools.register(ctx, ToolDefinition {
         name: "environment_probe".into(),
-        description: "Get cached host program paths, versions and supported capabilities. Request only required names: python, node, git, rg, pwsh, ffmpeg, wps, rustc. Reuse results; refresh only after failure or environment changes. Python module checks use isolated mode. WPS is located without launching Office. This does not establish sandbox or remote permissions; use environment_validate for the selected execution context.".into(),
-        parameters: json!({"type":"object","properties":{"names":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","enum":IDS}},"refresh":{"type":"boolean"}},"required":["names"],"additionalProperties":false}),
+        description: "Get cached host program paths, versions and supported capabilities. Request only required names: python, node, git, rg, pwsh, ffmpeg, wps, rustc, cargo. Reuse results; refresh only after failure or environment changes. Python module checks use isolated mode. WPS is located without launching Office. This does not establish sandbox or remote permissions; use environment_validate for the selected execution context.".into(),
+        parameters: json!({"type":"object","properties":{"names":{"type":"array","minItems":1,"maxItems":9,"items":{"type":"string","enum":IDS}},"refresh":{"type":"boolean"}},"required":["names"],"additionalProperties":false}),
         output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_, value| Ok(vec![ContentBlock::Text { text: value.to_string() }])), presentation_meta: None },
         timeout_ms: Some(60000), is_concurrency_safe: Some(Arc::new(|_| true)),
         execute: Arc::new(move |args, exec| {
