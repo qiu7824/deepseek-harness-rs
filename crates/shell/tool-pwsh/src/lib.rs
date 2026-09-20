@@ -654,6 +654,7 @@ impl ToolPwshService {
                         apply_profile(&mut request, profiles.as_ref(), true)?;
                         authorize_execution_directory(&mut request,owner.as_ref(),approval.as_ref(),&call_id).await?;
                         validate_profile(&request, profiles.as_ref(), "shell", request.shell_path.clone(), Some("powershell".into())).await?;
+                        let retry_context = serde_json::json!({"command":request.command,"workdir":request.workdir,"context":request.execution_context_id,"policy":request.sandbox_policy.as_ref().map(|p|format!("{:?}",p))});
                         let context_id = request.execution_context_id.clone();
                         if let (Some(sandbox),Some(policy))=(&sandbox,&request.sandbox_policy){sandbox.prepare(policy).await.map_err(shell_runtime_failure)?;}
                         mark_effects();
@@ -668,7 +669,9 @@ impl ToolPwshService {
                         if result.exit_code != Some(0) || result.signal.is_some() || result.timed_out || result.aborted {
                             if let (Some(profiles),Some(context)) = (&profiles,&result.execution_context_id) { profiles.report_failure(context,"shell"); }
                         }
-                        let output = output::render_result(&output::result_json(&result, &call_id));
+                        let mut receipt = output::result_json(&result, &call_id);
+                        receipt["retryContext"] = retry_context;
+                        let output = output::render_result(&receipt);
                         if result.aborted {
                             return Err(ToolBodyError::coded(format!("PowerShell command cancelled\n{output}"), "AbortError", "SHELL_ABORTED"));
                         }
@@ -694,9 +697,9 @@ impl ToolPwshService {
                                 && (output.contains("FileNotFoundError") || output.contains("不存在") || output.contains("No such file")) {
                                 "\nVerify the exact path and chosen execution context before diagnosing a missing file or encoding issue. This message alone does not establish a sandbox denial. Diagnose the required target and inspect existing effects before any retry."
                             } else { "" };
-                            return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}{hint}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED"));
+                            return Err(ToolBodyError::coded(format!("PowerShell command failed (exit: {:?}, signal: {:?})\n{output}{hint}", result.exit_code, result.signal), "ShellError", "SHELL_FAILED").with_receipt(receipt));
                         }
-                        Ok(output::result_json(&result, &call_id))
+                        Ok(receipt)
                     })
                 }),
                 finalize_content: None,

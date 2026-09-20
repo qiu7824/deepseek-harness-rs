@@ -1,5 +1,6 @@
 mod args;
 mod environment;
+mod launcher;
 #[cfg(windows)]
 mod pool;
 mod toolchain;

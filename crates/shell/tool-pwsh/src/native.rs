@@ -281,7 +281,7 @@ pub(super) fn install(
                     for (index, command) in commands.into_iter().enumerate() {
                         if signal() { return Err(ToolBodyError::coded(format!("Execution cancelled before step {}; no further steps dispatched. Previous results: {}", index+1, Value::Array(results)), "AbortError", "SHELL_ABORTED")); }
                         let mut step = request.clone();
-                        step.native_argv = Some(command);
+                        step.native_argv = Some(command.clone());
                         mark_effects();
                         let result = match shell.run(shell.resolve(step)).await {
                             Ok(result)=>result,
@@ -292,7 +292,8 @@ pub(super) fn install(
                                 return Err(failure);
                             },
                         };
-                        let value = super::output::result_json(&result, &format!("{call_id}:{}",index+1));
+                        let mut value = super::output::result_json(&result, &format!("{call_id}:{}",index+1));
+                        if total == 1 { value["retryContext"] = json!({"commands": request.native_argv, "command":command,"workdir":request.workdir,"context":request.execution_context_id,"policy":request.sandbox_policy.as_ref().map(|p|format!("{:?}",p))}); }
                         let succeeded = value["completion"] == "succeeded";
                         if !succeeded {
                             if let (Some(profiles),Some(context),Some(capability)) = (&profiles,&request.execution_context_id,&capabilities[index]) { profiles.report_failure(context,capability); }
@@ -308,7 +309,7 @@ pub(super) fn install(
                             value["steps"] = Value::Array(results);
                             if !succeeded && (args["allow_nonzero"] != true || result.aborted || result.timed_out) {
                                 let code = if result.aborted {"SHELL_ABORTED"} else if result.timed_out {"SHELL_TIMEOUT"} else {"SHELL_FAILED"};
-                                return Err(ToolBodyError::coded(super::output::render_result(&value), "ExecutionError", code));
+                                return Err(ToolBodyError::coded(super::output::render_result(&value), "ExecutionError", code).with_receipt(value));
                             }
                             return Ok(value);
                         }

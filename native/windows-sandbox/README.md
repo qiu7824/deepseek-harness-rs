@@ -18,6 +18,11 @@ and `UPSTREAM.json`. Initial setup requests elevation explicitly; the helper's
 asInvoker manifest also permits non-elevated workspace refreshes. Normal
 commands execute under a restricted sandbox account.
 
+Bare Windows command names follow PATHEXT; extensionless POSIX wrappers are not
+selected ahead of Windows launchers. npm/npx wrappers resolve to the matching
+installed npm JavaScript entry point and node.exe, preserving literal argv
+without cmd.exe interpolation. Other scripts require an explicit interpreter.
+
 ## Protocol
 
 `--status --native-home <absolute-directory>` returns readiness without exposing

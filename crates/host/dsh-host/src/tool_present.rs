@@ -23,6 +23,7 @@ type Pending = Arc<Mutex<HashMap<u64, Delivery>>>;
 
 fn failure(message: impl Into<String>) -> ToolBodyError {
     ToolBodyError {
+        receipt: None,
         message: message.into(),
         info: None,
     }

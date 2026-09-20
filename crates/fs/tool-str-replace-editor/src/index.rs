@@ -77,6 +77,7 @@ fn maybe_truncate(content: &str, max_output_chars: u64) -> String {
 /// `{ name, code }` info).
 fn fs_tool_error(error: &FsError) -> ToolBodyError {
     ToolBodyError {
+        receipt: None,
         message: error.to_string(),
         info: Some(ToolErrorInfo {
             name: "FsError".to_string(),

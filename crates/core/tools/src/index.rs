@@ -76,14 +76,21 @@ pub struct ToolFailure {
 /// The failure channel a tool body returns through.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolBodyError {
+    /// Adapter-owned structured outcome retained on the error channel for durable recovery.
+    pub receipt: Option<JsonValue>,
     pub message: String,
     pub info: Option<ToolErrorInfo>,
 }
 
 impl ToolBodyError {
+    pub fn with_receipt(mut self, receipt: JsonValue) -> Self {
+        self.receipt = Some(receipt);
+        self
+    }
     pub fn plain(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            receipt: None,
             info: None,
         }
     }
@@ -91,6 +98,7 @@ impl ToolBodyError {
     pub fn coded(message: impl Into<String>, name: &str, code: &str) -> Self {
         Self {
             message: message.into(),
+            receipt: None,
             info: Some(ToolErrorInfo {
                 name: name.to_string(),
                 code: code.to_string(),
@@ -1624,7 +1632,11 @@ impl ToolRuntime {
                         result
                     }
                 }
-                Ok(Err(error)) => tool_error_result(&error.message, error.info.as_ref()),
+                Ok(Err(error)) => {
+                    let mut result = tool_error_result(&error.message, error.info.as_ref());
+                    if let Some(receipt) = error.receipt { result.meta = Some(serde_json::json!({"executionReceipt":receipt})); }
+                    result
+                },
                 Err(payload) => {
                     let error = tool_error_from_panic(payload);
                     tool_error_result(&error.message, error.info.as_ref())

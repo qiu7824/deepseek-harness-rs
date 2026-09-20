@@ -77,6 +77,7 @@ fn output(
 }
 fn err(message: impl Into<String>, code: &str) -> ToolBodyError {
     ToolBodyError {
+        receipt: None,
         message: message.into(),
         info: Some(dsh_tools::ToolErrorInfo {
             name: "SearchError".into(),

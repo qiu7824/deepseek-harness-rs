@@ -46,15 +46,7 @@ fn allowed(name: &str) -> bool {
     )
 }
 
-fn locate(program: &str) -> Option<PathBuf> {
-    let direct = PathBuf::from(program);
-    if direct.is_absolute() {
-        return direct.is_file().then_some(direct);
-    }
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .flat_map(|p| [p.join(program), p.join(format!("{program}.exe"))])
-        .find(|p| p.is_file())
-}
+use crate::launcher::locate;
 
 pub fn prepare(request: &Request) -> Result<Environment> {
     let mut values: HashMap<_, _> = std::env::vars()
@@ -176,12 +168,7 @@ pub fn prepare(request: &Request) -> Result<Environment> {
     }
     // Explicitly selected programs require their installation tree, not the
     // user's whole profile. Shared compiler/SDK paths remain read-only.
-    if let Some(exe) = command.first().and_then(|name| locate(name)) {
-        if let Some(parent) = exe.parent() {
-            reads.push(parent.to_path_buf());
-        }
-        command[0] = exe.to_string_lossy().into_owned();
-    }
+    crate::launcher::adapt(&mut command, &mut reads)?;
     for name in ["PATH", "LIB", "LIBPATH", "INCLUDE"] {
         if let Some(paths) = values.get(name) {
             reads.extend(std::env::split_paths(paths).filter(|p| p.is_absolute() && p.is_dir()));

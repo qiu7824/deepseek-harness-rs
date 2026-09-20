@@ -124,3 +124,18 @@ async fn finite_negative_scroll_deltas_reach_the_body_while_invalid_numbers_do_n
         );
     }
 }
+
+#[tokio::test]
+async fn failure_preserves_execution_receipt_without_becoming_success() {
+    let ctx=Context::root();dsh_system_prompt::SystemPrompt::install(&ctx,Default::default()).unwrap();
+    let tools=ToolRuntime::install(&ctx,Config::default()).unwrap();
+    tools.register(&ctx,ToolDefinition {
+        name:"bounded-operation".into(),description:"receipt regression".into(),parameters:serde_json::json!({"type":"object"}),
+        output:ToolOutputDefinition{schema:serde_json::json!({"type":"object"}),render:Arc::new(|_,_|Ok(vec![])),presentation_meta:None},
+        timeout_ms:None,is_concurrency_safe:None,finalize_content:None,present_call:None,present_result:None,
+        execute:Arc::new(|_,_|Box::pin(async{Err(ToolBodyError::coded("failed","ExecutionError","SHELL_FAILED").with_receipt(serde_json::json!({"exitCode":101,"processState":"exited"})))})),
+    }).unwrap();
+    let result=tools.execute(input(serde_json::json!({}))).await;
+    assert!(result.is_error);assert!(result.value.is_none());
+    assert_eq!(result.meta.as_ref().unwrap()["executionReceipt"]["exitCode"],101);
+}

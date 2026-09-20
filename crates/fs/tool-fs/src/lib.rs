@@ -29,6 +29,7 @@ fn body_error(error: FsError) -> ToolBodyError {
         _ => "",
     };
     ToolBodyError {
+        receipt: None,
         message: format!("{error}{remedy}"),
         info: Some(dsh_tools::ToolErrorInfo {
             name: "FsError".into(),
@@ -42,6 +43,7 @@ fn mutation_body_error(error: FsError, path: &str) -> ToolBodyError {
         return body_error(error);
     }
     ToolBodyError {
+        receipt: None,
         message: format!(
             "cannot modify \"{path}\": file has not been read — read the file, then retry (cause: {error})"
         ),
