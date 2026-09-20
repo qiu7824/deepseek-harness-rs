@@ -6,11 +6,11 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：`0.1.3-alpha.28`。
+当前发布线：`0.1.3-alpha.29`。
 
-开发版本：`0.1.3-alpha.28`，见 [变更说明](release/notes/v0.1.3-alpha.28.md)。
+开发版本：`0.1.3-alpha.29`，见 [变更说明](release/notes/v0.1.3-alpha.29.md)。
 
-完整更新见 [alpha.28 发布说明](release/notes/v0.1.3-alpha.28.md)。
+完整更新见 [alpha.29 发布说明](release/notes/v0.1.3-alpha.29.md)。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
