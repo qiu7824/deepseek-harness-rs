@@ -3,6 +3,7 @@
 //! `packages/shell/shell`.
 
 pub mod diagnostics;
+pub mod developer_environment;
 pub mod index;
 pub mod invariant;
 pub mod profiles;

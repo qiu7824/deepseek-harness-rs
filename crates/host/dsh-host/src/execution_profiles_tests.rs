@@ -91,6 +91,63 @@ fn windows_app_aliases_are_distinct_from_real_packaged_executables() {
 struct SlowSandbox {
     prepared: Arc<AtomicBool>,
 }
+
+struct CleanupSandbox;
+impl SandboxProvider for CleanupSandbox {
+    fn confine(
+        &self,
+        argv: &[String],
+        _: &SandboxPolicy,
+    ) -> Result<dsh_sandbox::ConfinedArgv, dsh_sandbox::SandboxUnavailableError> {
+        let mut wrapped = vec![
+            "fixture-runner".into(),
+            "--ready-event".into(),
+            "fixture".into(),
+            "--".into(),
+        ];
+        wrapped.extend_from_slice(argv);
+        Ok(dsh_sandbox::ConfinedArgv {
+            argv: wrapped,
+            enforcement: dsh_sandbox::SandboxEnforcement::Full,
+            denial_signatures: vec![],
+            runner_failure_rules: vec![],
+            startup: Some(
+                dsh_sandbox::SandboxStartup::new(|| Ok(true), || Ok(false))
+                    .with_phase(|| Ok("cleanup".into())),
+            ),
+        })
+    }
+}
+
+#[tokio::test]
+async fn probe_command_budget_does_not_kill_runner_during_cleanup() {
+    let f = Fixture::new(SandboxMode::WorkspaceWrite);
+    f.service
+        .ctx
+        .register_service(Arc::new(CleanupSandbox) as Arc<dyn SandboxProvider>);
+    f.runtime.delay_ms.store(20_000, Ordering::SeqCst);
+    f.save().await;
+    let value = f
+        .service
+        .inspect(
+            "python",
+            "launch",
+            None,
+            None,
+            &f.cwd(),
+            false,
+            Arc::new(|| false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(value["status"], "ready", "{value}");
+    let args = f.runtime.args.lock();
+    assert!(
+        args[0]
+            .windows(2)
+            .any(|pair| pair == ["--command-timeout-ms", "15000"])
+    );
+}
 impl SandboxProvider for SlowSandbox {
     fn prepare(&self, _: &SandboxExecutionPolicy) -> BoxFuture<'static, Result<(), String>> {
         let prepared = self.prepared.clone();
@@ -301,14 +358,25 @@ fn profile_input_cannot_grant_permissions_or_run_startup_scripts() {
 async fn cargo_is_a_selected_validated_capability_and_keeps_explicit_choice() {
     let f = Fixture::new(SandboxMode::DangerFullAccess);
     let mut preferences = f.preferences();
-    preferences.toolchain_paths.insert("cargo".into(), f.runtime.path.clone());
+    preferences
+        .toolchain_paths
+        .insert("cargo".into(), f.runtime.path.clone());
     validate_preferences(&preferences).unwrap();
-    f.service.save("global", None, &f.cwd(), 0, Some(preferences)).await.unwrap();
+    f.service
+        .save("global", None, &f.cwd(), 0, Some(preferences))
+        .await
+        .unwrap();
     let resolved = f.service.resolve(None, &f.cwd()).unwrap();
     assert_eq!(resolved.toolchain_paths.get("cargo"), Some(&f.runtime.path));
-    assert_eq!(f.service.selected_path("cargo", None, &f.cwd()).unwrap(), Some(f.runtime.path.clone()));
+    assert_eq!(
+        f.service.selected_path("cargo", None, &f.cwd()).unwrap(),
+        Some(f.runtime.path.clone())
+    );
     assert!(IDS.contains(&"cargo"));
-    assert_eq!(probe_args("cargo", ShellKind::Powershell, "launch", None).unwrap(), vec!["--version"]);
+    assert_eq!(
+        probe_args("cargo", ShellKind::Powershell, "launch", None).unwrap(),
+        vec!["--version"]
+    );
 }
 
 #[tokio::test]

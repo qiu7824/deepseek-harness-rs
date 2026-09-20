@@ -15,6 +15,9 @@ regex = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+find-msvc-tools = "0.1.11"
+
 [dev-dependencies]
 async-trait = { workspace = true }
 tokio = { workspace = true }

@@ -3290,6 +3290,7 @@ dependencies = [
  "dsh-sandbox",
  "dsh-settings",
  "dsh-subprocess",
+ "find-msvc-tools",
  "futures",
  "parking_lot",
  "regex",

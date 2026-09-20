@@ -83,11 +83,11 @@ fn windows_command_shell() -> String {
 }
 
 pub struct ShellTerminalBackend {
+    ctx: Context,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox_policy: Arc<SandboxPolicyService>,
     sandbox: Option<Arc<dyn SandboxProvider>>,
     config: Config,
-    profiles: Option<Arc<dyn dsh_shell::ExecutionProfileResolver>>,
 }
 
 impl ShellTerminalBackend {
@@ -109,22 +109,30 @@ impl ShellTerminalBackend {
             .get_typed::<Arc<dyn SandboxProvider>>("sandbox", false)
             .map(|slot| slot.as_ref().clone());
         let backend = Arc::new(Self {
+            ctx: ctx.clone(),
             subprocess,
             sandbox_policy,
             sandbox,
             config,
-            profiles: ctx
-                .get_typed::<Arc<dyn dsh_shell::ExecutionProfileResolver>>(
-                    "executionProfiles",
-                    false,
-                )
-                .map(|slot| slot.as_ref().clone()),
         });
         terminals
             .register_backend(backend.clone())
             .map_err(|error| error.to_string())?;
         Ok(backend)
     }
+}
+
+fn execution_profiles(
+    ctx: &Context,
+    backend_type: &str,
+) -> Option<Arc<dyn dsh_shell::ExecutionProfileResolver>> {
+    // Services can be installed after terminal backends. Only the generic
+    // shell follows the selected profile; explicit cmd/bash backends stay explicit.
+    if backend_type != "shell" {
+        return None;
+    }
+    ctx.get_typed::<Arc<dyn dsh_shell::ExecutionProfileResolver>>("executionProfiles", false)
+        .map(|slot| slot.as_ref().clone())
 }
 
 fn validate(config: &Config) -> Result<(), String> {
@@ -207,8 +215,8 @@ impl TerminalBackend for ShellTerminalBackend {
         });
         let mut config = self.config.clone();
         let mut selected_kind = None;
-        let profile = self
-            .profiles
+        let profiles = execution_profiles(&self.ctx, &self.config.backend_type);
+        let profile = profiles
             .as_ref()
             .map(|profiles| {
                 profiles.resolve(
@@ -245,7 +253,6 @@ impl TerminalBackend for ShellTerminalBackend {
             Err(error) => Err(error.clone()),
         };
         let sandbox = self.sandbox.clone();
-        let profiles = self.profiles.clone();
         Box::pin(async move {
             if spec.signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(TerminalBackendSpawnError::spawn("terminal spawn aborted"));
@@ -289,21 +296,30 @@ impl TerminalBackend for ShellTerminalBackend {
                 .spawn_terminal(SubprocessTerminalSpawnSpec {
                     argv,
                     cwd,
-                    env: Some(vec![
-                        ("TERM".to_string(), "xterm-256color".to_string()),
-                        ("PAGER".to_string(), "cat".to_string()),
-                        ("GIT_PAGER".to_string(), "cat".to_string()),
-                        ("PS1".to_string(), "dsh> ".to_string()),
-                        ("DSH_SHELL".to_string(), "1".to_string()),
-                        (
-                            "DSH_SESSION_ID".to_string(),
-                            spec.owner.id().as_str().to_string(),
-                        ),
-                        (
-                            "DSH_PTY_SESSION_ID".to_string(),
-                            spec.session_id.as_str().to_string(),
-                        ),
-                    ]),
+                    env: Some(
+                        dsh_shell::developer_environment::environment()
+                            .into_iter()
+                            .chain(
+                                dsh_shell::powershell::system_execution_policy(&config.shell_path)
+                                    .map(|v| ("PSExecutionPolicyPreference".into(), v)),
+                            )
+                            .chain(vec![
+                                ("TERM".to_string(), "xterm-256color".to_string()),
+                                ("PAGER".to_string(), "cat".to_string()),
+                                ("GIT_PAGER".to_string(), "cat".to_string()),
+                                ("PS1".to_string(), "dsh> ".to_string()),
+                                ("DSH_SHELL".to_string(), "1".to_string()),
+                                (
+                                    "DSH_SESSION_ID".to_string(),
+                                    spec.owner.id().as_str().to_string(),
+                                ),
+                                (
+                                    "DSH_PTY_SESSION_ID".to_string(),
+                                    spec.session_id.as_str().to_string(),
+                                ),
+                            ])
+                            .collect(),
+                    ),
                     rows: config.rows,
                     cols: config.cols,
                     grace_ms: config.dispose_grace_ms,
@@ -902,6 +918,31 @@ mod utf8_tests {
 #[cfg(test)]
 mod tests {
     use super::BoundedText;
+
+    #[test]
+    fn generic_terminal_sees_late_profiles_and_explicit_cmd_does_not_change() {
+        struct Profiles;
+        impl dsh_shell::ExecutionProfileResolver for Profiles {
+            fn resolve(
+                &self,
+                _: Option<&str>,
+                _: &str,
+            ) -> Result<dsh_shell::ResolvedExecutionProfile, String> {
+                Ok(dsh_shell::ResolvedExecutionProfile::default())
+            }
+        }
+        let ctx = cordis::Context::root();
+        assert!(super::execution_profiles(&ctx, "shell").is_none());
+        let profiles: std::sync::Arc<dyn dsh_shell::ExecutionProfileResolver> =
+            std::sync::Arc::new(Profiles);
+        ctx.register_service(profiles.clone());
+        assert!(std::sync::Arc::ptr_eq(
+            &super::execution_profiles(&ctx, "shell").unwrap(),
+            &profiles
+        ));
+        assert!(super::execution_profiles(&ctx, "cmd").is_none());
+        assert!(super::execution_profiles(&ctx, "bash").is_none());
+    }
 
     #[test]
     fn bounded_scrollback_preserves_utf8_boundaries() {

@@ -136,6 +136,14 @@ fn shell_environment(spec: &ShellExecSpec, executable: &str) -> Vec<(String, Opt
         ("PYTHONIOENCODING".to_string(), Some("utf-8".to_string())),
         ("PYTHONUTF8".to_string(), Some("1".to_string())),
     ];
+    env.extend(
+        dsh_shell::developer_environment::environment()
+            .into_iter()
+            .map(|(k, v)| (k, Some(v))),
+    );
+    if let Some(policy) = dsh_shell::powershell::system_execution_policy(executable) {
+        env.push(("PSExecutionPolicyPreference".into(), Some(policy)));
+    }
     #[cfg(windows)]
     if let Some(parent) = std::path::Path::new(executable).parent() {
         let modules = parent.join("Modules");

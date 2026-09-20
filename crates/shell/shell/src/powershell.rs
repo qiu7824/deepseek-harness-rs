@@ -55,6 +55,84 @@ pub fn locate_powershell() -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// Windows PowerShell 5 cannot reliably read the user's policy registry from
+/// AppContainer. Carry the existing effective host policy, never invent Bypass.
+/// Only the protected system executable is queried; custom executables must not
+/// be launched on the host as an incidental preflight.
+pub fn system_execution_policy(executable: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::{
+            os::windows::process::CommandExt,
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+        let system = PathBuf::from(std::env::var_os("SystemRoot")?)
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let system = std::fs::canonicalize(system).ok()?;
+        if std::fs::canonicalize(executable).ok()? != system {
+            return None;
+        }
+        static CACHE: std::sync::Mutex<Option<(Instant, String)>> = std::sync::Mutex::new(None);
+        let mut cache = CACHE.lock().ok()?;
+        if let Some((at, value)) = cache
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(60))
+        {
+            let _ = at;
+            return Some(value.clone());
+        }
+        let mut command = Command::new(&system);
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Microsoft.PowerShell.Security\\Get-ExecutionPolicy",
+            ])
+            .env("PSModulePath", system.parent()?.join("Modules"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(0x08000000);
+        let mut child = command.spawn().ok()?;
+        let started = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(Some(_)) => return None,
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                _ if started.elapsed() > Duration::from_secs(3) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                _ => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        let output = child.wait_with_output().ok()?;
+        let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        if !matches!(
+            value.as_str(),
+            "Restricted" | "AllSigned" | "RemoteSigned" | "Unrestricted" | "Bypass"
+        ) {
+            return None;
+        }
+        *cache = Some((Instant::now(), value.clone()));
+        Some(value)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = executable;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

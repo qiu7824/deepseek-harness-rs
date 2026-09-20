@@ -259,11 +259,12 @@ fn validate_preferences(value: &Preferences) -> Result<(), String> {
             return Err("程序必须使用绝对路径，不支持命令字符串或初始化脚本".into());
         }
     }
-    if value
-        .toolchain_paths
-        .keys()
-        .any(|k| !matches!(k.as_str(), "node" | "rustc" | "cargo" | "git" | "rg" | "ffmpeg"))
-    {
+    if value.toolchain_paths.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "node" | "rustc" | "cargo" | "git" | "rg" | "ffmpeg"
+        )
+    }) {
         return Err("未知工具链名称".into());
     }
     Ok(())
@@ -755,7 +756,7 @@ impl ExecutionProfiles {
         signal: dsh_tools::AbortPredicate,
     ) -> Result<String, (&'static str, String)> {
         let argv: Vec<_> = std::iter::once(path.to_string()).chain(args).collect();
-        let (argv, enforcement) = if policy.mode == SandboxMode::DangerFullAccess {
+        let (mut argv, enforcement) = if policy.mode == SandboxMode::DangerFullAccess {
             (argv, None)
         } else {
             let sandbox = self
@@ -786,16 +787,41 @@ impl ExecutionProfiles {
                 .map_err(|e| ("permission_denied", e.to_string()))?;
             (confined.argv.clone(), Some(confined))
         };
+        // The Windows runner owns the command deadline, so it can finish ACL
+        // cleanup after terminating a timed-out payload. Do not charge cleanup
+        // against the program's execution budget.
+        let runner_budget = enforcement.as_ref().is_some_and(|c| c.startup.is_some())
+            && argv.iter().any(|arg| arg == "--ready-event");
+        if runner_budget {
+            let boundary = argv
+                .iter()
+                .position(|arg| arg == "--")
+                .ok_or(("setup_failed", "missing sandbox command boundary".into()))?;
+            argv.splice(
+                boundary..boundary,
+                ["--command-timeout-ms".into(), "15000".into()],
+            );
+        }
         let child = self
             .runtime
             .spawn(SubprocessSpawnSpec {
                 argv,
                 cwd: cwd.into(),
-                env: Some(vec![
-                    ("PYTHONSTARTUP".into(), None),
-                    ("NODE_OPTIONS".into(), None),
-                    ("PYTHONUTF8".into(), Some("1".into())),
-                ]),
+                env: Some(
+                    dsh_shell::developer_environment::environment()
+                        .into_iter()
+                        .map(|(k, v)| (k, Some(v)))
+                        .chain(
+                            dsh_shell::powershell::system_execution_policy(path)
+                                .map(|v| ("PSExecutionPolicyPreference".into(), Some(v))),
+                        )
+                        .chain(vec![
+                            ("PYTHONSTARTUP".into(), None),
+                            ("NODE_OPTIONS".into(), None),
+                            ("PYTHONUTF8".into(), Some("1".into())),
+                        ])
+                        .collect(),
+                ),
                 signal: Some(signal.clone()),
                 grace_ms: 200,
                 stdio: SubprocessStdio {
@@ -840,12 +866,29 @@ impl ExecutionProfiles {
                 .map_err(|_| ("setup_timeout", format!("[SANDBOX_SETUP_TIMEOUT] phase={}; runner readiness not confirmed; inspect startup evidence before retrying", startup.phase())))??;
         }
         let outcome = tokio::select! {
-            output = tokio::time::timeout(Duration::from_secs(5),child.done()) => output.map_err(|_|("timed_out","[ENVIRONMENT_PROBE_TIMEOUT] 程序已启动，探测运行超过五秒".into()))?.map_err(|e|("error",e))?,
+            output = tokio::time::timeout(Duration::from_secs(if runner_budget {135} else {15}),child.done()) => output.map_err(|_| {
+                let phase = enforcement.as_ref().and_then(|c|c.startup.as_ref()).map(|s|s.phase()).unwrap_or_else(||"command".into());
+                let stderr=child.collected().stderr.map(|r|r.read_from(0).text).unwrap_or_default();
+                ("timed_out",format!("[ENVIRONMENT_PROBE_TIMEOUT] phase={phase}; probe/cleanup deadline exceeded; stderr: {stderr}"))
+            })?.map_err(|e|("error",e))?,
             _ = cancelled(signal) => return Err(("unknown","环境检查已取消".into())),
         };
         let collected = child.collected();
         let out = collected.stdout.map(|r| r.read_from(0));
         let err = collected.stderr.map(|r| r.read_from(0));
+        if enforcement
+            .as_ref()
+            .and_then(|c| c.startup.as_ref())
+            .is_some_and(|s| s.timed_out().unwrap_or(false))
+        {
+            return Err((
+                "timed_out",
+                format!(
+                    "[ENVIRONMENT_PROBE_TIMEOUT] command exceeded 15000 ms; cleanup settled; stderr: {}",
+                    err.as_ref().map(|r| r.text.as_str()).unwrap_or_default()
+                ),
+            ));
+        }
         if outcome.exit_code != Some(0) {
             let stderr = err.as_ref().map(|r| r.text.as_str()).unwrap_or_default();
             let denied = enforcement.as_ref().is_some_and(|c| {
@@ -854,10 +897,19 @@ impl ExecutionProfiles {
             });
             return Err((
                 if denied { "permission_denied" } else { "error" },
-                format!("exit={:?}; {}{}", outcome.exit_code, stderr,
-                    dsh_shell::application_diagnostics(outcome.exit_code, stderr).iter()
-                        .map(|entry| format!("\n[diagnostic: {}; suspected application stderr]\n[recovery: {}]", entry.category, entry.recovery()))
-                        .collect::<String>()),
+                format!(
+                    "exit={:?}; {}{}",
+                    outcome.exit_code,
+                    stderr,
+                    dsh_shell::application_diagnostics(outcome.exit_code, stderr)
+                        .iter()
+                        .map(|entry| format!(
+                            "\n[diagnostic: {}; suspected application stderr]\n[recovery: {}]",
+                            entry.category,
+                            entry.recovery()
+                        ))
+                        .collect::<String>()
+                ),
             ));
         }
         let out = out.ok_or(("error", "检查没有输出".into()))?;
@@ -1040,7 +1092,7 @@ impl ExecutionProfiles {
         tools.register(ctx, ToolDefinition {
             name: "environment_validate".into(), description: "Validate selected shell, interpreter or a fixed capability inside the current execution policy. This is separate from environment_probe host facts. Request only needed capabilities, reuse cached facts; use refresh after a relevant failure. Python dependency imports use the selected isolated interpreter; cv2 feature checks an in-memory codec. WPS supports locate only. Never changes permissions or installs software.".into(),
             parameters: json!({"type":"object","properties":{"name":{"type":"string","enum":["shell","python","node","git","rg","pwsh","ffmpeg","wps","rustc","cargo"]},"level":{"type":"string","enum":["locate","launch","dependency","feature"]},"module":{"type":"string","enum":MODULES},"refresh":{"type":"boolean"}},"required":["name"],"additionalProperties":false}),
-            output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text {text:value.to_string()}])), presentation_meta: None }, timeout_ms: Some(15000), is_concurrency_safe: Some(Arc::new(|_|true)),
+            output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text {text:value.to_string()}])), presentation_meta: None }, timeout_ms: Some(400000), is_concurrency_safe: Some(Arc::new(|_|true)),
             execute: Arc::new(move |args,exec| { let service=service.clone(); let args=args.clone(); let signal=exec.signal.lock().clone(); let agent=exec.agent.clone(); Box::pin(async move {
                 let session=agent.as_ref().map(|a|a.session().header().id.as_str());
                 let cwd=agent.as_ref().and_then(|a|a.session().header().cwd.as_deref()).map(str::to_string).unwrap_or_else(||std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());

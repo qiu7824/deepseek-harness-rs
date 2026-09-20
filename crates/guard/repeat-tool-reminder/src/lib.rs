@@ -258,6 +258,7 @@ struct Chain {
 /// Shared observation state owned by the plugin's listeners.
 struct ObserveState {
     chains: Mutex<HashMap<String, Chain>>,
+    execution_failures: Mutex<HashMap<String, Chain>>,
     first_threshold: i64,
     threshold_set: HashSet<i64>,
     include: Vec<regex::Regex>,
@@ -293,19 +294,46 @@ fn call_key(name: &str, canonical: &str) -> String {
 }
 
 /// Advisory grouping only: changing wrappers does not resolve an access failure.
+fn is_execution_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "pwsh"
+            | "bash"
+            | "execute_script"
+            | "execute_native"
+            | "execute_steps"
+            | "environment_validate"
+            | "terminal_send"
+    )
+}
+
 fn execution_access_failure(name: &str, failed: bool, text: &str) -> Option<&'static str> {
-    if !failed || !matches!(name, "pwsh" | "bash" | "execute_script" | "execute_native" | "execute_steps" | "environment_validate") {
+    if !failed || !is_execution_tool(name) {
         return None;
     }
-    let text = text.chars().take(16_384).collect::<String>().to_ascii_lowercase();
-    if text.contains("permission denied") || text.contains("access is denied")
-        || text.contains("unauthorizedaccess") || text.contains("authorizationmanager")
-        || text.contains("拒绝访问") || text.contains("os error 5")
-        || text.contains("detected dubious ownership") {
+    let text = text
+        .chars()
+        .take(16_384)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if text.contains("permission denied")
+        || text.contains("access is denied")
+        || text.contains("unauthorizedaccess")
+        || text.contains("authorizationmanager")
+        || text.contains("拒绝访问")
+        || text.contains("os error 5")
+        || text.contains("detected dubious ownership")
+    {
         Some("EXECUTION_ACCESS_FAILURE_SUSPECTED")
     } else {
         None
     }
+}
+
+fn execution_succeeded(name: &str, value: &serde_json::Value) -> bool {
+    is_execution_tool(name)
+        && (value["completion"] == "succeeded"
+            || (name == "environment_validate" && value["status"] == "ready"))
 }
 
 #[cfg(test)]
@@ -313,9 +341,31 @@ mod key_tests {
     use super::*;
 
     #[test]
+    fn only_confirmed_execution_success_resets_environment_failures() {
+        let success = serde_json::json!({"completion":"succeeded"});
+        assert!(execution_succeeded("execute_native", &success));
+        assert!(!execution_succeeded("read", &success));
+        assert!(execution_succeeded(
+            "environment_validate",
+            &serde_json::json!({"status":"ready"})
+        ));
+        assert!(!execution_succeeded(
+            "environment_validate",
+            &serde_json::json!({"status":"located"})
+        ));
+        assert!(!execution_succeeded(
+            "terminal_send",
+            &serde_json::json!({"completion":"unknown"})
+        ));
+    }
+
+    #[test]
     fn changed_wrappers_share_advisory_failure_but_success_and_file_text_do_not() {
-        for name in ["pwsh", "execute_native", "execute_script"] {
-            assert_eq!(execution_access_failure(name, true, "Test-Path : Access is denied"), Some("EXECUTION_ACCESS_FAILURE_SUSPECTED"));
+        for name in ["pwsh", "execute_native", "execute_script", "terminal_send"] {
+            assert_eq!(
+                execution_access_failure(name, true, "Test-Path : Access is denied"),
+                Some("EXECUTION_ACCESS_FAILURE_SUSPECTED")
+            );
         }
         assert!(execution_access_failure("read", true, "Access is denied").is_none());
         assert!(execution_access_failure("pwsh", false, "Access is denied").is_none());
@@ -380,24 +430,51 @@ fn observe(
         });
     let failure = failure.or_else(|| {
         let result = result?;
-        let failed = result.is_error || result.value.as_ref().is_some_and(|v| v["completion"] == "failed");
-        let text = result.error.as_ref().map(|e| e.message.as_str())
-            .or_else(|| result.value.as_ref().and_then(|v| v["stdout"].as_str())).unwrap_or_default();
-        execution_access_failure(&exec.name, failed, text)
+        let failed = result.is_error
+            || result.value.as_ref().is_some_and(|v| {
+                v["completion"] == "failed"
+                    || (exec.name == "terminal_send" && v["completion"] == "unknown")
+            });
+        let mut text = result
+            .error
+            .as_ref()
+            .map(|e| e.message.chars().take(4096).collect::<String>())
+            .unwrap_or_default();
+        if let Some(value) = result.value.as_ref() {
+            for field in ["stderr", "stdout", "viewport"] {
+                if let Some(output) = value[field].as_str() {
+                    text.push('\n');
+                    text.extend(output.chars().take(4096));
+                }
+            }
+        }
+        execution_access_failure(&exec.name, failed, &text)
     });
     let key = failure
         .map(|code| format!("execution-failure:{code}"))
         .unwrap_or_else(|| call_key(&exec.name, &canonical));
     let agent_key = agent.id().as_str().to_string();
+    if failure.is_none()
+        && result
+            .filter(|r| !r.is_error)
+            .and_then(|r| r.value.as_ref())
+            .is_some_and(|v| execution_succeeded(&exec.name, v))
+    {
+        state.execution_failures.lock().remove(&agent_key);
+    }
     let count = {
-        let mut chains = state.chains.lock();
+        let mut chains = if failure.is_some() {
+            state.execution_failures.lock()
+        } else {
+            state.chains.lock()
+        };
         if chains.len() >= 512 && !chains.contains_key(&agent_key) {
             if let Some(oldest) = chains.keys().next().cloned() {
                 chains.remove(&oldest);
             }
         }
         let next = match chains.get(&agent_key) {
-            Some(chain) if chain.key == key => chain.count + 1,
+            Some(chain) if failure.is_some() || chain.key == key => chain.count + 1,
             _ => 1,
         };
         chains.insert(agent_key, Chain { key, count: next });
@@ -408,7 +485,7 @@ fn observe(
     }
     let text = if let Some(code) = failure {
         format!(
-            "The execution path has failed {count} times with {code}, including calls whose arguments may differ. Identify whether startup, command execution, or cleanup failed before retrying. Changing command text or switching between shell and PTY does not repair a shared runtime failure. Use environment_probe for missing host facts, then environment_validate in the selected context; access denied does not prove a missing installation. Check the intended workspace and scoped permission flow instead of guessing paths or writing wrapper/config files. Application-text classification is advisory, not a confirmed sandbox decision. Do not disable the sandbox or bypass an approval denial. If the operation simply needs more time, use the supported background-job workflow."
+            "The execution path has encountered {count} unresolved failures; the latest category is {code}. Calls may use different arguments and failure stages. Identify whether startup, command execution, or cleanup failed before retrying. Changing command text or switching between shell and PTY does not repair a shared runtime failure. Use environment_probe for missing host facts, then environment_validate in the selected context; access denied does not prove a missing installation. Check the intended workspace and scoped permission flow instead of guessing paths or writing wrapper/config files. Application-text classification is advisory, not a confirmed sandbox decision. Do not disable the sandbox or bypass an approval denial. If the operation simply needs more time, use the supported background-job workflow."
         )
     } else if count == state.first_threshold {
         GENTLE_REMINDER.to_string()
@@ -469,6 +546,7 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
     }
     let state = Arc::new(ObserveState {
         chains: Mutex::new(HashMap::new()),
+        execution_failures: Mutex::new(HashMap::new()),
         first_threshold,
         threshold_set,
         include,
@@ -551,6 +629,10 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                     .any(|message| matches!(message.source, MessageSource::User { .. }))
                 {
                     state.chains.lock().remove(payload.agent.id().as_str());
+                    state
+                        .execution_failures
+                        .lock()
+                        .remove(payload.agent.id().as_str());
                 }
                 Some(next.call().await)
             })
