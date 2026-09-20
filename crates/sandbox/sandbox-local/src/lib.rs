@@ -1,3 +1,6 @@
+#[cfg(windows)]
+mod native_backend;
+
 use std::sync::Arc;
 
 #[cfg(windows)]
@@ -60,6 +63,8 @@ pub struct Config {
 }
 
 pub struct LocalSandboxProvider {
+    #[cfg(windows)]
+    native: Result<Option<native_backend::NativeBackend>, String>,
     platform: String,
     runtime_roots: Vec<std::path::PathBuf>,
     runtime_cache: Option<std::path::PathBuf>,
@@ -127,6 +132,8 @@ mod preparation_tests {
 impl LocalSandboxProvider {
     pub fn new(config: Config) -> Arc<Self> {
         Arc::new(Self {
+            #[cfg(windows)]
+            native: Ok(None),
             platform: config.platform.unwrap_or_else(host_platform),
             runtime_roots: Vec::new(),
             runtime_cache: None,
@@ -151,6 +158,8 @@ impl LocalSandboxProvider {
         cache: std::path::PathBuf,
     ) -> Arc<Self> {
         let provider = Arc::new(Self {
+            #[cfg(windows)]
+            native: native_backend::NativeBackend::load(&cache),
             platform: config.platform.unwrap_or_else(host_platform),
             runtime_roots: roots,
             runtime_cache: Some(cache),
@@ -194,6 +203,55 @@ impl LocalSandboxProvider {
 }
 
 impl SandboxProvider for LocalSandboxProvider {
+    fn backend_id_for(&self, policy: &SandboxExecutionPolicy) -> &'static str {
+        #[cfg(windows)]
+        if self.platform == "win32"
+            && self.native.as_ref().is_ok_and(|n| {
+                n.as_ref()
+                    .is_some_and(|n| !n.matches_workspace(&policy.workspace_root))
+            })
+        {
+            return "windows-appcontainer";
+        }
+        self.backend_id()
+    }
+    fn backend_fingerprint_for(&self, policy: &SandboxExecutionPolicy) -> String {
+        if self.backend_id_for(policy) != self.backend_id() {
+            self.backend_id_for(policy).to_owned()
+        } else {
+            self.backend_fingerprint()
+        }
+    }
+    fn backend_id(&self) -> &'static str {
+        #[cfg(windows)]
+        if self.platform == "win32" {
+            return match &self.native {
+                Ok(Some(_)) => "windows-native",
+                Ok(None) => "windows-appcontainer",
+                Err(_) => "windows-unavailable",
+            };
+        }
+        match self.platform.as_str() {
+            "linux" => "linux-bwrap",
+            "darwin" => "macos-seatbelt",
+            _ => "local",
+        }
+    }
+
+    fn backend_fingerprint(&self) -> String {
+        #[cfg(windows)]
+        if let Ok(Some(native)) = &self.native {
+            return format!(
+                "windows-native:{}:{}:{}:{}",
+                native.sha256,
+                native.command_runner_sha256,
+                native.setup_sha256,
+                native.state_directory.display()
+            );
+        }
+        self.backend_id().to_owned()
+    }
+
     fn confine_with_startup(
         &self,
         argv: &[String],
@@ -202,12 +260,16 @@ impl SandboxProvider for LocalSandboxProvider {
         let mut confined = self.confine(argv, policy)?;
         #[cfg(windows)]
         if self.platform == "win32"
-            && embedded_runner_path().is_some_and(|runner| {
+            && (self.native.as_ref().is_ok_and(|backend| {
+                backend
+                    .as_ref()
+                    .is_some_and(|n| n.matches_workspace(&policy.workspace_root))
+            }) || embedded_runner_path().is_some_and(|runner| {
                 confined
                     .argv
                     .first()
                     .is_some_and(|program| std::path::Path::new(program) == runner)
-            })
+            }))
         {
             let (name, startup) = windows_startup_signal()
                 .map_err(|error| SandboxUnavailableError::new(policy.mode, Some(&error)))?;
@@ -223,6 +285,26 @@ impl SandboxProvider for LocalSandboxProvider {
         &self,
         policy: &SandboxExecutionPolicy,
     ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+        #[cfg(windows)]
+        if self.platform == "win32" && policy.mode != SandboxMode::DangerFullAccess {
+            match &self.native {
+                Err(error) => {
+                    let error = error.clone();
+                    return Box::pin(async move { Err(error) });
+                }
+                Ok(Some(native)) if native.matches_workspace(&policy.workspace_root) => {
+                    let native = native.clone();
+                    let workspace = policy.workspace_root.clone();
+                    let read_only = policy.mode == SandboxMode::ReadOnly;
+                    return Box::pin(async move {
+                        tokio::task::spawn_blocking(move || native.prepare(&workspace, read_only))
+                            .await
+                            .map_err(|e| format!("native readiness task: {e}"))?
+                    });
+                }
+                Ok(_) => {}
+            }
+        }
         #[cfg(windows)]
         if self.platform == "win32"
             && policy.mode != SandboxMode::DangerFullAccess
@@ -324,6 +406,20 @@ impl SandboxProvider for LocalSandboxProvider {
         argv: &[String],
         policy: &SandboxPolicy,
     ) -> Result<ConfinedArgv, SandboxUnavailableError> {
+        #[cfg(windows)]
+        if self.platform == "win32" {
+            match &self.native {
+                Err(error) => return Err(SandboxUnavailableError::new(policy.mode, Some(error))),
+                Ok(Some(native)) if native.matches_workspace(&policy.workspace_root) => {
+                    native
+                        .verify()
+                        .and_then(|_| native.validate_scope(&policy.workspace_root))
+                        .map_err(|e| SandboxUnavailableError::new(policy.mode, Some(&e)))?;
+                    return Ok(native.confine(argv, policy, &self.runtime_roots));
+                }
+                Ok(_) => {}
+            }
+        }
         let (mut wrapped, denial_signatures, runner_failure_rules) = match self.platform.as_str() {
             "linux" => (
                 bwrap_profile_args(policy),

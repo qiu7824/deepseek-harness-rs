@@ -250,6 +250,23 @@ impl std::error::Error for SandboxUnavailableError {}
 /// multi-runner chains and may be skipped for a sole candidate, whose own
 /// refusal remains the fail-closed end.
 pub trait SandboxProvider: Send + Sync + 'static {
+    /// Stable backend name for execution diagnostics.
+    fn backend_id(&self) -> &'static str {
+        "local"
+    }
+
+    /// Identity used to invalidate execution probes when an installed backend changes.
+    fn backend_fingerprint(&self) -> String {
+        self.backend_id().to_owned()
+    }
+    /// Effective backend after an explicitly configured workspace routing rule.
+    fn backend_id_for(&self, _policy: &SandboxExecutionPolicy) -> &'static str {
+        self.backend_id()
+    }
+    fn backend_fingerprint_for(&self, _policy: &SandboxExecutionPolicy) -> String {
+        self.backend_fingerprint()
+    }
+
     /// Opt into a runner handshake only when the consumer retains and uses it.
     fn confine_with_startup(
         &self,

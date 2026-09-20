@@ -412,8 +412,28 @@ impl ExecutionProfiles {
             })
             .collect();
         Ok(
-            json!({"version":1,"revision":self.state.lock().revision,"profileRevision":profile.revision,"source":source,"preferences":profile.preferences,"effective":runtime,"permissionMode":policy.mode.as_str(),"permissionManagedSeparately":true,"workspace":cwd,"backendId":"local","os":std::env::consts::OS,"arch":std::env::consts::ARCH,"shellCandidates":candidates,"existingTerminalsRequireRestart":true,"cache":self.checks.lock().values().filter(|c|fresh(c)).map(|c|c.value.clone()).filter(|c|c["sessionId"].as_str()==session && c["workspace"].as_str()==Some(cwd.as_str()) && c["contextId"]==current_context && c["policyFingerprint"]==policy_fingerprint).collect::<Vec<_>>() }),
+            json!({"version":1,"revision":self.state.lock().revision,"profileRevision":profile.revision,"source":source,"preferences":profile.preferences,"effective":runtime,"permissionMode":policy.mode.as_str(),"permissionManagedSeparately":true,"workspace":cwd,"backendId":self.backend_id(&policy),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"shellCandidates":candidates,"existingTerminalsRequireRestart":true,"cache":self.checks.lock().values().filter(|c|fresh(c)).map(|c|c.value.clone()).filter(|c|c["sessionId"].as_str()==session && c["workspace"].as_str()==Some(cwd.as_str()) && c["contextId"]==current_context && c["policyFingerprint"]==policy_fingerprint && c["backendId"]==self.backend_id(&policy)).collect::<Vec<_>>() }),
         )
+    }
+
+    fn backend_id(&self, policy: &SandboxExecutionPolicy) -> &'static str {
+        if policy.mode == SandboxMode::DangerFullAccess {
+            return "unconfined";
+        }
+        self.ctx
+            .get_typed::<Arc<dyn SandboxProvider>>("sandbox", false)
+            .map(|backend| backend.backend_id_for(policy))
+            .unwrap_or("unavailable")
+    }
+
+    fn backend_fingerprint(&self, policy: &SandboxExecutionPolicy) -> String {
+        if policy.mode == SandboxMode::DangerFullAccess {
+            return "unconfined".into();
+        }
+        self.ctx
+            .get_typed::<Arc<dyn SandboxProvider>>("sandbox", false)
+            .map(|backend| backend.backend_fingerprint_for(policy))
+            .unwrap_or_else(|| "unavailable".into())
     }
 
     fn policy(&self, session: Option<&str>) -> Result<SandboxExecutionPolicy, String> {
@@ -656,7 +676,7 @@ impl ExecutionProfiles {
         let path = selected.path;
         let policy = selected.policy;
         let key = hash(
-            &json!({"host":self.host.environment(),"context":selected.context_id,"backend":"local","session":session,"cwd":cwd,"policy":format!("{policy:?}"),"id":id,"level":level,"module":module,"file":path.as_deref().map(file_stamp),"venv":file_stamp(&Path::new(&cwd).join(".venv/pyvenv.cfg").to_string_lossy())}),
+            &json!({"host":self.host.environment(),"context":selected.context_id,"backend":self.backend_fingerprint(&policy),"session":session,"cwd":cwd,"policy":format!("{policy:?}"),"id":id,"level":level,"module":module,"file":path.as_deref().map(file_stamp),"venv":file_stamp(&Path::new(&cwd).join(".venv/pyvenv.cfg").to_string_lossy())}),
         );
         let gate = {
             let mut gates = self.gates.lock();
@@ -688,7 +708,7 @@ impl ExecutionProfiles {
         if signal() {
             return Err("环境检查已取消".into());
         }
-        let mut value = json!({"id":id,"level":level,"module":module,"path":path,"executionWorld":"selected_environment","backendId":"local","environmentFingerprint":key,"contextId":selected.context_id,"profileRevision":selected.profile_revision,"permissionMode":policy.mode.as_str(),"moduleScope":"selected isolated interpreter; workspace and user-site imports excluded","status":"missing","cacheHit":false,"checkedAt":timestamp(),"checkId":uuid::Uuid::new_v4().to_string(),"workspace":cwd,"sessionId":session});
+        let mut value = json!({"id":id,"level":level,"module":module,"path":path,"executionWorld":"selected_environment","backendId":self.backend_id(&policy),"environmentFingerprint":key,"contextId":selected.context_id,"profileRevision":selected.profile_revision,"permissionMode":policy.mode.as_str(),"moduleScope":"selected isolated interpreter; workspace and user-site imports excluded","status":"missing","cacheHit":false,"checkedAt":timestamp(),"checkId":uuid::Uuid::new_v4().to_string(),"workspace":cwd,"sessionId":session});
         value["policyFingerprint"] = json!(hash(&json!(format!("{policy:?}"))));
         if let Some(path) = path {
             if level == "locate" {

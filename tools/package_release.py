@@ -127,6 +127,16 @@ def main() -> None:
     shutil.copy2(core_source, stage / core_output)
     shutil.copy2(launcher_source, stage / launcher_output)
     if args.platform == "windows":
+        native_source = ROOT / "target" / "native-windows-sandbox" / "release"
+        native_stage = stage / "native-sandbox"
+        native_stage.mkdir()
+        for helper in ("dsh-windows-native.exe", "dsh-command-runner.exe", "dsh-windows-sandbox-setup.exe"):
+            if not (native_source / helper).is_file():
+                raise SystemExit(f"missing native sandbox helper: {helper}; build native/windows-sandbox first")
+            shutil.copy2(native_source / helper, native_stage / helper)
+        for notice in ("LICENSE", "NOTICE"):
+            shutil.copy2(ROOT / "native" / "windows-sandbox" / "engine" / notice, native_stage / notice)
+        shutil.copy2(ROOT / "native" / "windows-sandbox" / "UPSTREAM.json", native_stage / "UPSTREAM.json")
         for controller in ("dsh-desktop-controller", "dsh-uu-controller"):
             controller_source = ROOT / "target" / "release" / f"{controller}.exe"
             if not controller_source.is_file():

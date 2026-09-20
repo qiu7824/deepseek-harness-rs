@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/openai/codex",
+  "revision": "bb5054fe47abe73ecbbd454751066a28c89f4bb9",
+  "package": "codex-rs/windows-sandbox-rs",
+  "license": "Apache-2.0",
+  "identity": "DSH-only accounts, helpers and WFP object keys",
+  "wfpKeys": {
+    "2e31d31c_3948_4753_9117_e5d1a6496f41": "0eecc184f7d75bfb9f8085e430034e52",
+    "e65054fd_4d32_4c7c_95ef_621f0cf6431a": "a2108d4659b457aa9d67b4697841491b",
+    "9f5f3812_79f0_4fe9_9615_4c2c92d2f0ff": "e169035a7d305f74861051d2e31b24e3",
+    "87498484_45ab_4510_845e_ece8b791b3bc": "ea1c68a582915169b7fa202f8cd35265",
+    "af4751de_f874_4a7b_a34d_f0d0f22d1d9b": "8c43cc733e2b50a38fac25238a4da91e",
+    "ea10db66_a928_4b2e_a82e_a376a54f93ba": "1e50486ea07252b293edf140deb6121c",
+    "83172805_f6be_4ae1_9dc6_6847aef04e7f": "74cb8fd4650f58f5a4410bc8386fbe02",
+    "d23b2efb_1efb_46b2_96f3_b0ccda5690c8": "cbffd5ce7702513cb2a12c05fffee7f4",
+    "420b026f_9dc9_4aea_88f4_0f2b9feab39a": "18f94eba97b95200aa4acf4502196111",
+    "8d917c81_99cc_45e7_84d6_824df860cfb8": "bdf5f1d29edc532e8f7afd44717fe0d7",
+    "e1d6e0af_ce5f_471b_b2d3_15ca00e966f3": "3482a05fdee55c06ad5f32b881a66281",
+    "c2bceca4_66ef_4a0f_ba80_f4f761b8c6f0": "dcfce770c03d5bcca39cb85410690c5f",
+    "ba10c618_84e7_4b83_8f74_36e22b2fa1ff": "9c329de1b5cc5f1c87975ee3f74b493c",
+    "fe7f22b8_5cf5_4adb_b2aa_71fc0a8f5d44": "a0f662e0f6f95273a9477eae6dc58200"
+  }
+}

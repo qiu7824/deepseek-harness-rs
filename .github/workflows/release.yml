@@ -171,7 +171,14 @@ jobs:
       - name: 构建正式二进制
         timeout-minutes: 45
         run: cargo build --locked --release --timings -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher -p dsh-skin-installer --bin dsh-skin-installer
-      - name: Build Windows desktop controller
+      - name: Build Windows native sandbox
+        if: matrix.platform == 'windows'
+        run: |
+          cargo build --locked --release --workspace --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+          if ($LASTEXITCODE -ne 0) { throw 'Native sandbox build failed' }
+          cargo test --locked -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+          if ($LASTEXITCODE -ne 0) { throw 'Native sandbox protocol tests failed' }
+      - name: Build Windows desktop controller binaries
         if: matrix.platform == 'windows'
         run: |
           cargo build --locked --release -p dsh-desktop-controller -p dsh-uu-controller

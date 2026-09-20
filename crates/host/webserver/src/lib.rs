@@ -9,7 +9,7 @@ pub mod index;
 pub mod invariant;
 
 pub use index::{
-    Config, Host, RouteDisposer, WebHandlerError, WebIndexTap, WebRequest, WebResponse, WebRoute,
-    WebRouteHandler, WebRouteKind, WebServer, WebServerPlugin, WebUpgradeHandler, WebUpgradeRoute,
-    WebUpgraded, accept_websocket,
+    Config, ConnectionFilter, Host, RouteDisposer, WebHandlerError, WebIndexTap, WebRequest,
+    WebResponse, WebRoute, WebRouteHandler, WebRouteKind, WebServer, WebServerPlugin,
+    WebUpgradeHandler, WebUpgradeRoute, WebUpgraded, accept_websocket,
 };

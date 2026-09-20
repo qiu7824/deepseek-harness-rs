@@ -215,8 +215,12 @@ pub type WebUpgradeHandler = Arc<
 /// Synchronous route disposer (the TS register methods return `() => void`).
 pub type RouteDisposer = Arc<dyn Fn() + Send + Sync>;
 
+/// Admission check for a connected peer before any HTTP or upgrade is served.
+pub type ConnectionFilter = Arc<dyn Fn(SocketAddr, SocketAddr) -> bool + Send + Sync>;
+
 /// The browser HTTP carrier service.
 pub struct WebServer {
+    connection_filter: Option<ConnectionFilter>,
     config: Config,
     exact: Arc<Mutex<HashMap<String, WebRoute>>>,
     prefixes: Arc<Mutex<HashMap<String, WebRoute>>>,
@@ -241,7 +245,16 @@ impl WebServer {
     /// Construct an unregistered server (test hook); `install` binds, registers
     /// the `webServer` service, and attaches the teardown effect.
     pub fn new(ctx: &Context, config: Config) -> Arc<Self> {
+        Self::with_connection_filter(ctx, config, None)
+    }
+
+    fn with_connection_filter(
+        ctx: &Context,
+        config: Config,
+        connection_filter: Option<ConnectionFilter>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            connection_filter,
             config,
             exact: Arc::new(Mutex::new(HashMap::new())),
             prefixes: Arc::new(Mutex::new(HashMap::new())),
@@ -260,7 +273,16 @@ impl WebServer {
     /// Bind the configured address, register the service, and attach teardown.
     /// A bind failure is returned (the loader fiber reports it fail-loud).
     pub async fn install(ctx: &Context, config: Config) -> Result<Arc<Self>, String> {
-        let server = Self::new(ctx, config);
+        Self::install_with_connection_filter(ctx, config, None).await
+    }
+
+    /// Set connection admission before binding, including connections accepted during startup.
+    pub async fn install_with_connection_filter(
+        ctx: &Context,
+        config: Config,
+        filter: Option<ConnectionFilter>,
+    ) -> Result<Arc<Self>, String> {
+        let server = Self::with_connection_filter(ctx, config, filter);
         let unregister = ctx.register_service(server.clone());
         if let Err(error) = server.listen().await {
             unregister().await;
@@ -416,10 +438,19 @@ impl WebServer {
                     break;
                 }
                 match listener.accept().await {
-                    Ok((stream, _)) => {
+                    Ok((stream, peer)) => {
                         let Some(server) = weak.upgrade() else {
                             break;
                         };
+                        if let Some(filter) = &server.connection_filter {
+                            let accepted = stream.local_addr().ok().is_some_and(|local| {
+                                std::panic::catch_unwind(AssertUnwindSafe(|| filter(peer, local)))
+                                    .unwrap_or(false)
+                            });
+                            if !accepted {
+                                continue;
+                            }
+                        }
                         let io = TokioIo::new(stream);
                         let weak_conn = weak.clone();
                         let service = service_fn(move |request| {

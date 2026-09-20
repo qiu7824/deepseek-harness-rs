@@ -65,6 +65,8 @@ mod video_http;
 mod video_reader;
 mod web_preview;
 mod web_search_settings;
+#[cfg(windows)]
+mod windows_peer_identity;
 mod workspace_copy;
 mod workspace_resources;
 mod workspace_ssh;
@@ -4176,12 +4178,31 @@ fn compose_host_in_fiber(
     // Port zero asks the OS for a free test/embedding port; application
     // launchers may select a stable port so the web-surface prompt stays
     // byte-identical across Host restarts.
-    let web_server = futures::executor::block_on(WebServer::install(
+    #[cfg(windows)]
+    let connection_filter = {
+        let backend = dsh_sandbox::SandboxProvider::backend_id(sandbox.as_ref());
+        if matches!(backend, "windows-native" | "windows-unavailable")
+            && bind_host != BindHost::Loopback
+        {
+            return Err(
+                "Windows native sandbox requires a same-user loopback control interface".into(),
+            );
+        }
+        if bind_host == BindHost::Loopback {
+            Some(windows_peer_identity::filter()?)
+        } else {
+            None
+        }
+    };
+    #[cfg(not(windows))]
+    let connection_filter = None;
+    let web_server = futures::executor::block_on(WebServer::install_with_connection_filter(
         ctx,
         WebConfig {
             host: bind_host,
             port: bind_port,
         },
+        connection_filter,
     ))
     .map_err(|error| format!("webserver: {error}"))?;
     let _web_surface = system_prompt.section(

@@ -217,3 +217,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+## Windows native sandbox engine
+
+The Windows native execution helpers incorporate OpenAI Codex's Windows sandbox
+implementation, commit `bb5054fe47abe73ecbbd454751066a28c89f4bb9`, under Apache-2.0.
+Source and license: https://github.com/openai/codex/tree/bb5054fe47abe73ecbbd454751066a28c89f4bb9/codex-rs/windows-sandbox-rs
+
+The preserved license and notice are in `native/windows-sandbox/engine/LICENSE`
+and `native/windows-sandbox/engine/NOTICE`. Product-specific adaptations use DSH
+identities, helper executables and network-rule keys, ownership checks, explicit
+initialization, and command-lifetime process-tree cleanup. The dependency lock
+and provenance record accompany the standalone native backend.
