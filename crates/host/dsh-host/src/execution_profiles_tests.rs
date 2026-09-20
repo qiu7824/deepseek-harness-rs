@@ -5,10 +5,10 @@ use dsh_subprocess::{
 };
 
 #[test]
-fn powershell_launch_probe_reports_policy_without_changing_it() {
+fn powershell_launch_probe_does_not_require_policy_registry_access() {
     let args = probe_args("shell", ShellKind::Powershell, "launch", None).unwrap();
     let command = args.last().unwrap();
-    assert!(command.contains("Get-ExecutionPolicy -List"));
+    assert!(!command.contains("Get-ExecutionPolicy"));
     assert!(command.contains("LanguageMode"));
     assert!(!command.contains("Set-ExecutionPolicy"));
     assert!(!args.iter().any(|arg| arg == "-ExecutionPolicy"));

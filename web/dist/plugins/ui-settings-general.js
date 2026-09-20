@@ -614,7 +614,6 @@ window.__ModuleLoader__.load({
 		}
 		const subagentCss = ".dshSub{display:flex;flex-direction:column;gap:18px;width:100%;max-width:720px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary)}.dshSub h2{margin:0;font-size:18px;font-weight:600;line-height:26px}.dshSub h3{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-tertiary);text-transform:uppercase;letter-spacing:.04em}.dshSubHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}.dshSubGroup{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}.dshSubGrid{display:grid;grid-template-columns:160px minmax(0,1fr);gap:12px 16px;align-items:center}.dshSubGrid>label{font-size:13px;color:var(--dsw-alias-label-secondary);text-align:right;line-height:20px}.dshSubGrid small{display:block;font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:3px;font-weight:400}.dshSub input,.dshSub select{box-sizing:border-box;width:100%;max-width:320px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:7px 10px;font:inherit;font-size:13px;line-height:20px;transition:border-color .15s}.dshSub input:focus,.dshSub select:focus{outline:none;border-color:var(--dsw-alias-border-l3)}.dshSub input[type=checkbox]{width:16px;height:16px;max-width:none;justify-self:start;cursor:pointer}.dshSub input[type=number]{max-width:160px}.dshSubError{color:var(--dsw-alias-state-error-primary);font-size:13px;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-state-error-bg,rgba(255,80,80,.08))}.dshSubRow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dshSubBadge{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}";
 		if (typeof document !== "undefined" && !document.querySelector("style[data-plugin-css='dsh-subagent-settings']")) { const tag = document.createElement("style"); tag.dataset.pluginCss = "dsh-subagent-settings"; tag.textContent = subagentCss; document.head.appendChild(tag); }
-		if (typeof document !== "undefined" && !document.querySelector("style[data-environment-controls]")) { const tag=document.createElement("style");tag.dataset.environmentControls="1";tag.textContent=" .dshEnvironment,.dshRemoteExecution{font-size:14px;line-height:1.6;min-width:0;gap:14px}.dshEnvironment p,.dshRemoteExecution p{margin:0;overflow-wrap:anywhere}.dshEnvironment label,.dshRemoteExecution label{min-width:0;overflow-wrap:anywhere}.dshEnvActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dshEnvironment button,.dshRemoteExecution button{box-sizing:border-box;align-self:flex-start;max-width:100%;min-height:36px;padding:7px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;line-height:20px;cursor:pointer}.dshEnvironment button:disabled,.dshRemoteExecution button:disabled{opacity:.5;cursor:default}.dshEnvironment :is(button,input,select):focus-visible,.dshRemoteExecution :is(button,input,select):focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.dshEnvironment :is(input,select),.dshRemoteExecution :is(input,select){min-width:0}.dshEnvironment details summary{cursor:pointer;min-height:30px}.dshRemoteExecution button{margin-right:8px;margin-bottom:8px}";document.head.appendChild(tag); }
 		const subagentFields = [
 			{ field: "defaultProvider", label: "子智能体提供方", type: "text", placeholder: "留空继承当前会话", hint: "例如 spawn、fork；留空则使用当前会话路由" },
 			{ field: "defaultModel", label: "子智能体模型", type: "text", placeholder: "留空继承父会话", hint: "独立模型 ID；覆盖父会话模型选择" },
@@ -628,90 +627,6 @@ window.__ModuleLoader__.load({
 			{ field: "serviceTier", label: "服务等级", type: "text", placeholder: "（无）", hint: "透传给支持 service_tier 的 Provider（OpenAI/Anthropic）" },
 			{ field: "apiRetryCount", label: "API 重试次数", type: "number", hint: "子智能体调用 LLM 失败时的重试次数" }
 		];
-		async function environmentRequest(payload) {
-			const response = await fetch("/__dsh-environment", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify(payload) });
-			const value = await response.json();
-			if (!response.ok || value.error) throw new Error(value.error || "环境请求失败");
-			return value;
-		}
-		function EnvironmentSection({ sessionId }) {
-			const h = react.createElement;
-			const [state, setState] = react.useState(null);
-			const [preferences, setPreferences] = react.useState({});
-			const [scope, setScope] = react.useState(sessionId ? "session" : "global");
-			const [cwd, setCwd] = react.useState("");
-            const [cwdDraft, setCwdDraft] = react.useState("");
-			const [error, setError] = react.useState("");
-			const [busy, setBusy] = react.useState(false);
-			const [result, setResult] = react.useState(null);
-			const generation = react.useRef(0);
-            const actionGeneration = react.useRef(0);
-			const load = react.useCallback(async ({ preserveDraft = false } = {}) => {
-				const token = ++generation.current;
-				try { const value = await environmentRequest({ action: "describe", sessionId, cwd }); if (token !== generation.current) return; setState(previous => preserveDraft && previous ? { ...value, revision: previous.revision, preferences: previous.preferences } : value); if (!preserveDraft) setPreferences(value.preferences); setError(""); }
-				catch (cause) { if (token === generation.current) setError(messageOf(cause)); }
-			}, [sessionId, cwd]);
-			react.useEffect(() => { actionGeneration.current++; setState(null); setPreferences({}); setResult(null); setBusy(false); setError(""); load(); return () => { generation.current++; actionGeneration.current++; }; }, [load]);
-			const action = async (payload, replace = false) => {
-                const token = ++actionGeneration.current;
-                setBusy(true); setError("");
-                try { const value = await environmentRequest({ sessionId, cwd, ...payload }); if (token !== actionGeneration.current) return; if (replace) { setState(value); setPreferences(value.preferences); } else { setResult(payload.action === "clearCache" ? null : value); await load({ preserveDraft: true }); } }
-                catch (cause) { if (token === actionGeneration.current) setError(messageOf(cause)); }
-                finally { if (token === actionGeneration.current) setBusy(false); }
-            };
-			const field = (key, value) => setPreferences(p => ({ ...p, [key]: value || null }));
-			const labels = { ready: "当前环境可运行", located: "已定位，尚未启动验证", missing: "未找到", permission_denied: "权限不足", timed_out: "检查超时", error: "检查失败", unknown: "尚未验证" };
-			const permissionLabels = { "read-only": "仅查看", "workspace-write": "工作区保护", "danger-full-access": "完全访问" };
-			const row = (label, child) => h("label", { key: label, style: { display: "grid", gap: 6, margin: 0 } }, h("span", null, label), child);
-			const button = (title, click, disabled = false) => h("button", { key: title, type: "button", disabled: busy || disabled, onClick: click }, title);
-			const projectChanged = !sessionId && scope === "project" && cwdDraft.trim() !== cwd;
-            const readProject = () => { const next = cwdDraft.trim(); if (next === cwd) return load(); setCwd(next); };
-            const scopePicker = row("保存范围", h("select", { value: scope, onChange: e => { setScope(e.target.value); if (!sessionId && e.target.value !== "project") { setCwd(""); setCwdDraft(""); } }, disabled: busy }, [ ["global", "全局默认"], ["project", "项目默认"], ...(sessionId ? [["session", "当前会话"]] : []) ].map(([value, label]) => h("option", { value, key: value }, label))));
-            const projectEditor = !sessionId && scope === "project" && h("div", { key: "project-directory", style: { display: "grid", gap: 8 } },
-                row("项目目录", h("input", { "aria-label": "项目目录", value: cwdDraft, placeholder: "工作区绝对路径", onChange: e => setCwdDraft(e.target.value), onKeyDown: e => { if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229) { e.preventDefault(); readProject(); } }, disabled: busy })),
-                h("div", { className: "dshEnvActions" }, button("读取项目配置", readProject)),
-                h("small", { className: "dshSubHint" }, projectChanged ? "目录尚未应用，请先读取项目配置。" : state ? `当前读取目录：${state.workspace}` : error ? "目录尚未读取成功，可修改目录后重试。" : "正在读取所选目录…"));
-            if (!state) return h("section", { className: "dshSub dshEnvironment" }, h("h2", null, "工具与运行环境"), scopePicker, projectEditor, h("p", { role: error ? "alert" : "status" }, error || "正在读取环境…"), button("重新加载", load));
-			return h("section", { className: "dshSub dshEnvironment" },
-				h("h2", null, "工具与运行环境"),
-				h("p", { className: "dshSubHint" }, `${state.os} / ${state.arch} · 本机 · ${permissionLabels[state.permissionMode] || state.permissionMode}`),
-				h("p", null, `Shell：${state.effective.shellPath || "未找到"}；Python：${state.effective.pythonPath || "未找到"}`),
-				state.effective.error && h("p", { role: "alert" }, state.effective.error),
-				h("p", { className: "dshSubHint" }, "环境选择对后续执行生效；运行中的命令保留原环境，已有终端需重新创建。权限由会话权限设置独立管理。"),
-				scopePicker,
-				projectEditor,
-				row("Shell", h("select", { value: preferences.shellKind || "", onChange: e => { field("shellKind", e.target.value); field("shellPath", ""); }, disabled: busy }, h("option", { value: "" }, "自动推荐"), state.shellCandidates.map(candidate => h("option", { value: candidate.kind, key: candidate.kind }, `${candidate.kind} · ${candidate.path}`)), preferences.shellKind && !state.shellCandidates.some(c => c.kind === preferences.shellKind) ? h("option", { value: preferences.shellKind }, `${preferences.shellKind}（当前不可用）`) : null)),
-				row("指定 Shell 路径（可选）", h("input", { value: preferences.shellPath || "", onChange: e => field("shellPath", e.target.value), disabled: busy, placeholder: "绝对路径" })),
-				row("Python", h("input", { value: preferences.pythonPath || "", onChange: e => field("pythonPath", e.target.value), disabled: busy, placeholder: "自动选择；或填写解释器绝对路径" })),
-				row("信任并使用当前项目 .venv", h("input", { type: "checkbox", checked: !!preferences.useProjectPython, onChange: e => setPreferences(p => ({ ...p, useProjectPython: e.target.checked })), disabled: busy || !!preferences.pythonPath })),
-				row("WPS 路径（可选）", h("input", { value: preferences.wpsPath || "", onChange: e => field("wpsPath", e.target.value), disabled: busy, placeholder: "自动定位；或填写 wps.exe 的绝对路径" })),
-				h("details", null, h("summary", null, "工具链路径"), ["node", "rustc", "cargo", "git", "rg", "ffmpeg"].map(name => row(name, h("input", { key: name, value: preferences.toolchainPaths?.[name] || "", onChange: e => setPreferences(p => { const paths = { ...p.toolchainPaths }; if (e.target.value) paths[name] = e.target.value; else delete paths[name]; return { ...p, toolchainPaths: paths }; }), placeholder: "自动发现；或填写绝对路径", disabled: busy })))),
-				h("div", { className: "dshEnvActions", "aria-label": "配置操作" }, button("保存", () => action({ action: "save", scope, preferences, expectedRevision: state.revision }, true), projectChanged),
-				button("移除当前范围覆盖", () => action({ action: "reset", scope, expectedRevision: state.revision }, true), projectChanged), button("放弃修改并重新加载", () => { setResult(null); setCwdDraft(cwd); return load(); })),
-                h("h3", null, "环境检查"),
-                h("p", { className: "dshSubHint" }, "检查使用已保存的配置；修改后请先保存。"),
-                h("div", { className: "dshEnvActions", "aria-label": "环境检查操作" },
-				h("h3", null, "环境检查"),
-				h("p", { className: "dshSubHint" }, "首次需要时自动检查并复用缓存。宿主可运行不代表当前工作区可运行。刷新只清理诊断记录。"),
-				["shell", "python", "rustc", "cargo", "node", "wps"].map(name => button(`检查 ${name}`, () => action({ action: "probe", name, level: name === "wps" ? "locate" : "launch", refresh: true }), projectChanged)),
-				button("检查宿主 Python", () => action({ action: "probeHost", name: "python" })),
-				button("清空诊断缓存", () => action({ action: "clearCache" }))),
-				result && h("p", { role: "status" }, `${result.id || ""} · ${result.executionWorld === "host" ? "宿主" : "所选执行环境"} · ${labels[result.status] || result.status}${result.error ? `：${result.error}` : ""}${result.output ? ` · ${result.output}` : ""}`),
-				error && h("p", { role: "alert" }, error));
-		}
-		function RemoteExecutionSection({ api }) {
-			const h=react.createElement;
-			const [rows,setRows]=react.useState([]),[busy,setBusy]=react.useState(false),[error,setError]=react.useState("");
-			const [form,setForm]=react.useState({host:"",user:"",port:22,workspace:"",helper:"dsh-remote-helper",configFile:""});
-			const request=async data=>{const response=await fetch("/__dsh-remote-execution",{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",body:JSON.stringify(data)});const value=await response.json();if(!response.ok||value.error)throw new Error(value.error||"远端操作失败");return value;};
-			const load=async()=>{try{const result=await request({action:"list"});setRows(result.items||[]);}catch(e){setError(messageOf(e));}};
-			react.useEffect(()=>{load();},[]);
-			const connect=async()=>{setBusy(true);setError("");try{const connection={...form,id:crypto.randomUUID(),port:Number(form.port)};const verified=await request({action:"connect",connection});const reply=await api.workspace.create({kind:"ssh-execution",source:verified.connection.id,path:verified.handshake.workspace});if(!reply.result.ok)throw new Error(reply.result.error.message);await load();}catch(e){setError(messageOf(e));}finally{setBusy(false);}};
-			return h("section",{className:"dshSub dshRemoteExecution"},h("h2",null,"远端执行"),h("p",null,"当前 Agent 在远端工作区执行文件和命令；模型连接保留在本机。远端独立 Harness 的 SSH 隧道入口继续独立使用。"),h("p",{className:"dshSubHint"},"连接前需在远端安装同版本 dsh-remote-helper，并显式授权工作目录；使用已验证的 known_hosts 和现有 SSH 身份，不复制模型凭据或自动安装服务。"),
-				[["host","SSH 主机或配置别名"],["user","用户名（可选）"],["port","SSH 端口"],["workspace","远端工作目录"],["helper","远端 helper 路径"],["configFile","本机 SSH 配置文件（可选）"]].map(([name,label])=>h("label",{key:name,style:{display:"grid",gap:6,margin:0}},label,h("input",{disabled:busy,value:form[name],type:name==="port"?"number":"text",onChange:e=>setForm(p=>({...p,[name]:e.target.value}))}))),
-				h("button",{type:"button",disabled:busy,onClick:connect},busy?"正在核验远端…":"核验并添加工作区"),error&&h("p",{role:"alert"},error),
-				rows.map(row=>h("div",{key:row.connection.id,style:{marginTop:16}},h("strong",null,`${row.connection.user?row.connection.user+"@":""}${row.connection.host} · ${row.handshake.os}/${row.handshake.arch}`),h("p",null,row.handshake.workspace),h("p",{className:"dshSubHint"},`协议 ${row.handshake.protocolVersion} · ${row.handshake.permissionCeiling} · 最近核验身份 ${row.handshake.contextId.slice(0,12)}`),h("button",{disabled:busy,onClick:async()=>{setBusy(true);try{await request({action:"connect",connection:row.connection});await load();}catch(e){setError(messageOf(e));}finally{setBusy(false);}}},"重新核验"),h("button",{disabled:busy,onClick:async()=>{setBusy(true);try{await request({action:"remove",id:row.connection.id});await load();}catch(e){setError(messageOf(e));}finally{setBusy(false);}}},"移除连接"))));
-		}
 		function SubagentSection({ api }) {
 			const [state, setState] = (0, react.useState)({ namespace: null, loading: true, error: null });
 			const load = (0, react.useCallback)(async () => {
@@ -1087,9 +1002,6 @@ window.__ModuleLoader__.load({
 				} }
 			}, GeneralSection));
             ctx.slots.inject("conversation.context.experience",()=>ctx.slots.register({name:"conversation.context.experience",inject:sessionId=>({api:connection.api,sessionId})},ExperiencePanel));
-			ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "environment", order: 24, label: "工具与运行环境" }, EnvironmentSection));
-			ctx.slots.inject("settings.section", () => ctx.slots.register({ name: "settings.section", id: "remote-execution", order: 24.5, label: "远端执行", inject:()=>({api:connection.api}) }, RemoteExecutionSection));
-			ctx.slots.inject("conversation.view", () => ctx.slots.register({ name: "conversation.view", id: "environment", order: 22, label: "运行环境", inject: sessionId => ({ sessionId }) }, EnvironmentSection));
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "memory",

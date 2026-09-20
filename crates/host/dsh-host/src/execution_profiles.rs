@@ -979,7 +979,7 @@ fn probe_args(
             "-NoProfile".into(),
             "-NonInteractive".into(),
             "-Command".into(),
-            "$ProgressPreference='SilentlyContinue'; $PSVersionTable.PSVersion.ToString(); 'LanguageMode=' + $ExecutionContext.SessionState.LanguageMode; Get-ExecutionPolicy -List | ForEach-Object { 'ExecutionPolicy.' + $_.Scope + '=' + $_.ExecutionPolicy }".into(),
+            "$ProgressPreference='SilentlyContinue'; $PSVersionTable.PSVersion.ToString(); 'LanguageMode=' + $ExecutionContext.SessionState.LanguageMode".into(),
         ],
         "shell" | "pwsh" => vec!["--version".into()],
         "python" => {
