@@ -15,6 +15,10 @@ pub fn locate_in(program: &str, paths: &[PathBuf], pathext: &str) -> Option<Path
 }
 
 pub fn locate(program: &str) -> Option<PathBuf> {
+    if !Path::new(program).is_absolute() && program.contains(['/', '\\']) {
+        let explicit = std::env::current_dir().ok()?.join(program);
+        return explicit.is_file().then_some(explicit);
+    }
     locate_in(program, &std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>(),
         &std::env::var("PATHEXT").unwrap_or_else(|_|".COM;.EXE;.BAT;.CMD".into()))
 }
