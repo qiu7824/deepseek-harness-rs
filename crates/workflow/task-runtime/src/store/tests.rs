@@ -483,30 +483,79 @@ fn expected_negative_sample_verifies_readonly_failure_but_not_unknown_write_effe
 
 #[test]
 fn known_failed_process_needs_matching_success_and_fresh_content_validation() {
-    let fixture=Fixture::new();let runtime=fixture.open();runtime.create("owner","task",spec()).unwrap();
-    let receipt=|code,context|serde_json::json!({"kind":"foreground","processState":"exited","commandStarted":true,"exitCode":code,"signal":null,"completion":if code==0{"succeeded"}else{"failed"},"retryContext":{"command":"cargo test --offline","workdir":"project","policy":context},"stdout":"x".repeat(20000)});
-    for (id,code,context) in [("failed",101,"restricted"),("other",0,"full-access")] {
-        runtime.prepare("owner","task",step(id)).unwrap();runtime.dispatch("owner","task",id).unwrap();
-        runtime.observe("owner","task",id,id,code==0,false,Some(receipt(code,context)),vec![id.into()]).unwrap();
+    let fixture = Fixture::new();
+    let runtime = fixture.open();
+    runtime.create("owner", "task", spec()).unwrap();
+    let receipt = |code, context| serde_json::json!({"kind":"foreground","processState":"exited","commandStarted":true,"exitCode":code,"signal":null,"completion":if code==0{"succeeded"}else{"failed"},"retryContext":{"command":"cargo test --offline","workdir":"project","policy":context},"stdout":"x".repeat(20000)});
+    for (id, code, context) in [("failed", 101, "restricted"), ("other", 0, "full-access")] {
+        runtime.prepare("owner", "task", step(id)).unwrap();
+        runtime.dispatch("owner", "task", id).unwrap();
+        runtime
+            .observe(
+                "owner",
+                "task",
+                id,
+                id,
+                code == 0,
+                false,
+                Some(receipt(code, context)),
+                vec![id.into()],
+            )
+            .unwrap();
     }
-    let task=validate_answer(&runtime,br#"{"answer":42}"#);
-    assert_eq!(task.steps[0].state,StepState::Failed);
-    assert!(task.completion_blockers().iter().any(|b|b.contains("failed")));
-    runtime.prepare("owner","task",step("retry")).unwrap();runtime.dispatch("owner","task","retry").unwrap();
-    runtime.observe("owner","task","retry","retry",true,false,Some(receipt(0,"restricted")),vec!["retry".into()]).unwrap();
-    let task=validate_answer(&runtime,br#"{"answer":42}"#);
-    assert!(task.completion_blockers().is_empty(),"{:?}",task.completion_blockers());
-    runtime.complete("owner","task","finish",task.revision,&task.output_identities).unwrap();
+    let task = validate_answer(&runtime, br#"{"answer":42}"#);
+    assert_eq!(task.steps[0].state, StepState::Failed);
+    assert!(
+        task.completion_blockers()
+            .iter()
+            .any(|b| b.contains("failed"))
+    );
+    runtime.prepare("owner", "task", step("retry")).unwrap();
+    runtime.dispatch("owner", "task", "retry").unwrap();
+    runtime
+        .observe(
+            "owner",
+            "task",
+            "retry",
+            "retry",
+            true,
+            false,
+            Some(receipt(0, "restricted")),
+            vec!["retry".into()],
+        )
+        .unwrap();
+    let task = validate_answer(&runtime, br#"{"answer":42}"#);
+    assert!(
+        task.completion_blockers().is_empty(),
+        "{:?}",
+        task.completion_blockers()
+    );
+    runtime
+        .complete(
+            "owner",
+            "task",
+            "finish",
+            task.revision,
+            &task.output_identities,
+        )
+        .unwrap();
 }
 
 #[test]
 fn unknown_process_is_never_cleared_by_successful_retry() {
-    let fixture=Fixture::new();let runtime=fixture.open();runtime.create("owner","task",spec()).unwrap();
-    for (id,code,state) in [("unknown",None,"cancelled"),("retry",Some(0),"exited")] {
-        runtime.prepare("owner","task",step(id)).unwrap();runtime.dispatch("owner","task",id).unwrap();
+    let fixture = Fixture::new();
+    let runtime = fixture.open();
+    runtime.create("owner", "task", spec()).unwrap();
+    for (id, code, state) in [("unknown", None, "cancelled"), ("retry", Some(0), "exited")] {
+        runtime.prepare("owner", "task", step(id)).unwrap();
+        runtime.dispatch("owner", "task", id).unwrap();
         runtime.observe("owner","task",id,id,code==Some(0),false,Some(serde_json::json!({"kind":"foreground","processState":state,"commandStarted":true,"exitCode":code,"completion":"succeeded","retryContext":{"command":"same"}})),vec![]).unwrap();
     }
-    let task=validate_answer(&runtime,br#"{"answer":42}"#);
-    assert_eq!(task.steps[0].state,StepState::Unknown);
-    assert!(task.completion_blockers().iter().any(|b|b.contains("Unknown")));
+    let task = validate_answer(&runtime, br#"{"answer":42}"#);
+    assert_eq!(task.steps[0].state, StepState::Unknown);
+    assert!(
+        task.completion_blockers()
+            .iter()
+            .any(|b| b.contains("Unknown"))
+    );
 }

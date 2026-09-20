@@ -2,12 +2,12 @@
 //! process handles, and the shared exit-status render contract. Rust port of
 //! `packages/shell/shell`.
 
-pub mod diagnostics;
 pub mod developer_environment;
+pub mod diagnostics;
 pub mod index;
 pub mod invariant;
-pub mod profiles;
 pub mod powershell;
+pub mod profiles;
 pub mod render;
 pub mod types;
 

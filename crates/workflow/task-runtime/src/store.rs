@@ -349,16 +349,29 @@ impl TaskRuntime {
                 .as_ref()
                 .map(|v| digest(&serde_json::to_vec(v).unwrap_or_default()));
             step.result = result.and_then(|mut value| {
-                if serde_json::to_vec(&value).is_ok_and(|v|v.len() > 16_384) && value["kind"] == "foreground" {
+                if serde_json::to_vec(&value).is_ok_and(|v| v.len() > 16_384)
+                    && value["kind"] == "foreground"
+                {
                     if let Some(object) = value.as_object_mut() {
-                        object.remove("streams"); object.remove("steps");
+                        object.remove("streams");
+                        object.remove("steps");
                         if let Some(text) = object.get("stdout").and_then(Value::as_str) {
-                            let tail: String = text.chars().rev().take(2000).collect::<String>().chars().rev().collect();
-                            object.insert("stdout".into(),Value::String(tail)); object.insert("journalOutputTruncated".into(),Value::Bool(true));
+                            let tail: String = text
+                                .chars()
+                                .rev()
+                                .take(2000)
+                                .collect::<String>()
+                                .chars()
+                                .rev()
+                                .collect();
+                            object.insert("stdout".into(), Value::String(tail));
+                            object.insert("journalOutputTruncated".into(), Value::Bool(true));
                         }
                     }
                 }
-                serde_json::to_vec(&value).is_ok_and(|v|v.len() <= 16_384).then_some(value)
+                serde_json::to_vec(&value)
+                    .is_ok_and(|v| v.len() <= 16_384)
+                    .then_some(value)
             });
             step.evidence_refs = evidence;
             step.state = if running {

@@ -1634,9 +1634,11 @@ impl ToolRuntime {
                 }
                 Ok(Err(error)) => {
                     let mut result = tool_error_result(&error.message, error.info.as_ref());
-                    if let Some(receipt) = error.receipt { result.meta = Some(serde_json::json!({"executionReceipt":receipt})); }
+                    if let Some(receipt) = error.receipt {
+                        result.meta = Some(serde_json::json!({"executionReceipt":receipt}));
+                    }
                     result
-                },
+                }
                 Err(payload) => {
                     let error = tool_error_from_panic(payload);
                     tool_error_result(&error.message, error.info.as_ref())

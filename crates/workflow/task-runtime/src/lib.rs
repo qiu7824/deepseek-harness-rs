@@ -261,13 +261,26 @@ impl TaskContract {
                 });
             let recovered_process_failure = step.state == StepState::Failed
                 && step.known_process_exit()
-                && step.result.as_ref().and_then(|r|r.get("retryContext")).is_some_and(|identity| {
-                    self.steps.iter().skip_while(|s|s.id != step.id).skip(1).any(|later| {
-                        later.tool == step.tool && matches!(later.state,StepState::Verified|StepState::Committed)
-                        && later.known_process_exit()
-                        && later.result.as_ref().and_then(|r|r.get("retryContext")) == Some(identity)
-                    })
-                });
+                && step
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("retryContext"))
+                    .is_some_and(|identity| {
+                        self.steps
+                            .iter()
+                            .skip_while(|s| s.id != step.id)
+                            .skip(1)
+                            .any(|later| {
+                                later.tool == step.tool
+                                    && matches!(
+                                        later.state,
+                                        StepState::Verified | StepState::Committed
+                                    )
+                                    && later.known_process_exit()
+                                    && later.result.as_ref().and_then(|r| r.get("retryContext"))
+                                        == Some(identity)
+                            })
+                    });
             let expected_readonly_failure = step.state == StepState::Failed
                 && step.effect == EffectKind::ReadOnly
                 && self.spec.acceptance_checks.iter().any(|check| {
@@ -337,9 +350,15 @@ pub fn now() -> u64 {
 
 impl Step {
     pub(crate) fn known_process_exit(&self) -> bool {
-        self.result.as_ref().is_some_and(|r| r["kind"] == "foreground"
-            && r["processState"] == "exited" && r["commandStarted"] == true
-            && r["exitCode"].as_i64().is_some_and(|code|code != 124 && code != 125) && r["signal"].is_null()
-            && matches!(r["completion"].as_str(),Some("failed"|"succeeded")))
+        self.result.as_ref().is_some_and(|r| {
+            r["kind"] == "foreground"
+                && r["processState"] == "exited"
+                && r["commandStarted"] == true
+                && r["exitCode"]
+                    .as_i64()
+                    .is_some_and(|code| code != 124 && code != 125)
+                && r["signal"].is_null()
+                && matches!(r["completion"].as_str(), Some("failed" | "succeeded"))
+        })
     }
 }

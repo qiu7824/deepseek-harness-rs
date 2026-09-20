@@ -84,7 +84,6 @@ fn outcome_flags(name: &str, value: Option<&Value>, is_error: bool) -> (bool, bo
     (!failed, running)
 }
 
-
 fn model_parameters() -> Value {
     let mut schema = json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","get","validate","complete","recover"]},"taskId":{"type":"string","minLength":1,"description":"Required for get, validate, complete and recover. Optional for create: omitted IDs are generated deterministically and returned; reuse the returned taskId."},"idempotencyKey":{"type":"string","minLength":1,"description":"Optional operation key; the runtime supplies one when omitted. Reuse an explicit key only for an identical retry."},"contract":{"type":"object","properties":{"objective":{"type":"string"},"goalId":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"expectedOutputs":{"type":"array","items":{"type":"string"}},"acceptanceChecks":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"checker":{"type":"object","description":"kind=text(path,required,forbidden), json(path,assertions keyed by JSON pointer), image(path,min_width,min_height,channels), office_package(path,format docx/xlsx/pptx), tool_result(step_id exact ID or tool:NAME,assertions), manual(reason)"}},"required":["id","description","checker"]}},"validationSubject":{"type":"object","properties":{"kind":{"type":"string"},"identity":{"type":"string"},"expectedOutcome":{"type":"string"}},"required":["kind","identity","expectedOutcome"]}},"required":["objective","acceptanceChecks"]}},"required":["action"],"additionalProperties":false});
     schema["properties"]["contract"]["properties"]["acceptanceChecks"]["items"]["properties"]["checker"] = json!({"oneOf":[
@@ -101,21 +100,36 @@ fn model_parameters() -> Value {
 fn validate_model_contract(spec: &ContractSpec) -> Result<()> {
     let mut errors = Vec::new();
     for check in &spec.acceptance_checks {
-        if let Checker::ToolResult {step_id,..} = &check.checker {
-            if !step_id.strip_prefix("tool:").is_some_and(|name| !name.is_empty() && !name.chars().any(char::is_whitespace)) {
+        if let Checker::ToolResult { step_id, .. } = &check.checker {
+            if !step_id
+                .strip_prefix("tool:")
+                .is_some_and(|name| !name.is_empty() && !name.chars().any(char::is_whitespace))
+            {
                 errors.push(format!("{}: use a tool selector such as tool:execute_native; future step labels cannot be referenced",check.id));
             }
         }
-        if let Checker::ToolResult {assertions,..} | Checker::Json {assertions,..} = &check.checker {
+        if let Checker::ToolResult { assertions, .. } | Checker::Json { assertions, .. } =
+            &check.checker
+        {
             for pointer in assertions.keys() {
-                let mut chars=pointer.chars();
-                let mut valid=pointer.is_empty() || pointer.starts_with('/');
-                while let Some(ch)=chars.next() { if ch=='~' && !matches!(chars.next(),Some('0'|'1')) {valid=false;} }
-                if !valid {errors.push(format!("{}: assertion key {pointer:?} must be a valid JSON Pointer, e.g. /exitCode",check.id));}
+                let mut chars = pointer.chars();
+                let mut valid = pointer.is_empty() || pointer.starts_with('/');
+                while let Some(ch) = chars.next() {
+                    if ch == '~' && !matches!(chars.next(), Some('0' | '1')) {
+                        valid = false;
+                    }
+                }
+                if !valid {
+                    errors.push(format!("{}: assertion key {pointer:?} must be a valid JSON Pointer, e.g. /exitCode",check.id));
+                }
             }
         }
     }
-    if errors.is_empty() {Ok(())} else {Err(format!("Contract was not created: {}",errors.join("; ")))}
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Contract was not created: {}", errors.join("; ")))
+    }
 }
 
 impl TaskExecution {
@@ -404,8 +418,18 @@ impl TaskExecution {
         if action == "list" {
             return Ok(json!({"tasks":self.runtime.list(owner)?}));
         }
-        let generated_id = format!("task-{}", &digest(&serde_json::to_vec(&json!({"owner":owner,"cwd":cwd,"contract":args["contract"]})).map_err(|e|e.to_string())?)[..24]);
-        let id = if action == "create" && args.get("taskId").is_none() { generated_id.as_str() } else { text(args, "taskId")? };
+        let generated_id = format!(
+            "task-{}",
+            &digest(
+                &serde_json::to_vec(&json!({"owner":owner,"cwd":cwd,"contract":args["contract"]}))
+                    .map_err(|e| e.to_string())?
+            )[..24]
+        );
+        let id = if action == "create" && args.get("taskId").is_none() {
+            generated_id.as_str()
+        } else {
+            text(args, "taskId")?
+        };
         if action == "get" || action == "recover" {
             let task = self.runtime.get(owner, id)?;
             return Ok(
@@ -413,12 +437,18 @@ impl TaskExecution {
             );
         }
         let generated_key = format!("operation-{}", uuid::Uuid::new_v4());
-        let key = if !user_control && args.get("idempotencyKey").is_none() { generated_key.as_str() } else { text(args, "idempotencyKey")? };
+        let key = if !user_control && args.get("idempotencyKey").is_none() {
+            generated_key.as_str()
+        } else {
+            text(args, "idempotencyKey")?
+        };
         let task = match action {
             "create" => {
                 let mut spec: ContractSpec =
                     serde_json::from_value(args["contract"].clone()).map_err(|e| e.to_string())?;
-                if !user_control { validate_model_contract(&spec)?; }
+                if !user_control {
+                    validate_model_contract(&spec)?;
+                }
                 spec.environment_fingerprint = self.environment(owner, cwd)?;
                 self.runtime.create(owner, id, spec)?
             }
@@ -748,9 +778,12 @@ mod tests {
     #[test]
     fn invalid_acceptance_references_are_rejected_before_contract_creation() {
         let mut spec: ContractSpec=serde_json::from_value(json!({"objective":"Check build","acceptanceChecks":[{"id":"test","description":"test succeeds","checker":{"kind":"tool_result","step_id":"invented-test-step","assertions":{"exitCode":0}}}]})).unwrap();
-        let error=validate_model_contract(&spec).unwrap_err();
+        let error = validate_model_contract(&spec).unwrap_err();
         assert!(error.contains("tool:execute_native") && error.contains("/exitCode"));
-        spec.acceptance_checks[0].checker=Checker::ToolResult{step_id:"tool:execute_native".into(),assertions:BTreeMap::from([("/exitCode".into(),json!(0))])};
+        spec.acceptance_checks[0].checker = Checker::ToolResult {
+            step_id: "tool:execute_native".into(),
+            assertions: BTreeMap::from([("/exitCode".into(), json!(0))]),
+        };
         validate_model_contract(&spec).unwrap();
         dsh_tools::assert_object_json_schema(&model_parameters()).unwrap();
     }
