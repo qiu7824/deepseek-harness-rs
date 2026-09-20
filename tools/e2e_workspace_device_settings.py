@@ -4,6 +4,7 @@ import argparse,json,pathlib,time
 from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import rpc,require_ok
 from e2e_workspace_insights import PreviewClient
+from e2e_workspace_resources import file_has_text
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--binary',type=pathlib.Path,required=True);parser.add_argument('--workdir',type=pathlib.Path,required=True);args=parser.parse_args()
@@ -32,9 +33,9 @@ def main():
         command="[IO.File]::WriteAllText((Join-Path $env:TEMP 'routing-proof.txt'), 'route-proof')\r" if os.name=='nt' else 'printf route-proof > "$TMPDIR/routing-proof.txt"\r'
         terminal_client.ok('terminal-action',body={'sessionId':session,'terminalId':terminal,'action':'input','text':command})
         deadline=time.monotonic()+20
-        while time.monotonic()<deadline and not list(scratch.rglob('routing-proof.txt')):time.sleep(.1)
+        while time.monotonic()<deadline and not any(file_has_text(path,'route-proof') for path in scratch.rglob('routing-proof.txt')):time.sleep(.1)
         assert list(scratch.rglob('routing-proof.txt')),'terminal ignored workspace scratch setting'
-        assert any(path.read_text().strip()=='route-proof' for path in scratch.rglob('routing-proof.txt')),'terminal input did not execute correctly'
+        assert any(file_has_text(path,'route-proof') for path in scratch.rglob('routing-proof.txt')),'terminal input did not execute correctly'
         terminal_client.ok('terminal-action',body={'sessionId':session,'terminalId':terminal,'action':'close'})
         status,devices=client.raw('/__dsh-devices/status',{});assert status==200,devices;assert isinstance(devices['installed'],bool)
         if devices.get('signedIn') and devices.get('devices'):

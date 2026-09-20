@@ -6,6 +6,10 @@ from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import require_ok,rpc
 from e2e_sidebar_git_terminal import request as preview
 
+def file_has_text(path,expected):
+    try:return path.read_text(encoding='utf-8')==expected
+    except (OSError,UnicodeError):return False
+
 def request(port,operation,args,status=200):
     request=urllib.request.Request(f"http://127.0.0.1:{port}/__dsh-artifacts/{operation}",data=json.dumps(args).encode(),headers={"Origin":f"http://127.0.0.1:{port}","Sec-Fetch-Site":"same-origin","Content-Type":"application/json"})
     try: response=urllib.request.urlopen(request,timeout=60)
@@ -47,11 +51,14 @@ def main():
         deadline=time.monotonic()+25
         while time.monotonic()<deadline:
             output=preview(port,'terminal-read',query={'sessionId':owner,'terminalId':terminal,'count':2000})['text']
-            if 'scratch' in output and 'content' in output:break
+            resources=request(port,'resources',{'sessionId':owner})['entries']
+            proofs=[pathlib.Path(item['path'])/'resource-proof.txt' for item in resources if item['busy']]
+            # Seeing the path in PTY output does not mean the following write
+            # has finished; only the completed file is execution evidence.
+            if 'scratch' in output and 'content' in output and any(file_has_text(path,'proof') for path in proofs):break
             time.sleep(.1)
-        else:raise AssertionError(output)
-        resources=request(port,'resources',{'sessionId':owner})['entries'];assert any(item['busy'] for item in resources),resources
-        assert any((pathlib.Path(item['path'])/'resource-proof.txt').is_file() for item in resources if item['busy']),resources
+        else:raise AssertionError({'output':output,'resources':resources})
+        assert any(item['busy'] for item in resources),resources
         preview(port,'terminal-action',body={'sessionId':owner,'terminalId':terminal,'action':'close'})
         evidence={'artifactChanges':entries,'removedId':removed['id'],'terminalEnvironment':output,'resourceCount':len(resources)}
         (run/'evidence.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf8')

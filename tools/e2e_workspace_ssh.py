@@ -28,6 +28,7 @@ import paramiko
 from e2e_model_management import isolated_environment, running_fixture_host
 from e2e_settings_model_preserves_data import require_ok, rpc
 from e2e_sidebar_git_terminal import request as preview
+from e2e_workspace_resources import file_has_text
 
 
 class ForwardServer(paramiko.ServerInterface):
@@ -169,10 +170,10 @@ def main():
                 command = "[IO.File]::WriteAllText((Join-Path (Get-Location) 'ssh-proof.txt'), 'ssh-remote-write')\r" if sys.platform == "win32" else "printf ssh-remote-write > ssh-proof.txt\r"
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"input","terminalId":terminal,"text":command})
                 for _ in range(100):
-                    if (project / "ssh-proof.txt").is_file():
+                    if file_has_text(project / "ssh-proof.txt", "ssh-remote-write"):
                         break
                     time.sleep(0.1)
-                assert "ssh-remote-write" in (project / "ssh-proof.txt").read_text()
+                assert file_has_text(project / "ssh-proof.txt", "ssh-remote-write")
                 assert not (local / "ssh-proof.txt").exists()
                 long_command="ping -n 30 127.0.0.1 | Out-Null\r" if sys.platform=="win32" else "sleep 30\r"
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"input","terminalId":terminal,"text":long_command})
@@ -182,9 +183,9 @@ def main():
                 recover="[IO.File]::WriteAllText((Join-Path (Get-Location) 'ssh-after-cancel.txt'), 'ssh-after-cancel')\r" if sys.platform=="win32" else "printf ssh-after-cancel > ssh-after-cancel.txt\r"
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"input","terminalId":terminal,"text":recover})
                 for _ in range(100):
-                    if (project/'ssh-after-cancel.txt').is_file():break
+                    if file_has_text(project/'ssh-after-cancel.txt','ssh-after-cancel'):break
                     time.sleep(.1)
-                assert 'ssh-after-cancel' in (project/'ssh-after-cancel.txt').read_text()
+                assert file_has_text(project/'ssh-after-cancel.txt','ssh-after-cancel')
                 preview(tunnel_port,"terminal-action",body={"sessionId":session,"action":"close","terminalId":terminal})
                 assert ssh_request(local_port,"disconnect",{"id":config["id"]})[0] == 200
                 assert ssh_request(local_port)[1]["items"][0]["state"] == "disconnected"
