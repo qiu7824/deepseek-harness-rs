@@ -84,6 +84,40 @@ fn outcome_flags(name: &str, value: Option<&Value>, is_error: bool) -> (bool, bo
     (!failed, running)
 }
 
+
+fn model_parameters() -> Value {
+    let mut schema = json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","get","validate","complete","recover"]},"taskId":{"type":"string","minLength":1,"description":"Required for get, validate, complete and recover. Optional for create: omitted IDs are generated deterministically and returned; reuse the returned taskId."},"idempotencyKey":{"type":"string","minLength":1,"description":"Optional operation key; the runtime supplies one when omitted. Reuse an explicit key only for an identical retry."},"contract":{"type":"object","properties":{"objective":{"type":"string"},"goalId":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"expectedOutputs":{"type":"array","items":{"type":"string"}},"acceptanceChecks":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"checker":{"type":"object","description":"kind=text(path,required,forbidden), json(path,assertions keyed by JSON pointer), image(path,min_width,min_height,channels), office_package(path,format docx/xlsx/pptx), tool_result(step_id exact ID or tool:NAME,assertions), manual(reason)"}},"required":["id","description","checker"]}},"validationSubject":{"type":"object","properties":{"kind":{"type":"string"},"identity":{"type":"string"},"expectedOutcome":{"type":"string"}},"required":["kind","identity","expectedOutcome"]}},"required":["objective","acceptanceChecks"]}},"required":["action"],"additionalProperties":false});
+    schema["properties"]["contract"]["properties"]["acceptanceChecks"]["items"]["properties"]["checker"] = json!({"oneOf":[
+        {"type":"object","properties":{"kind":{"const":"text"},"path":{"type":"string"},"required":{"type":"array","items":{"type":"string"}},"forbidden":{"type":"array","items":{"type":"string"}}},"required":["kind","path","required"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"json"},"path":{"type":"string"},"assertions":{"type":"object","description":"JSON Pointer keys, for example /scripts/test. Keys must start with / (or be empty to match the whole result)."}},"required":["kind","path","assertions"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"tool_result"},"step_id":{"type":"string","description":"When creating a contract use tool: followed by the tool name, e.g. tool:execute_native or tool:pwsh. Do not invent future step labels."},"assertions":{"type":"object","description":"JSON Pointer keys into the recorded result, e.g. {\"/exitCode\":0}. Plain exitCode is not a JSON Pointer."}},"required":["kind","step_id","assertions"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"image"},"path":{"type":"string"},"min_width":{"type":"integer"},"min_height":{"type":"integer"},"channels":{"type":"integer"}},"required":["kind","path","min_width","min_height"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"office_package"},"path":{"type":"string"},"format":{"type":"string","enum":["docx","xlsx","pptx"]}},"required":["kind","path","format"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"manual"},"reason":{"type":"string"}},"required":["kind","reason"],"additionalProperties":false}
+    ]});
+    schema
+}
+
+fn validate_model_contract(spec: &ContractSpec) -> Result<()> {
+    let mut errors = Vec::new();
+    for check in &spec.acceptance_checks {
+        if let Checker::ToolResult {step_id,..} = &check.checker {
+            if !step_id.strip_prefix("tool:").is_some_and(|name| !name.is_empty() && !name.chars().any(char::is_whitespace)) {
+                errors.push(format!("{}: use a tool selector such as tool:execute_native; future step labels cannot be referenced",check.id));
+            }
+        }
+        if let Checker::ToolResult {assertions,..} | Checker::Json {assertions,..} = &check.checker {
+            for pointer in assertions.keys() {
+                let mut chars=pointer.chars();
+                let mut valid=pointer.is_empty() || pointer.starts_with('/');
+                while let Some(ch)=chars.next() { if ch=='~' && !matches!(chars.next(),Some('0'|'1')) {valid=false;} }
+                if !valid {errors.push(format!("{}: assertion key {pointer:?} must be a valid JSON Pointer, e.g. /exitCode",check.id));}
+            }
+        }
+    }
+    if errors.is_empty() {Ok(())} else {Err(format!("Contract was not created: {}",errors.join("; ")))}
+}
+
 impl TaskExecution {
     fn environment(&self, owner: &str, cwd: &str) -> Result<String> {
         crate::skill_validation::environment_fingerprint(&self.context, Some(owner), cwd)
@@ -384,6 +418,7 @@ impl TaskExecution {
             "create" => {
                 let mut spec: ContractSpec =
                     serde_json::from_value(args["contract"].clone()).map_err(|e| e.to_string())?;
+                if !user_control { validate_model_contract(&spec)?; }
                 spec.environment_fingerprint = self.environment(owner, cwd)?;
                 self.runtime.create(owner, id, spec)?
             }
@@ -600,7 +635,7 @@ pub(crate) async fn install(
     tools.register(ctx,ToolDefinition{
         name:"task_execution".into(),
         description:"Create and inspect a durable task acceptance contract for multi-step work. create requires contract; taskId is optional and generated when omitted. get/validate/complete/recover require the returned taskId. idempotencyKey is optional and generated by the runtime when omitted. Requirements cannot be weakened after creation. Other tool executions are journaled automatically. validate runs real content checkers; complete rechecks input identities and blocks unfinished or unknown effects. recover only inspects and never replays. Manual confirmation, effect reconciliation, cancellation and resume require user controls. Declare content checks against final target paths: workspace_scratch promote checks candidate bytes against those requirements before version-checked delivery.".into(),
-        parameters:json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","get","validate","complete","recover"]},"taskId":{"type":"string","minLength":1,"description":"Required for get, validate, complete and recover. Optional for create: omitted IDs are generated deterministically and returned; reuse the returned taskId."},"idempotencyKey":{"type":"string","minLength":1,"description":"Optional operation key; the runtime supplies one when omitted. Reuse an explicit key only for an identical retry."},"contract":{"type":"object","properties":{"objective":{"type":"string"},"goalId":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"expectedOutputs":{"type":"array","items":{"type":"string"}},"acceptanceChecks":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"checker":{"type":"object","description":"kind=text(path,required,forbidden), json(path,assertions keyed by JSON pointer), image(path,min_width,min_height,channels), office_package(path,format docx/xlsx/pptx), tool_result(step_id exact ID or tool:NAME,assertions), manual(reason)"}},"required":["id","description","checker"]}},"validationSubject":{"type":"object","properties":{"kind":{"type":"string"},"identity":{"type":"string"},"expectedOutcome":{"type":"string"}},"required":["kind","identity","expectedOutcome"]}},"required":["objective","acceptanceChecks"]}},"required":["action"],"additionalProperties":false}),
+        parameters:model_parameters(),
         output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
         timeout_ms:Some(60_000),is_concurrency_safe:None,finalize_content:None,present_call:None,present_result:None,
         execute:Arc::new(move|args,run|{let service=action.clone();let args=args.clone();let agent=run.agent.clone();let signal=run.signal.lock().clone();Box::pin(async move{
@@ -710,6 +745,15 @@ pub(crate) fn register_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_acceptance_references_are_rejected_before_contract_creation() {
+        let mut spec: ContractSpec=serde_json::from_value(json!({"objective":"Check build","acceptanceChecks":[{"id":"test","description":"test succeeds","checker":{"kind":"tool_result","step_id":"invented-test-step","assertions":{"exitCode":0}}}]})).unwrap();
+        let error=validate_model_contract(&spec).unwrap_err();
+        assert!(error.contains("tool:execute_native") && error.contains("/exitCode"));
+        spec.acceptance_checks[0].checker=Checker::ToolResult{step_id:"tool:execute_native".into(),assertions:BTreeMap::from([("/exitCode".into(),json!(0))])};
+        validate_model_contract(&spec).unwrap();
+        dsh_tools::assert_object_json_schema(&model_parameters()).unwrap();
+    }
     #[test]
     fn silent_terminal_observation_is_not_command_success() {
         assert_eq!(
