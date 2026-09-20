@@ -1,0 +1,12 @@
+====================================================================================================
+FILE: C:\Users\xs\AppData\Local\DeepSeek Harness\sessions\--~003F-E-rust-deepseek-harness-rs--\agent-session-4a1b3a37-0055-4cdb-9be3-af5254ebdfb3\session.jsonl.zstd
+total events: 1
+       1  session
+----------------------------------------------------------------------------------------------------
+ERROR-ISH EVENTS:
+====================================================================================================
+FILE: C:\Users\xs\AppData\Local\DeepSeek Harness\sessions\--~003F-E-~8D44~6599-~4EA4~901A-~9F99~6C5F~8DEF-~98CE~9669~8FA8~8BC6--\agent-session-c9539d51-f904-4d1c-8686-962fc518a252\session.jsonl.zstd
+total events: 1
+       1  session
+----------------------------------------------------------------------------------------------------
+ERROR-ISH EVENTS:

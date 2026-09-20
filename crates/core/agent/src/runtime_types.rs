@@ -72,12 +72,21 @@ impl CancellationSignal {
     }
 
     /// Resolve when the signal aborts.
+    ///
+    /// `Notify::notify_waiters` only wakes waiters that are already
+    /// registered, so the `Notified` future must be created and enabled
+    /// *before* the flag is re-checked. Checking first and then awaiting a
+    /// fresh `notified()` loses the wakeup when `abort` lands in between,
+    /// which left a stalled stream uncancellable until its next chunk.
     pub async fn cancelled(&self) {
         loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.aborted() {
                 return;
             }
-            self.notify.notified().await;
+            notified.await;
         }
     }
 }

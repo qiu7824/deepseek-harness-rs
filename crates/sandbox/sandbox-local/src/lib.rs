@@ -226,6 +226,18 @@ impl SandboxProvider for LocalSandboxProvider {
             let state = self.preparation.clone();
             let (generation, preparation) = {
                 let mut state = state.lock().unwrap();
+                // A shared attempt that already settled with an error must not
+                // be served again: the only caller that could have evicted it
+                // was the one that timed out (120 s) before the failure landed,
+                // so the poisoned entry would otherwise fail every later prepare
+                // for this workspace until restart.
+                if state
+                    .active
+                    .get(&preparation_key)
+                    .is_some_and(|(_, flight)| matches!(flight.peek(), Some(Err(_))))
+                {
+                    state.active.remove(&preparation_key);
+                }
                 if let Some(active) = state.active.get(&preparation_key) {
                     active.clone()
                 } else {

@@ -163,27 +163,28 @@ async fn run_group(
         in_flight: InFlight::new(),
     };
 
-    let initial_fill = tokio::select! {
-        biased;
-        _ = wait_until_aborted(&signal) => false,
-        result = fill_pool(
-            tools,
-            session,
-            max_parallel_tool_calls,
-            turn,
-            step,
-            group,
-            mode,
-            &signal,
-            &accept_context,
-            &mut state,
-        ) => {
-            result?;
-            true
-        },
-    };
-    if !initial_fill {
-        state.aborted = true;
+    // The initial fill is awaited directly, exactly like the refills below.
+    // Wrapping it in a `select!` against the abort signal used to drop the
+    // fill mid-way: `commit_ready` had already taken the slot and cleared
+    // the run context, so a settled (executed!) call was later recorded as
+    // "aborted before dispatch" and its definition finalizer never ran.
+    // `fill_pool` observes the signal between calls and `commit_ready`
+    // races finalize against the signal itself, so no separate outer race
+    // is needed.
+    fill_pool(
+        tools,
+        session,
+        max_parallel_tool_calls,
+        turn,
+        step,
+        group,
+        mode,
+        &signal,
+        &accept_context,
+        &mut state,
+    )
+    .await?;
+    if state.aborted && state.in_flight.is_empty() {
         cancel_uncommitted_started(
             tools,
             session,

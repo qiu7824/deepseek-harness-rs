@@ -43,7 +43,7 @@ use dsh_session::{
 use dsh_system_prompt::{
     PromptAssembly, join_context_sections, render_context_sections, render_prompt,
 };
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 
 use crate::runtime_context::RuntimeContextProjection;
@@ -342,6 +342,18 @@ impl ReactLoopAgent {
             .expect("agent loop requires the tools service")
     }
 
+    /// The deployment-wide scheduler cap owned by the `agentLoop` service.
+    /// Falls back to the documented default when the loop drives an agent
+    /// outside the installed service (tests, embedded hosts).
+    fn max_parallel_tool_calls(&self) -> usize {
+        let cap = self
+            .loop_ctx
+            .get_typed::<Arc<crate::index::AgentLoop>>("agentLoop", false)
+            .map(|service| service.max_parallel_tool_calls())
+            .unwrap_or(crate::constants::DEFAULT_MAX_PARALLEL_TOOL_CALLS);
+        usize::try_from(cap.max(1)).unwrap_or(usize::MAX)
+    }
+
     fn status(&self) -> AgentStatus {
         match &*self.phase.lock() {
             Phase::Idle { .. } | Phase::Maintenance { .. } => AgentStatus::Idle,
@@ -446,18 +458,112 @@ impl ReactLoopAgent {
         self.emit_status(AgentStatus::Running);
         let weak = self.weak.clone();
         tokio::spawn(async move {
-            if let Some(agent) = weak.upgrade() {
-                let agent_dyn: Arc<dyn Agent> = agent.clone();
-                if let Some(agents) = agent
-                    .loop_ctx
-                    .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
-                    .map(|slot| slot.as_ref().clone())
-                {
-                    let _ = agents.with_initiator(agent_dyn, agent.kick()).await;
+            let Some(agent) = weak.upgrade() else {
+                return;
+            };
+            // The driver owns the Running phase. A panic anywhere inside the
+            // turn/step machinery must still release that phase and the
+            // activity barrier; otherwise the agent is wedged in Running
+            // forever (wakes only latch, `when_idle` never resolves, and
+            // `run_maintenance` panics on "already has active work").
+            let agent_dyn: Arc<dyn Agent> = agent.clone();
+            let agents = agent
+                .loop_ctx
+                .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
+                .map(|slot| slot.as_ref().clone());
+            match agents {
+                Some(agents) => {
+                    let outcome = std::panic::AssertUnwindSafe(
+                        agents.with_initiator(agent_dyn, agent.kick()),
+                    )
+                    .catch_unwind()
+                    .await;
+                    match outcome {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            tracing::warn!(
+                                agent = agent.id.as_str(),
+                                error = %error,
+                                "agent driver could not enter the initiator boundary; queued input stays pending"
+                            );
+                        }
+                        Err(payload) => {
+                            let message = payload
+                                .downcast_ref::<String>()
+                                .cloned()
+                                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                                .unwrap_or_else(|| "non-string panic payload".to_string());
+                            tracing::error!(
+                                agent = agent.id.as_str(),
+                                panic = %message,
+                                "agent driver panicked; releasing the Running phase"
+                            );
+                            agent.record_driver_panic(&message);
+                        }
+                    }
                 }
-                agent.finish_driver(activity_token);
+                None => {
+                    tracing::error!(
+                        agent = agent.id.as_str(),
+                        "agent driver has no AgentRegistry (\"agents\" service); queued input stays pending"
+                    );
+                }
             }
+            agent.finish_driver(activity_token);
         });
+    }
+
+    /// Best-effort durable record of a driver panic so the session log does
+    /// not end on an open turn that only crash repair can close. Every step is
+    /// fallible here; a second failure is logged and swallowed.
+    fn record_driver_panic(&self, message: &str) {
+        let (turn, step) = match &*self.phase.lock() {
+            Phase::Running { turn, step, .. } => (*turn, *step),
+            _ => return,
+        };
+        let open_turn = self.session.with_events(|events| {
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.type_.as_str(), "turn/start" | "turn/end"))
+                .is_some_and(|event| event.type_ == "turn/start")
+        });
+        if !open_turn {
+            return;
+        }
+        let open_step = self.session.with_events(|events| {
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.type_.as_str(), "step/start" | "step/end"))
+                .is_some_and(|event| event.type_ == "step/start")
+        });
+        if open_step
+            && let Err(error) = self.session.append(
+                "step/end",
+                serde_json::json!({ "turn": turn, "step": step }),
+                None,
+            )
+        {
+            tracing::warn!(error = %error, "could not close the step after a driver panic");
+        }
+        let reason = TurnEndReason::Error {
+            error: LlmFailure {
+                offload_images: None,
+                message: format!("agent driver panicked: {message}"),
+                code: "DRIVER_PANIC".to_string(),
+                status: None,
+                provider_retry_after_ms: None,
+                request_id: None,
+            },
+        };
+        if let Err(error) = self.session.append(
+            "turn/end",
+            serde_json::json!({ "turn": turn, "reason": reason }),
+            None,
+        ) {
+            tracing::warn!(error = %error, "could not close the turn after a driver panic");
+        }
     }
 
     fn clear_cancelled_inbox(&self) {
@@ -1187,7 +1293,7 @@ impl ReactLoopAgent {
             let concluded = execute_tool_calls(
                 &tools,
                 agent,
-                10,
+                self.max_parallel_tool_calls(),
                 turn,
                 step,
                 tool_calls,
@@ -1195,15 +1301,25 @@ impl ReactLoopAgent {
                 Arc::new(move |context| {
                     if let Some(agent) = weak.upgrade() {
                         let len = agent.inbox.next_step().len();
-                        agent
-                            .inbox
-                            .splice(InboxTarget::NextStep, len as f64, 0.0, vec![context])
-                            .expect("inbox context splice");
+                        if let Err(error) = agent.inbox.splice(
+                            InboxTarget::NextStep,
+                            len as f64,
+                            0.0,
+                            vec![context],
+                        ) {
+                            tracing::warn!(
+                                agent = agent.id.as_str(),
+                                error = %error,
+                                "dropping deferred tool context: inbox splice failed"
+                            );
+                        }
                     }
                 }),
             )
             .await
-            .expect("executeToolCalls");
+            // A scheduler failure is a structured turn error, not a driver
+            // panic: the turn still closes with `turn/end {reason: error}`.
+            .map_err(|error| LoopCancelled::hook(format!("tool-call scheduler: {error}")))?;
             if concluded {
                 return Ok(Some(TurnEndReason::Completed));
             }

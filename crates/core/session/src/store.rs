@@ -831,35 +831,49 @@ fn invoke_contained_session_observers(
 ) {
     let logger = ctx.named_logger(Some("sessions"));
     for (listener_ctx, callback) in listeners {
-        let listener_ctx = listener_ctx.clone();
-        let callback = callback.clone();
-        let listener_args = args.to_vec();
         let prefix = format!("session \"{}\": {name} listener", id.as_str());
-        let runtime = tokio::runtime::Handle::try_current().ok();
-        let outcome = std::thread::spawn(move || {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let future = callback(&listener_ctx, listener_args);
-                match runtime {
-                    Some(runtime) => runtime.block_on(future),
-                    None => futures::executor::block_on(future),
-                }
-            }))
-        })
-        .join();
-        match outcome {
-            Ok(Ok(_)) => {}
-            Ok(Err(payload)) => {
-                logger.warn(vec![arc(format!(
-                    "{prefix} threw: {}",
-                    render_panic(payload)
-                ))]);
-            }
-            Err(payload) => {
-                logger.warn(vec![arc(format!(
-                    "{prefix} worker threw: {}",
-                    render_panic(payload)
-                ))]);
-            }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let future = callback(listener_ctx, args.to_vec());
+            drive_observer_inline(future);
+        }));
+        if let Err(payload) = outcome {
+            logger.warn(vec![arc(format!(
+                "{prefix} threw: {}",
+                render_panic(payload)
+            ))]);
+        }
+    }
+}
+
+/// Drive one observer future to completion on the *current* thread.
+///
+/// Almost every `session/event` observer is a synchronous body wrapped in
+/// `Box::pin(async move { ...; None })`, so a single poll settles it without
+/// touching any executor. Only a genuinely pending observer falls back to a
+/// blocking wait. Staying on the appending thread matters: the
+/// `SessionEntry` reentrancy guard is keyed by thread id, so a listener that
+/// appends recursively is now rejected (the documented contract) instead of
+/// waiting on a Condvar for an owner that is itself waiting on the listener.
+fn drive_observer_inline(mut future: cordis::BoxFuture<'static, Option<ArcValue>>) {
+    use std::task::{Context as TaskContext, Poll};
+    let waker = futures::task::noop_waker();
+    let mut task_context = TaskContext::from_waker(&waker);
+    if future.as_mut().poll(&mut task_context).is_ready() {
+        return;
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            // Hand this worker's slot to another thread while we block so the
+            // runtime keeps making progress for whatever the observer awaits.
+            tokio::task::block_in_place(|| handle.block_on(future));
+        }
+        Ok(handle) => {
+            // current_thread flavour: blocking here would starve the only
+            // driver, so park a helper thread on the handle instead.
+            let _ = std::thread::spawn(move || handle.block_on(future)).join();
+        }
+        Err(_) => {
+            futures::executor::block_on(future);
         }
     }
 }
