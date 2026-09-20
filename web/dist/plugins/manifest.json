@@ -271,7 +271,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-subagent",
       "url": "/plugins/ui-subagent.js",
-      "rev": "75f8c5eb4eef5fe6",
+      "rev": "c7b2be753a7b9ed9",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
