@@ -350,9 +350,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
         graph = (ROOT / "web" / "dist" / "plugins" / "ui-code-graph.js").read_text(encoding="utf-8")
         manifest = (ROOT / "web" / "dist" / "plugins" / "manifest.json").read_text(encoding="utf-8")
         sidebar = (ROOT / "release" / "plugins" / "dsh-better-sidebar" / "lib" / "client.js").read_text(encoding="utf-8")
-        for required in ("代码图谱", "符号列表", "调用引用", "调用者", "被调用者", "调用链", "文件依赖", "影响面"):
+        for required in ("代码图谱", "代码画布", "符号调用", "调用者", "被调用者", "聚焦关系", "文件依赖", "影响范围", "打开源码", "缩略导航"):
             self.assertIn(required, graph)
-        for required in ("/__dsh-preview/code-graph", "references", "calls", "deps"):
+        for required in ("/__dsh-preview/code-graph", "calls", "deps", "source", "target", "resolution"):
             self.assertIn(required, graph)
         self.assertNotIn("extractSymbols", graph)
         self.assertNotIn("wordLines", graph)
