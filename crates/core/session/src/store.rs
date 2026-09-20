@@ -9,14 +9,12 @@
 //! - `Session` is a cloneable `Arc` handle; the store keeps strong refs.
 //! - `SessionStore::create`/`announce` are `async`: listener veto panics
 //!   propagate as `Err` (the TS synchronous throw boundary).
-//! - `Session::append` stays synchronous; observers run fire-and-forget on
-//!   the ambient tokio runtime (or inline when none exists), matching the
-//!   port's emit semantics.
+//! - `Session::append` stays synchronous; observers must complete inline.
+//!   Pending observers are rejected with a diagnostic.
 //! - `deepFreeze`/`structuredClone` collapse to the identity function:
 //!   Rust values are owned.
-//! - The listener snapshot resolves while the session state lock is held;
-//!   `internal/dispatch` listeners must therefore not re-enter the
-//!   dispatching session's state (documented).
+//! - Pre-commit hooks run outside the state mutex while publication ownership
+//!   serializes writers; recursive writes are rejected.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -656,67 +654,48 @@ impl Session {
                 "session append cannot reenter while another append is being published".to_string(),
             );
         }
-        let outcome =
-            (|| -> Result<(Option<SessionEvent>, Vec<(Context, Arc<Listener>)>), String> {
-                let state = &mut *self.inner.state.lock();
-                if !condition(&state.log) {
-                    return Ok((None, Vec::new()));
-                }
-                let event = SessionEvent {
-                    type_: type_.to_string(),
-                    seq: SessionSeq::new(state.log.len() as u64)?,
-                    time: now_ms(),
-                    data: data_snapshot,
-                    ignorable: matches!(type_, "request/phase" | "tools/discovery").then_some(true),
-                    surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),
-                    source_event_seqs: intent.and_then(|intent| intent.source_event_seqs),
-                };
-                state.surface.validate_next(&state.log, &event)?;
-                // Resolve the listener snapshot BEFORE the log push (callbacks
-                // run after it, exactly like the TS flow).
-                let listeners: Vec<(Context, Arc<Listener>)> = match &entry {
-                    Some(entry) => {
-                        let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
-                        // Public and internal observers receive the same compact
-                        // [session, event] shape. Invariants keep incremental
-                        // per-session folds instead of requiring an O(history)
-                        // authority prefix on every append.
-                        let args: Vec<ArcValue> = vec![arc(self.clone()), arc(event.clone())];
-                        entry.emit_ctx.events.collect(
-                            DispatchMode::Emit,
-                            Some(&dispatch_ctx),
-                            "session/event",
-                            &args,
-                        )
-                    }
-                    None => Vec::new(),
-                };
-                Arc::make_mut(&mut state.log).push(event.clone());
-                Ok((Some(event), listeners))
-            })();
-        let (event, listeners) = match outcome {
-            Ok(result) => result,
-            Err(error) => {
-                if let Some(entry) = &entry
+        // Release publication ownership even if validation or a pre-hook panics.
+        struct AppendGuard(Option<Arc<SessionEntry>>);
+        impl Drop for AppendGuard {
+            fn drop(&mut self) {
+                if let Some(entry) = &self.0
                     && entry.finish_append()
                 {
                     entry.detach_now();
                 }
-                return Err(error);
             }
-        };
-        let Some(event) = event else {
-            if let Some(entry) = &entry
-                && entry.finish_append()
-            {
-                entry.detach_now();
-            }
+        }
+        let _guard = AppendGuard(entry.clone());
+        let mut state = self.inner.state.lock();
+        if !condition(&state.log) {
             return Ok(None);
+        }
+        let event = SessionEvent {
+            type_: type_.to_string(),
+            seq: SessionSeq::new(state.log.len() as u64)?,
+            time: now_ms(),
+            data: data_snapshot,
+            ignorable: matches!(type_, "request/phase" | "tools/discovery").then_some(true),
+            surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),
+            source_event_seqs: intent.and_then(|intent| intent.source_event_seqs),
         };
-        // TS runs observers INSIDE the guarded region while `appending` is
-        // still true, so a reentrant append rejects instead of deadlocking.
+        {
+            let state = &mut *state;
+            state.surface.validate_next(&state.log, &event)?;
+        }
         if let Some(entry) = &entry {
+            // The append guard serializes writers while pre-commit hooks read
+            // the durable prefix without holding the session state mutex.
+            drop(state);
+            let dispatch_ctx = entry.emit_ctx.with_filter(entry.carrier.filter.clone());
             let args: Vec<ArcValue> = vec![arc(self.clone()), arc(event.clone())];
+            let listeners = entry.emit_ctx.events.collect(
+                DispatchMode::Emit,
+                Some(&dispatch_ctx),
+                "session/event",
+                &args,
+            );
+            Arc::make_mut(&mut self.inner.state.lock().log).push(event.clone());
             invoke_contained_session_observers(
                 &entry.emit_ctx,
                 "session/event",
@@ -724,9 +703,8 @@ impl Session {
                 &args,
                 &listeners,
             );
-            if entry.finish_append() {
-                entry.detach_now();
-            }
+        } else {
+            Arc::make_mut(&mut state.log).push(event.clone());
         }
         Ok(Some(event))
     }
@@ -845,37 +823,17 @@ fn invoke_contained_session_observers(
     }
 }
 
-/// Drive one observer future to completion on the *current* thread.
-///
-/// Almost every `session/event` observer is a synchronous body wrapped in
-/// `Box::pin(async move { ...; None })`, so a single poll settles it without
-/// touching any executor. Only a genuinely pending observer falls back to a
-/// blocking wait. Staying on the appending thread matters: the
-/// `SessionEntry` reentrancy guard is keyed by thread id, so a listener that
-/// appends recursively is now rejected (the documented contract) instead of
-/// waiting on a Condvar for an owner that is itself waiting on the listener.
+/// Session observers have a synchronous publication contract. A pending
+/// observer violates that contract: waiting would deadlock a current-thread
+/// runtime (or a task awaited by its own publisher). Reject it inside the
+/// per-listener panic boundary and let subsequent observers run.
 fn drive_observer_inline(mut future: cordis::BoxFuture<'static, Option<ArcValue>>) {
-    use std::task::{Context as TaskContext, Poll};
     let waker = futures::task::noop_waker();
-    let mut task_context = TaskContext::from_waker(&waker);
-    if future.as_mut().poll(&mut task_context).is_ready() {
-        return;
-    }
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            // Hand this worker's slot to another thread while we block so the
-            // runtime keeps making progress for whatever the observer awaits.
-            tokio::task::block_in_place(|| handle.block_on(future));
-        }
-        Ok(handle) => {
-            // current_thread flavour: blocking here would starve the only
-            // driver, so park a helper thread on the handle instead.
-            let _ = std::thread::spawn(move || handle.block_on(future)).join();
-        }
-        Err(_) => {
-            futures::executor::block_on(future);
-        }
-    }
+    let mut context = std::task::Context::from_waker(&waker);
+    assert!(
+        future.as_mut().poll(&mut context).is_ready(),
+        "session observers must complete synchronously; spawn background work explicitly"
+    );
 }
 
 // ---- SessionStore ----

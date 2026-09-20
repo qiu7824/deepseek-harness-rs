@@ -10,6 +10,74 @@ use super::support::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_during_initial_fill_finalizes_the_prepared_result_once() {
+    let h = harness().await;
+    h.ctx
+        .on(
+            "tools/pre-execute",
+            Arc::new(|_, _| {
+                Box::pin(async {
+                    Some(cordis::arc(dsh_tools::PreToolDecision::Deny {
+                        reason: "denied".into(),
+                    }))
+                })
+            }),
+            cordis::EventOptions::default().global(true),
+        )
+        .await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let notification = entered.clone();
+    h.ctx
+        .on(
+            "tools/post-execute",
+            Arc::new(move |_, _| {
+                let notification = notification.clone();
+                Box::pin(async move {
+                    notification.notify_one();
+                    futures::future::pending().await
+                })
+            }),
+            cordis::EventOptions::default().global(true),
+        )
+        .await;
+    let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = finalized.clone();
+    let mut tool = hanging_tool(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    tool.finalize_content = Some(Arc::new(move |_, _| {
+        count.fetch_add(1, Ordering::SeqCst);
+        None
+    }));
+    h.tools.register(&h.ctx, tool).unwrap();
+    register_adapter(
+        &h,
+        Arc::new(ToolThenTextAdapter {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+    );
+    h.agent.followup(message("initial fill cancellation"));
+    tokio::time::timeout(Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    h.agent.cancel(dsh_agent::AgentCancelCause::User, None);
+    tokio::time::timeout(Duration::from_secs(1), h.agent.when_idle())
+        .await
+        .unwrap();
+    assert_eq!(finalized.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        h.agent
+            .session()
+            .events()
+            .iter()
+            .filter(|event| event.type_ == "tool/result")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_cancel_discards_old_queue_before_another_model_request() {
     let harness = harness().await;
     let entered = Arc::new(AtomicBool::new(false));
@@ -314,6 +382,7 @@ async fn cancellation_interrupts_a_non_cooperative_pre_execute_hook() {
     let pre_entered = Arc::new(AtomicBool::new(false));
     let body_entered = Arc::new(AtomicBool::new(false));
     let body_dropped = Arc::new(AtomicBool::new(false));
+    let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let pre_entered_for_listener = Arc::clone(&pre_entered);
     harness
         .ctx
@@ -329,12 +398,15 @@ async fn cancellation_interrupts_a_non_cooperative_pre_execute_hook() {
             cordis::EventOptions::default().global(true).prepend(true),
         )
         .await;
+    let mut tool = hanging_tool(Arc::clone(&body_entered), body_dropped);
+    let finalized_for_tool = finalized.clone();
+    tool.finalize_content = Some(Arc::new(move |_, _| {
+        finalized_for_tool.fetch_add(1, Ordering::SeqCst);
+        None
+    }));
     harness
         .tools
-        .register(
-            &harness.ctx,
-            hanging_tool(Arc::clone(&body_entered), body_dropped),
-        )
+        .register(&harness.ctx, tool)
         .expect("register tool behind pre-execute hook");
     register_adapter(
         &harness,
@@ -365,4 +437,5 @@ async fn cancellation_interrupts_a_non_cooperative_pre_execute_hook() {
         .find(|event| event.type_ == "tool/result")
         .expect("pre-dispatch cancellation result");
     assert_eq!(result.data["error"]["code"], "ABORTED_BEFORE_DISPATCH");
+    assert_eq!(finalized.load(Ordering::SeqCst), 1);
 }

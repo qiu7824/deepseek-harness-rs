@@ -29,6 +29,35 @@ use crate::runtime_types::{
 };
 
 const NO_FACTORY_MESSAGE: &str = "no agent factory registered (load an agent-loop plugin)";
+
+#[cfg(test)]
+mod initiator_recovery_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn panic_and_dropped_operations_release_initiator_runs() {
+        let ctx = Context::root();
+        let registry = AgentRegistry::install(&ctx);
+        let outcome = std::panic::AssertUnwindSafe(registry.without_initiator(async {
+            panic!("initiator operation failed");
+        }))
+        .catch_unwind()
+        .await;
+        assert!(outcome.is_err());
+        assert_eq!(registry.active_initiator_runs.load(Ordering::SeqCst), 0);
+        let mut operation = Box::pin(registry.without_initiator(std::future::pending::<()>()));
+        assert!(futures::poll!(operation.as_mut()).is_pending());
+        assert_eq!(registry.active_initiator_runs.load(Ordering::SeqCst), 1);
+        drop(operation);
+        assert_eq!(registry.active_initiator_runs.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            registry.dispose_initiators(),
+        )
+        .await
+        .unwrap();
+    }
+}
 const NO_INITIATOR_MESSAGE: &str = "no initiating agent is active";
 const DISPOSED_INITIATOR_MESSAGE: &str = "agent initiator scope is disposed";
 
@@ -351,10 +380,22 @@ impl AgentRegistry {
             self.active_initiator_runs.fetch_add(1, Ordering::SeqCst);
             run
         };
+        struct RunGuard<'a> {
+            registry: &'a AgentRegistry,
+            run: Arc<InitiatorRun>,
+        }
+        impl Drop for RunGuard<'_> {
+            fn drop(&mut self) {
+                self.registry.release_initiator_run(&self.run);
+            }
+        }
+        let _guard = RunGuard {
+            registry: self,
+            run: run.clone(),
+        };
         let result = AMBIENT_INITIATOR_RUN
             .scope(Some(run.clone()), AMBIENT_INITIATOR.scope(agent, operation))
             .await;
-        self.release_initiator_run(&run);
         Ok(result)
     }
 

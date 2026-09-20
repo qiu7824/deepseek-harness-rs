@@ -73,6 +73,9 @@ pub async fn execute_tool_calls(
     signal: AbortPredicate,
     accept_context: ContextAcceptor,
 ) -> Result<bool, String> {
+    if max_parallel_tool_calls == 0 {
+        return Err("max_parallel_tool_calls must be positive".into());
+    }
     let session = agent.session().clone();
     let planned: Vec<PlannedCall> = tool_calls
         .into_iter()
@@ -159,99 +162,18 @@ async fn run_group(
         started: 0,
         aborted: signal(),
         concluded: false,
-        scheduler_failure: None,
         in_flight: InFlight::new(),
     };
 
-    // The initial fill is awaited directly, exactly like the refills below.
-    // Wrapping it in a `select!` against the abort signal used to drop the
-    // fill mid-way: `commit_ready` had already taken the slot and cleared
-    // the run context, so a settled (executed!) call was later recorded as
-    // "aborted before dispatch" and its definition finalizer never ran.
-    // `fill_pool` observes the signal between calls and `commit_ready`
-    // races finalize against the signal itself, so no separate outer race
-    // is needed.
-    fill_pool(
-        tools,
-        session,
-        max_parallel_tool_calls,
-        turn,
-        step,
-        group,
-        mode,
-        &signal,
-        &accept_context,
-        &mut state,
-    )
-    .await?;
-    if state.aborted && state.in_flight.is_empty() {
-        cancel_uncommitted_started(
-            tools,
-            session,
-            turn,
-            step,
-            group,
-            &accept_context,
-            &mut state,
-        )?;
-    }
-    while !state.in_flight.is_empty() {
-        if let Some(failure) = &state.scheduler_failure {
-            drain(&mut state.in_flight).await;
-            return Err(failure.clone());
-        }
-        let settled = tokio::select! {
-            biased;
-            _ = wait_until_aborted(&signal) => None,
-            settled = state.in_flight.next() => settled,
-        };
-        let Some((index, exec, outcome)) = settled else {
-            state.aborted = true;
-            state.in_flight.clear();
-            // Dropping the dispatch futures is the cancellation boundary for
-            // non-cooperative tools. The durable log still needs one result
-            // for every call already announced before those futures vanish.
-            cancel_uncommitted_started(
-                tools,
-                session,
-                turn,
-                step,
-                group,
-                &accept_context,
-                &mut state,
-            )?;
-            break;
-        };
-        match outcome {
-            DispatchOutcome::PostResult(result) => {
-                state.slots[index] = Some(Slot {
-                    exec,
-                    result,
-                    needs_post: true,
-                });
-            }
-            DispatchOutcome::FinalResult(result) => {
-                state.slots[index] = Some(Slot {
-                    exec,
-                    result,
-                    needs_post: false,
-                });
-            }
-        }
-        commit_ready(
-            tools,
-            session,
-            turn,
-            step,
-            group,
-            &signal,
-            &accept_context,
-            &mut state,
-        )
-        .await?;
-        if signal() {
-            state.aborted = true;
-        }
+    let outcome = async {
+        // The initial fill is awaited directly, exactly like the refills below.
+        // Wrapping it in a `select!` against the abort signal used to drop the
+        // fill mid-way: `commit_ready` had already taken the slot and cleared
+        // the run context, so a settled (executed!) call was later recorded as
+        // "aborted before dispatch" and its definition finalizer never ran.
+        // `fill_pool` observes the signal between calls and `commit_ready`
+        // races finalize against the signal itself, so no separate outer race
+        // is needed.
         fill_pool(
             tools,
             session,
@@ -265,26 +187,136 @@ async fn run_group(
             &mut state,
         )
         .await?;
-    }
-
-    if state.aborted {
-        for call in &group[state.started..] {
-            append_skipped_tool_call(session, turn, step, &call.block)?;
+        if state.aborted && state.in_flight.is_empty() {
+            cancel_uncommitted_started(
+                tools,
+                session,
+                turn,
+                step,
+                group,
+                &accept_context,
+                &mut state,
+            )?;
         }
-        return Ok(GroupOutcome {
-            consumed: group.len(),
-            aborted: true,
+        while !state.in_flight.is_empty() {
+            let settled = tokio::select! {
+                biased;
+                _ = wait_until_aborted(&signal) => None,
+                settled = state.in_flight.next() => settled,
+            };
+            let Some((index, exec, outcome)) = settled else {
+                state.aborted = true;
+                state.in_flight.clear();
+                // Dropping the dispatch futures is the cancellation boundary for
+                // non-cooperative tools. The durable log still needs one result
+                // for every call already announced before those futures vanish.
+                cancel_uncommitted_started(
+                    tools,
+                    session,
+                    turn,
+                    step,
+                    group,
+                    &accept_context,
+                    &mut state,
+                )?;
+                break;
+            };
+            match outcome {
+                DispatchOutcome::PostResult(result) => {
+                    state.slots[index] = Some(Slot {
+                        exec,
+                        result,
+                        needs_post: true,
+                    });
+                }
+                DispatchOutcome::FinalResult(result) => {
+                    state.slots[index] = Some(Slot {
+                        exec,
+                        result,
+                        needs_post: false,
+                    });
+                }
+            }
+            commit_ready(
+                tools,
+                session,
+                turn,
+                step,
+                group,
+                &signal,
+                &accept_context,
+                &mut state,
+            )
+            .await?;
+            if signal() {
+                state.aborted = true;
+            }
+            fill_pool(
+                tools,
+                session,
+                max_parallel_tool_calls,
+                turn,
+                step,
+                group,
+                mode,
+                &signal,
+                &accept_context,
+                &mut state,
+            )
+            .await?;
+        }
+
+        if state.aborted {
+            for call in &group[state.started..] {
+                append_skipped_tool_call(session, turn, step, &call.block)?;
+            }
+            return Ok(GroupOutcome {
+                consumed: group.len(),
+                aborted: true,
+                concluded: state.concluded,
+            });
+        }
+        if state.committed != state.started {
+            return Err("tool-call scheduler: uncommitted settled calls".to_string());
+        }
+        Ok(GroupOutcome {
+            consumed: state.started,
+            aborted: false,
             concluded: state.concluded,
-        });
+        })
     }
-    if state.committed != state.started {
-        return Err("tool-call scheduler: uncommitted settled calls".to_string());
+    .await;
+    if outcome.is_err() {
+        // Preserve the first publication error, but release all started tool
+        // contexts. Cancellation can still interrupt non-cooperative dispatch.
+        loop {
+            let settled = tokio::select! {
+                biased;
+                _ = wait_until_aborted(&signal) => None,
+                settled = state.in_flight.next() => settled,
+            };
+            let Some((index, exec, result)) = settled else {
+                break;
+            };
+            state.run_contexts[index] = None;
+            let result = match result {
+                DispatchOutcome::PostResult(result) | DispatchOutcome::FinalResult(result) => {
+                    result
+                }
+            };
+            tools.finish_scheduled(exec, result);
+        }
+        state.in_flight.clear();
+        for index in 0..state.started {
+            if let Some(slot) = state.slots[index].take() {
+                state.run_contexts[index] = None;
+                tools.finish_scheduled(slot.exec, slot.result);
+            } else if let Some(run_ctx) = state.run_contexts[index].take() {
+                tools.finish_cancelled_scheduled(run_ctx, true, None);
+            }
+        }
     }
-    Ok(GroupOutcome {
-        consumed: state.started,
-        aborted: false,
-        concluded: state.concluded,
-    })
+    outcome
 }
 
 async fn wait_until_aborted(signal: &AbortPredicate) {
@@ -307,6 +339,9 @@ fn cancel_uncommitted_started(
             continue;
         };
         let result = if let Some(slot) = state.slots[index].take() {
+            // A publication error below must not leave a second cleanup path
+            // to the same already-finalized execution context.
+            state.run_contexts[index] = None;
             // Dispatch has already settled. Preserve that real outcome rather
             // than rewriting a completed side effect as ABORTED merely because
             // an earlier model-ordered call was still pending at cancellation.
@@ -358,7 +393,6 @@ struct GroupState {
     started: usize,
     aborted: bool,
     concluded: bool,
-    scheduler_failure: Option<String>,
     in_flight: InFlight,
 }
 
@@ -397,7 +431,9 @@ async fn fill_pool(
         let call_seq = append_tool_call(session, turn, step, &group[index].block)?;
         state.call_seqs[index] = Some(call_seq);
         state.started += 1;
-        let prepared = tools.prepare_scheduled(group[index].exec.clone()).await;
+        let prepared = tools
+            .prepare_scheduled_until(group[index].exec.clone(), wait_until_aborted(signal))
+            .await;
         match prepared {
             Preparation::Dispatch { run_ctx } => {
                 state.run_contexts[index] = Some(Arc::clone(&run_ctx));
@@ -498,12 +534,6 @@ async fn commit_ready(
         state.committed += 1;
     }
     Ok(())
-}
-
-/// Drain in-flight dispatches without committing their results (the TS
-/// `Promise.allSettled` on scheduler failure).
-async fn drain(in_flight: &mut InFlight) {
-    while in_flight.next().await.is_some() {}
 }
 
 /// Append the durable call/result pair for a model call skipped after

@@ -12,6 +12,48 @@ use super::support::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_honors_configured_parallel_limit() {
+    let harness = harness().await;
+    let _loop = dsh_agent_loop::AgentLoop::install(
+        &harness.ctx,
+        dsh_agent_loop::Config {
+            max_parallel_tool_calls: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let slow_entered = Arc::new(AtomicBool::new(false));
+    let quick_entered = Arc::new(AtomicBool::new(false));
+    let mut slow = hanging_tool(slow_entered.clone(), Arc::new(AtomicBool::new(false)));
+    slow.is_concurrency_safe = Some(Arc::new(|_| true));
+    harness.tools.register(&harness.ctx, slow).unwrap();
+    harness
+        .tools
+        .register(&harness.ctx, quick_tool(quick_entered.clone()))
+        .unwrap();
+    register_adapter(&harness, Arc::new(ParallelToolAdapter));
+    harness.agent.followup(message("bounded tools"));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !slow_entered.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        !quick_entered.load(Ordering::SeqCst),
+        "second tool exceeded configured cap"
+    );
+    harness
+        .agent
+        .cancel(dsh_agent::AgentCancelCause::User, None);
+    tokio::time::timeout(Duration::from_secs(1), harness.agent.when_idle())
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_pairs_every_started_parallel_tool_call() {
     let harness = harness().await;
     let slow_entered = Arc::new(AtomicBool::new(false));

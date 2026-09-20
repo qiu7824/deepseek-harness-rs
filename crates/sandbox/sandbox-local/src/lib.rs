@@ -82,6 +82,48 @@ struct RuntimePreparation {
     >,
 }
 
+#[cfg(windows)]
+impl RuntimePreparation {
+    fn evict_failed(&mut self, key: &str) {
+        if self
+            .active
+            .get(key)
+            .is_some_and(|(_, flight)| matches!(flight.peek(), Some(Err(_))))
+        {
+            self.active.remove(key);
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod preparation_tests {
+    use super::*;
+    use futures::FutureExt;
+
+    #[tokio::test]
+    async fn failed_shared_preparation_is_retryable_without_evicting_live_or_successful_work() {
+        let mut state = RuntimePreparation::default();
+        let failed = async { Err::<(), String>("ACL preparation failed".into()) }
+            .boxed()
+            .shared();
+        let success = async { Ok::<(), String>(()) }.boxed().shared();
+        let pending = futures::future::pending::<Result<(), String>>()
+            .boxed()
+            .shared();
+        state.active.insert("failed".into(), (1, failed.clone()));
+        state.active.insert("success".into(), (2, success.clone()));
+        state.active.insert("pending".into(), (3, pending));
+        assert!(failed.await.is_err());
+        success.await.unwrap();
+        for key in ["failed", "success", "pending"] {
+            state.evict_failed(key);
+        }
+        assert!(!state.active.contains_key("failed"));
+        assert!(state.active.contains_key("success"));
+        assert!(state.active.contains_key("pending"));
+    }
+}
+
 impl LocalSandboxProvider {
     pub fn new(config: Config) -> Arc<Self> {
         Arc::new(Self {
@@ -231,13 +273,7 @@ impl SandboxProvider for LocalSandboxProvider {
                 // was the one that timed out (120 s) before the failure landed,
                 // so the poisoned entry would otherwise fail every later prepare
                 // for this workspace until restart.
-                if state
-                    .active
-                    .get(&preparation_key)
-                    .is_some_and(|(_, flight)| matches!(flight.peek(), Some(Err(_))))
-                {
-                    state.active.remove(&preparation_key);
-                }
+                state.evict_failed(&preparation_key);
                 if let Some(active) = state.active.get(&preparation_key) {
                     active.clone()
                 } else {

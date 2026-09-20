@@ -1103,6 +1103,17 @@ impl ToolRuntime {
     /// [`ToolRuntime::finalize_scheduled`]/[`ToolRuntime::finish_scheduled`]
     /// for the parallel scheduler's overlapping dispatch.
     pub async fn prepare_scheduled(self: &Arc<Self>, input: ToolExecutionInput) -> Preparation {
+        self.prepare_scheduled_until(input, std::future::pending())
+            .await
+    }
+
+    /// Cancel preparation while retaining the execution context for exactly-once
+    /// definition finalization and durable result publication by the scheduler.
+    pub async fn prepare_scheduled_until(
+        self: &Arc<Self>,
+        input: ToolExecutionInput,
+        cancelled: impl std::future::Future<Output = ()>,
+    ) -> Preparation {
         let created = self.create_execution(input);
         let run_ctx = match created {
             CreatedExecution::Final { run_ctx, result } => {
@@ -1227,15 +1238,27 @@ impl ToolRuntime {
                 run_ctx: Arc::clone(&run_ctx),
             }
         })
-        .catch_unwind()
-        .await;
+        .catch_unwind();
+        futures::pin_mut!(cancelled, outcome);
+        let outcome = match futures::future::select(cancelled, outcome).await {
+            futures::future::Either::Left(_) => {
+                return Preparation::FinalResult {
+                    run_ctx: Arc::clone(&run_ctx),
+                    result: Arc::new(tool_aborted_before_dispatch_result(None)),
+                };
+            }
+            futures::future::Either::Right((outcome, _)) => outcome,
+        };
         match outcome {
             Ok(preparation) => preparation,
             Err(payload) => {
                 let error = tool_error_from_panic(payload);
                 let result = tool_error_result(&error.message, error.info.as_ref());
                 let result = Arc::new(self.mark_canonical(run_ctx.token, result));
-                Preparation::FinalResult { run_ctx, result }
+                Preparation::FinalResult {
+                    run_ctx: Arc::clone(&run_ctx),
+                    result,
+                }
             }
         }
     }

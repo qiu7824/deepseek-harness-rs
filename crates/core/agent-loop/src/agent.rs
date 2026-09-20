@@ -221,6 +221,27 @@ pub struct ReactLoopAgent {
     runtime_context: RuntimeContextProjection,
 }
 
+struct DriverGuard {
+    agent: Arc<ReactLoopAgent>,
+    token: u64,
+}
+
+impl Drop for DriverGuard {
+    fn drop(&mut self) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.agent.finish_driver(self.token);
+        }));
+        if outcome.is_err() {
+            let mut phase = self.agent.phase.lock();
+            if let Phase::Running { turn, .. } = &*phase {
+                *phase = Phase::Idle { last_turn: *turn };
+            }
+            tracing::error!("agent driver cleanup panicked");
+        }
+        self.agent.activity.lock().finish(self.token);
+    }
+}
+
 struct MaintenanceGuard {
     agent: Weak<ReactLoopAgent>,
     activity_token: u64,
@@ -461,6 +482,10 @@ impl ReactLoopAgent {
             let Some(agent) = weak.upgrade() else {
                 return;
             };
+            let _guard = DriverGuard {
+                agent: agent.clone(),
+                token: activity_token,
+            };
             // The driver owns the Running phase. A panic anywhere inside the
             // turn/step machinery must still release that phase and the
             // activity barrier; otherwise the agent is wedged in Running
@@ -509,7 +534,6 @@ impl ReactLoopAgent {
                     );
                 }
             }
-            agent.finish_driver(activity_token);
         });
     }
 
@@ -569,7 +593,9 @@ impl ReactLoopAgent {
     fn clear_cancelled_inbox(&self) {
         let captured = std::mem::take(&mut *self.cancelled_inbox.lock());
         for id in captured {
-            self.inbox.remove(&id).expect("cancel captured inbox item");
+            if let Err(error) = self.inbox.remove(&id) {
+                tracing::warn!(error = %error, "could not remove cancelled inbox item");
+            }
         }
     }
 
@@ -1319,7 +1345,16 @@ impl ReactLoopAgent {
             .await
             // A scheduler failure is a structured turn error, not a driver
             // panic: the turn still closes with `turn/end {reason: error}`.
-            .map_err(|error| LoopCancelled::hook(format!("tool-call scheduler: {error}")))?;
+            .map_err(|error| {
+                LoopCancelled::failure(LlmFailure {
+                    message: format!("tool-call scheduler: {error}"),
+                    code: "TOOL_SCHEDULER_FAILED".into(),
+                    status: None,
+                    provider_retry_after_ms: None,
+                    request_id: None,
+                    offload_images: None,
+                })
+            })?;
             if concluded {
                 return Ok(Some(TurnEndReason::Completed));
             }

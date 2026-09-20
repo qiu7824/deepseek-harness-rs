@@ -2,6 +2,8 @@
 mod cancellation;
 #[path = "lifecycle_failures/compaction_recovery.rs"]
 mod compaction_recovery;
+#[path = "lifecycle_failures/driver_panic.rs"]
+mod driver_panic;
 #[path = "lifecycle_failures/model_switch.rs"]
 mod model_switch;
 #[path = "lifecycle_failures/parallel_cancellation.rs"]

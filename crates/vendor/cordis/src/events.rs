@@ -194,11 +194,11 @@ impl EventsService {
     ///
     /// The TS `dispatch()` runs the `internal/dispatch` pre-hook synchronously
     /// (a `bail` dispatch) before resolving the listener snapshot. This port
-    /// keeps that ordering: the internal listeners run INLINE (blocked to
-    /// completion, panics contained) so pre-commit validation observers (the
+    /// keeps that ordering: internal listeners must complete in one poll
+    /// (panics contained) so pre-commit validation observers (the
     /// session invariant companion) stage their transitions before any
-    /// resolved listener can run. Internal listeners must therefore not await
-    /// work that depends on the current task.
+    /// resolved listener can run. Pending internal listeners are rejected with
+    /// a diagnostic rather than blocking the publishing runtime.
     pub fn collect(
         &self,
         mode: DispatchMode,
@@ -225,12 +225,20 @@ impl EventsService {
                 &dispatch_args,
             );
             for (ctx, callback) in internal {
-                let future = callback(&ctx, dispatch_args.clone());
-                // TS runs this pre-hook synchronously; failures are
-                // contained per listener.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    futures::executor::block_on(future)
+                // Synchronous pre-hooks cannot wait for the publishing task.
+                // Contain callback construction as well as its first poll.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut future = callback(&ctx, dispatch_args.clone());
+                    let waker = futures::task::noop_waker();
+                    let mut context = std::task::Context::from_waker(&waker);
+                    assert!(
+                        future.as_mut().poll(&mut context).is_ready(),
+                        "internal/dispatch hooks must complete synchronously"
+                    );
                 }));
+                if outcome.is_err() {
+                    tracing::warn!(event = name, "internal/dispatch hook failed or yielded");
+                }
             }
         }
 
