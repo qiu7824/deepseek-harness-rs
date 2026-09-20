@@ -14,10 +14,11 @@ window.__ModuleLoader__.load({
     const assetLoads = new Map();
     const desktopStarts = new Map(), desktopClosures = new Map();
     const desktopStartKey = (owner, session) => owner + "\u0000" + session;
-    function abortDesktopStart(owner, session) { const key=desktopStartKey(owner,session),entry=desktopStarts.get(key);if(entry){desktopStarts.delete(key);entry.controller.abort()} }
+    function abortDesktopStart(owner, session, target) { const key=desktopStartKey(owner,session)+"\u0000"+target,entry=desktopStarts.get(key);if(entry){desktopStarts.delete(key);entry.controller.abort()} }
     function desktopClose(owner, session, options) {
-      abortDesktopStart(owner,session);
-      const key=desktopStartKey(owner,session),existing=desktopClosures.get(key);
+      const target=JSON.parse(options.body).target||"local";
+      abortDesktopStart(owner,session,target);
+      const key=desktopStartKey(owner,session)+"\u0000"+target,existing=desktopClosures.get(key);
       if(existing?.pending)return existing.promise;
       const controller=new AbortController(),entry={pending:true,promise:null};
       const timer=setTimeout(()=>controller.abort(),75_000);
@@ -29,7 +30,7 @@ window.__ModuleLoader__.load({
       return entry.promise;
     }
     function desktopStart(owner, session, options, keepAlive=true) {
-      const key=desktopStartKey(owner,session),existing=desktopStarts.get(key);
+      const key=desktopStartKey(owner,session)+"\u0000"+(JSON.parse(options.body).target||"local"),existing=desktopStarts.get(key);
       if(existing)return existing.promise;
       const controller=new AbortController(),entry={controller,promise:null};
       const timer=setTimeout(()=>controller.abort(),75_000);
@@ -897,7 +898,8 @@ window.__ModuleLoader__.load({
     }
     function ControlledBrowserSession(props) {
       const browserSessionId = props.browserSessionId;
-      const [target,setTarget]=React.useState(()=>/^https?:/i.test(props.tab.path||"")?"browser":"local");
+      const [target,setTarget]=React.useState(()=>props.tab.meta?.target || (/^https?:/i.test(props.tab.path||"")?"browser":"local"));
+      React.useEffect(()=>{props.sidebar?.updateTab?.(props.tab.id,{meta:{...props.tab.meta,browserSessionId,target}},props.scope)},[target,browserSessionId]);
       const desktopInput=React.useRef(null), browserImage=React.useRef(null);
       const autoRefresh = props.pluginSettings?.autoRefresh === true;
       const alive = React.useRef(true),closed=React.useRef(false);
@@ -1004,8 +1006,30 @@ window.__ModuleLoader__.load({
     function ControlledBrowserTab(props) {
       const sidebar=props.sidebar;
       React.useEffect(()=>{if(props.tab.title==="受控浏览器")sidebar?.updateTab?.(props.tab.id,{title:"Computer Use"},props.scope)},[sidebar,props.tab.id,props.tab.title,props.scope.sessionId]);
-      const browserSessionId = props.tab.meta?.browserSessionId || "default";
-      return h(ControlledBrowserSession, { ...props, browserSessionId, key: props.scope.sessionId + "\u0000" + props.tab.id + "\u0000" + browserSessionId });
+      const [binding,setBinding]=React.useState(null),[available,setAvailable]=React.useState([]),[error,setError]=React.useState(""),[refresh,setRefresh]=React.useState(0);
+      const explicit=props.tab.meta?.browserSessionId;
+      React.useEffect(()=>{
+        if(!props.visible)return;
+        const controller=new AbortController();let active=true;
+        (async()=>{
+          // Discover the model's existing browser before creating a blank default session.
+          const value=await json("/__dsh-computer-use/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ownerSessionId:props.scope.sessionId,target:"browser",action:"list_sessions",includeScreenshot:false}),signal:controller.signal});
+          if(!active)return;
+          const names=Array.isArray(value.sessions)?value.sessions.filter(name=>typeof name==="string"&&name.length>0):[];
+          setAvailable(names);setError("");
+          const selected=explicit||names.find(name=>name!=="default")||names[0]||"default";
+          setBinding(previous=>previous&&(!explicit||explicit===previous.sessionId)?previous:{sessionId:selected,target:props.tab.meta?.target||(names.length?"browser":undefined),existing:names.includes(selected)});
+        })().catch(reason=>{if(active&&reason?.name!=="AbortError"){setError(reason.message||String(reason));setBinding(previous=>previous||{sessionId:explicit||"default",target:props.tab.meta?.target})}});
+        return()=>{active=false;controller.abort()};
+      },[props.visible,props.scope.sessionId,explicit,refresh]);
+      if(!binding)return h("div",{role:"status"},"正在查找控制会话…");
+      const browserSessionId=binding.sessionId;
+      const tab={...props.tab,path:binding.existing?undefined:props.tab.path,meta:{...props.tab.meta,browserSessionId,target:binding.target}};
+      return h(React.Fragment,null,
+        h(Button,{variant:"outline",size:"sm",onClick:()=>setRefresh(value=>value+1)},"刷新浏览器会话"),
+        available.length>0&&h("label",{className:"dswSuiteBar"},"浏览器会话",h("select",{"aria-label":"浏览器会话",value:browserSessionId,onChange:event=>setBinding({sessionId:event.target.value,target:"browser",existing:true})},[...new Set([browserSessionId,...available])].map(name=>h("option",{key:name,value:name},name)))),
+        error&&h("div",{role:"status"},error),
+        h(ControlledBrowserSession, { ...props, tab, browserSessionId, key: props.scope.sessionId + "\u0000" + props.tab.id + "\u0000" + browserSessionId }));
     }
     function SettingRow({ scope, snapshot, field, error }) {
       const value = snapshot.value?.[field.key] ?? field.defaultValue;
@@ -1067,7 +1091,7 @@ window.__ModuleLoader__.load({
         sidebar.registerFileViewer({id:"suite:pdf",title:"PDF 预览",exts:["pdf"],priority:130,fetchStrategy:"custom",load:loadPdfBytes,component:PdfViewer}),
         sidebar.registerFileViewer({id:"suite:image",title:"图片预览",exts:["png","jpg","jpeg","webp","gif","bmp","avif","ico"],priority:130,fetchStrategy:"mediaUrl",component:ImageViewer}),
         sidebar.registerTab({ id: "suite:jobs", title: "后台任务", order: 80, single: true, component: JobsTab }),
-        sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void desktopClose(scope.sessionId,tab.meta?.browserSessionId||"default",{ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", action: "close", includeScreenshot: false }) }).catch(() => {}); } })
+        sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar,key:props.scope.sessionId+"\u0000"+props.tab.id}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void desktopClose(scope.sessionId,tab.meta?.browserSessionId||"default",{ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", target: tab.meta?.target || (/^https?:/i.test(tab.path||"")?"browser":"local"), action: "close", includeScreenshot: false }) }).catch(() => {}); } })
       ];
       ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({ name: "settings.plugin.item", id: "computer-use", order: 40, label: "Computer Use" }, () => h("details", {className:"dshSettingsDisclosure"},h("summary",null,"Computer Use 与远程设备"),h(ComputerUseSettings, { scope: computerUseScope }))));
       ctx.effect?.(() => () => { clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");

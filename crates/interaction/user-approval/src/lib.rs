@@ -367,6 +367,53 @@ mod policy_tests {
     }
 
     #[tokio::test]
+    async fn remembered_grants_respect_policy_cancellation_and_current_scope() {
+        let ctx = Context::root();
+        let service = ApprovalService::install(&ctx, Config::default());
+        let owner = agent(&ctx, "grant-revalidation").await;
+        service.grants.grant(owner.id().as_str(), "browser");
+        let mut request = ApprovalRequest {
+            agent: owner.clone(),
+            tool_name: "computer_use".into(),
+            call_id: None,
+            reason: None,
+            grant_key: Some("browser".into()),
+            rememberable: true,
+            signal: None,
+        };
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::AllowedAlways
+        );
+        service.set_policy(&owner, ApprovalPolicy::Never).unwrap();
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::Rejected
+        );
+        service.set_policy(&owner, ApprovalPolicy::Ask).unwrap();
+        request.signal = Some(Arc::new(|| true));
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::Cancelled
+        );
+        request.signal = None;
+        request.rememberable = false;
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::Unavailable
+        );
+        assert_eq!(
+            owner
+                .session()
+                .events()
+                .iter()
+                .filter(|event| event.type_ == "approval/asked")
+                .count(),
+            3
+        );
+    }
+
+    #[tokio::test]
     async fn non_rememberable_allowed_always_is_downgraded_in_the_audit_pair() {
         let ctx = Context::root();
         SessionStore::install(&ctx);
@@ -669,10 +716,13 @@ impl ApprovalService {
                     .to_string(),
             );
         }
-        if req
-            .grant_key
-            .as_deref()
-            .is_some_and(|key| self.grants.is_granted(session.id().as_str(), key))
+        if self.effective_policy(session) != ApprovalPolicy::Never
+            && !req.signal.as_ref().is_some_and(|signal| signal())
+            && req.rememberable
+            && req
+                .grant_key
+                .as_deref()
+                .is_some_and(|key| self.grants.is_granted(session.id().as_str(), key))
         {
             return Ok(ApprovalOutcome::AllowedAlways);
         }

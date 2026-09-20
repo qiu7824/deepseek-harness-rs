@@ -6405,6 +6405,7 @@ window.__ModuleLoader__.load({
 			if (call === void 0) return void 0;
 			try {
 				const args = JSON.parse(call.argsRaw);
+                if (call.name === "computer_use") return JSON.stringify({ target: args.target, action: args.action, sessionId: args.sessionId || "default", url: args.url, windowId: args.windowId }, null, 2);
                 if (typeof args.command === "string") return args.command;
                 const target = [args.file_path, args.path].find(value => typeof value === "string" && value.trim());
                 return target === void 0 ? void 0 : target.replace(/^\\\\\?\\UNC\\/i,"\\\\").replace(/^\\\\\?\\/,"");

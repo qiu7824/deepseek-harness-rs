@@ -37,6 +37,9 @@ async function loadComponent() {
   const code = section('var PendingApproval = class') + section('function toolNode(node)') + section('var ApprovalPanel_module_css_default =') + section('function commandOf(call)') + '\nresult.Component = ApprovalPanel; result.commandOf = commandOf;';
   const result = {};
   vm.runInNewContext(code, { react: React, react_jsx_runtime: jsx, result, _deepseek_ai_dsh_client_runtime_client: { conversationContextKey: (_, id) => id }, _deepseek_ai_dsh_client_ui_primitives: { Button: ({ children, variant, ...props }) => React.createElement('button', props, children) } });
+  const browserDetails = result.commandOf({name:'computer_use',argsRaw:JSON.stringify({target:'browser',action:'type',sessionId:'river-demo',text:'PRIVATE_INPUT'})});
+  assert.deepEqual(JSON.parse(browserDetails), {target:'browser',action:'type',sessionId:'river-demo'});
+  assert.ok(!browserDetails.includes('PRIVATE_INPUT'), 'approval identifies the control target without exposing typed secrets');
   Component = result.Component; evidence.componentSha256 = crypto.createHash('sha256').update(code).digest('hex');
   assert.equal(result.commandOf({argsRaw: JSON.stringify({file_path: String.raw`\\?\D:\folder\file.txt`})}), String.raw`D:\folder\file.txt`);
   assert.equal(result.commandOf({argsRaw: JSON.stringify({file_path: String.raw`\\?\UNC\server\share\file.txt`})}), String.raw`\\server\share\file.txt`);

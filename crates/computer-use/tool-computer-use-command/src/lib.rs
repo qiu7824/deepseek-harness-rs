@@ -310,7 +310,34 @@ impl ComputerUseRuntime {
     }
 }
 
+fn computer_use_grant_key(adapter: &str, arguments: &Value) -> String {
+    let session = arguments
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    format!("computer-use:{}", json!([adapter, session]))
+}
+
 fn validate_adapter_url(adapter: &str, arguments: &Value) -> Result<(), AdapterError> {
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if adapter == "native-browser" && matches!(action, "start" | "navigate" | "new_tab") {
+        match arguments.get("url") {
+            Some(Value::String(url)) => {
+                browser::validate_navigation_url(url)?;
+            }
+            None if action != "navigate" => {}
+            _ => {
+                return Err(AdapterError::new(
+                    "COMPUTER_USE_URL",
+                    "navigate requires an absolute HTTP/HTTPS URL; start and new_tab may omit url for about:blank",
+                ));
+            }
+        }
+    }
     if matches!(adapter, "native-desktop" | "uu-desktop")
         && matches!(
             arguments.get("action").and_then(Value::as_str),
@@ -324,7 +351,7 @@ fn validate_adapter_url(adapter: &str, arguments: &Value) -> Result<(), AdapterE
         return Err(AdapterError::new(
             "COMPUTER_USE_ADAPTER_MISMATCH",
             format!(
-                "Active adapter is {adapter}; a URL does not open an isolated browser on a desktop adapter. Use the configured desktop's browser UI, or ask the user to select the native-browser adapter. No desktop session was opened for this request."
+                "Active adapter is {adapter}; a URL does not open an isolated browser on a desktop adapter. Use target=browser for an isolated browser when available, or use the configured desktop's browser UI. No desktop session was opened for this request."
             ),
         ));
     }
@@ -550,7 +577,9 @@ pub fn install_adapter(
         .get_typed::<Arc<dyn ComputerPermissionService>>("computerPermissions", false)
         .map(|slot| slot.as_ref().clone());
     let scoped_permissions = permission_service.is_some();
+    let approval_adapter = adapter.clone();
     let listener: Arc<Listener> = Arc::new(move |_ctx, args| {
+        let adapter = approval_adapter.clone();
         let execution = args
             .first()
             .and_then(|value| downcast_arc::<Arc<ToolExecution>>(value))
@@ -568,9 +597,26 @@ pub fn install_adapter(
                         .unwrap_or_default(),
                 )
             {
+                let selected = match adapter.adapter_id_for(&execution.arguments) {
+                    Ok(selected) => selected,
+                    Err(error) => {
+                        return Some(arc(PreToolDecision::Deny {
+                            reason: error.to_string(),
+                        }));
+                    }
+                };
+                if let Err(error) = validate_adapter_url(selected, &execution.arguments) {
+                    return Some(arc(PreToolDecision::Deny {
+                        reason: error.to_string(),
+                    }));
+                }
+                // An isolated browser grant must never authorize a physical desktop.
+                let grant_key = computer_use_grant_key(selected, &execution.arguments);
                 return Some(arc(PreToolDecision::Ask {
-                    reason: Some("Computer Use 将操作隔离浏览器或桌面，需要用户确认".to_string()),
-                    grant_key: Some("tool:computer_use".to_string()),
+                    reason: Some(format!(
+                        "Computer Use 将操作 {selected}；允许一次仅执行当前动作，允许此范围可在当前对话中继续操作同一控制会话"
+                    )),
+                    grant_key: Some(grant_key),
                     rememberable: true,
                 }));
             }
@@ -704,7 +750,7 @@ pub fn install_adapter(
         ctx,
         ToolDefinition {
             name: "computer_use".to_string(),
-            description: format!("Operate a persistent, isolated browser or configured desktop adapter. Active adapter: {}. Reuse sessionId across calls. Start or navigate, inspect the returned state and screenshot, perform one or more click/type/scroll actions, then inspect the new screenshot. Desktop adapters do not open a webpage from the url argument. A waiting-for-frame state or zero-size viewport is not usable page or video evidence. Mutating actions require user approval and all actions support cancellation and timeout.", runtime.adapter_id()),
+            description: format!("Operate a persistent, isolated browser or configured desktop adapter. Active adapter: {}. Reuse sessionId across calls. Start or navigate, inspect the returned state and screenshot, perform one or more click/type/scroll actions, then inspect the new screenshot. Desktop adapters do not open a webpage from the url argument. A waiting-for-frame state or zero-size viewport is not usable page or video evidence. Mutating actions request approval through the tool; do not ask for a duplicate chat confirmation. Allow once covers one action; a remembered grant covers the displayed target and permissions in this conversation. For local HTML, start a localhost HTTP server, verify it is ready, then navigate to its HTTP URL; file URLs are unsupported. The Computer Use panel can attach to the same sessionId. All actions support cancellation and timeout.", runtime.adapter_id()),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": true,
@@ -881,6 +927,49 @@ mod tests {
             panic!("a browser URL must not open the configured physical desktop");
         }
     }
+    #[test]
+    fn browser_navigation_and_approval_scopes_are_validated() {
+        for arguments in [
+            json!({"action":"start","url":"file:///private.html"}),
+            json!({"action":"navigate"}),
+            json!({"action":"new_tab","url":42}),
+            json!({"action":"navigate","url":"https://user:secret@example.com"}),
+        ] {
+            assert!(validate_adapter_url("native-browser", &arguments).is_err());
+        }
+        assert!(validate_adapter_url("native-browser", &json!({"action":"start"})).is_ok());
+        assert!(
+            validate_adapter_url(
+                "native-browser",
+                &json!({"action":"navigate","url":"http://localhost:8123/page.html"})
+            )
+            .is_ok()
+        );
+        let first = computer_use_grant_key(
+            "native-browser",
+            &json!({"sessionId":"demo","action":"start"}),
+        );
+        assert_eq!(
+            first,
+            computer_use_grant_key(
+                "native-browser",
+                &json!({"sessionId":"demo","action":"click"})
+            )
+        );
+        assert_ne!(
+            first,
+            computer_use_grant_key("native-browser", &json!({"sessionId":"other"}))
+        );
+        assert_ne!(
+            first,
+            computer_use_grant_key("native-desktop", &json!({"sessionId":"demo"}))
+        );
+        assert_ne!(
+            first,
+            computer_use_grant_key("uu-desktop", &json!({"sessionId":"demo"}))
+        );
+    }
+
     #[tokio::test]
     async fn desktop_url_mismatch_is_rejected_before_adapter_execution() {
         let runtime = ComputerUseRuntime {
@@ -1111,6 +1200,37 @@ mod tests {
             result.content[1],
             dsh_llm::ContentBlock::Image { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn invalid_browser_url_is_rejected_before_asking_for_approval() {
+        let ctx = Context::root();
+        dsh_system_prompt::SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
+            .unwrap();
+        let tools = ToolRuntime::install(&ctx, dsh_tools::Config::default()).unwrap();
+        let adapter = Arc::new(RecordingAdapter {
+            id: "native-browser",
+            calls: SyncMutex::new(vec![]),
+        });
+        install_adapter(&ctx, 5_000, adapter.clone()).unwrap();
+        let result = tools
+            .execute(ToolExecutionInput {
+                call_id: dsh_llm::call_id("invalid-browser-url"),
+                root_call_id: None,
+                name: "computer_use".into(),
+                arguments: json!({"action":"start","url":"file:///private.html"}),
+                agent: None,
+                parent: None,
+                signal: Arc::new(|| false),
+            })
+            .await;
+        assert!(result.is_error);
+        let text = format!("{:?}", result.content);
+        assert!(
+            text.contains("only permits http"),
+            "validation must precede the missing approval service: {text}"
+        );
+        assert!(adapter.calls.lock().is_empty());
     }
 
     #[tokio::test]

@@ -91,6 +91,23 @@ async fn edge_controls_isolated_pages_and_returns_real_screenshots() {
         viewport_height: 720,
     })
     .expect("construct native browser adapter");
+    let rejected = adapter
+        .execute(
+            AdapterRequest::from_arguments(
+                &json!({"action":"start","sessionId":"invalid","url":"file:///private.html"}),
+            )
+            .unwrap()
+            .with_owner_id("owner-a"),
+            active_signal(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.code, "COMPUTER_USE_URL_SCHEME");
+    assert!(!adapter.has_owner_activity("owner-a"));
+    assert!(
+        !test_root.exists(),
+        "invalid navigation must not launch a browser or create a profile"
+    );
     let (fixture, server) = fixture_server().await;
 
     let navigated = request(

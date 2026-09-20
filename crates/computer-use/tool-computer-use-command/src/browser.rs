@@ -411,6 +411,7 @@ impl NativeBrowserAdapter {
         request: AdapterRequest,
         signal: AbortPredicate,
     ) -> Result<AdapterOutput, AdapterError> {
+        crate::validate_adapter_url("native-browser", &request.arguments)?;
         let session_id = session_id(&request.arguments)?;
         let owner_id = request.owner_id.as_deref().unwrap_or("host");
         let action = request.action.as_str();
@@ -1533,7 +1534,7 @@ fn argument_wait_ms(arguments: &Value, default: u64) -> Result<u64, AdapterError
     }
 }
 
-fn validate_navigation_url(value: &str) -> Result<&str, AdapterError> {
+pub(super) fn validate_navigation_url(value: &str) -> Result<&str, AdapterError> {
     if value == "about:blank" {
         return Ok(value);
     }
