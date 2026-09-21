@@ -204,10 +204,16 @@ def main() -> None:
         prefix + "web/dist/index.html",
         prefix + "web/dist/plugins/ui-theme.js",
         prefix + "plugins/dsh-context-jump/lib/client.js",
+        prefix + f"runtime/node/node{executable_suffix}",
+        prefix + "runtime/node/LICENSE",
+        prefix + "runtime/node/IDENTITY.json",
     }
     if args.platform == "windows":
         required.add(prefix + "dsh-desktop-controller.exe")
         required.add(prefix + "dsh-uu-controller.exe")
+        required.add(prefix + "runtime/native-install-upgrade.cjs")
+        for helper in ("dsh-windows-native.exe", "dsh-command-runner.exe", "dsh-windows-sandbox-setup.exe"):
+            required.add(prefix + "native-sandbox/" + helper)
     if args.variant == "skin":
         required.add(prefix + "plugins/dsh-skin-center/lib/client.js")
     elif any(name.startswith(prefix + "plugins/dsh-skin-center/") for name in names):
@@ -216,6 +222,12 @@ def main() -> None:
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"archive is missing required entries: {missing}")
+    node_lock=json.loads((ROOT/'tools/node_runtime_lock.json').read_text(encoding='utf-8'))
+    node_identity=json.loads(read_archive_file(archive,prefix+'runtime/node/IDENTITY.json'))
+    if (node_identity.get('version')!=node_lock['version'] or node_lock['archives'].get(node_identity.get('archive'))!=node_identity.get('archiveSha256')):
+        raise SystemExit('Node runtime identity differs from the pinned release')
+    if hashlib.sha256(read_archive_file(archive,prefix+f'runtime/node/node{executable_suffix}')).hexdigest()!=node_identity.get('binarySha256'):
+        raise SystemExit('Node runtime binary checksum mismatch')
     for icon_name in ("deepseek-black.ico", "deepseek-black.png"):
         if read_archive_file(archive, prefix + icon_name) != (ROOT / "packaging/windows" / icon_name).read_bytes():
             raise SystemExit(f"archive {icon_name} differs from the standard tray icon")

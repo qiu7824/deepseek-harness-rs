@@ -1,0 +1,10 @@
+{
+  "version": "26.8.2",
+  "baseUrl": "https://nodejs.org/dist/v26.8.2/",
+  "archives": {
+    "node-v26.8.2-win-x64.zip": "cf02f5d0c06c794b84f277177d5cf3743d0924ca49f6641cd435dd7cb6ee9085",
+    "node-v26.8.2-linux-x64.tar.xz": "40e1d3225c1c9ae9a2671c98ecb9857e4d5555026394f348645676798840d5c5",
+    "node-v26.8.2-darwin-x64.tar.xz": "49950999366bf6cd47c8c8fd3593aa82fb5efed494937b380b85677338285ca0",
+    "node-v26.8.2-darwin-arm64.tar.xz": "f58e5044b938a3174184de4aaf1d2bbfcfff812e88220ff08e9221c09f5c8677"
+  }
+}

@@ -226,7 +226,8 @@ impl SandboxProvider for LocalSandboxProvider {
         #[cfg(windows)]
         if self.platform == "win32" {
             return match &self.native {
-                Ok(Some(_)) => "windows-native",
+                Ok(Some(native)) if native.verify().is_ok() => "windows-native",
+                Ok(Some(_)) => "windows-unavailable",
                 Ok(None) => "windows-appcontainer",
                 Err(_) => "windows-unavailable",
             };

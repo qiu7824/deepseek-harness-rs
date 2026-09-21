@@ -73,6 +73,7 @@ english.LaunchAfterInstall=Launch DeepSeek Harness-rs
 english.DirectoryUnavailable=The selected drive or folder is unavailable. Please choose another installation folder.
 english.DirectoryNotWritable=The selected folder is not writable. Choose a folder you can write to, or restart Setup with appropriate permissions.
 english.IncompleteInstallation=The launcher or core program is missing from the installation folder. The application cannot start. Reinstall using a complete installation package.
+english.NativeUpgradeFailed=Native sandbox upgrade verification failed. The existing configuration is preserved; review the installation log before retrying.
 chinesesimp.DesktopShortcut=创建桌面快捷方式
 chinesesimp.AdditionalTasks=附加任务：
 chinesesimp.LauncherName=DeepSeek Harness-rs 启动器
@@ -80,6 +81,7 @@ chinesesimp.LaunchAfterInstall=启动 DeepSeek Harness-rs
 chinesesimp.DirectoryUnavailable=所选磁盘或文件夹不可用，请选择其他安装目录。
 chinesesimp.DirectoryNotWritable=无法写入所选目录，请选择有写入权限的目录，或使用适当权限重新运行安装程序。
 chinesesimp.IncompleteInstallation=安装目录中缺少启动器或核心程序，无法启动。请使用完整安装包重新安装。
+chinesesimp.NativeUpgradeFailed=原生沙箱升级校验失败，原配置已保留；请检查安装日志后重试。
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:AdditionalTasks}"; Flags: unchecked
 [Files]
@@ -96,9 +98,20 @@ procedure SHChangeNotify(EventId: Integer; Flags: Cardinal; Item1, Item2: Intege
   external 'SHChangeNotify@shell32.dll stdcall';
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then
+  begin
+    ResultCode := -1;
+    if not Exec(ExpandConstant('{app}\runtime\node\node.exe'),
+      '"' + ExpandConstant('{app}\runtime\native-install-upgrade.cjs') + '"',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException(CustomMessage('NativeUpgradeFailed'));
+    if ResultCode <> 0 then
+      RaiseException(CustomMessage('NativeUpgradeFailed'));
     SHChangeNotify($08000000, 0, 0, 0);
+  end;
 end;
 
 function InstalledRuntimeReady: Boolean;

@@ -53,18 +53,33 @@ impl NativeBackend {
         }
         let config: Self = serde_json::from_slice(&data)
             .map_err(|e| format!("[SANDBOX_SETUP_FAILED] invalid native backend selection: {e}"))?;
-        config.verify()?;
+        // Retain valid workspace selection even when the selected binaries
+        // need repair; unrelated workspaces still use their own backend.
+        config.validate_configuration()?;
         Ok(Some(config))
     }
 
-    pub fn verify(&self) -> Result<(), String> {
+    fn validate_configuration(&self) -> Result<(), String> {
         if self.version != 1
             || self.backend != "windows-native"
             || !self.runner.is_absolute()
             || !self.state_directory.is_absolute()
+            || self.workspaces.iter().any(|path| !path.is_absolute())
+            || [
+                &self.sha256,
+                &self.command_runner_sha256,
+                &self.setup_sha256,
+            ]
+            .iter()
+            .any(|digest| digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()))
         {
             return Err("[SANDBOX_SETUP_FAILED] unsupported native backend configuration".into());
         }
+        Ok(())
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        self.validate_configuration()?;
         let folder = self
             .runner
             .parent()
@@ -204,6 +219,44 @@ impl NativeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dsh_sandbox::{SandboxExecutionPolicy, SandboxMode, SandboxProvider};
+
+    #[tokio::test]
+    async fn stale_native_identity_is_scoped_and_still_fails_closed_for_selected_workspaces() {
+        let root = std::env::temp_dir().join(format!("dsh-native-scope-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("cache")).unwrap();
+        let selected = root.join("selected");
+        let other = root.join("other");
+        let value = serde_json::json!({
+            "version": 1, "backend": "windows-native", "runner": root.join("missing.exe"),
+            "stateDirectory": root.join("state"), "workspaces": [selected],
+            "sha256": "0".repeat(64), "commandRunnerSha256": "0".repeat(64), "setupSha256": "0".repeat(64)
+        });
+        std::fs::write(
+            root.join("windows-sandbox.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let native = NativeBackend::load(&root.join("cache/runtime-read-permissions"))
+            .unwrap()
+            .unwrap();
+        assert!(native.verify().is_err());
+        let mut provider = crate::LocalSandboxProvider::new(crate::Config::default());
+        std::sync::Arc::get_mut(&mut provider).unwrap().native = Ok(Some(native));
+        let mut policy = SandboxExecutionPolicy {
+            mode: SandboxMode::WorkspaceWrite,
+            workspace_root: other.to_string_lossy().into_owned(),
+            read_only_roots: vec![],
+            session_id: None,
+        };
+        assert_eq!(provider.backend_id_for(&policy), "windows-appcontainer");
+        policy.workspace_root = selected.to_string_lossy().into_owned();
+        assert_eq!(provider.backend_id_for(&policy), "windows-unavailable");
+        assert!(provider.prepare(&policy).await.is_err());
+        std::fs::remove_file(root.join("windows-sandbox.json")).unwrap();
+        std::fs::remove_dir(root.join("cache")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn invalid_selection_cannot_silently_become_appcontainer_or_unconfined() {
         let directory =

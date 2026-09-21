@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -18,6 +18,52 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 
 const SOURCE: &str = include_str!("../assets/computer-js.cjs");
 const PARSER: &str = include_str!("../assets/acorn.cjs");
+
+fn node_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        if let Some(tail) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{tail}"));
+        }
+        if let Some(tail) = value.strip_prefix(r"\\?\") {
+            let bytes = tail.as_bytes();
+            if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\'
+            {
+                return PathBuf::from(tail);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(all(test, windows))]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn node_permissions_use_the_same_windows_namespace_as_the_loader() {
+        assert_eq!(
+            node_path(Path::new(r"\\?\C:\程序 文件\kernel")),
+            PathBuf::from(r"C:\程序 文件\kernel")
+        );
+        assert_eq!(
+            node_path(Path::new(r"\\?\UNC\server\share\kernel")),
+            PathBuf::from(r"\\server\share\kernel")
+        );
+        assert_eq!(
+            node_path(Path::new(r"C:\kernel")),
+            PathBuf::from(r"C:\kernel")
+        );
+        assert_eq!(
+            node_path(Path::new(r"\\?\Volume{abc}\kernel")),
+            PathBuf::from(r"\\?\Volume{abc}\kernel")
+        );
+    }
+}
 struct Kernel {
     child: Arc<dyn SubprocessHandle>,
     input: Box<dyn AsyncWrite + Unpin + Send>,
@@ -50,8 +96,13 @@ fn failure(code: &str, completed: u64, uncertain: bool) -> ToolBodyError {
     ToolBodyError::coded(json!({"code":code,"completedActions":completed,"uncertainAction":uncertain,"kernelReset":true}).to_string(),"ComputerUseJsError",code)
 }
 impl ComputerJs {
-    async fn run(&self, code: &str, execution: Arc<ToolExecution>) -> Result<Value, ToolBodyError> {
-        let value = self.evaluate(code, execution).await?;
+    async fn run(
+        &self,
+        code: &str,
+        execution: Arc<ToolExecution>,
+        mark_effects: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Value, ToolBodyError> {
+        let value = self.evaluate(code, execution, mark_effects).await?;
         if value["ok"] != true {
             return Err(ToolBodyError::coded(
                 value.to_string(),
@@ -82,8 +133,13 @@ impl ComputerJs {
                 .map_err(|e| ToolBodyError::plain(e.to_string()))?;
             }
         }
+        // Node's permission matcher does not equate verbatim Windows paths
+        // with the regular paths used by its module loader.
+        let root = node_path(&root);
         let argv = vec![
-            self.node.clone(),
+            node_path(Path::new(&self.node))
+                .to_string_lossy()
+                .into_owned(),
             "--permission".into(),
             "--allow-worker".into(),
             "--max-old-space-size=192".into(),
@@ -185,6 +241,7 @@ impl ComputerJs {
         &self,
         code: &str,
         execution: Arc<ToolExecution>,
+        mark_effects: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Value, ToolBodyError> {
         let owner = execution
             .agent
@@ -253,8 +310,23 @@ impl ComputerJs {
                     .await
                     .map_err(|_| failure("COMPUTER_USE_KERNEL_PIPE", completed, uncertain))?;
                 if read == 0 {
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(500),
+                        kernel.child.wait_for_exit(None),
+                    )
+                    .await;
+                    let diagnostic = kernel
+                        .child
+                        .collected()
+                        .stderr
+                        .map(|reader| reader.read_from(0).text)
+                        .unwrap_or_default();
                     return Err(ToolBodyError::coded(
-                        "Computer Use JS kernel exited. A packaged Node 25+ runtime is required; check the runtime diagnostics.",
+                        format!(
+                            "Computer Use JS kernel exited (runtime: {}). {}",
+                            self.node,
+                            diagnostic.chars().take(4096).collect::<String>()
+                        ),
                         "ComputerUseJsError",
                         "COMPUTER_USE_KERNEL_EXITED",
                     ));
@@ -280,6 +352,7 @@ impl ComputerJs {
                         .tools
                         .upgrade()
                         .ok_or_else(|| ToolBodyError::plain("Tool runtime unavailable"))?;
+                    mark_effects();
                     uncertain = true;
                     let result = tools
                         .execute(ToolExecutionInput {
@@ -449,7 +522,7 @@ pub fn install_js(ctx: &Context, node: String, root: PathBuf) -> Result<(), Stri
     });
     for reset in [false, true] {
         let service = service.clone();
-        tools.register(ctx,ToolDefinition{name:if reset{"computer_use_js_reset"}else{"computer_use_js"}.into(),description:if reset{"Reset this session's Computer Use JavaScript kernel and invalidate its variables."}else{"Run persistent JavaScript for Computer Use. Variables persist across calls in this conversation. Use let app = await cua.getApp(name or windowRef), await app.getAXStateAndScreenshot(), app.click(elementId or [x,y]), app.setValue(elementId,text), app.typeText(text), app.pressKey('Control+a'), app.scroll(...). Use cua.getState() to discover windows. Default target is the Host computer; cua.remote().perform(...) uses only the bound UU device; cua.browser().perform(...) uses the isolated browser. nodeRepl.write(value) and nodeRepl.emitImage(observation) produce output. No modules, files, network or processes are accessible to code. Observe before acting; stale element IDs are rejected. Await all actions. A timeout resets variables. Every action receives normal Host authorization."}.into(),parameters:if reset{json!({"type":"object","properties":{},"additionalProperties":false})}else{json!({"type":"object","properties":{"code":{"type":"string","minLength":1,"maxLength":65536}},"required":["code"],"additionalProperties":false})},output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|{let mut blocks=vec![dsh_llm::ContentBlock::Text{text:value.to_string()}];for image in value["images"].as_array().into_iter().flatten(){blocks.push(dsh_llm::ContentBlock::Image{attachment:serde_json::from_value(image.clone()).map_err(|e|e.to_string())?});}Ok(blocks)}),presentation_meta:None},timeout_ms:Some(70000),is_concurrency_safe:Some(Arc::new(move |_|reset)),execute:Arc::new(move|args,run|{let service=service.clone();let code=args["code"].as_str().unwrap_or("").to_string();let execution=run.execution.clone();Box::pin(async move{if reset{let id=execution.agent.as_ref().ok_or_else(||ToolBodyError::plain("Session required"))?.id().as_str().to_string();service.reset(&id).await;Ok(json!({"reset":true}))}else{service.run(&code,execution).await}})}),finalize_content:None,present_call:None,present_result:None})?;
+        tools.register(ctx,ToolDefinition{name:if reset{"computer_use_js_reset"}else{"computer_use_js"}.into(),description:if reset{"Reset this session's Computer Use JavaScript kernel and invalidate its variables."}else{"Run persistent JavaScript for Computer Use. Variables persist across calls in this conversation. Use let app = await cua.getApp(name or windowRef), await app.getAXStateAndScreenshot(), app.click(elementId or [x,y]), app.setValue(elementId,text), app.typeText(text), app.pressKey('Control+a'), app.scroll(...). Use cua.getState() to discover windows. Default target is the Host computer; cua.remote().perform(...) uses only the bound UU device; cua.browser().perform(...) uses the isolated browser. nodeRepl.write(value) and nodeRepl.emitImage(observation) produce output. No modules, files, network or processes are accessible to code. Observe before acting; stale element IDs are rejected. Await all actions. A timeout resets variables. Every action receives normal Host authorization."}.into(),parameters:if reset{json!({"type":"object","properties":{},"additionalProperties":false})}else{json!({"type":"object","properties":{"code":{"type":"string","minLength":1,"maxLength":65536}},"required":["code"],"additionalProperties":false})},output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|{let mut blocks=vec![dsh_llm::ContentBlock::Text{text:value.to_string()}];for image in value["images"].as_array().into_iter().flatten(){blocks.push(dsh_llm::ContentBlock::Image{attachment:serde_json::from_value(image.clone()).map_err(|e|e.to_string())?});}Ok(blocks)}),presentation_meta:None},timeout_ms:Some(70000),is_concurrency_safe:Some(Arc::new(move |_|reset)),execute:Arc::new(move|args,run|{let service=service.clone();let code=args["code"].as_str().unwrap_or("").to_string();let execution=run.execution.clone();let mark_effects=run.track_requested_effects();Box::pin(async move{if reset{let id=execution.agent.as_ref().ok_or_else(||ToolBodyError::plain("Session required"))?.id().as_str().to_string();service.reset(&id).await;Ok(json!({"reset":true}))}else{service.run(&code,execution,mark_effects).await}})}),finalize_content:None,present_call:None,present_result:None})?;
     }
     let weak = Arc::downgrade(&service);
     let _ = ctx.effect(

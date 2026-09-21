@@ -16,6 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from build_skin_payload import build_skin_payload
 from verify_release_version import verify as verify_release_version
 from free_model_evidence import package_defaults, validated_models
+from stage_node_runtime import stage_node_runtime
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
@@ -120,6 +121,7 @@ def main() -> None:
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
+    stage_node_runtime(stage, args.platform, arch)
 
     launcher_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-launcher")
     core_output = binary_name(args.platform, "deepseek-harness-rs")
@@ -137,6 +139,9 @@ def main() -> None:
         for notice in ("LICENSE", "NOTICE"):
             shutil.copy2(ROOT / "native" / "windows-sandbox" / "engine" / notice, native_stage / notice)
         shutil.copy2(ROOT / "native" / "windows-sandbox" / "UPSTREAM.json", native_stage / "UPSTREAM.json")
+        native_hashes={name:hashlib.sha256((native_stage/name).read_bytes()).hexdigest() for name in ("dsh-windows-native.exe","dsh-command-runner.exe","dsh-windows-sandbox-setup.exe")}
+        migration=(ROOT/'tools/native_install_upgrade.cjs').read_text(encoding='utf-8').replace('__DSH_NATIVE_EXPECTED_HASHES__',json.dumps(native_hashes))
+        (stage/'runtime/native-install-upgrade.cjs').write_text(migration,encoding='utf-8')
         for controller in ("dsh-desktop-controller", "dsh-uu-controller"):
             controller_source = ROOT / "target" / "release" / f"{controller}.exe"
             if not controller_source.is_file():

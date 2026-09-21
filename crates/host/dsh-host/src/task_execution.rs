@@ -49,6 +49,7 @@ fn effect(name: &str) -> EffectKind {
             | "grep"
             | "environment_probe"
             | "environment_validate"
+            | "consult_model"
             | "web_search"
             | "web_fetch"
             | "job_output"
@@ -789,6 +790,8 @@ mod tests {
     }
     #[test]
     fn silent_terminal_observation_is_not_command_success() {
+        assert!(matches!(effect("consult_model"), EffectKind::ReadOnly));
+        assert!(matches!(effect("computer_use_js"), EffectKind::Write));
         assert_eq!(
             outcome_flags(
                 "terminal_send",
