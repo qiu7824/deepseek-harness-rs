@@ -216,6 +216,7 @@ fn control_outcome(code: &str) -> bool {
     matches!(
         code,
         "ABORTED"
+            | "APPROVAL_REJECTED"
             | "SHELL_ABORTED"
             | "TOOL_ABORTED"
             | "ABORTED_BEFORE_DISPATCH"
@@ -710,6 +711,62 @@ impl LearningStore {
         let result = self.record_recovery_inner(observation).await;
         self.remember_error(&result);
         result
+    }
+
+    /// Successful later requests resolve only earlier transient failures on the
+    /// exact workspace/provider/model route. Concurrent newer failures survive.
+    pub async fn resolve_provider_success(
+        &self,
+        workspace: &str,
+        provider: &str,
+        model: &str,
+        started_at: u64,
+    ) -> Result<usize, String> {
+        self.flush_pending().await?;
+        if !self.enabled() || provider.is_empty() || model.is_empty() {
+            return Ok(0);
+        }
+        let provider_key = digest(provider.as_bytes());
+        let model_key = digest(model.as_bytes());
+        let matches = |entry: &LearningEntry| {
+            entry.enabled
+                && entry.source == "provider"
+                && entry.route_known
+                && entry.workspace_key == workspace
+                && entry.provider_key == provider_key
+                && entry.model_key == model_key
+                && entry.last_seen < started_at
+                && matches!(
+                    entry.code.as_str(),
+                    "TIMEOUT"
+                        | "TRANSPORT"
+                        | "RATE_LIMIT"
+                        | "RATE_LIMITED"
+                        | "OVERLOADED"
+                        | "PROVIDER_OVERLOADED"
+                        | "NETWORK_ERROR"
+                        | "CONNECTION_ERROR"
+                )
+        };
+        if !self.document.read().unwrap().entries.iter().any(&matches) {
+            return Ok(0);
+        }
+        let result = self
+            .change(|document| {
+                if !document.enabled || !self.policy_enabled.load(Ordering::Acquire) {
+                    return Ok(0);
+                }
+                let before = document.entries.len();
+                document.entries.retain(|entry| !matches(entry));
+                Ok(before - document.entries.len())
+            })
+            .await;
+        self.remember_error(&result);
+        let count = result?;
+        if count > 0 {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(count)
     }
 
     pub async fn mark_application(

@@ -61,7 +61,7 @@ pub fn install(ctx: &Context, memory_scope: &dsh_settings::SettingsScope) -> Res
     );
     let routes = Arc::new(parking_lot::Mutex::new(HashMap::<
         (String, u64),
-        (String, String),
+        (String, String, u64),
     >::new()));
     let request_routes = routes.clone();
     let listener: Arc<Listener> = Arc::new(move |_, args| {
@@ -88,7 +88,17 @@ pub fn install(ctx: &Context, memory_scope: &dsh_settings::SettingsScope) -> Res
                 {
                     routes.remove(&oldest);
                 }
-                routes.insert(key, (config.provider.clone(), config.model.clone()));
+                routes.insert(
+                    key,
+                    (
+                        config.provider.clone(),
+                        config.model.clone(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    ),
+                );
             }
             Some(result)
         })
@@ -104,19 +114,43 @@ pub fn install(ctx: &Context, memory_scope: &dsh_settings::SettingsScope) -> Res
             .first()
             .and_then(downcast::<Session>)
             .and_then(|session| {
-                args.get(1)
-                    .and_then(downcast::<SessionEvent>)
-                    .and_then(|event| {
-                        if event.type_ != "turn/end" {
-                            return None;
-                        }
-                        let turn = event.data["turn"].as_u64()?;
-                        let route = routes.lock().remove(&(session.id().to_string(), turn));
-                        provider_failure(session, event, route)
+                let event = args.get(1).and_then(downcast::<SessionEvent>)?;
+                if event.type_ != "turn/end" {
+                    return None;
+                }
+                let turn = event.data["turn"].as_u64()?;
+                let route = routes.lock().remove(&(session.id().to_string(), turn));
+                let failure = provider_failure(
+                    session,
+                    event,
+                    route.as_ref().map(|(p, m, _)| (p.clone(), m.clone())),
+                );
+                let success = if event.data["reason"]["kind"] == "completed" {
+                    route.and_then(|(p, m, started)| {
+                        session
+                            .header()
+                            .cwd
+                            .as_deref()
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|cwd| (workspace_key(cwd), p, m, started))
                     })
+                } else {
+                    None
+                };
+                Some((failure, success))
             });
-        if let Some(observation) = observation {
-            let _ = failures.enqueue_failure(observation);
+        let store = failures.clone();
+        if let Some((Some(failure), _)) = &observation {
+            let _ = store.enqueue_failure(failure.clone());
+        }
+        if let Some((_, Some((workspace, provider, model, started)))) = observation {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = store
+                        .resolve_provider_success(&workspace, &provider, &model, started)
+                        .await;
+                });
+            }
         }
         Box::pin(async { None })
     });

@@ -21,6 +21,14 @@ pub(crate) struct TaskExecution {
 }
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 
+// Journal revisions change after ordinary successful tools. Only facts requiring
+// model action belong in the durable prompt, not storage bookkeeping.
+fn prompt_task_state(task: &TaskContract) -> Value {
+    json!({"taskId":task.task_id,"state":task.state,
+        "blockers":task.completion_blockers().into_iter().take(12).collect::<Vec<_>>(),
+        "recovery":task.recovery().into_iter().take(8).collect::<Vec<_>>()})
+}
+
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
     value[key]
         .as_str()
@@ -694,7 +702,7 @@ pub(crate) async fn install(
                     let cwd = session.header().cwd.as_deref()?;
                     service.environment(owner,cwd).ok().map(|current|current!=task.spec.environment_fingerprint)
                 });
-                let summary=json!({"taskId":task.task_id,"revision":task.revision,"state":task.state,"blockers":task.completion_blockers().into_iter().take(12).collect::<Vec<_>>(),"recovery":task.recovery().into_iter().take(8).collect::<Vec<_>>()});
+                let summary=prompt_task_state(&task);
                 format!("Durable task acceptance state (inspect task_execution for full facts; never replay unknown effects): {}{}",summary.to_string().chars().take(6000).collect::<String>(),if changed==Some(true) {"\nTASK_ENVIRONMENT_CHANGED: Stop issuing write or execution tools. Ask the user to use 任务验收 → 切换到当前环境 and confirm, or cancel the old task when its objective is no longer relevant. Do not retry with other tools, reinterpret running as migrated, or claim an environment probe changed permissions. Migration preserves requirements and effect history and invalidates old acceptance."} else {""})
             }
             Ok(None)=>String::new(),
@@ -789,6 +797,27 @@ pub(crate) fn register_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn successful_steps_do_not_reinject_task_context_but_unknown_effects_do() {
+        let mut task:TaskContract=serde_json::from_value(json!({"version":1,"taskId":"t","owner":"s","revision":1,"spec":{"objective":"Check","acceptanceChecks":[]},"state":"running","steps":[],"acceptanceResults":[],"validationIdentity":null,"outputIdentities":{},"createdAt":1,"updatedAt":1})).unwrap();
+        let before = prompt_task_state(&task);
+        task.revision = 42;
+        task.updated_at = 999;
+        let mut step:Step=serde_json::from_value(json!({"id":"read","executionId":"e","idempotencyKey":"k","inputIdentity":"i","tool":"read","effect":"read_only","state":"verified","updatedAt":999,"process":null,"resultIdentity":null,"result":null,"evidenceRefs":[],"failureReason":null})).unwrap();
+        task.steps.push(step.clone());
+        assert_eq!(before, prompt_task_state(&task));
+        step.id = "write".into();
+        step.effect = EffectKind::Write;
+        step.state = StepState::Unknown;
+        task.steps.push(step);
+        let unresolved = prompt_task_state(&task);
+        assert_ne!(before, unresolved);
+        assert!(unresolved["blockers"].to_string().contains("Unknown"));
+        assert_eq!(unresolved["recovery"][0]["action"], "inspect_effects");
+        task.state = TaskState::Cancelled;
+        assert_ne!(unresolved, prompt_task_state(&task));
+    }
+
     #[test]
     fn team_observation_does_not_require_environment_migration() {
         for action in ["status", "wait"] {

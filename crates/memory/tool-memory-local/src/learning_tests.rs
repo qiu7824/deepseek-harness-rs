@@ -665,3 +665,83 @@ async fn diagnostic_review_is_durable_non_reusable_and_invalidated_by_new_events
         .unwrap();
     assert_eq!(store.list(&json!({}))["items"][0]["reviewStale"], true);
 }
+
+#[tokio::test]
+async fn resolved_provider_diagnostics_are_removed_only_after_later_matching_requests() {
+    let store = LearningStore::open(root()).await.unwrap();
+    assert!(
+        store
+            .record_failure(FailureObservation {
+                code: "APPROVAL_REJECTED".into(),
+                ..failure("denied")
+            })
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let base = FailureObservation {
+        source: "provider".into(),
+        tool: String::new(),
+        code: "TIMEOUT".into(),
+        ..failure("timeout")
+    };
+    let entry = store.record_failure(base.clone()).await.unwrap().unwrap();
+    store
+        .record_failure(FailureObservation {
+            code: "NATIVE_TOOL_UNSUPPORTED".into(),
+            call_id: "unsupported".into(),
+            ..base.clone()
+        })
+        .await
+        .unwrap();
+    store
+        .record_failure(FailureObservation {
+            model: "other-model".into(),
+            call_id: "other-model".into(),
+            ..base.clone()
+        })
+        .await
+        .unwrap();
+    store
+        .record_failure(FailureObservation {
+            workspace_key: workspace_key("D:/other"),
+            call_id: "other-workspace".into(),
+            ..base.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .resolve_provider_success(
+                &base.workspace_key,
+                &base.provider,
+                &base.model,
+                entry.last_seen
+            )
+            .await
+            .unwrap(),
+        0,
+        "a request started before a new failure cannot clear it"
+    );
+    assert_eq!(
+        store
+            .resolve_provider_success(
+                &base.workspace_key,
+                &base.provider,
+                &base.model,
+                entry.last_seen + 1
+            )
+            .await
+            .unwrap(),
+        1
+    );
+    let value = store.list(&json!({"limit":1000}));
+    assert_eq!(value["total"], 3);
+    assert!(
+        !value["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == entry.id)
+    );
+}
