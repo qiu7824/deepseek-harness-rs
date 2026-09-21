@@ -248,6 +248,9 @@ jobs:
           HOST="$STAGE/deepseek-harness-rs"
           [[ "${{ matrix.platform }}" == "windows" ]] && HOST="$HOST.exe"
           python tools/e2e_computer_js.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-computer-js"
+          if [[ "${{ matrix.platform }}" == "windows" ]]; then
+            python tools/e2e_portable_windows.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-portable-windows"
+          fi
           python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE" --relocate --migrate-home
           python tools/e2e_model_management.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-model-management"
           python tools/e2e_queue_references.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-queue-references"
