@@ -1674,7 +1674,7 @@ async fn bridge_api_request(
         })
         .collect();
     #[cfg(windows)]
-    let collect_after_response = matches!(
+    let collect_after_response = bytes.len() >= 256 * 1024 || matches!(
         parts.uri.path(),
         "/api/session.history" | "/api/session.models"
     );
@@ -1684,7 +1684,7 @@ async fn bridge_api_request(
             path: parts.uri.path().to_string(),
             query,
             headers,
-            body: (!bytes.is_empty()).then(|| bytes.to_vec()),
+            body: (!bytes.is_empty()).then(|| bytes.into()),
         })
         .await;
     let (parts, body) = response.into_parts();

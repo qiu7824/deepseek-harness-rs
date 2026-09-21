@@ -336,7 +336,7 @@ pub struct FetchHandler {
 }
 
 impl FetchHandler {
-    pub async fn handle(&self, request: CarrierRequest) -> CarrierResponse {
+    pub async fn handle(&self, mut request: CarrierRequest) -> CarrierResponse {
         let path = request.path.as_str();
 
         // No-envelope read channels (SSE GET streams + host-only download):
@@ -424,16 +424,17 @@ impl FetchHandler {
 
         // 400 = carrier layer (body is not even JSON); valid JSON with a
         // bad shape goes 200 + bad-request.
-        let Some(bytes) = &request.body else {
+        let Some(bytes) = request.body.take() else {
             return text_response(StatusCode::BAD_REQUEST, "body is not JSON");
         };
-        let body: serde_json::Value = match serde_json::from_slice(bytes) {
+        let body: serde_json::Value = match serde_json::from_slice(&bytes) {
             Ok(value) => value,
             Err(_) => return text_response(StatusCode::BAD_REQUEST, "body is not JSON"),
         };
 
+        drop(bytes);
         if path == "/api/respond" {
-            let Ok(response) = serde_json::from_value::<ClientResponse>(body.clone()) else {
+            let Ok(response) = serde_json::from_value::<ClientResponse>(body) else {
                 return receipt_response(RpcReceipt::Rejected {
                     accepted: False,
                     reason: RpcReceiptReason::BadResponse,
@@ -447,7 +448,11 @@ impl FetchHandler {
             return text_response(StatusCode::NOT_FOUND, "not found");
         };
 
-        let message: ClientRequest = match serde_json::from_value::<RpcMessage>(body.clone()) {
+        let correlation_id = body
+            .get("rpcId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let message: ClientRequest = match serde_json::from_value::<RpcMessage>(body) {
             Ok(RpcMessage::ClientRequest {
                 rpc_id,
                 method: envelope_method,
@@ -476,7 +481,7 @@ impl FetchHandler {
                 // Best effort at correlation: salvage a string rpcId
                 // from the raw body; otherwise the fixed sentinel keeps
                 // the response a valid ServerResponse.
-                let raw_id = body.get("rpcId").and_then(serde_json::Value::as_str);
+                let raw_id = correlation_id.as_deref();
                 let rpc_id = raw_id
                     .map(|id| rpc_id(id.to_string()))
                     .unwrap_or_else(|| rpc_id(INVALID_REQUEST_RPC_ID));

@@ -109,7 +109,7 @@ pub async fn validate_image_file(
     input: &SaveImageAttachment,
     limits: &ImageAttachmentLimits,
 ) -> Result<(), AttachmentError> {
-    if input.data.len() as u64 > limits.max_image_bytes {
+    if input.data.len() as u64 > limits.image_byte_limit() {
         return Err(AttachmentError::new(
             "IMAGE_TOO_LARGE",
             "Image exceeds the configured byte limit.",
@@ -185,7 +185,7 @@ pub async fn save_image_file(
     input: &SaveImageAttachment,
     limits: &ImageAttachmentLimits,
 ) -> Result<ImageAttachmentRef, AttachmentError> {
-    if input.data.len() as u64 > limits.max_image_bytes {
+    if input.data.len() as u64 > limits.image_byte_limit() {
         return Err(AttachmentError::new(
             "IMAGE_TOO_LARGE",
             "Image exceeds the configured byte limit.",

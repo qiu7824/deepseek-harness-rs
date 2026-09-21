@@ -10,6 +10,7 @@ const context={ContextMeter:()=>null,react:React,react_jsx_runtime:jsx,window,do
 vm.runInNewContext(source.slice(source.indexOf('function isRasterFile('),source.indexOf('function imageMediaType(')),context);
 const begin=source.indexOf('function InputBar('),end=source.indexOf('\n\t\t//#endregion',begin);vm.runInNewContext(source.slice(begin,end),context);
 
+let imageLimits={maxImageBytes:0,maxMessageImageBytes:0,maxImagesPerMessage:20};
 let active='a', counter=0; const states=new Map(['a','b'].map(id=>[id,{draft:'',imageIds:[],phase:'editing',queue:[],claim:null}]));
 const drafts=new Map(), submitted=[], failures=[];
 const root=Client.createRoot(document.getElementById('root')), act=fn=>React.act(async()=>{await fn();});
@@ -20,7 +21,7 @@ const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,
  addImages:files=>{const state=states.get(active);for(const file of files){const id=String(++counter);drafts.set(id,{id,kind:context.isRasterFile(file)?'image':'file',file,previewUrl:'blob:test'});state.imageIds.push(id);}render();return null;},
  draftImages:ids=>ids.map(id=>drafts.get(id)),removeImage:id=>{states.get(active).imageIds=states.get(active).imageIds.filter(value=>value!==id);drafts.delete(id);render();},
  useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),
- useProjection:(name,select)=>select?select(undefined):undefined,t:(key,args)=>args?.name?`${key}:${args.name}`:key,renderSlot:()=>null}));
+ useProjection:(name,select)=>name==='imageLimits'?imageLimits:select?select(undefined):undefined,t:(key,args)=>args?.name?`${key}:${args.name}`:key,renderSlot:()=>null}));
 async function choose(files){const input=document.querySelector('[data-file-picker]');Object.defineProperty(input,'files',{configurable:true,value:files});await act(()=>input.dispatchEvent(new window.Event('change',{bubbles:true})));}
 (async()=>{
  await act(render);assert.ok(document.querySelector('button[aria-label="file.upload"]'));
@@ -30,9 +31,17 @@ async function choose(files){const input=document.querySelector('[data-file-pick
  await act(()=>document.querySelector('button[aria-label="input.send"]').click());assert.equal(submitted[0].imageIds.length,2);
  await act(()=>document.querySelector('button[aria-label="file.remove:Éè¼Æ.txt"]').click());assert.equal(states.get('a').imageIds.length,1);
  const oversized=new window.File(['x'],'large.bin');Object.defineProperty(oversized,'size',{value:17*1024*1024});await choose([oversized]);
- assert.equal(states.get('a').imageIds.length,1,'size rejection preserves existing drafts');assert.match(document.body.textContent,/file.limits/);
- active='b';await act(render);assert.equal(document.querySelectorAll('[data-file-draft]').length,0);active='a';await act(render);assert.equal(document.querySelectorAll('[data-file-draft]').length,1);
+ assert.equal(states.get('a').imageIds.length,2,'files above 16 MiB are accepted');
+ await choose(Array.from({length:15},(_,i)=>new window.File(['x'],`extra-${i}.bin`)));
+ assert.equal(states.get('a').imageIds.length,2,'count rejection preserves existing drafts');assert.match(document.body.textContent,/file.limits/);
+ active='b';await act(render);assert.equal(document.querySelectorAll('[data-file-draft]').length,0);
+ const largeImage=new window.File(['png'],'large.png',{type:'image/png'});Object.defineProperty(largeImage,'size',{value:6*1024*1024});
+ await choose([largeImage]);assert.equal(states.get('b').imageIds.length,1,'zero byte limit accepts an image above 5 MiB');
+ imageLimits={...imageLimits,maxImageBytes:5*1024*1024};await act(render);
+ await choose([largeImage]);assert.equal(states.get('b').imageIds.length,1,'explicit image byte limit still rejects oversized input');
+ assert.match(document.body.textContent,/image.fileTooLarge/);
+ active='a';await act(render);assert.equal(document.querySelectorAll('[data-file-draft]').length,2);
  states.get('a').phase='submitting';await act(render);assert.equal(document.querySelector('button[aria-label="file.upload"]').disabled,true);
- await choose([new window.File(['x'],'late.txt')]);assert.equal(states.get('a').imageIds.length,1,'late chooser completion cannot modify a submitting draft');
+ await choose([new window.File(['x'],'late.txt')]);assert.equal(states.get('a').imageIds.length,2,'late chooser completion cannot modify a submitting draft');
  await act(()=>root.unmount());dom.window.close();console.log('PASS actual file composer: picker, binary labels, file-only send, remove, limits, session isolation and submission lock');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close();});

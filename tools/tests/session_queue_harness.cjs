@@ -67,5 +67,16 @@ function fixture(address) {
     pending.shift()({result:{ok:true,value:{accepted:true,messageId:'finished-before-reply',running:true}}});await late;
     assert.equal(session.running,false,'a late receipt must not overwrite a newer idle event');
   }
+  {
+    const { session, pending } = fixture();
+    const upload = [{ type: 'image', mediaType: 'image/png', data: 'x'.repeat(8 * 1024 * 1024) }];
+    const failed = session.prompt(upload, 'queue');
+    await new Promise(resolve => setImmediate(resolve));
+    pending.shift()({result:{ok:false,error:{code:'attachment-error',details:{reason:'IMAGE_TOO_LARGE'}}}});
+    await failed;
+    assert.equal(session.promptRetry, null, 'a definite attachment rejection must release the encoded upload');
+    assert.equal(session.promptInFlight.length, 0);
+    assert.equal(session.queueMirror.snapshot().length, 0);
+  }
   console.log('PASS session queues: main/child delivery, sending, reconnect, acknowledgement merge, retry and durable handoff');
 })().catch(error => { console.error(error); process.exitCode = 1; });

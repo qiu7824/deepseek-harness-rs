@@ -135,11 +135,31 @@ pub struct ImageAttachmentRef {
 /// buffering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageAttachmentLimits {
+    /// Maximum encoded bytes, or zero for no local byte limit.
     pub max_image_bytes: u64,
     pub max_images_per_message: u64,
+    /// Maximum aggregate encoded bytes, or zero for no local byte limit.
     pub max_message_image_bytes: u64,
     pub max_image_pixels: u64,
     pub media_types: Vec<ImageMediaType>,
+}
+
+impl ImageAttachmentLimits {
+    pub fn image_byte_limit(&self) -> u64 {
+        if self.max_image_bytes == 0 {
+            u64::MAX
+        } else {
+            self.max_image_bytes
+        }
+    }
+
+    pub fn message_byte_limit(&self) -> u64 {
+        if self.max_message_image_bytes == 0 {
+            u64::MAX
+        } else {
+            self.max_message_image_bytes
+        }
+    }
 }
 
 /// Request to validate and durably commit one image.

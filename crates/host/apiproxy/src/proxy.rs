@@ -5750,6 +5750,8 @@ impl ApiProxyService {
             Ok(files) => files,
             Err(message) => return err(request.rpc_id, invalid_prompt(&message)),
         };
+        drop(pending_files);
+        drop(request.payload.content);
         content.extend(
             files
                 .into_iter()
@@ -6549,15 +6551,15 @@ impl ApiProxyService {
                 } => {
                     let limits = limits.expect("image count guarantees attachment limits");
                     let remaining_message_bytes = limits
-                        .max_message_image_bytes
+                        .message_byte_limit()
                         .saturating_sub(message_image_bytes);
-                    let max_decoded_bytes = limits.max_image_bytes.min(remaining_message_bytes);
+                    let max_decoded_bytes = limits.image_byte_limit().min(remaining_message_bytes);
                     let max_encoded_bytes = max_decoded_bytes
                         .saturating_add(2)
                         .saturating_div(3)
                         .saturating_mul(4);
                     if data.len() as u64 > max_encoded_bytes {
-                        let reason = if remaining_message_bytes < limits.max_image_bytes {
+                        let reason = if remaining_message_bytes < limits.image_byte_limit() {
                             "MESSAGE_IMAGES_TOO_LARGE"
                         } else {
                             "IMAGE_TOO_LARGE"
@@ -6580,7 +6582,7 @@ impl ApiProxyService {
                         }
                     };
                     let decoded_bytes = bytes.len() as u64;
-                    if decoded_bytes > limits.max_image_bytes {
+                    if decoded_bytes > limits.image_byte_limit() {
                         return subagent_attachment_error(
                             request.rpc_id,
                             "subagent image exceeds the deployment byte limit",
@@ -6588,7 +6590,7 @@ impl ApiProxyService {
                         );
                     }
                     message_image_bytes = match message_image_bytes.checked_add(decoded_bytes) {
-                        Some(total) if total <= limits.max_message_image_bytes => total,
+                        Some(total) if total <= limits.message_byte_limit() => total,
                         _ => {
                             return subagent_attachment_error(
                                 request.rpc_id,
@@ -6709,6 +6711,7 @@ impl ApiProxyService {
                 }
             }
         };
+        drop(pending_images);
         let mut content = Vec::with_capacity(pending_parts.len());
         for part in pending_parts {
             match part {
@@ -6743,6 +6746,8 @@ impl ApiProxyService {
                 return err(request.rpc_id, invalid_prompt(&message));
             }
         };
+        drop(pending_files);
+        drop(request.payload.content);
         content.extend(
             files
                 .into_iter()
