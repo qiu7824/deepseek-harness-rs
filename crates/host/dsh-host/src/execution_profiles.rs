@@ -212,6 +212,18 @@ fn file_stamp(path: &str) -> Value {
     std::fs::metadata(path).ok().map(|m| json!({"path":path,"length":m.len(),"modified":m.modified().ok().and_then(|s|s.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_nanos().to_string())})).unwrap_or_else(|| json!({"path":path,"missing":true}))
 }
 fn locate(names: &[&str]) -> Option<String> {
+    if names.iter().any(|name| matches!(*name, "rg" | "rg.exe")) {
+        if let Ok(executable) = std::env::current_exe() {
+            if let Some(root) = executable.parent() {
+                let path =
+                    root.join("runtime/search")
+                        .join(if cfg!(windows) { "rg.exe" } else { "rg" });
+                if path.is_file() {
+                    return Some(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
     // Relative PATH entries could execute repository-controlled files and are not trusted probes.
     for name in names {
         for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())

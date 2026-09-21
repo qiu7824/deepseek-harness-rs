@@ -207,6 +207,11 @@ def main() -> None:
         prefix + f"runtime/node/node{executable_suffix}",
         prefix + "runtime/node/LICENSE",
         prefix + "runtime/node/IDENTITY.json",
+        prefix + f"runtime/search/rg{executable_suffix}",
+        prefix + "runtime/search/COPYING",
+        prefix + "runtime/search/LICENSE-MIT",
+        prefix + "runtime/search/UNLICENSE",
+        prefix + "runtime/search/IDENTITY.json",
     }
     if args.platform == "windows":
         required.add(prefix + "dsh-desktop-controller.exe")
@@ -223,6 +228,13 @@ def main() -> None:
     if missing:
         raise SystemExit(f"archive is missing required entries: {missing}")
     node_lock=json.loads((ROOT/'tools/node_runtime_lock.json').read_text(encoding='utf-8'))
+    from stage_search_runtime import ARCHIVES, VERSION
+    search_identity=json.loads(read_archive_file(archive,prefix+'runtime/search/IDENTITY.json'))
+    suffix,expected=ARCHIVES[(args.platform,args.arch)]
+    if search_identity.get('version')!=VERSION or search_identity.get('archive')!=f'ripgrep-{VERSION}-{suffix}' or search_identity.get('archiveSha256')!=expected:
+        raise SystemExit('ripgrep runtime identity differs from the pinned release')
+    if hashlib.sha256(read_archive_file(archive,prefix+f'runtime/search/rg{executable_suffix}')).hexdigest()!=search_identity.get('binarySha256'):
+        raise SystemExit('ripgrep runtime binary checksum mismatch')
     node_identity=json.loads(read_archive_file(archive,prefix+'runtime/node/IDENTITY.json'))
     if (node_identity.get('version')!=node_lock['version'] or node_lock['archives'].get(node_identity.get('archive'))!=node_identity.get('archiveSha256')):
         raise SystemExit('Node runtime identity differs from the pinned release')

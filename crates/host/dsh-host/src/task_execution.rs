@@ -165,7 +165,7 @@ impl TaskExecution {
             && effect(&execution.name) != EffectKind::ReadOnly
             && self.environment(owner, cwd)? != task.spec.environment_fingerprint
         {
-            return Err("The task execution environment changed; review the contract and its acceptance evidence before continuing".into());
+            return Err("TASK_ENVIRONMENT_CHANGED: 当前权限或运行环境与任务契约不一致。请在本会话的「任务验收」中选择「切换到当前环境」并确认，然后继续；旧验收证据将失效，任务要求和未知效果记录保留。不要重试写入、换工具或重建同一契约；running 状态不表示环境已迁移。".into());
         }
         if execution.name != "workspace_scratch" || execution.arguments["action"] != "promote" {
             return Ok(());
@@ -433,8 +433,10 @@ impl TaskExecution {
         };
         if action == "get" || action == "recover" {
             let task = self.runtime.get(owner, id)?;
+            let environment_changed =
+                self.environment(owner, cwd)? != task.spec.environment_fingerprint;
             return Ok(
-                json!({"recovery":task.recovery(),"blockers":task.completion_blockers(),"task":task}),
+                json!({"environmentChanged":environment_changed,"requiredUserAction":if environment_changed {Some("任务验收 → 切换到当前环境 → 确认；停止重复尝试其他写入工具")} else {None},"recovery":task.recovery(),"blockers":task.completion_blockers(),"task":task}),
             );
         }
         let generated_key = format!("operation-{}", uuid::Uuid::new_v4());
@@ -677,12 +679,19 @@ pub(crate) async fn install(
     })?;
     prompt.section(ctx,dsh_system_prompt::PromptSection{name:"task:acceptance".into(),order:108.0,complete:None,text:dsh_tools::scoped_tool_guidance(ctx,&["task_execution"],"For multi-step implementation or artifact tasks, create task_execution with the user's objective, constraints and explicit content acceptance checks before execution. Do not weaken requirements. Use its durable recovery state after a restart; unknown effects must be inspected before retrying. A successful process alone is not business acceptance. Validate all final inputs and complete the contract before present/update_goal complete. Office package checks only prove structural readability: add actual WPS rendering/layout or manual checks when layout is required. Manual confirmation and resuming cancelled tasks require direct user controls.")});
     let runtime = service.runtime.clone();
+    let environment_service = Arc::downgrade(&service);
     prompt.context(ctx,dsh_system_prompt::PromptContext{name:"task:durable-state".into(),order:82.0,text:dsh_system_prompt::PromptText::Provider(Arc::new(move|context|{
         let Some(owner)=context.field_str("sessionId") else {return String::new()};
         match runtime.latest(owner) {
             Ok(Some(task))=>{
+                let changed = environment_service.upgrade().and_then(|service| {
+                    let store = service.context.get_typed::<Arc<dsh_session::SessionStore>>("sessions",false)?;
+                    let session = store.get(&dsh_session::session_id(owner))?;
+                    let cwd = session.header().cwd.as_deref()?;
+                    service.environment(owner,cwd).ok().map(|current|current!=task.spec.environment_fingerprint)
+                });
                 let summary=json!({"taskId":task.task_id,"revision":task.revision,"state":task.state,"blockers":task.completion_blockers().into_iter().take(12).collect::<Vec<_>>(),"recovery":task.recovery().into_iter().take(8).collect::<Vec<_>>()});
-                format!("Durable task acceptance state (inspect task_execution for full facts; never replay unknown effects): {}",summary.to_string().chars().take(6000).collect::<String>())
+                format!("Durable task acceptance state (inspect task_execution for full facts; never replay unknown effects): {}{}",summary.to_string().chars().take(6000).collect::<String>(),if changed==Some(true) {"\nTASK_ENVIRONMENT_CHANGED: Stop issuing write or execution tools. Ask the user to use 任务验收 → 切换到当前环境 and confirm, or cancel the old task when its objective is no longer relevant. Do not retry with other tools, reinterpret running as migrated, or claim an environment probe changed permissions. Migration preserves requirements and effect history and invalidates old acceptance."} else {""})
             }
             Ok(None)=>String::new(),
             Err(error)=>format!("Durable task state unavailable: {error}; do not infer completion from chat history."),

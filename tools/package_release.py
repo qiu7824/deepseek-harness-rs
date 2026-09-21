@@ -17,6 +17,7 @@ from build_skin_payload import build_skin_payload
 from verify_release_version import verify as verify_release_version
 from free_model_evidence import package_defaults, validated_models
 from stage_node_runtime import stage_node_runtime
+from stage_search_runtime import stage_search_runtime
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
@@ -122,6 +123,7 @@ def main() -> None:
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
     stage_node_runtime(stage, args.platform, arch)
+    stage_search_runtime(stage, args.platform, arch)
 
     launcher_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-launcher")
     core_output = binary_name(args.platform, "deepseek-harness-rs")

@@ -876,6 +876,18 @@ impl ReactLoopAgent {
         if !self.inbox.has_pending() {
             return Ok(false);
         }
+        // Keeping queued input is not permission to resume after the user's
+        // stop request. Only a new wake admitted after cancellation resumes it.
+        if let Phase::Running {
+            abort,
+            wake_requested,
+            ..
+        } = &*self.phase.lock()
+        {
+            if abort.reason() == Some(AgentCancelCause::User) && !*wake_requested {
+                return Ok(false);
+            }
+        }
         // A fresh controller makes a latch set on the old one stale: the live
         // driver claims the queue itself.
         if let Phase::Running {
@@ -1741,7 +1753,7 @@ impl Agent for ReactLoopAgent {
                     wake_requested,
                     ..
                 } => {
-                    if !keep_inbox {
+                    if !keep_inbox || cause == AgentCancelCause::User {
                         *wake_requested = false;
                     }
                     abort.abort_with(cause);

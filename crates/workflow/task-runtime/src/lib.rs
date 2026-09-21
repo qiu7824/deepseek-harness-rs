@@ -302,6 +302,7 @@ impl TaskContract {
                 step.state,
                 StepState::Verified | StepState::Committed | StepState::NotDispatched
             ) && !expected_readonly_failure
+                && !(step.effect == EffectKind::ReadOnly && step.state == StepState::Failed)
                 && !safely_superseded
                 && !recovered_process_failure
             {

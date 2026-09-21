@@ -262,7 +262,7 @@ async fn cancellation_interrupts_a_non_cooperative_post_execute_hook() {
         "post-execute future was not dropped"
     );
     assert_eq!(harness.agent.status(), AgentStatus::Idle);
-    assert_eq!(turn_end_kinds(&harness.agent), ["aborted", "completed"]);
+    assert_eq!(turn_end_kinds(&harness.agent), ["aborted"]);
     let events = harness.agent.session().events();
     let result = events
         .iter()
@@ -277,7 +277,7 @@ async fn cancellation_interrupts_a_non_cooperative_post_execute_hook() {
         notified.load(Ordering::SeqCst),
         "tools/result was not emitted"
     );
-    assert!(harness.agent.inbox().next_step().is_empty());
+    assert!(!harness.agent.inbox().next_step().is_empty());
     let consumed_context = harness
         .agent
         .session()
@@ -285,7 +285,15 @@ async fn cancellation_interrupts_a_non_cooperative_post_execute_hook() {
         .iter()
         .filter(|event| event.type_ == "user/message")
         .any(|event| event.data["content"][0]["text"] == "quick-context");
-    assert!(consumed_context, "deferred context was not consumed");
+    assert!(
+        !consumed_context,
+        "stop must retain context without starting another turn"
+    );
+    harness.agent.followup(message("continue after stop"));
+    tokio::time::timeout(Duration::from_secs(1), harness.agent.when_idle())
+        .await
+        .unwrap();
+    assert_eq!(turn_end_kinds(&harness.agent), ["aborted", "completed"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn failed_readonly_search_does_not_poison_fresh_content_acceptance() {
+    let fixture = Fixture::new();
+    let runtime = fixture.open();
+    runtime.create("owner", "task", spec()).unwrap();
+    let mut search = step("search");
+    search.tool = "grep".into();
+    search.effect = EffectKind::ReadOnly;
+    runtime.prepare("owner", "task", search).unwrap();
+    runtime.dispatch("owner", "task", "search").unwrap();
+    runtime
+        .observe(
+            "owner",
+            "task",
+            "search",
+            "failed-search",
+            false,
+            false,
+            Some(serde_json::json!({"error":"missing executable"})),
+            vec![],
+        )
+        .unwrap();
+    let task = validate_answer(&runtime, br#"{"answer":42}"#);
+    assert_eq!(task.steps[0].state, StepState::Failed);
+    assert!(
+        task.completion_blockers().is_empty(),
+        "{:?}",
+        task.completion_blockers()
+    );
+    runtime
+        .complete(
+            "owner",
+            "task",
+            "done",
+            task.revision,
+            &task.output_identities,
+        )
+        .unwrap();
+}
+
+#[test]
 fn undispatched_write_is_failed_and_migration_preserves_unknown_effects() {
     let fixture = Fixture::new();
     let runtime = fixture.open();

@@ -220,16 +220,28 @@ impl LocalSubprocessRuntime {
         } else {
             vec![String::new()]
         };
-        std::env::split_paths(path)
-            .flat_map(|directory| {
-                extensions.iter().map(move |extension| {
-                    directory
-                        .join(format!("{command}{extension}"))
-                        .to_string_lossy()
-                        .into_owned()
-                })
+        let mut candidates = Vec::new();
+        if matches!(command, "rg" | "rg.exe") {
+            if let Ok(executable) = std::env::current_exe() {
+                if let Some(root) = executable.parent() {
+                    candidates.push(
+                        root.join("runtime/search")
+                            .join(if cfg!(windows) { "rg.exe" } else { "rg" })
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+        candidates.extend(std::env::split_paths(path).flat_map(|directory| {
+            extensions.iter().map(move |extension| {
+                directory
+                    .join(format!("{command}{extension}"))
+                    .to_string_lossy()
+                    .into_owned()
             })
-            .collect()
+        }));
+        candidates
     }
 
     /// A stable abort message for the `signal` predicate (TS

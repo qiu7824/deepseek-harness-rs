@@ -152,9 +152,9 @@ async fn run_command(
     let rg = runtime
         .resolve_executable("rg", None, Some(signal.clone()))
         .await
-        .map_err(|_| {
+        .map_err(|error| {
             err(
-                format!("{tool} could not start its search command (ripgrep launch failed)"),
+                format!("{tool} could not resolve ripgrep: {error}. Repair the installation if runtime/search/rg is missing."),
                 "SEARCH_FAILED",
             )
         })?;
@@ -180,15 +180,15 @@ async fn run_command(
             signal: Some(signal),
             env: None,
         })
-        .map_err(|_| {
+        .map_err(|error| {
             err(
-                format!("{tool} could not start its search command (ripgrep launch failed)"),
+                format!("{tool} could not spawn ripgrep: {error}"),
                 "SEARCH_FAILED",
             )
         })?;
-    let outcome = handle.done().await.map_err(|_| {
+    let outcome = handle.done().await.map_err(|error| {
         err(
-            format!("{tool} could not start its search command (ripgrep launch failed)"),
+            format!("{tool} ripgrep execution failed: {error}"),
             "SEARCH_FAILED",
         )
     })?;
