@@ -7763,6 +7763,7 @@ impl ApiProxyCarrier for ApiProxyService {
             | "memory.learningConfigure"
             | "memory.learningToggle"
             | "memory.learningRemove"
+            | "memory.learningReview"
             | "memory.learningConfirm"
             | "memory.learningPreview" => self.learning_rpc(rpc_id, method, request.payload).await,
             "settings.update" => {

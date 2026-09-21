@@ -40,6 +40,28 @@ fn argv(value: &Value) -> Result<Vec<String>, ToolBodyError> {
                 .to_string(),
         );
     }
+    let executable = program
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    if ["wps", "wps.exe", "et", "et.exe", "wpp", "wpp.exe"].contains(&executable.as_str())
+        && arguments
+            .iter()
+            .skip(1)
+            .any(|v| matches!(v.to_ascii_lowercase().as_str(), "/convert" | "/t"))
+        && arguments
+            .iter()
+            .skip(1)
+            .any(|v| v.eq_ignore_ascii_case("pdf"))
+    {
+        return Err(ToolBodyError::coded(
+            "Use office_render for WPS PDF export and page inspection. These guessed command-line conversion arguments do not establish a supported WPS interface; no process was started.",
+            "OfficeAutomationError",
+            "OFFICE_AUTOMATION_REQUIRED",
+        ));
+    }
     dsh_shell::validate_native_argv(&arguments).map_err(input_error)?;
     Ok(arguments)
 }
@@ -326,6 +348,20 @@ pub(super) fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn guessed_wps_conversion_is_rejected_before_dispatch() {
+        for flag in ["/t", "/convert"] {
+            let error =
+                argv(&json!({"program":"C:/WPS/wps.exe","argv":[flag,"pdf","document.docx"]}))
+                    .err()
+                    .expect("unsupported conversion rejected");
+            assert_eq!(
+                error.info.as_ref().map(|v| v.code.as_str()),
+                Some("OFFICE_AUTOMATION_REQUIRED")
+            );
+        }
+        assert!(argv(&json!({"program":"python","argv":["/convert","pdf"]})).is_ok());
+    }
     #[test]
     fn argv_is_data_and_unknown_profile_refs_fail_closed() {
         let parsed =

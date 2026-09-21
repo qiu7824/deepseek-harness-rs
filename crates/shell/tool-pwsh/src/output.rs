@@ -31,6 +31,12 @@ pub(crate) fn output_text(result: &ShellRunResult) -> String {
             }
         }
     }
+    if result.exit_code.is_some_and(|code| code != 0)
+        && result.stdout.text.is_empty()
+        && result.stderr.text.is_empty()
+    {
+        text.push_str(&format!("\n[process-exit: program={}; code={:?}; the process started and exited without stdout/stderr. This does not establish a sandbox launch failure or a missing dependency. Inspect the executable's supported interface and execution environment before retrying.]",result.executable,result.exit_code));
+    }
     for diagnostic in dsh_shell::application_diagnostics(result.exit_code, &result.stderr.text) {
         text.push_str(&format!(
             "\n[diagnostic: {} (suspected; application stderr, not a confirmed sandbox decision)]",
@@ -63,6 +69,7 @@ pub(crate) fn result_json(result: &ShellRunResult, execution_id: &str) -> Value 
         "exitCode": result.exit_code,
         "signal": result.signal,
         "commandStarted": true,
+        "failureStage": if completion == "succeeded" { Value::Null } else {json!(if result.aborted {"cancelled"} else if result.timed_out {"timeout"} else {"process-exit"})},
         "completion": completion,
         "effects": "possible",
         "retryAdvice": if completion == "succeeded" { "none" } else { "diagnose" },

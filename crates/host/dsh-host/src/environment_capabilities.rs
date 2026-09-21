@@ -564,7 +564,7 @@ impl EnvironmentCapabilities {
         let mut text = String::from(
             "Host environment capabilities: reuse the paths below while valid. Use environment_probe for missing details or refresh after an execution failure; do not repeat shell discovery for known capabilities. These are host diagnostics, not proof of sandbox/remote access. Actual operations must use normal tools and permissions.\n",
         );
-        text.push_str("For build tasks discover the needed toolchain (including cargo) once, then validate it in the selected execution context before starting a long/background build. Access denied means unknown accessibility, not missing installation. Do not rotate shell wrappers, guess installation directories, or change global settings after repeated failures; follow the diagnostic recovery and permission flow. Background started means running, not passed.\n");
+        text.push_str("For build tasks discover the needed toolchain (including cargo) once, then validate it in the selected execution context before starting a long/background build. Access denied means unknown accessibility, not missing installation. Do not rotate shell wrappers, guess installation directories, or change global settings after repeated failures; follow the diagnostic recovery and permission flow. Background started means running, not passed. For Office/PDF conversion and visual inspection use office_render: it runs the fixed WPS host bridge and Windows PDF renderer without Python, ffmpeg or LibreOffice. Do not guess WPS command-line switches or retry COM activation through sandboxed shells.\n");
         for (id, record) in records
             .iter()
             .filter(|(_, record)| record.valid(&environment, now()))

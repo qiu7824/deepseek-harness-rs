@@ -145,7 +145,9 @@ window.__ModuleLoader__.load({
         setDocument(null);setPage(savedPage);setZoom(savedZoom);setError("");setRendering(true);
         loadAsset("pdf.js","__DSH_SIDEBAR_PDF__").then(async runtime=>{
           if(controller.signal.aborted)return;
-          opened=runtime.open(props.customData,controller.signal);
+          const data=props.customData??await loadPdfBytes(props.path,props.scope,controller.signal);
+          if(controller.signal.aborted)return;
+          opened=runtime.open(data,controller.signal);
           const next=await opened.document;if(!controller.signal.aborted){setPage(value=>Math.min(next.numPages,value));setDocument(next);}
         }).catch(reason=>{if(!controller.signal.aborted){setError(reason.message||String(reason));setRendering(false)}});
         return()=>{controller.abort();void opened?.dispose()};

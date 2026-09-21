@@ -6079,6 +6079,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
             "memory.learningToggle":memoryLearningMutationValueSchema,
             "memory.learningRemove":memoryLearningMutationValueSchema,
             "memory.learningConfirm":memoryLearningMutationValueSchema,
+            "memory.learningReview":memoryLearningMutationValueSchema,
             "memory.learningPreview":memoryLearningPreviewValueSchema,
 			"agentPreset.list": agentPresetListValueSchema,
 			"agentPreset.select": agentPresetSelectValueSchema,
@@ -6342,6 +6343,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
                 learningToggle:(payload,signal)=>this.callUnary("memory.learningToggle",payload,signal),
                 learningRemove:(payload,signal)=>this.callUnary("memory.learningRemove",payload,signal),
                 learningConfirm:(payload,signal)=>this.callUnary("memory.learningConfirm",payload,signal),
+                learningReview:(payload,signal)=>this.callUnary("memory.learningReview",payload,signal),
                 learningPreview:(payload,signal)=>this.callUnary("memory.learningPreview",payload,signal)
 			};
 			agentPresets = {

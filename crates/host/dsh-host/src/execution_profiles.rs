@@ -282,6 +282,22 @@ fn validate_preferences(value: &Preferences) -> Result<(), String> {
     Ok(())
 }
 
+/// Prompt identity excludes probe timestamps, UUIDs and cache bookkeeping.
+/// Detailed evidence remains available through environment_validate and settings.
+fn prompt_snapshot(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        for field in [
+            "cache",
+            "shellCandidates",
+            "existingTerminalsRequireRestart",
+            "revision",
+        ] {
+            object.remove(field);
+        }
+    }
+    value
+}
+
 impl ExecutionProfiles {
     pub(super) fn install(
         ctx: &Context,
@@ -1137,7 +1153,7 @@ impl ExecutionProfiles {
             if !weak.upgrade().is_some_and(|t|t.get("environment_validate",assembly.scope.as_ref()).is_some()) {return String::new();}
             let session=assembly.field_str("sessionId");
             let cwd=session.and_then(|id|service.ctx.get_typed::<Arc<dsh_session::SessionStore>>("sessions", false).and_then(|s|s.get(&dsh_session::session_id(id)))).and_then(|s|s.header().cwd.clone()).unwrap_or_else(||std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());
-            match service.snapshot(session,&cwd) {Ok(snapshot)=>format!("Selected execution environment (location is not proof of runtime access; use environment_validate once when needed): {}",snapshot).chars().take(4096).collect(),Err(e)=>format!("Selected execution environment unavailable: {e}")}
+            match service.snapshot(session,&cwd) {Ok(snapshot)=>format!("Selected execution environment (location is not proof of runtime access; use environment_validate once when needed): {}",prompt_snapshot(snapshot)).chars().take(4096).collect(),Err(e)=>format!("Selected execution environment unavailable: {e}")}
         })) });
         Ok(())
     }

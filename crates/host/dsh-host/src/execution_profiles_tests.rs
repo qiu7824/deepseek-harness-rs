@@ -692,3 +692,17 @@ async fn unknown_or_script_like_dependency_never_launches_a_process() {
     );
     assert_eq!(f.runtime.spawns.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn prompt_context_does_not_change_for_repeated_probe_bookkeeping() {
+    let original = json!({"effective":{"contextId":"same","shellPath":"C:/shell.exe"},"permissionMode":"read-only","backendId":"windows-elevated","cache":[{"checkId":"first","checkedAt":1,"cacheHit":false}],"revision":1});
+    let mut refreshed = original.clone();
+    refreshed["cache"] = json!([{"checkId":"second","checkedAt":999,"cacheHit":true}]);
+    refreshed["revision"] = json!(2);
+    assert_eq!(
+        prompt_snapshot(original.clone()),
+        prompt_snapshot(refreshed.clone())
+    );
+    refreshed["backendId"] = json!("windows-unelevated");
+    assert_ne!(prompt_snapshot(original), prompt_snapshot(refreshed));
+}

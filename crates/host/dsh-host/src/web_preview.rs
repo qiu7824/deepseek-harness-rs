@@ -309,7 +309,7 @@ struct PreviewState {
 
 struct PreviewService {
     turn_changes: Option<Arc<crate::turn_changes::TurnChanges>>,
-    office: crate::office_preview::OfficePreview,
+    office: Arc<crate::office_preview::OfficePreview>,
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
     api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
@@ -1379,12 +1379,27 @@ impl PreviewService {
             Ok(input) => input,
             Err(response) => return response,
         };
-        let (_, _, target) =
-            match authorized_path(&self.registry, &session_id(input.session_id), &input.path).await
-            {
-                Ok(path) => path,
-                Err(response) => return response,
+        let session = session_id(input.session_id);
+        let relative = if Path::new(&input.path).is_absolute() {
+            let (_, root) = match workspace_root(&self.registry, &session).await {
+                Ok(v) => v,
+                Err(e) => return e,
             };
+            let path = match tokio::fs::canonicalize(&input.path).await {
+                Ok(v) => v,
+                Err(_) => return error(StatusCode::NOT_FOUND, "file-not-found", "文件不存在"),
+            };
+            match path.strip_prefix(&root) {
+                Ok(p) => p.to_string_lossy().into_owned(),
+                Err(_) => return error(StatusCode::FORBIDDEN, "path-escape", "文档不在当前工作区"),
+            }
+        } else {
+            input.path
+        };
+        let (_, _, target) = match authorized_path(&self.registry, &session, &relative).await {
+            Ok(path) => path,
+            Err(response) => return response,
+        };
         match self.office.export(&target).await {
             Ok((identity, pdf)) => Response::builder()
                 .status(StatusCode::OK)
@@ -1413,7 +1428,7 @@ impl PreviewService {
     ) -> Arc<Self> {
         Arc::new(Self {
             turn_changes: None,
-            office: Default::default(),
+            office: crate::office_preview::shared(),
             registry,
             agents,
             api,

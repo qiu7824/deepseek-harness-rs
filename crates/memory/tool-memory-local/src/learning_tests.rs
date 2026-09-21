@@ -627,3 +627,41 @@ async fn damaged_optional_ledger_is_visible_read_only_and_never_overwritten() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn diagnostic_review_is_durable_non_reusable_and_invalidated_by_new_events() {
+    let directory = root();
+    let store = LearningStore::open(directory.clone()).await.unwrap();
+    let observation = FailureObservation {
+        code: "SHELL_FAILED".into(),
+        ..failure("original")
+    };
+    let entry = store.record_failure(observation).await.unwrap().unwrap();
+    let review = json!({"id":entry.id,"expectedRevision":entry.revision,"cause":"mixed","reviewStatus":"mixed","summary":"Process exit, not launch failure; capability repaired","evidence":["session-1/original","regression:office-render"]});
+    store
+        .invoke("memory.learningReview", review.clone())
+        .await
+        .unwrap();
+    assert!(store.invoke("memory.learningReview", review).await.is_err());
+    let value = store.list(&json!({"limit":1000}));
+    assert_eq!(value["items"][0]["review"]["cause"], "mixed");
+    assert_eq!(value["items"][0]["reviewStale"], false);
+    assert_eq!(store.list(&json!({"cause":"mixed"}))["total"], 1);
+    assert_eq!(store.list(&json!({"cause":"provider"}))["total"], 0);
+    assert_eq!(store.list(&json!({"cause":"unreviewed"}))["total"], 0);
+    assert_eq!(value["items"][0]["disposition"], "diagnostic");
+    drop(store);
+    let store = LearningStore::open(directory).await.unwrap();
+    assert_eq!(
+        store.list(&json!({}))["items"][0]["review"]["evidence"][0],
+        "session-1/original"
+    );
+    store
+        .record_failure(FailureObservation {
+            code: "SHELL_FAILED".into(),
+            ..failure("new-event")
+        })
+        .await
+        .unwrap();
+    assert_eq!(store.list(&json!({}))["items"][0]["reviewStale"], true);
+}

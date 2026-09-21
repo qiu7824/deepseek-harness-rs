@@ -333,7 +333,7 @@ impl NativeBackend {
             .ok()
             .is_some_and(|s| s["initialized"] == true && s["protocolVersion"] == 1);
         if !result.status.success() || !ready {
-            return Err("[SANDBOX_SETUP_REQUIRED] Windows native backend is not initialized for this workspace; use Settings → Windows sandbox → Initialize workspace, or explicitly select the unelevated fallback; command not dispatched".into());
+            return Err("[SANDBOX_SETUP_REQUIRED] Windows native backend is not initialized for this workspace; call environment_initialize for this workspace, then retry validation; Settings → Windows sandbox is also available; command not dispatched".into());
         }
         Ok(())
     }
@@ -396,13 +396,20 @@ mod tests {
 
     #[test]
     fn private_state_overlap_is_rejected_before_state_directory_exists() {
-        let root=std::env::temp_dir().join(format!("dsh-native-overlap-{}",std::process::id()));
-        let workspace=root.join("project");let install=root.join("install");
-        std::fs::create_dir_all(&workspace).unwrap();std::fs::create_dir_all(&install).unwrap();
+        let root = std::env::temp_dir().join(format!("dsh-native-overlap-{}", std::process::id()));
+        let workspace = root.join("project");
+        let install = root.join("install");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
         let mut config:NativeBackend=serde_json::from_value(serde_json::json!({"version":1,"backend":"windows-native","runner":install.join("runner.exe"),"stateDirectory":workspace.join("missing/state"),"sha256":"0".repeat(64),"commandRunnerSha256":"0".repeat(64),"setupSha256":"0".repeat(64)})).unwrap();
-        assert!(config.validate_scope(&workspace.to_string_lossy()).unwrap_err().contains("overlaps"));
+        assert!(
+            config
+                .validate_scope(&workspace.to_string_lossy())
+                .unwrap_err()
+                .contains("overlaps")
+        );
         assert!(!config.state_directory.exists());
-        config.state_directory=root.join("separate/state");
+        config.state_directory = root.join("separate/state");
         config.validate_scope(&workspace.to_string_lossy()).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

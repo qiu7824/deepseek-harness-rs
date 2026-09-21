@@ -46,6 +46,7 @@ fn effect(name: &str, arguments: &Value) -> EffectKind {
             | "read_file"
             | "read_image"
             | "read_video"
+            | "office_render"
             | "list_directory"
             | "glob"
             | "grep"
@@ -680,7 +681,7 @@ pub(crate) async fn install(
             service.action(agent.id().as_str(),cwd,&args,signal,false).await.map_err(ToolBodyError::plain)
         })}),
     })?;
-    prompt.section(ctx,dsh_system_prompt::PromptSection{name:"task:acceptance".into(),order:108.0,complete:None,text:dsh_tools::scoped_tool_guidance(ctx,&["task_execution"],"For multi-step implementation or artifact tasks, create task_execution with the user's objective, constraints and explicit content acceptance checks before execution. Do not weaken requirements. Use its durable recovery state after a restart; unknown effects must be inspected before retrying. A successful process alone is not business acceptance. Validate all final inputs and complete the contract before present/update_goal complete. Office package checks only prove structural readability: add actual WPS rendering/layout or manual checks when layout is required. Manual confirmation and resuming cancelled tasks require direct user controls.")});
+    prompt.section(ctx,dsh_system_prompt::PromptSection{name:"task:acceptance".into(),order:108.0,complete:None,text:dsh_tools::scoped_tool_guidance(ctx,&["task_execution"],"For multi-step implementation or artifact tasks, create task_execution with the user's objective, constraints and explicit content acceptance checks before execution. Do not weaken requirements. Use its durable recovery state after a restart; unknown effects must be inspected before retrying. A successful process alone is not business acceptance. Validate all final inputs and complete the contract before present/update_goal complete. Office package checks only prove structural readability: use office_render to obtain actual WPS PDF page images and inspect all pages when layout is required. A missing Python/ffmpeg/LibreOffice does not block this Windows-native renderer. Never infer missing installation from sandbox denial, or claim visual acceptance from XML, text or package checks. Manual confirmation and resuming cancelled tasks require direct user controls.")});
     let runtime = service.runtime.clone();
     let environment_service = Arc::downgrade(&service);
     prompt.context(ctx,dsh_system_prompt::PromptContext{name:"task:durable-state".into(),order:82.0,text:dsh_system_prompt::PromptText::Provider(Arc::new(move|context|{

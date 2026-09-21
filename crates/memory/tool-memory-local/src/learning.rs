@@ -56,6 +56,18 @@ pub struct ModelOccurrence {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DiagnosticReview {
+    pub cause: String,
+    pub status: String,
+    pub summary: String,
+    pub evidence: Vec<String>,
+    pub reviewed_at: u64,
+    pub occurrences: u64,
+    pub last_seen: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LearningEntry {
     pub id: String,
     pub workspace_key: String,
@@ -93,6 +105,8 @@ pub struct LearningEntry {
     pub last_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<DiagnosticReview>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -315,6 +329,18 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
             "execution-timeout",
             "timeout",
             "区分初始化、命令运行和输出回收阶段；确认命令是否已产生效果，再决定等待、后台执行或重试。",
+            false,
+        ),
+        "OFFICE_AUTOMATION_REQUIRED" => (
+            "office-host-bridge",
+            "capability",
+            "使用 office_render 导出 WPS 文档和实际页面图像；不要猜测 WPS 命令行转换参数或在沙箱 Shell 中重复尝试 COM。",
+            false,
+        ),
+        "OFFICE_RENDER_FAILED" => (
+            "office-rendering",
+            "runtime",
+            "核对原始渲染错误、文档范围与 WPS/Windows PDF 服务；不能用 XML 结构通过代替页面视觉验收。",
             false,
         ),
         "SHELL_FAILED" => (
@@ -855,6 +881,7 @@ impl LearningStore {
                         last_application_outcome: None,
                         last_session_id: None,
                         last_call_id: None,
+                        review: None,
                     });
                     document.entries.len() - 1
                 };
@@ -992,6 +1019,19 @@ impl LearningStore {
                         .get("status")
                         .and_then(Value::as_str)
                         .is_none_or(|status| entry.status == status)
+                    && payload
+                        .get("cause")
+                        .and_then(Value::as_str)
+                        .is_none_or(|cause| {
+                            if cause == "unreviewed" {
+                                entry.review.is_none()
+                            } else {
+                                entry
+                                    .review
+                                    .as_ref()
+                                    .is_some_and(|review| review.cause == cause)
+                            }
+                        })
                     && (query.is_empty()
                         || format!(
                             "{} {} {} {} {}",
@@ -1023,6 +1063,12 @@ impl LearningStore {
                     "experience"
                 });
                 value["reusableRule"] = json!(reusable_rule(entry));
+                if let Some(review) = &entry.review {
+                    value["reviewStale"] = json!(
+                        review.occurrences != entry.occurrences
+                            || review.last_seen != entry.last_seen
+                    );
+                }
                 value
             })
             .collect::<Vec<_>>();
@@ -1078,6 +1124,17 @@ impl LearningStore {
                 }
                 let entry = &mut document.entries[index];
                 match method {
+                    "memory.learningReview" => {
+                        if expected.is_none(){return Err("核对诊断必须提供 expectedRevision".into())}
+                        let cause = payload["cause"].as_str().ok_or("缺少诊断分类")?;
+                        let status = payload["reviewStatus"].as_str().ok_or("缺少核对状态")?;
+                        if !["agent_implementation","agent_usage","environment","provider","task_state","expected_control","mixed","insufficient_evidence"].contains(&cause)
+                            || !["open","fixed","external","historical","unknown","mixed"].contains(&status) { return Err("诊断分类或状态无效".into()); }
+                        let summary = payload["summary"].as_str().map(str::trim).filter(|s|!s.is_empty() && s.chars().count()<=2000).ok_or("结论必须为 1–2000 字符")?;
+                        let values=payload["evidence"].as_array().filter(|v|!v.is_empty() && v.len()<=16).ok_or("需要 1–16 条证据定位")?;
+                        let evidence=values.iter().map(|v|v.as_str().filter(|s|!s.is_empty() && s.chars().count()<=512 && !s.chars().any(char::is_control)).map(str::to_string).ok_or("证据定位无效")).collect::<Result<Vec<_>,_>>()?;
+                        entry.review=Some(DiagnosticReview{cause:cause.into(),status:status.into(),summary:summary.into(),evidence,reviewed_at:now(),occurrences:entry.occurrences,last_seen:entry.last_seen});
+                    }
                     "memory.learningToggle" => {
                         entry.enabled = payload
                             .get("enabled")

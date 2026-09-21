@@ -58,3 +58,22 @@ pub(super) fn register(
         }),
     })
 }
+
+#[cfg(windows)]
+pub(super) fn install_tool(ctx: &cordis::Context, home: PathBuf) -> Result<(), String> {
+    use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRuntime};
+    let tools = ctx
+        .get_typed::<Arc<ToolRuntime>>("tools", false)
+        .ok_or("tools unavailable")?;
+    tools.register(ctx,ToolDefinition{
+        name:"environment_initialize".into(),description:"Initialize the configured Windows sandbox for this session's workspace when SANDBOX_SETUP_REQUIRED is reported. Uses only the installed verified helper and the existing selected implementation/network policy. No arbitrary commands or outside workspace can be supplied. Windows may request administrator authorization for dedicated-account setup. After success retry environment_validate; do not ask the user to navigate settings for routine project initialization.".into(),
+        parameters:json!({"type":"object","properties":{},"additionalProperties":false}),output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,v|Ok(vec![dsh_llm::ContentBlock::Text{text:v.to_string()}])),presentation_meta:None},timeout_ms:Some(900000),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:None,present_result:None,
+        execute:Arc::new(move |_,run|{let home=home.clone();let agent=run.agent.clone();Box::pin(async move{
+            let agent=agent.ok_or_else(||ToolBodyError::plain("Initialization requires a session"))?;
+            let workspace=agent.session().header().cwd.clone().ok_or_else(||ToolBodyError::plain("Workspace unavailable"))?;
+            let current=dsh_sandbox_local::windows_backend_configuration(&home).map_err(ToolBodyError::plain)?;
+            dsh_sandbox_local::windows_backend_manage(home,json!({"action":"setup","workspace":workspace,"implementation":current["implementation"],"network":current["network"],"expectedRevision":current["revision"]})).await.map_err(|e|ToolBodyError::coded(e,"SandboxSetupError","SANDBOX_SETUP_FAILED"))
+        })})
+    })?;
+    Ok(())
+}

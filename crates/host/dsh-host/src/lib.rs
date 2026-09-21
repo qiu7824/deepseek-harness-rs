@@ -42,6 +42,7 @@ mod memory_import;
 mod model_capabilities;
 mod model_discovery;
 mod office_preview;
+mod office_render;
 mod open_in_app;
 mod plugin_manager;
 mod productivity;
@@ -1675,10 +1676,11 @@ async fn bridge_api_request(
         })
         .collect();
     #[cfg(windows)]
-    let collect_after_response = bytes.len() >= 256 * 1024 || matches!(
-        parts.uri.path(),
-        "/api/session.history" | "/api/session.models"
-    );
+    let collect_after_response = bytes.len() >= 256 * 1024
+        || matches!(
+            parts.uri.path(),
+            "/api/session.history" | "/api/session.models"
+        );
     let response = handler
         .handle(CarrierRequest {
             method: parts.method,
@@ -3335,6 +3337,9 @@ fn compose_host_in_fiber(
         image_generation::ImageGeneration::install(ctx, task_models.clone(), account_auth.clone())?;
     video_reader::install(ctx, settings.clone())?;
     resources.install_tools(ctx, &tools, &system_prompt)?;
+    office_render::install(ctx, resources.clone())?;
+    #[cfg(windows)]
+    windows_sandbox_http::install_tool(ctx, data_root.clone())?;
     dsh_session_reference::SessionReferenceResolver::install(
         ctx,
         query.clone(),

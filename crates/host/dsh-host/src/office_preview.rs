@@ -3,6 +3,13 @@ use sha2::{Digest, Sha256};
 use std::{collections::VecDeque, path::Path, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, Semaphore};
 
+pub(crate) fn shared() -> Arc<OfficePreview> {
+    static SERVICE: std::sync::OnceLock<Arc<OfficePreview>> = std::sync::OnceLock::new();
+    SERVICE
+        .get_or_init(|| Arc::new(OfficePreview::default()))
+        .clone()
+}
+
 pub(crate) struct OfficePreview {
     queue: Semaphore,
     worker: Mutex<()>,

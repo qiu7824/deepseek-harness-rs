@@ -73,6 +73,8 @@ impl Default for DiscoveryConfig {
                 "tool_describe",
                 "environment_probe",
                 "environment_validate",
+                "environment_initialize",
+                "office_render",
                 "execute_native",
                 "execute_steps",
                 "execute_script",
