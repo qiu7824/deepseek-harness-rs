@@ -24,10 +24,11 @@ window.__ModuleLoader__ = { load: definition => {
     return result;
   } });
 } };
-const directory = path.resolve(__dirname, '../../web/dist/plugins');
+const directory = process.env.DSH_RUNTIME_PLUGINS_DIR || path.resolve(__dirname, '../../web/dist/plugins');
+const runtimeFile = name => fs.existsSync(path.join(directory, name)) ? path.join(directory, name) : path.resolve(__dirname, '../../web/dist/plugins', name);
 const source = fs.readFileSync(path.join(directory, 'ui-subagent.js'), 'utf8').replace('return module.exports;', 'exports.test = { childProgress, subagentToolModel, SubagentToolRow, SubagentCatalogAction, zh, en }; return module.exports;');
 vm.runInNewContext(source, { window, document, Node, console, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask });
-vm.runInNewContext(fs.readFileSync(path.join(directory, 'ui-skill.js'), 'utf8').replace('return module.exports;', 'exports.test = { SkillRow, zh }; return module.exports;'), { window, document, console });
+vm.runInNewContext(fs.readFileSync(runtimeFile('ui-skill.js'), 'utf8').replace('return module.exports;', 'exports.test = { SkillRow, zh }; return module.exports;'), { window, document, console });
 const plugin = plugins['@deepseek-ai/dsh-client-ui-subagent'];
 const skill = plugins['@deepseek-ai/dsh-client-ui-skill'];
 const { childProgress, subagentToolModel, SubagentToolRow, SubagentCatalogAction, zh, en } = plugin.test;
@@ -65,6 +66,9 @@ const settle = () => React.act(async () => { await new Promise(resolve => setTim
   await settle();
   assert.equal(document.querySelector('[data-tool=subagent]').dataset.state, 'running');
   await React.act(async () => document.querySelector('.dsh-subagent-tool-trigger').click());
+  assert.deepEqual(JSON.parse(JSON.stringify(addresses[0])), success.address, 'primary task row opens the exact child without expansion');
+  assert.equal(document.querySelector('.dsh-subagent-tool-body'), null);
+  await React.act(async () => document.querySelector('.dsh-subagent-tool-expand').click());
   assert.match(document.body.textContent, /正在检查独立模块/);
   await React.act(async () => [...document.querySelectorAll('button')].find(button => button.textContent === '打开子任务').click());
   assert.deepEqual(JSON.parse(JSON.stringify(addresses[0])), success.address, 'navigation uses the exact returned child id');

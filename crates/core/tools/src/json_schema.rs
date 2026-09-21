@@ -329,8 +329,10 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
 
                 let has_type = has_own(node, "type");
                 let has_one_of = has_own(node, "oneOf");
-                if has_type && has_one_of {
-                    violations.push(format!("{path} cannot declare both type and oneOf"));
+                if has_type && has_one_of && node["type"].as_str() != Some("object") {
+                    violations.push(format!(
+                        "{path} only type object may be combined with oneOf"
+                    ));
                     continue;
                 }
                 if !has_type && !has_one_of {
@@ -344,10 +346,12 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
 
                 if has_one_of {
                     let one_of = &node["oneOf"];
-                    tasks.push(SchemaTask::OneOfTail {
-                        node,
-                        path: path.clone(),
-                    });
+                    if !has_type {
+                        tasks.push(SchemaTask::OneOfTail {
+                            node,
+                            path: path.clone(),
+                        });
+                    }
                     let valid = is_plain_json_array(one_of)
                         && one_of
                             .as_array()
@@ -365,7 +369,9 @@ fn check_schema_node(root: &JsonValue, root_path: &str, violations: &mut Vec<Str
                             });
                         }
                     }
-                    continue;
+                    if !has_type {
+                        continue;
+                    }
                 }
 
                 let type_value = &node["type"];
@@ -616,6 +622,7 @@ struct ValueFrame<'a> {
     violations: Vec<String>,
     tail_violations: Vec<String>,
     matches: usize,
+    one_of_checked: bool,
 }
 
 /// Validate one scalar node after its primitive type check.
@@ -675,6 +682,7 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
         violations: Vec::new(),
         tail_violations: Vec::new(),
         matches: 0,
+        one_of_checked: false,
     }];
     let mut root_result: Option<Vec<String>> = None;
 
@@ -697,6 +705,7 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                     violations: Vec::new(),
                     tail_violations: Vec::new(),
                     matches: 0,
+                    one_of_checked: false,
                 });
                 continue;
             }
@@ -710,6 +719,15 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                         frame.matches
                     )]
                 };
+                if frame.node.get("type").and_then(JsonValue::as_str) == Some("object") {
+                    // JSON Schema siblings intersect. Check the object fields
+                    // after the union, retaining both sets of violations.
+                    frame.violations.extend(result);
+                    frame.one_of_checked = true;
+                    frame.phase = FramePhase::Start;
+                    frame.kind = None;
+                    continue;
+                }
                 finish_frame(&mut frames, &mut root_result, result);
                 continue;
             }
@@ -727,7 +745,7 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
             .and_then(JsonValue::as_str)
             .map(str::to_string);
         let one_of = frame.node.get("oneOf");
-        if let Some(one_of) = one_of {
+        if let Some(one_of) = one_of.filter(|_| !frame.one_of_checked) {
             frame.kind = Some(FrameKind::OneOf);
             frame.children = one_of
                 .as_array()
@@ -817,7 +835,7 @@ fn check_value(schema: &JsonValue, value: &JsonValue, path: &str) -> Vec<String>
                 frame.kind = Some(FrameKind::Object);
                 frame.children = children;
                 frame.child_index = 0;
-                frame.violations = violations;
+                frame.violations.extend(violations);
                 frame.tail_violations = tail_violations;
                 frame.phase = FramePhase::Children;
             }
@@ -921,6 +939,98 @@ pub fn validate_json_schema_value(
     path: &str,
 ) -> Vec<String> {
     check_value(schema, value, path)
+}
+
+#[cfg(test)]
+mod object_union_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn action_schema() -> JsonValue {
+        json!({
+            "type":"object", "required":["action","revision"], "additionalProperties":false,
+            "properties":{
+                "action":{"type":"string"}, "revision":{"type":"integer","minimum":0},
+                "id":{"oneOf":[{"type":"string"},{"type":"null"}]}
+            },
+            "oneOf":[
+                {"type":"object","properties":{"action":{"type":"string","const":"list"}},"required":["action"]},
+                {"type":"object","properties":{"action":{"type":"string","const":"read"},"id":{}},"required":["action","id"]}
+            ]
+        })
+    }
+
+    #[test]
+    fn object_siblings_and_exact_one_branch_are_both_enforced() {
+        let schema = action_schema();
+        assert_object_json_schema(&schema).unwrap();
+        for good in [
+            json!({"action":"list","revision":0}),
+            json!({"action":"read","revision":1,"id":null}),
+            json!({"action":"read","revision":1,"id":"a"}),
+        ] {
+            assert!(
+                validate_json_schema_value(&schema, &good, "arguments").is_empty(),
+                "{good}"
+            );
+        }
+        for bad in [
+            json!({"action":"read","revision":0}),
+            json!({"action":"list"}),
+            json!({"action":"read","revision":1,"id":2}),
+            json!({"action":"list","revision":-1}),
+            json!({"action":"list","revision":0,"extra":true}),
+            json!({"action":"unknown","revision":0}),
+            json!(null),
+        ] {
+            assert!(
+                !validate_json_schema_value(&schema, &bad, "arguments").is_empty(),
+                "{bad}"
+            );
+        }
+        let both = validate_json_schema_value(
+            &schema,
+            &json!({"action":"read","revision":-1}),
+            "arguments",
+        );
+        assert!(both.iter().any(|message| message.contains("oneOf")));
+        assert!(both.iter().any(|message| message.contains("revision")));
+        let nested =
+            json!({"type":"object","properties":{"operation":schema},"required":["operation"]});
+        assert_object_json_schema(&nested).unwrap();
+        assert!(
+            validate_json_schema_value(
+                &nested,
+                &json!({"operation":{"action":"read","revision":1}}),
+                "arguments"
+            )
+            .iter()
+            .any(|message| message.contains("arguments.operation"))
+        );
+    }
+
+    #[test]
+    fn typed_object_union_still_rejects_ambiguous_branches_and_invalid_schema() {
+        let ambiguous = json!({"type":"object","oneOf":[{"type":"object"},{"type":"object"}]});
+        assert_object_json_schema(&ambiguous).unwrap();
+        assert!(
+            validate_json_schema_value(&ambiguous, &json!({}), "arguments")[0]
+                .contains("matched 2")
+        );
+        let scalar_branches =
+            json!({"type":"object","oneOf":[{"type":"string"},{"type":"integer"}]});
+        assert_object_json_schema(&scalar_branches).unwrap();
+        assert!(!validate_json_schema_value(&scalar_branches, &json!(1), "arguments").is_empty());
+        for bad in [
+            json!({"type":"object","oneOf":[{"type":"object"}]}),
+            json!({"type":"object","oneOf":[{"type":"object"},{"type":"array"}],"properties":{"x":{"uniqueItems":true}}}),
+            json!({"type":"object","oneOf":[{"type":"object"},{"type":"array"}],"required":["undeclared"]}),
+            json!({"type":"object","oneOf":[{"type":"object"},{"type":"array"}],"items":{"type":"string"}}),
+            json!({"type":"string","oneOf":[{"type":"string"},{"type":"null"}]}),
+        ] {
+            assert!(assert_supported_json_schema(&bad).is_err(), "{bad}");
+        }
+    }
 }
 
 #[cfg(test)]

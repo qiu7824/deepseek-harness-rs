@@ -135,6 +135,21 @@ pub trait FileSystem: Send + Sync + 'static {
         max_bytes: u64,
     ) -> Result<Vec<u8>, FsError>;
 
+    /// Stream bounded regular-file bytes in the provider's execution world.
+    /// Production providers should read incrementally and release their handle
+    /// when this stream is dropped. The compatibility default still buffers up
+    /// to `max_bytes`; it does not promise constant-memory behavior for custom
+    /// providers that implement only `read_bytes`.
+    async fn stream_bytes(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+        max_bytes: u64,
+    ) -> Result<futures::stream::BoxStream<'static, Result<Vec<u8>, FsError>>, FsError> {
+        let bytes = self.read_bytes(target, signal, max_bytes).await?;
+        Ok(Box::pin(futures::stream::once(async move { Ok(bytes) })))
+    }
+
     /// List direct children of a directory in stable name order. Returns
     /// resolved child targets plus cheap metadata only; never reads file
     /// contents.

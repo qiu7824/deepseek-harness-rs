@@ -7014,6 +7014,52 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		* @returns The browser-provided canonical zone.
 		* @throws when the runtime cannot provide a non-empty zone.
 		*/
+		const activePromptRequests = new Map();
+		function promptRequestScope(address) { return JSON.stringify([address.parentSessionId ?? null, address.childSessionId ?? address.sessionId]); }
+		function trackPromptRequest(address, requestId = globalThis.crypto?.randomUUID?.() ?? `prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`) {
+			const key = promptRequestScope(address), entries = activePromptRequests.get(key) ?? new Map();
+			activePromptRequests.set(key, entries);
+			const entry = entries.get(requestId) ?? { references: 0, cancelled: false };
+			entries.set(requestId, entry); entry.references++; let released = false;
+			return { requestId, cancelled: () => entry.cancelled, release() { if (released) return; released = true; if (--entry.references === 0) entries.delete(requestId); if (!entries.size) activePromptRequests.delete(key); } };
+		}
+		function pendingPromptRequestIds(address) { return [...(activePromptRequests.get(promptRequestScope(address))?.keys() ?? [])]; }
+		function cancelPromptRequests(address, ids) { const entries = activePromptRequests.get(promptRequestScope(address)); for (const id of ids) { const entry = entries?.get(id); if (entry) entry.cancelled = true; } }
+
+		const activePromptStops = new Map();
+		function pendingPromptStop(address) { return activePromptStops.get(promptRequestScope(address))?.promise; }
+		/** Serialize Stop receipts per address and include identities added by another view while waiting. */
+		function stopPromptRequests(address, requestIds, dispatch) {
+			cancelPromptRequests(address, requestIds);
+			const key = promptRequestScope(address);
+			let state = activePromptStops.get(key);
+			if (state) {
+				for (const id of requestIds) if (!state.sent.has(id)) state.pending.add(id);
+				return state.promise;
+			}
+			let resolve;
+			state = { pending: new Set(requestIds), sent: new Set(), promise: new Promise(done => { resolve = done; }) };
+			activePromptStops.set(key, state);
+			void (async () => {
+				let result = { ok: true }, first = true;
+				while (first || state.pending.size) {
+					first = false;
+					const batch = [...state.pending].slice(0, 64);
+					for (const id of batch) { state.pending.delete(id); state.sent.add(id); }
+					try {
+						const reply = await dispatch(batch);
+						if (!reply.ok && result.ok) result = reply;
+					} catch (error) {
+						if (result.ok) result = { ok: false, error: { code: typeof error?.code === 'string' ? error.code : 'transport-error', message: typeof error?.message === 'string' ? error.message : String(error), details: error?.details ?? {} } };
+					}
+				}
+				// Remove the barrier before resolving; there is no gap in which new IDs can join a completed drain.
+				activePromptStops.delete(key);
+				resolve(result);
+			})();
+			return state.promise;
+		}
+
 		function resolvedClientTimeZone() {
 			const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
 			if (typeof timeZone !== "string" || timeZone.length === 0) throw new Error("browser time zone is unavailable");
@@ -7241,6 +7287,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			queueMirror = new SessionQueueMirror();
 			promptInFlight = [];
 			promptRetry = null;
+			promptCancelGeneration = 0;
+			cancelling = null;
+			stopRetryIds = [];
 			/** Session-owned business Context engine over the contiguous raw window. */
 			conversation;
 			running = false;
@@ -7342,23 +7391,24 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @param mode - queue appends after the current turn; steer interrupts it.
 			* @returns the prompt result (also mirrored into promptError on failure).
 			*/
-			prompt(content, mode) {
+			prompt(content, mode, reservedRequestId) {
 				const same = attempt => attempt.mode === mode && attempt.content.length === content.length && attempt.content.every((part, index) => {
                     const other = content[index], keys = Object.keys(part);
                     return keys.length === Object.keys(other).length && keys.every(key => part[key] === other[key]);
                 });
-				const active = this.promptInFlight.find(same);
+				const active = this.promptInFlight.find(attempt => attempt.cancelGeneration === this.promptCancelGeneration && same(attempt));
 				if (active) return active.promise;
 				const retry = this.promptRetry;
-				const requestId = retry && same(retry) ? retry.requestId : globalThis.crypto?.randomUUID?.() ?? `prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-				const attempt = { content, mode, requestId };
+				const requestId = reservedRequestId ?? (retry && same(retry) ? retry.requestId : globalThis.crypto?.randomUUID?.() ?? `prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+				const attempt = { content, mode, requestId, cancelGeneration: this.promptCancelGeneration, ticket: trackPromptRequest(this.address ?? { sessionId: this.sessionId }, requestId) };
 				this.promptRetry = null;
 				this.queueMirror.begin(requestId, content);
 				this.notifier.markDirty();
-				attempt.promise = this.sendPrompt(content, mode, requestId).then(result => {
-					if (!this.disposed && !result.ok && ["internal", "transport-error"].includes(result.error?.code)) this.promptRetry = attempt;
+				attempt.promise = this.sendPrompt(content, mode, requestId, attempt.ticket).then(result => {
+					if (!this.disposed && !attempt.ticket.cancelled() && attempt.cancelGeneration === this.promptCancelGeneration && !result.ok && ["internal", "transport-error"].includes(result.error?.code)) this.promptRetry = attempt;
 					return result;
 				}).finally(() => {
+					attempt.ticket.release();
 					this.promptInFlight = this.promptInFlight.filter(item => item !== attempt);
 					this.queueMirror.finish(requestId);
 					this.notifier.markDirty();
@@ -7366,7 +7416,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.promptInFlight.push(attempt);
 				return attempt.promise;
 			}
-			async sendPrompt(content, mode, requestId) {
+			async sendPrompt(content, mode, requestId, ticket) {
+				const cancelGeneration = this.promptCancelGeneration;
 				this.promptError = null;
 				this.lastAgentError = null;
 				this.promptAttempted = true;
@@ -7376,6 +7427,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				let result;
 				try {
 					await this.returnLatest();
+					let stopping;
+					while ((stopping = pendingPromptStop(this.address ?? { sessionId: this.sessionId }))) {
+						const stopped = await stopping;
+						if (!stopped.ok) return stopped;
+					}
+					if (this.disposed || cancelGeneration !== this.promptCancelGeneration || ticket?.cancelled()) return { ok: false, error: { code: "cancelled", message: "Message submission was stopped before dispatch", details: {} } };
 					runningRevisionAtStart = this.runningRevision;
 					if (this.address === void 0) result = (await this.api.sessions.prompt({
 						sessionId: this.sessionId,
@@ -7408,6 +7465,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				} catch (error) {
 					result = transportError(error);
 				}
+				if (this.disposed || cancelGeneration !== this.promptCancelGeneration || ticket?.cancelled()) return result;
 				if (!result.ok) {
 					this.firstPromptPendingTurn = false;
 					this.promptError = {
@@ -7473,7 +7531,29 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* defensive).
 			* @returns the cancel result.
 			*/
-			async cancel() {
+			cancel() {
+				this.promptCancelGeneration++;
+				this.promptRetry = null;
+				this.firstPromptPendingTurn = false;
+				const scope = this.address ?? { sessionId: this.sessionId };
+				const ids = [...new Set([...(this.stopRetryIds ?? []), ...pendingPromptRequestIds(scope), ...this.promptInFlight.map(attempt => attempt.requestId)])];
+				cancelPromptRequests(scope, ids);
+				for (const id of ids) this.queueMirror.finish(id);
+				this.notifier.markDirty();
+				this.stopRetryIds = ids;
+				const stopping = stopPromptRequests(scope, ids, batch => this.cancelRequests(batch));
+				const operation = stopping.then(result => {
+					if (result.ok) this.stopRetryIds = (this.stopRetryIds ?? []).filter(id => !ids.includes(id));
+					else {
+						this.promptError = { op: "stop", error: result.error };
+						this.notifier.markDirty();
+					}
+					return result;
+				}).finally(() => { if (this.cancelling === operation) this.cancelling = null; });
+				this.cancelling = operation;
+				return operation;
+			}
+			async cancelRequests(requestIds) {
 				const address = this.address;
 				if (address !== void 0 && address.mode === "one-shot") {
 					const result = {
@@ -7493,7 +7573,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				}
 				let result;
 				try {
-					result = address !== void 0 ? (await this.api.subagents.interrupt(address)).result : (await this.api.sessions.cancel({ sessionId: this.sessionId })).result;
+					const batches = requestIds.length ? Array.from({ length: Math.ceil(requestIds.length / 64) }, (_, index) => requestIds.slice(index * 64, index * 64 + 64)) : [[]];
+					for (const ids of batches) {
+						result = address !== void 0 ? (await this.api.subagents.interrupt({ ...address, requestIds: ids })).result : (await this.api.sessions.cancel({ sessionId: this.sessionId, requestIds: ids })).result;
+						if (!result.ok) break;
+					}
 				} catch (error) {
 					result = transportError(error);
 				}
@@ -8279,6 +8363,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* on select and session-removed, re-armed by the next completion).
 			*/
 			completedNotifications = /* @__PURE__ */ new Set();
+			runOutcomes = /* @__PURE__ */ new Map();
 			/** Last-observed running bits per session; the true→false edge here arms {@link completedNotifications}. */
 			prevRunning = /* @__PURE__ */ new Map();
 			/** Per-session projection value stores, retained independently of instance arrival (the
@@ -8800,6 +8885,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			handleMuxEnvelope(envelope) {
 				const frame = envelope.payload;
 				if (frame.type === "stream/error") return;
+				if (frame.type === "session/event" && frame.event.type === "turn/start") this.runOutcomes?.delete(frame.sessionId);
+				if (frame.type === "session/event" && frame.event.type === "turn/end") {
+					(this.runOutcomes ??= new Map()).set(frame.sessionId, frame.event.data?.reason?.kind ?? "unknown");
+					this.notifier.markDirty();
+				}
 				if (frame.type === "session/event" && frame.event.type === "user/message" && frame.event.data.source.kind === "user") this.recordMutation({
 					kind: "activity",
 					sessionId: frame.sessionId,
@@ -8881,6 +8971,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						if (frame.parentSessionId !== void 0 && (this.selected === frame.parentSessionId || this.openCatalogs.has(frame.parentSessionId))) this.scheduleCatalogRefresh(frame.parentSessionId);
 						return;
 					case "host/session-removed": {
+						this.runOutcomes?.delete(frame.sessionId);
 						const durableSubagent = this.summaries.find((candidate) => candidate.sessionId === frame.sessionId)?.origin === "subagent" || this.addresses.has(frame.sessionId);
 						this.recordMutation(durableSubagent ? {
 							kind: "status",
@@ -8914,6 +9005,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						return;
 					}
 					case "host/session-status":
+						if (frame.running) this.runOutcomes?.delete(frame.sessionId);
 						this.recordMutation({
 							kind: "status",
 							sessionId: frame.sessionId,
@@ -8923,6 +9015,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						this.updateCatalogActivity(frame.sessionId, frame.running);
 						return;
 					case "host/agent-error":
+						(this.runOutcomes ??= new Map()).set(frame.sessionId, "error");
+						this.notifier.markDirty();
 						this.sessions.get(frame.sessionId)?.handleAgentError(frame.message);
 						return;
 					default: return;
@@ -8938,6 +9032,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* request with its live rpcId.
 			*/
 			handleDisconnected() {
+				this.runOutcomes?.clear();
 				let activityChanged = false;
 				for (const session of this.sessions.values()) {
 					if (session.running) activityChanged = true;
@@ -9065,6 +9160,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				}
 				for (const id of this.prevRunning.keys()) if (!seen.has(id)) this.prevRunning.delete(id);
 				for (const id of this.completedNotifications) if (!seen.has(id)) this.completedNotifications.delete(id);
+				for (const id of this.runOutcomes?.keys() ?? []) if (!seen.has(id)) this.runOutcomes.delete(id);
 			}
 			buildListSnapshot() {
                 // A catalog refresh is not a deletion notification. Keep the selected
@@ -9077,6 +9173,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					const projectionValues = projectionStore?.values();
 					return {
 						...summary,
+						lastTurnReason: this.runOutcomes?.get(summary.sessionId) ?? projectionValues?.sessionListMetadata?.lastTurnReason,
 						...typeof title === "string" && title !== "" ? { title } : {},
 						...projectionValues === void 0 ? {} : { projectionValues }
 					};
@@ -9089,7 +9186,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				}
 				const items = flattenLineage(merged, pendingInteractions, this.completedNotifications).map((entry) => {
 					const prev = this.entryCache.get(entry.sessionId);
-					if (prev !== void 0 && prev.updatedAt === entry.updatedAt && prev.running === entry.running && prev.blank === entry.blank && prev.agentPreset === entry.agentPreset && prev.parentSessionId === entry.parentSessionId && prev.cwd === entry.cwd && prev.origin === entry.origin && prev.title === entry.title && prev.depth === entry.depth && prev.pendingInteraction === entry.pendingInteraction && prev.projectionValues === entry.projectionValues && prev.completed === entry.completed) return prev;
+					if (prev !== void 0 && prev.updatedAt === entry.updatedAt && prev.running === entry.running && prev.blank === entry.blank && prev.agentPreset === entry.agentPreset && prev.parentSessionId === entry.parentSessionId && prev.cwd === entry.cwd && prev.origin === entry.origin && prev.title === entry.title && prev.depth === entry.depth && prev.pendingInteraction === entry.pendingInteraction && prev.projectionValues === entry.projectionValues && prev.completed === entry.completed && prev.lastTurnReason === entry.lastTurnReason) return prev;
 					this.entryCache.set(entry.sessionId, entry);
 					return entry;
 				});
@@ -9749,6 +9846,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						displayTitle: displayTitleOf(entry.title, entry.cwd, entry.sessionId),
 						running: entry.running,
 						...entry.completed ? { completed: true } : {},
+						...entry.lastTurnReason === void 0 ? {} : { lastTurnReason: entry.lastTurnReason },
 						blank: entry.blank,
 						updatedAt: entry.updatedAt,
 						...entry.pendingInteraction === void 0 ? {} : { pendingInteraction: entry.pendingInteraction },
@@ -11082,6 +11180,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		exports.conversationContextKey = conversationContextKey;
 		exports.createScope = createScope;
 		exports.createSnapshotStore = createSnapshotStore;
+		exports.trackPromptRequest = trackPromptRequest;
+		exports.pendingPromptRequestIds = pendingPromptRequestIds;
+		exports.cancelPromptRequests = cancelPromptRequests;
+		exports.pendingPromptStop = pendingPromptStop;
+		exports.stopPromptRequests = stopPromptRequests;
 		exports.defineStore = defineStore;
 		exports.displayFailureMessage = displayFailureMessage;
 		exports.emptyAssistantBlock = emptyAssistantBlock;

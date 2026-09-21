@@ -5,6 +5,7 @@ mod image;
 mod index;
 pub mod invariant;
 mod request_image;
+mod request_resize;
 pub mod store;
 
 pub use index::*;

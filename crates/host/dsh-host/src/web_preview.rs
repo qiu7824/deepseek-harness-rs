@@ -1401,13 +1401,27 @@ impl PreviewService {
             Err(response) => return response,
         };
         match self.office.export(&target).await {
-            Ok((identity, pdf)) => Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/pdf")
-                .header(header::CACHE_CONTROL, "no-store")
-                .header("x-dsh-source-sha256", identity)
-                .body(Body::from(pdf.as_ref().clone()))
-                .expect("Office preview response"),
+            Ok((identity, pdf)) => {
+                let bytes = pdf.bytes;
+                let body = match pdf.body().await {
+                    Ok(body) => body,
+                    Err(message) => {
+                        return error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "office-preview-failed",
+                            message,
+                        );
+                    }
+                };
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/pdf")
+                    .header(header::CONTENT_LENGTH, bytes)
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .header("x-dsh-source-sha256", identity)
+                    .body(body)
+                    .expect("Office preview response")
+            }
             Err(message) => error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "office-preview-failed",

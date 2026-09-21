@@ -17,9 +17,10 @@ use dsh_host_cli::{
 
 #[cfg(windows)]
 fn configure_allocator() {
-    // mimalloc v2 stable enum positions (mimalloc.h): arena eager commit = 4,
-    // purge decommits = 5, purge delay = 15. Set these at the single-threaded
-    // process boundary before Tokio creates workers.
+    // mimalloc v2 stable enum positions (mimalloc.h). Commit pages when
+    // allocated rather than charging each worker's mostly empty segment.
+    // Set these at the single-threaded boundary before Tokio creates workers.
+    const EAGER_COMMIT: libmimalloc_sys::mi_option_t = 3;
     const ARENA_EAGER_COMMIT: libmimalloc_sys::mi_option_t = 4;
     const PURGE_DECOMMITS: libmimalloc_sys::mi_option_t = 5;
     const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
@@ -28,6 +29,7 @@ fn configure_allocator() {
     // SAFETY: the mimalloc option API is not thread-safe; main calls this
     // before any application thread or async runtime exists.
     unsafe {
+        libmimalloc_sys::mi_option_set(EAGER_COMMIT, 0);
         libmimalloc_sys::mi_option_set(ARENA_EAGER_COMMIT, 0);
         libmimalloc_sys::mi_option_set(PURGE_DECOMMITS, 1);
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);

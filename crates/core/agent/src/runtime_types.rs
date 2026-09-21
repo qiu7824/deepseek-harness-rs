@@ -162,6 +162,24 @@ pub enum SessionStartSource {
     Compact,
 }
 
+/// A synchronous control operation could not exclusively observe a quiescent agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentControlBusy {
+    /// The implementation does not offer an atomic idle-control boundary.
+    Unavailable,
+    /// Another mutation or control operation currently owns the boundary.
+    Contended,
+    /// A turn, maintenance task, or driver handoff is still active.
+    Active,
+    /// Durable queued or steering input has not been consumed.
+    PendingInput,
+}
+
+/// Holds the agent's idle-control boundary for a short synchronous operation.
+/// Keep this guard in a local block and release it before awaiting or invoking
+/// agent mutations. External effects caused by the commit belong after it.
+pub trait AgentControlGuard {}
+
 /// Public live-agent handle.
 pub trait Agent: Send + Sync + 'static {
     /// The single identity shared with [`Agent::session`].
@@ -174,6 +192,12 @@ pub trait Agent: Send + Sync + 'static {
     fn inbox(&self) -> &Inbox;
     /// The current lifecycle state.
     fn status(&self) -> AgentStatus;
+    /// Atomically require true quiescence, then exclude all message publication
+    /// and activity admission until the returned synchronous guard is dropped.
+    /// Unsupported implementations conservatively reject control operations.
+    fn try_idle_control(&self) -> Result<Box<dyn AgentControlGuard + '_>, AgentControlBusy> {
+        Err(AgentControlBusy::Unavailable)
+    }
     /// Agent-scoped context; its contributions are agent-local.
     fn ctx(&self) -> &Context;
     /// The agent's dsh-scope identity (TS uses the agent object itself as
@@ -183,6 +207,25 @@ pub trait Agent: Send + Sync + 'static {
     /// Clear queued and steering work — unless `keepInbox` — and abort the
     /// active turn or between-turn task.
     fn cancel(&self, cause: AgentCancelCause, options: Option<&CancelOptions>);
+
+    /// Capture the current cancellation boundary for work delegated by this agent.
+    /// Agents without an atomic cancellation boundary cannot grant wake permission.
+    fn cancellation_generation(&self) -> Option<u64> {
+        None
+    }
+
+    /// Preserve a delegated result, waking only if its captured generation is still
+    /// current. Implementations must serialize cancellation with enqueue and wake,
+    /// and recheck after synchronous inbox listeners. The default is non-waking.
+    fn send_from_generation(
+        &self,
+        message: UserMessage,
+        _target: InboxTarget,
+        _generation: Option<u64>,
+    ) -> bool {
+        self.send(message, InboxTarget::NextTurn, false);
+        false
+    }
 
     /// Resolve after the current whole-agent activity reaches quiescence.
     fn when_idle(&self) -> BoxFuture<'static, ()>;

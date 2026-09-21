@@ -6,11 +6,13 @@
 
 pub mod agent_lookup;
 pub mod api;
+mod cancelled_requests;
 pub mod capabilities;
 pub mod fetch;
 mod interactions;
 mod learning_preview;
 pub mod native_path_opener;
+mod pending_subagent_prompts;
 mod prompt_files;
 pub mod proxy;
 mod public_event;

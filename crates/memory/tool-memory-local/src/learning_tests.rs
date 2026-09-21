@@ -608,6 +608,55 @@ async fn observation_telemetry_does_not_conflict_with_global_pause_cas() {
 }
 
 #[tokio::test]
+async fn provider_quota_stays_an_account_diagnostic_without_learning_retry_advice() {
+    let store = LearningStore::open(root()).await.unwrap();
+    let quota = store
+        .record_failure(FailureObservation {
+            source: "provider".into(),
+            tool: String::new(),
+            code: dsh_llm::QUOTA_EXCEEDED_CODE.into(),
+            ..failure("quota")
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(quota.rule_id, "provider-quota");
+    assert_eq!(quota.category, "account-quota");
+    assert!(quota.suggestion.contains("停止当前请求的自动重试"));
+    let value = store.list(&json!({}));
+    assert_eq!(value["items"][0]["disposition"], "diagnostic");
+    assert_eq!(value["items"][0]["reusableRule"], false);
+    assert!(!value.to_string().contains("sk-secret-value"));
+    assert_eq!(
+        store
+            .resolve_provider_success(
+                &quota.workspace_key,
+                &quota.provider,
+                &quota.model,
+                quota.last_seen + 1
+            )
+            .await
+            .unwrap(),
+        0
+    );
+    let unrelated = store
+        .record_failure(FailureObservation {
+            source: "provider".into(),
+            tool: String::new(),
+            code: "INVALID_REQUEST".into(),
+            message: "Untrusted error text says usage quota has been exhausted".into(),
+            ..failure("format")
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        unrelated.category, "request-format",
+        "only trusted provider codes classify diagnostics"
+    );
+}
+
+#[tokio::test]
 async fn damaged_optional_ledger_is_visible_read_only_and_never_overwritten() {
     let root = root();
     std::fs::create_dir_all(&root).unwrap();

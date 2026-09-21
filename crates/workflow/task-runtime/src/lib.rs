@@ -1,12 +1,12 @@
 //! Durable business acceptance and effect facts, independent of session event durability.
 //! Callers own authorization and supply file bytes through their filesystem provider.
-//! Requirements are immutable; checker outcomes are produced by code, never pass flags.
+//! Agents cannot change requirements; explicit user revisions retain their audit history.
 mod checks;
 pub mod evaluation;
 pub mod images;
 pub mod office;
 mod store;
-pub use checks::{check_bytes, check_tool_result, digest};
+pub use checks::{check_bytes, check_file, check_tool_result, digest};
 pub use store::TaskRuntime;
 
 use serde::{Deserialize, Serialize};
@@ -97,6 +97,17 @@ pub enum Checker {
     },
 }
 impl Checker {
+    pub fn version(&self) -> &'static str {
+        match self {
+            Self::OfficePackage { .. } => "dsh-acceptance-office-v2",
+            _ => CHECKER_VERSION,
+        }
+    }
+
+    fn evidence_current(&self, result: &AcceptanceResult) -> bool {
+        // Human confirmation belongs to its input identity, not to parser code.
+        matches!(self, Self::Manual { .. }) || result.checker_version == self.version()
+    }
     pub fn path(&self) -> Option<&str> {
         match self {
             Self::Text { path, .. }
@@ -154,6 +165,87 @@ pub struct AcceptanceResult {
     pub failure_reason: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceRefresh {
+    pub completed_revision: u64,
+    pub completed_at: u64,
+    pub refreshed_at: u64,
+    pub input_identity: String,
+    pub results: Vec<AcceptanceResult>,
+}
+
+fn initial_requirements_revision() -> u64 {
+    1
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRevisionOrigin {
+    pub task_id: String,
+    pub revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionMode {
+    InPlace,
+    Successor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RevisionError {
+    InvalidContract(String),
+    Conflict,
+    IdempotencyConflict,
+    Busy,
+    EnvironmentChanged,
+    SuccessorRequired,
+    InvalidMode,
+    ActiveContract,
+    Storage(String),
+}
+impl RevisionError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidContract(_) => "TASK_INVALID_CONTRACT",
+            Self::Conflict => "TASK_REVISION_CONFLICT",
+            Self::IdempotencyConflict => "TASK_IDEMPOTENCY_CONFLICT",
+            Self::Busy => "TASK_BUSY",
+            Self::EnvironmentChanged => "TASK_ENVIRONMENT_CHANGED",
+            Self::SuccessorRequired => "TASK_SUCCESSOR_REQUIRED",
+            Self::InvalidMode => "TASK_INVALID_REVISION_MODE",
+            Self::ActiveContract => "TASK_ACTIVE_CONTRACT",
+            Self::Storage(_) => "TASK_EXECUTION_FAILED",
+        }
+    }
+}
+impl From<String> for RevisionError {
+    fn from(value: String) -> Self {
+        Self::Storage(value)
+    }
+}
+impl std::fmt::Display for RevisionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidContract(message) | Self::Storage(message) => message,
+            Self::Conflict => "Task revision conflict; reload before changing it",
+            Self::IdempotencyConflict => "Idempotency key was reused with different input",
+            Self::Busy => "Stop in-flight executions and validation before editing requirements",
+            Self::EnvironmentChanged => {
+                "Task environment changed; migrate it explicitly before editing requirements"
+            }
+            Self::SuccessorRequired => {
+                "Completed history is immutable; explicitly create a successor task"
+            }
+            Self::InvalidMode => "A successor requires a completed or cancelled source task",
+            Self::ActiveContract => {
+                "Finish or cancel the current contract before creating a successor"
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessIdentity {
@@ -189,10 +281,16 @@ pub struct TaskContract {
     pub task_id: String,
     pub owner: String,
     pub revision: u64,
+    #[serde(default = "initial_requirements_revision")]
+    pub requirements_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub based_on: Option<TaskRevisionOrigin>,
     pub spec: ContractSpec,
     pub state: TaskState,
     pub steps: Vec<Step>,
     pub acceptance_results: Vec<AcceptanceResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_refresh: Option<AcceptanceRefresh>,
     pub validation_identity: Option<String>,
     pub output_identities: BTreeMap<String, String>,
     #[serde(default)]
@@ -220,6 +318,13 @@ pub struct RecoveryItem {
 }
 
 impl TaskContract {
+    pub fn current_acceptance_results(&self) -> &[AcceptanceResult] {
+        self.acceptance_refresh
+            .as_ref()
+            .map_or(self.acceptance_results.as_slice(), |refresh| {
+                refresh.results.as_slice()
+            })
+    }
     pub fn recovery(&self) -> Vec<RecoveryItem> {
         self.steps.iter().filter(|step| matches!(step.state, StepState::Prepared|StepState::Unknown|StepState::Dispatched|StepState::Running)).map(|step| {
             let (action, reason) = if step.state==StepState::Prepared {
@@ -294,8 +399,10 @@ impl TaskContract {
                                 .is_some_and(|name| candidate.tool == name)
                     });
                     selected.is_some_and(|selected| selected.id == step.id)
-                        && self.acceptance_results.iter().any(|result| {
-                            result.check_id == check.id && result.status == AcceptanceStatus::Passed
+                        && self.current_acceptance_results().iter().any(|result| {
+                            result.check_id == check.id
+                                && result.status == AcceptanceStatus::Passed
+                                && check.checker.evidence_current(result)
                         })
                 });
             if !matches!(
@@ -310,16 +417,34 @@ impl TaskContract {
             }
         }
         for check in &self.spec.acceptance_checks {
-            if !self
-                .acceptance_results
-                .iter()
-                .any(|r| r.check_id == check.id && r.status == AcceptanceStatus::Passed)
-            {
-                failures.push(format!("Acceptance {} has not passed", check.id));
+            if !self.current_acceptance_results().iter().any(|r| {
+                r.check_id == check.id
+                    && r.status == AcceptanceStatus::Passed
+                    && check.checker.evidence_current(r)
+            }) {
+                if self.current_acceptance_results().iter().any(|r| {
+                    r.check_id == check.id
+                        && r.status == AcceptanceStatus::Passed
+                        && !check.checker.evidence_current(r)
+                }) {
+                    failures.push(format!("Acceptance {} uses an obsolete checker; revalidate with {} before reusing this evidence", check.id, check.checker.version()));
+                } else {
+                    failures.push(format!("Acceptance {} has not passed", check.id));
+                }
             }
         }
         if self.validation_identity.is_none() {
             failures.push("Current inputs have not been validated".into());
+        }
+        if let Some(refresh) = &self.acceptance_refresh {
+            let identity = digest(
+                &serde_json::to_vec(&self.output_identities).expect("input identities JSON"),
+            );
+            if refresh.input_identity != identity {
+                failures.push(
+                    "Refreshed evidence does not match the completed input identities".into(),
+                );
+            }
         }
         if let Some(subject) = &self.spec.validation_subject
             && subject.kind == "skill"

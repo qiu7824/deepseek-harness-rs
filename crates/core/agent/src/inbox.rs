@@ -260,6 +260,37 @@ impl Inbox {
         Ok(())
     }
 
+    /// Persist an aborted submission atomically without exposing runnable work.
+    /// A single no-op splice keeps older queue readers compatible and records
+    /// resource references plus the cancelled request identity for cold replay.
+    pub fn record_cancelled(
+        &self,
+        message: UserMessage,
+        context: Option<UserMessage>,
+    ) -> Result<(), String> {
+        let _mutation = self.begin_mutation()?;
+        let additional_context = context
+            .into_iter()
+            .map(|context| (message.id.to_string(), Some(context)))
+            .collect();
+        let splice = InboxSplice {
+            target: InboxTarget::NextTurn,
+            start: 0,
+            removed_count: None,
+            inserted: Vec::new(),
+            cancelled: vec![message],
+            additional_context,
+            outcome: Some(InboxSpliceOutcome::Canceled),
+        };
+        self.validate(&splice)?;
+        let data = serde_json::to_value(&splice).map_err(|error| error.to_string())?;
+        let event = self.session.append("agent/inbox/spliced", data, None)?;
+        let logged: InboxSplice =
+            serde_json::from_value(event.data).map_err(|error| error.to_string())?;
+        self.apply(&logged)?;
+        Ok(())
+    }
+
     /// Prepend one message to a pending list and durably record the
     /// insertion.
     pub fn prepend(&self, target: InboxTarget, message: UserMessage) -> Result<(), String> {
@@ -477,6 +508,7 @@ impl Inbox {
                 Some(actual_delete as u64)
             },
             inserted: inserted.clone(),
+            cancelled: Vec::new(),
             additional_context,
             outcome,
         };
@@ -535,6 +567,10 @@ impl Inbox {
         let start = splice.start as usize;
         let mut state = self.state.lock();
         remember_requests(&mut state, &splice.inserted);
+        remember_requests(&mut state, &splice.cancelled);
+        state
+            .cancelled_messages
+            .extend(splice.cancelled.iter().map(|message| message.id.clone()));
         apply_additional_context(&mut state, &splice.additional_context);
         let list = match splice.target {
             InboxTarget::NextTurn => &mut state.next_turn,
@@ -554,9 +590,17 @@ impl Inbox {
             !splice
                 .inserted
                 .iter()
+                .chain(splice.cancelled.iter())
                 .any(|message| message.id.as_str() == id)
         }) {
             return Err("inbox context must belong to an inserted message".to_string());
+        }
+        if !splice.cancelled.is_empty()
+            && (!splice.inserted.is_empty()
+                || splice.removed_count.unwrap_or(0) != 0
+                || splice.outcome != Some(InboxSpliceOutcome::Canceled))
+        {
+            return Err("cancelled admissions cannot mutate the pending queue".into());
         }
         let list_len = self.list_len(splice.target);
         let removed_count = splice.removed_count.unwrap_or(0);
@@ -806,6 +850,90 @@ mod tests {
             restored.message_for_request("cancel-id").is_some(),
             "receipt identity remains stable while its outcome is explicit"
         );
+    }
+
+    #[test]
+    fn stopped_admission_is_one_durable_event_without_pending_or_claimable_work() {
+        let session = Session::create(
+            dsh_session::session_id("stopped-admission"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let inserts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = inserts.clone();
+        let inbox = Inbox::new(
+            &session,
+            InboxNotifications {
+                inserted: Some(Arc::new(move |_| {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let existing = dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text {
+                text: "existing work".into(),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: Some("existing".into()),
+                client_time_zone: None,
+            },
+        );
+        inbox
+            .append(InboxTarget::NextTurn, existing.clone())
+            .unwrap();
+        let message = dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text {
+                text: "retained-resource-reference".into(),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: Some("stopped-request".into()),
+                client_time_zone: None,
+            },
+        );
+        let context = dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::Text {
+                text: "retained-reference-context".into(),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
+        );
+        let before = session.events().len();
+        inbox
+            .record_cancelled(message.clone(), Some(context))
+            .unwrap();
+        assert_eq!(
+            session.events().len(),
+            before + 1,
+            "no crash boundary can leave a cancelled admission queued"
+        );
+        assert_eq!(
+            inserts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "cancelled admissions never notify insertion or wake a driver"
+        );
+        assert_eq!(inbox.next_turn(), vec![existing.clone()]);
+        assert!(inbox.request_was_cancelled("stopped-request"));
+        assert!(!inbox.request_was_cancelled("existing"));
+        let logged = serde_json::to_string(&session.events().last().unwrap().data).unwrap();
+        assert!(logged.contains("retained-resource-reference"));
+        assert!(logged.contains("retained-reference-context"));
+        let restored = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        assert!(restored.request_was_cancelled("stopped-request"));
+        assert_eq!(
+            restored.message_for_request("stopped-request"),
+            Some(message.id)
+        );
+        assert_eq!(
+            restored.claim(InboxTarget::NextTurn, 1).unwrap(),
+            vec![existing]
+        );
+        assert!(!restored.has_pending());
     }
 
     #[test]

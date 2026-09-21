@@ -2,7 +2,27 @@
 use dsh_sandbox::{ConfinedArgv, SandboxEnforcement, SandboxPolicy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+fn digest_reader(mut reader: impl Read) -> std::io::Result<String> {
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+fn digest_file(path: &Path) -> std::io::Result<String> {
+    digest_reader(std::fs::File::open(path)?)
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -184,7 +204,11 @@ impl NativeBackend {
             .ok_or("Host executable has no directory")?
             .join("native-sandbox");
         let digest = |name: &str| {
-            std::fs::read(folder.join(name)).map(|bytes| format!("{:x}", Sha256::digest(bytes))).map_err(|e| format!("[SANDBOX_SETUP_REQUIRED] missing packaged Windows sandbox helper {name}: {e}"))
+            digest_file(&folder.join(name)).map_err(|e| {
+                format!(
+                    "[SANDBOX_SETUP_REQUIRED] missing packaged Windows sandbox helper {name}: {e}"
+                )
+            })
         };
         Ok(Self {
             version: 1,
@@ -245,13 +269,12 @@ impl NativeBackend {
                 &self.setup_sha256,
             ),
         ] {
-            let bytes = std::fs::read(&path).map_err(|e| {
+            let hash = digest_file(&path).map_err(|e| {
                 format!(
                     "[SANDBOX_SETUP_FAILED] missing native helper {}: {e}",
                     path.display()
                 )
             })?;
-            let hash = format!("{:x}", Sha256::digest(bytes));
             if !hash.eq_ignore_ascii_case(expected) {
                 return Err(format!(
                     "[SANDBOX_SETUP_FAILED] native helper identity mismatch: {}",
@@ -393,6 +416,49 @@ impl NativeBackend {
 mod tests {
     use super::*;
     use dsh_sandbox::{SandboxExecutionPolicy, SandboxMode, SandboxProvider};
+
+    #[test]
+    fn helper_identity_is_hashed_in_bounded_chunks_and_propagates_read_failures() {
+        struct Generated {
+            remaining: usize,
+            first: bool,
+        }
+        impl Read for Generated {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                assert!(buffer.len() <= 64 * 1024);
+                if self.first {
+                    self.first = false;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let len = self.remaining.min(buffer.len());
+                buffer[..len].fill(42);
+                self.remaining -= len;
+                Ok(len)
+            }
+        }
+        let mut expected = Sha256::new();
+        for _ in 0..256 {
+            expected.update([42u8; 8192]);
+        }
+        assert_eq!(
+            digest_reader(Generated {
+                remaining: 2 * 1024 * 1024,
+                first: true
+            })
+            .unwrap(),
+            format!("{:x}", expected.finalize())
+        );
+        struct Failed;
+        impl Read for Failed {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        }
+        assert_eq!(
+            digest_reader(Failed).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
 
     #[test]
     fn private_state_overlap_is_rejected_before_state_directory_exists() {

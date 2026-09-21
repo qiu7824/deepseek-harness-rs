@@ -592,6 +592,65 @@ pub async fn read_whole_bytes(
     Ok(chunks)
 }
 
+/// Incremental bounded binary read with the same identity and size checks as
+/// `read_whole_bytes`; dropping the stream closes its file handle.
+pub async fn stream_whole_bytes(
+    target: &LocalTarget,
+    signal: Option<&FsAbort>,
+    max_bytes: u64,
+    internals: &FsIoInternals,
+) -> Result<futures::stream::BoxStream<'static, Result<Vec<u8>, FsError>>, FsError> {
+    let info = stat_regular_file(target, "read", signal).await?;
+    if info.len() > max_bytes {
+        return Err(FsError::new(
+            "file exceeds the byte limit",
+            FsErrorCode::FsTooLarge,
+        ));
+    }
+    if let Some(hook) = &internals.inspect_read_bytes_after_stat {
+        hook(target)
+            .await
+            .map_err(|e| FsError::new(e, FsErrorCode::FsIoError))?;
+    }
+    let file = tokio::fs::File::open(target.target_key.as_str())
+        .await
+        .map_err(io_to_fs_error)?;
+    let signal = signal.cloned();
+    Ok(Box::pin(futures::stream::try_unfold(
+        (file, 0u64),
+        move |(mut file, total)| {
+            let signal = signal.clone();
+            async move {
+                use tokio::io::AsyncReadExt;
+                throw_if_aborted(signal.as_ref(), "read")?;
+                let capacity = max_bytes
+                    .saturating_sub(total)
+                    .saturating_add(1)
+                    .min(64 * 1024) as usize;
+                let mut chunk = vec![0; capacity];
+                let read = file.read(&mut chunk).await.map_err(io_to_fs_error)?;
+                throw_if_aborted(signal.as_ref(), "read")?;
+                if read == 0 {
+                    return Ok(None);
+                }
+                let total = total.saturating_add(read as u64);
+                if total > max_bytes {
+                    return Err(FsError::new(
+                        "file grew beyond the byte limit",
+                        FsErrorCode::FsTooLarge,
+                    ));
+                }
+                chunk.truncate(read);
+                Ok(Some((chunk, (file, total))))
+            }
+        },
+    )))
+}
+
+#[cfg(test)]
+#[path = "stream_bytes_tests.rs"]
+mod stream_bytes_tests;
+
 /// Incremental strict UTF-8 chunk decoder (the TS streaming `TextDecoder`
 /// `{ fatal: true, stream: true }` equivalent): incomplete trailing
 /// sequences ride into the next chunk; invalid bytes reject.

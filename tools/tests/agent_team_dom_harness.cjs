@@ -30,10 +30,10 @@ const input=async(node,value)=>act(()=>{Object.getOwnPropertyDescriptor(node ins
 const saveSettings=async(value,revision)=>{writes.push({value:structuredClone(value),revision});if(settingsFail)throw Error('revision conflict');assert.equal(revision,settings.revision);settings={...settings,revision:settings.revision+1,value:structuredClone(value)};for(const listener of listeners)listener();};
 const render=id=>root.render(React.createElement(React.Fragment,null,
  React.createElement(context.TeamBoardAction,{parentSessionId:id,panel,panelOnly:true,teamSettings:scope,saveSettings,openChild:value=>opened.push(value),t}),
- React.createElement(context.TeamComposerTrigger,{parentSessionId:id,panel,teamSettings:scope,t})));
+ React.createElement(context.TeamSidebarTrigger,{parentSessionId:id,panel,teamSettings:scope,t})));
 (async()=>{
- await act(()=>render('a'));await settleViews();await click('team.mode.auto');await settleViews();
- assert.equal(document.querySelectorAll('[role=dialog]').length,1,'composer opens the same panel as the header');
+ await act(()=>render('a'));await settleViews();await click('team.title');await settleViews();
+ assert.equal(document.querySelectorAll('[role=dialog]').length,1,'top-right collaboration opens the session team panel');
  assert.match(document.body.textContent,/Review module/);assert.match(document.body.textContent,/src\/module/);
  await click('team.members');await click('team.openConversation');assert.equal(document.querySelector('[role=dialog]'),null);
  assert.deepEqual(JSON.parse(JSON.stringify(opened)),[{parentSessionId:'a',childSessionId:'child-a',mode:'continuable'}]);
@@ -46,7 +46,9 @@ const render=id=>root.render(React.createElement(React.Fragment,null,
  assert.equal(form.querySelector('fieldset').disabled,true,'duplicate submissions remain locked while admission is pending');
  await reply(creating,{error:'admission failed'},400);await settleViews();assert.equal(field('team.initialTask','textarea').value,'Inspect only the assigned module','failed creation preserves input');
  await act(()=>form.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));const retry=controls().at(-1);assert.equal(JSON.parse(retry.options.body).arguments.requestId,args.requestId,'same retry keeps its request identity');
- await reply(retry,value());await settleViews();assert.equal(field('team.memberName').value,'');
+ const failedReceipt=value();failedReceipt.board.receipt={error:'provider admission refused'};
+ await reply(retry,failedReceipt);await settleViews();assert.equal(field('team.memberName').value,'中文成员','a rejected operation receipt must preserve the form');assert.match(document.querySelector('[role=alert]').textContent,/provider admission refused/);
+ await act(()=>form.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));await reply(controls().at(-1),value());await settleViews();assert.equal(field('team.memberName').value,'');
  await click('team.tasks');await act(()=>document.querySelector('.dshTeamCreate>summary').click());await input(field('team.subject'),'First task');
  const taskForm=field('team.subject').closest('form');await act(()=>taskForm.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));
  const firstTask=controls().at(-1),firstId=JSON.parse(firstTask.options.body).arguments.taskId;assert.equal(JSON.parse(firstTask.options.body).arguments.expectedRevision,0);
@@ -61,6 +63,12 @@ const render=id=>root.render(React.createElement(React.Fragment,null,
  await click('team.addProfile');await input(field('team.profileName'),'编码方案');await click('team.save');await settleViews({...value(),enabled:false});assert.equal(settings.value.profiles[0].name,'编码方案');assert.equal(settings.value.profiles[0].roles.length,1);
  settingsFail=true;await act(()=>document.querySelector('[data-team-settings] input[role=switch]').click());await click('team.save');assert.match(document.querySelector('[role=alert]').textContent,/revision conflict/);assert.equal(settings.value.enabled,false,'failed settings writes do not report success');
  await click('close');await act(()=>render('b'));const stale=requests.at(-1);await act(()=>render('c'));assert.equal(stale.options.signal.aborted,true);await reply(stale,value('b'));await settleViews(value('c'));assert.equal(document.querySelector('[role=dialog]'),null,'late responses do not reopen a different conversation');
+ settings={...settings,value:{...settings.value,enabled:true}};await act(()=>listeners.forEach(fn=>fn()));
+ await act(()=>render('a'));await settleViews(value('a'));await act(()=>panel.open('a'));await settleViews(value('a'));await click('team.tasks');await click('team.dispatch');const oldMutation=controls().at(-1);
+ await act(()=>render('b'));await act(()=>render('a'));await settleViews(value('a'));await act(()=>panel.open('a'));await settleViews(value('a'));await click('team.tasks');await click('team.dispatch');const newMutation=controls().at(-1);assert.notEqual(newMutation,oldMutation);
+ const staleMutation=value('a');staleMutation.board.tasks.check.subject='STALE MUTATION';await reply(oldMutation,staleMutation);
+ assert.doesNotMatch(document.body.textContent,/STALE MUTATION/,'A→B→A navigation cannot accept a previous generation mutation result');assert.equal(button('team.dispatch').disabled,true,'the old completion cannot unlock the current mutation');
+ const freshMutation=value('a');freshMutation.board.tasks.check.subject='FRESH MUTATION';await reply(newMutation,freshMutation);await settleViews(freshMutation);assert.match(document.body.textContent,/FRESH MUTATION/);
  await act(()=>root.unmount());assert.equal(timers.size,0);
  const directory=context.teamModelDirectory(),modelRequest=requests.at(-1);assert.equal(modelRequest.url,'/task-models/describe','global settings must not call a session-only model endpoint without a session');assert.deepEqual(JSON.parse(modelRequest.options.body),{});await reply(modelRequest,{providers:[{id:'fixture',name:'Fixture',models:[{id:'worker',name:'Worker'}]}]});assert.equal((await directory).groups[0].models[0].id,'worker');dom.window.close();
  console.log('PASS unified collaboration: shared entry, real action payloads, task CAS, stable retries, independent member addressing, live settings and stale-response isolation');

@@ -2,11 +2,23 @@ use crate::*;
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
 
+#[path = "checks_file.rs"]
+mod file;
+pub use file::check_file;
+
 pub fn digest(value: &[u8]) -> String {
     format!("{:x}", Sha256::digest(value))
 }
 
 fn outcome(check: &AcceptanceCheck, input: &[u8], result: Result<String>) -> AcceptanceResult {
+    outcome_with_identity(check, digest(input), result)
+}
+
+fn outcome_with_identity(
+    check: &AcceptanceCheck,
+    identity: String,
+    result: Result<String>,
+) -> AcceptanceResult {
     let (status, coverage, failure_reason) = match result {
         Ok(coverage) => (AcceptanceStatus::Passed, coverage, None),
         Err(error) => (
@@ -17,10 +29,14 @@ fn outcome(check: &AcceptanceCheck, input: &[u8], result: Result<String>) -> Acc
     };
     AcceptanceResult {
         check_id: check.id.clone(),
-        checker_version: CHECKER_VERSION.into(),
-        input_identity: digest(input),
+        checker_version: check.checker.version().into(),
+        input_identity: identity.clone(),
         status,
-        evidence_refs: vec![format!("sha256:{}", digest(input))],
+        evidence_refs: if identity.is_empty() {
+            vec![]
+        } else {
+            vec![format!("sha256:{identity}")]
+        },
         coverage,
         failure_reason,
     }
@@ -108,36 +124,7 @@ pub fn check_bytes(check: &AcceptanceCheck, bytes: &[u8]) -> AcceptanceResult {
             ))
         }
         Checker::OfficePackage { format, .. } => {
-            let required = match format.as_str() {
-                "docx" => "word/document.xml",
-                "xlsx" => "xl/workbook.xml",
-                "pptx" => "ppt/presentation.xml",
-                _ => return Err("Unsupported Office package type".into()),
-            };
-            let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-                .map_err(|e| format!("Cannot open Office package: {e}"))?;
-            if archive.len() > 10_000 {
-                return Err("Office package has too many entries".into());
-            }
-            let mut total = 0u64;
-            for index in 0..archive.len() {
-                let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-                total = total.saturating_add(entry.size());
-                if total > 64 * 1024 * 1024 {
-                    return Err("Office expanded content exceeds validation budget".into());
-                }
-                std::io::copy(&mut entry, &mut std::io::sink())
-                    .map_err(|e| format!("Corrupt Office entry: {e}"))?;
-            }
-            for name in ["[Content_Types].xml", required] {
-                let mut entry = archive
-                    .by_name(name)
-                    .map_err(|_| format!("Office package missing {name}"))?;
-                let mut xml = String::new();
-                entry.read_to_string(&mut xml).map_err(|e| e.to_string())?;
-                roxmltree::Document::parse(&xml)
-                    .map_err(|e| format!("Invalid XML content in {name}: {e}"))?;
-            }
+            crate::office::validate_structure(Cursor::new(bytes), format)?;
             Ok("Office ZIP and required XML parts are readable; page layout, formula correctness and application rendering require separate acceptance checks.".into())
         }
         _ => Err("This checker does not accept file bytes".into()),

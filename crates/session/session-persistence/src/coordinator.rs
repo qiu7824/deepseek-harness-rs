@@ -243,8 +243,10 @@ struct LiveSessionState {
 
 /// One validated cold source and the exact unpublished Session built from it.
 struct PreparedSessionSource<TornMarker> {
-    inspection: SessionInspection,
     session: Session,
+    /// Durable/repaired prefix before the constructor's end-seed marker.
+    /// The Session owns its bytes; do not retain a second complete log.
+    inspection_length: usize,
     revision: SessionPersistenceRevision,
     /// Session length after constructor-owned seed markers were appended.
     session_length: usize,
@@ -263,12 +265,24 @@ impl<TornMarker: Clone + Send + Sync + 'static> PreparedSource
 impl<TornMarker: Clone> Clone for PreparedSessionSource<TornMarker> {
     fn clone(&self) -> Self {
         Self {
-            inspection: self.inspection.clone(),
             session: self.session.clone(),
+            inspection_length: self.inspection_length,
             revision: self.revision.clone(),
             session_length: self.session_length,
             torn_marker: self.torn_marker.clone(),
             closers: self.closers.clone(),
+        }
+    }
+}
+
+impl<TornMarker> PreparedSessionSource<TornMarker> {
+    fn inspection(&self) -> SessionInspection {
+        SessionInspection {
+            meta: self.session.header().clone(),
+            inherited_event_count: self.session.inherited_event_count(),
+            events: self
+                .session
+                .with_events(|events| events[..self.inspection_length].to_vec()),
         }
     }
 }
@@ -683,14 +697,32 @@ fn snapshot_stored_events(
     events: &[SessionEvent],
     id: &SessionId,
 ) -> Result<Vec<SessionEvent>, String> {
-    assert_supported_events(events, id)?;
+    own_stored_events(events.to_vec(), id)
+}
+
+/// Upgrade freshly decoded records without retaining their original full log.
+fn own_stored_events(
+    events: Vec<SessionEvent>,
+    id: &SessionId,
+) -> Result<Vec<SessionEvent>, String> {
+    assert_supported_events(&events, id)?;
     let mut message_ids = HashMap::new();
     let mut out = Vec::with_capacity(events.len());
     for event in events {
-        let migrated_start = migrate_legacy_turn_start_event(event, id)?;
-        let migrated_turn = migrate_legacy_turn_end_event(&migrated_start, id)?;
-        let migrated_steering = migrate_legacy_steering_event(&migrated_turn, id)?;
-        let snapshot = migrate_legacy_message_event(&migrated_steering, id, &message_ids);
+        // Current messages and transport records already own valid JSON;
+        // legacy upgrades must not clone every large payload four times.
+        let snapshot = match event.type_.as_str() {
+            "turn/start" => migrate_legacy_turn_start_event(&event, id)?,
+            "turn/end" => migrate_legacy_turn_end_event(&event, id)?,
+            "steering/message" => {
+                let steering = migrate_legacy_steering_event(&event, id)?;
+                migrate_legacy_message_event(&steering, id, &message_ids)
+            }
+            _ if needs_legacy_prefix(&event) => {
+                migrate_legacy_message_event(&event, id, &message_ids)
+            }
+            _ => event,
+        };
         if let Some(message_id) = event_message_id(&snapshot) {
             message_ids.insert(snapshot.seq.get(), message_id);
         }
@@ -1066,7 +1098,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 self.preparations.discard(&reservation);
                 return self.load_live_snapshot(&attached).await;
             }
-            let inspection = reservation.source.inspection.clone();
+            let inspection = reservation.source.inspection();
             self.preparations.discard(&reservation);
             return Ok(inspection);
         }
@@ -1099,13 +1131,13 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                         return Ok(self.inspect_live(&published));
                     }
                     if current {
-                        return Ok(source.inspection.clone());
+                        return Ok(source.inspection());
                     }
                     if matches!(
                         self.preparations.discard_ready(id, &source),
                         crate::preparations::DiscardOutcome::Retained
                     ) {
-                        return Ok(source.inspection.clone());
+                        return Ok(source.inspection());
                     }
                 }
                 Err(error) => {
@@ -1214,7 +1246,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         let meta = stored.meta.clone();
         self.assert_stored_id(id, &meta)?;
         self.assert_version(&meta)?;
-        let stored_events = snapshot_stored_events(&stored.events, id)?;
+        let stored_events = own_stored_events(stored.events, id)?;
         self.assert_events_supported(&meta, &stored_events)?;
 
         // Preserve complete interrupted events and synthesize only missing
@@ -1222,11 +1254,12 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         let closers = interrupted_turn_closers(&stored_events);
         let mut balanced = stored_events;
         balanced.extend(closers.clone());
+        let inspection_length = balanced.len();
         let sessions = self.sessions()?;
         let session = sessions.prepare(
             Some(id.clone()),
             Some(dsh_session::CreateSessionOptions {
-                seed: Some(balanced.clone()),
+                seed: Some(balanced),
                 inherited_event_count: Some(stored.inherited_event_count),
                 meta: Some(dsh_session::CreateSessionMeta {
                     cwd: meta.cwd.clone(),
@@ -1239,15 +1272,10 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 }),
             }),
         )?;
-        let inspection = SessionInspection {
-            meta: session.header().clone(),
-            inherited_event_count: session.inherited_event_count(),
-            events: balanced,
-        };
         Ok(Arc::new(PreparedSessionSource {
-            session_length: session.events().len(),
+            session_length: session.seq().get() as usize,
             session,
-            inspection,
+            inspection_length,
             revision: stored.revision,
             torn_marker: stored.torn_marker,
             closers,
@@ -1260,8 +1288,8 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         self: &Arc<Self>,
         source: Arc<PreparedSessionSource<TornMarker>>,
     ) -> Result<Option<(Arc<PreparedSessionSource<TornMarker>>, SessionState)>, String> {
-        let id = source.inspection.meta.id.clone();
-        let cursor = source.inspection.events.len() as u64;
+        let id = source.session.id().clone();
+        let cursor = source.inspection_length as u64;
         if self
             .states
             .lock()
@@ -1279,7 +1307,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         if source.torn_marker.is_some() || !source.closers.is_empty() {
             self.backend
                 .commit_repair(
-                    &source.inspection.meta,
+                    source.session.header(),
                     source.torn_marker.clone(),
                     &source.closers,
                 )
@@ -1290,15 +1318,15 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         }
         let existing = self.states.lock().get(id.as_str()).cloned();
         let state = existing.unwrap_or(SessionState {
-            meta: source.inspection.meta.clone(),
-            inherited_event_count: source.inspection.inherited_event_count,
+            meta: source.session.header().clone(),
+            inherited_event_count: source.session.inherited_event_count(),
             cursor,
             materialized: true,
             owner: None,
         });
         let mut state = state;
-        state.meta = source.inspection.meta.clone();
-        state.inherited_event_count = source.inspection.inherited_event_count;
+        state.meta = source.session.header().clone();
+        state.inherited_event_count = source.session.inherited_event_count();
         state.cursor = cursor;
         state.materialized = true;
         self.states
@@ -1315,7 +1343,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         Box::pin(async move {
             Ok(coordinator
                 .backend
-                .read_stored_revision(&source.inspection.meta.id)
+                .read_stored_revision(source.session.id())
                 .await?
                 == Some(source.revision.clone()))
         })
@@ -1732,7 +1760,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         let state = reservation.state.clone();
         if !source.session.ptr_eq(session)
             || state.owner.is_some()
-            || state.cursor != source.inspection.events.len() as u64
+            || state.cursor != source.inspection_length as u64
             || session.first_live_seq().get() != state.cursor
         {
             panic!(

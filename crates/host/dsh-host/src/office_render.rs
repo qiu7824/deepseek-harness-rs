@@ -2,7 +2,6 @@
 use dsh_attachment::{AttachmentStore, ImageMediaType, SaveImageAttachment};
 use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRuntime};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -17,13 +16,14 @@ pub(crate) fn install(
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .ok_or("Office tools unavailable")?;
     let context = ctx.clone();
+    let office = super::office_preview::shared();
     tools.register(ctx,ToolDefinition{
   name:"office_render".into(),
   description:"Export DOCX/XLSX/PPTX through the installed WPS host automation bridge and render actual PDF pages to image attachments. Also renders an existing PDF. Input must be inside the current workspace; original files are never edited. Does not require Python, LibreOffice or ffmpeg and does not launch WPS through the shell sandbox. Optional pages are one-based, up to 12; default first page. Inspect returned page images (or consult_model vision) and render remaining pages before claiming visual acceptance. Returns an owned candidate PDF resource; use workspace_scratch inspect/promote after validation to deliver it. An export or XML check alone is not visual verification.".into(),
   parameters:json!({"type":"object","properties":{"path":{"type":"string","minLength":1},"pages":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"integer","minimum":1}}},"required":["path"],"additionalProperties":false}),
   output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,v|{let mut parts=vec![dsh_llm::ContentBlock::Text{text:v.to_string()}];for page in v["pages"].as_array().into_iter().flatten(){parts.push(dsh_llm::ContentBlock::Text{text:format!("Rendered document page {} of {}",page["page"],v["pageCount"])});parts.push(dsh_llm::ContentBlock::Image{attachment:serde_json::from_value(page["attachment"].clone()).map_err(|e|e.to_string())?});}Ok(parts)}),presentation_meta:None},
   timeout_ms:Some(240000),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:None,present_result:None,
-  execute:Arc::new(move |args,run|{let args=args.clone();let context=context.clone();let resources=resources.clone();let execution=run.execution.clone();Box::pin(async move{render(&context,&resources,&args,&execution).await.map_err(|e|ToolBodyError::coded(e,"OfficeRenderError","OFFICE_RENDER_FAILED"))})})
+  execute:Arc::new(move |args,run|{let args=args.clone();let context=context.clone();let resources=resources.clone();let office=office.clone();let execution=run.execution.clone();Box::pin(async move{render(&context,&resources,&office,&args,&execution).await.map_err(|e|ToolBodyError::coded(e,"OfficeRenderError","OFFICE_RENDER_FAILED"))})})
  })?;
     Ok(())
 }
@@ -50,6 +50,7 @@ async fn source_path(root: &str, raw: &str) -> Result<PathBuf, String> {
 async fn render(
     ctx: &cordis::Context,
     resources: &super::workspace_resources::Resources,
+    office: &super::office_preview::OfficePreview,
     args: &Value,
     execution: &dsh_tools::ToolExecution,
 ) -> Result<Value, String> {
@@ -89,19 +90,9 @@ async fn render(
         .unwrap_or("")
         .to_ascii_lowercase();
     let (identity, pdf) = if ext == "pdf" {
-        if tokio::fs::metadata(&path)
-            .await
-            .map_err(|e| e.to_string())?
-            .len()
-            > 64 * 1024 * 1024
-        {
-            return Err("PDF exceeds 64 MiB".into());
-        }
-        let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-        dsh_task_runtime::office::validate_export_framing(&bytes)?;
-        (format!("{:x}", Sha256::digest(&bytes)), Arc::new(bytes))
+        super::office_preview::snapshot_pdf(&path).await?
     } else {
-        super::office_preview::shared().export(&path).await?
+        office.export(&path).await?
     };
     if signal() {
         return Err("Document rendering cancelled".into());
@@ -115,7 +106,7 @@ async fn render(
     )?;
     let root = lease.path();
     let pdf_path = root.join("document.pdf");
-    tokio::fs::write(&pdf_path, pdf.as_ref())
+    tokio::fs::copy(&pdf.path, &pdf_path)
         .await
         .map_err(|e| e.to_string())?;
     let result = render_pages(&pdf_path, &root, &pages, signal.clone()).await?;

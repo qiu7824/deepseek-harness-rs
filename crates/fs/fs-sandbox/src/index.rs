@@ -198,6 +198,15 @@ impl FileSystem for SandboxedFileSystem {
         self.local.read_bytes(target, signal, max_bytes).await
     }
 
+    async fn stream_bytes(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+        max_bytes: u64,
+    ) -> Result<futures::stream::BoxStream<'static, Result<Vec<u8>, FsError>>, FsError> {
+        self.local.stream_bytes(target, signal, max_bytes).await
+    }
+
     async fn list_dir(
         &self,
         target: &FsTarget,

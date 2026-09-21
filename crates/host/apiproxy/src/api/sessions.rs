@@ -459,6 +459,15 @@ pub struct SessionRefRequest {
     pub session_id: SessionId,
 }
 
+/// Stop the active turn and specifically named in-flight submissions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCancelRequest {
+    pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub request_ids: Vec<String>,
+}
+
 /// `session.selectModel` request payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -694,7 +703,10 @@ pub trait SessionsApi: Send + Sync {
 
     /// Stops an ordinary session's active turn, preserving pending inbox
     /// work.
-    async fn cancel(&self, request: RpcRequest<SessionRefRequest>) -> RpcResponse<AcceptedResult>;
+    async fn cancel(
+        &self,
+        request: RpcRequest<SessionCancelRequest>,
+    ) -> RpcResponse<AcceptedResult>;
 }
 
 #[cfg(test)]

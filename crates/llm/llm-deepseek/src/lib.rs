@@ -636,15 +636,47 @@ fn request_image_attachments(options: &GenerateOptions) -> Vec<&dsh_llm::ImageAt
     ordered
 }
 
-fn project_estimated_request(options: &GenerateOptions) -> GenerateOptions {
+fn request_with_messages(
+    options: &GenerateOptions,
+    messages: Vec<dsh_llm::Message>,
+) -> GenerateOptions {
+    GenerateOptions {
+        provider: options.provider.clone(),
+        model: options.model.clone(),
+        reasoning_effort: options.reasoning_effort.clone(),
+        messages,
+        system: options.system.clone(),
+        tools: options.tools.clone(),
+        temperature: options.temperature,
+        max_tokens: options.max_tokens,
+        stop: options.stop.clone(),
+        signal: options.signal.clone(),
+        session_id: options.session_id.clone(),
+        purpose: options.purpose.clone(),
+        agent_loop_request: options.agent_loop_request,
+        telemetry: options.telemetry.clone(),
+    }
+}
+
+#[cfg(test)]
+#[path = "request_projection_ownership_tests.rs"]
+mod request_projection_ownership_tests;
+
+fn project_estimated_request(options: GenerateOptions) -> Result<GenerateOptions, LlmFailure> {
+    if !options
+        .messages
+        .iter()
+        .any(|message| dsh_llm::content_has_image(&message.content))
+    {
+        return Ok(options);
+    }
     let estimate = |image: &dsh_llm::ImageAttachmentRef| {
         image
             .bytes
             .unwrap_or(0)
             .min(DEFAULT_REQUEST_IMAGE_MAX_BYTES)
     };
-    let mut projected = options.clone();
-    projected.messages = dsh_llm::offload_request_images_with_policy(
+    let messages = dsh_llm::offload_request_images_with_policy(
         &options.messages,
         &dsh_llm::RequestImageOffloadPolicy {
             representation: dsh_llm::RequestImageRepresentation::Raw,
@@ -655,7 +687,9 @@ fn project_estimated_request(options: &GenerateOptions) -> GenerateOptions {
             byte_length: Some(&estimate),
         },
     );
-    projected
+    let projected = request_with_messages(&options, messages);
+    require_durable_image_offload(&options, &projected)?;
+    Ok(projected)
 }
 
 fn require_durable_image_offload(
@@ -968,11 +1002,18 @@ mod image_pricing_tests {
     }
 }
 
-fn project_exact_request(
-    options: &GenerateOptions,
+fn project_exact_request<'a>(
+    options: &'a GenerateOptions,
     image_meta: &std::collections::HashMap<String, serialize::PreparedImageMeta>,
     representation: dsh_llm::RequestImageRepresentation,
-) -> GenerateOptions {
+) -> std::borrow::Cow<'a, GenerateOptions> {
+    if !options
+        .messages
+        .iter()
+        .any(|message| dsh_llm::content_has_image(&message.content))
+    {
+        return std::borrow::Cow::Borrowed(options);
+    }
     let exact = |image: &dsh_llm::ImageAttachmentRef| {
         image_meta
             .get(&image.attachment_id)
@@ -988,8 +1029,7 @@ fn project_exact_request(
             DEFAULT_INLINE_IMAGE_OFFLOAD_BYTE_QUANTUM,
         ),
     };
-    let mut projected = options.clone();
-    projected.messages = dsh_llm::offload_request_images_with_policy(
+    let messages = dsh_llm::offload_request_images_with_policy(
         &options.messages,
         &dsh_llm::RequestImageOffloadPolicy {
             representation,
@@ -1000,7 +1040,7 @@ fn project_exact_request(
             byte_length: Some(&exact),
         },
     );
-    projected
+    std::borrow::Cow::Owned(request_with_messages(options, messages))
 }
 
 async fn prepare_attachments<T>(
@@ -1331,7 +1371,7 @@ async fn resolve_image_file_ids(
         Ok(Some(ResolvedRequestFiles {
             ids,
             image_meta,
-            messages: exact_options.messages,
+            messages: exact_options.into_owned().messages,
             used,
             index,
             scope,
@@ -1445,9 +1485,7 @@ async fn request_chunks(
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
     cleanup: Arc<files_cleanup::CleanupWorker>,
 ) -> Result<(), LlmFailure> {
-    let projected = project_estimated_request(&options);
-    require_durable_image_offload(&options, &projected)?;
-    let mut options = projected;
+    let mut options = project_estimated_request(options)?;
     if let Some(model) = connection
         .models
         .iter()
@@ -1549,8 +1587,7 @@ async fn request_chunks(
             .await;
             let prepared = match resolved_files {
                 Ok(Some(files)) => {
-                    let mut exact_options = options.clone();
-                    exact_options.messages = files.messages.clone();
+                    let exact_options = request_with_messages(&options, files.messages.clone());
                     (
                         serialize::serialize_request_with_prepared_images(
                             &exact_options,
@@ -1605,6 +1642,7 @@ async fn request_chunks(
                 "INVALID_REQUEST",
             )
         })?;
+        drop(body);
         let response = transport::post_tracked(
             &url,
             (!connection.keyless).then_some(api_key.as_str()),

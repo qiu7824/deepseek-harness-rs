@@ -1,4 +1,8 @@
 use super::*;
+#[path = "tests/revise.rs"]
+mod revise;
+#[path = "tests/migration.rs"]
+mod migration;
 
 #[test]
 fn failed_readonly_search_does_not_poison_fresh_content_acceptance() {
@@ -159,6 +163,176 @@ fn validate_answer(runtime: &TaskRuntime, bytes: &[u8]) -> TaskContract {
             BTreeMap::from([("answer.json".into(), digest(bytes))]),
         )
         .unwrap()
+}
+
+#[test]
+fn completed_evidence_refresh_is_audited_and_keeps_human_consent_and_history() {
+    let fixture = Fixture::new();
+    let runtime = fixture.open();
+    let mut definition = spec();
+    definition.expected_outputs = vec!["out.docx".into()];
+    definition.acceptance_checks = vec![
+        AcceptanceCheck {
+            id: "office".into(),
+            description: "Office".into(),
+            checker: Checker::OfficePackage {
+                path: "out.docx".into(),
+                format: "docx".into(),
+            },
+        },
+        AcceptanceCheck {
+            id: "manual".into(),
+            description: "Layout".into(),
+            checker: Checker::Manual {
+                reason: "Inspect rendered pages".into(),
+            },
+        },
+    ];
+    let created = runtime.create("owner", "task", definition).unwrap();
+    let bytes = office::feature_docx().unwrap();
+    let outputs = BTreeMap::from([("out.docx".into(), digest(&bytes))]);
+    let manual = AcceptanceResult {
+        check_id: "manual".into(),
+        checker_version: CHECKER_VERSION.into(),
+        input_identity: digest(&serde_json::to_vec(&outputs).unwrap()),
+        status: AcceptanceStatus::Passed,
+        evidence_refs: vec!["user-confirmation:original".into()],
+        coverage: "User inspected the pages".into(),
+        failure_reason: None,
+    };
+    let machine = check_bytes(&created.spec.acceptance_checks[0], &bytes);
+    let validated = runtime
+        .record_validation(
+            "owner",
+            "task",
+            "initial",
+            created.revision,
+            vec![machine.clone(), manual.clone()],
+            outputs.clone(),
+        )
+        .unwrap();
+    let mut historical = runtime
+        .complete("owner", "task", "complete", validated.revision, &outputs)
+        .unwrap();
+    // A completed record written by the previous release, before current gates.
+    historical.acceptance_results[0].checker_version = CHECKER_VERSION.into();
+    persist(&runtime.db.lock(), &historical).unwrap();
+    assert!(
+        historical
+            .completion_blockers()
+            .iter()
+            .any(|reason| reason.contains("obsolete"))
+    );
+    let refreshed = runtime
+        .refresh_evidence_by_user(
+            "owner",
+            "task",
+            "refresh-1",
+            historical.revision,
+            vec![machine.clone(), manual.clone()],
+            outputs.clone(),
+        )
+        .unwrap();
+    assert!(refreshed.completion_blockers().is_empty());
+    assert_eq!(refreshed.state, TaskState::Completed);
+    assert_eq!(refreshed.spec, historical.spec);
+    assert_eq!(refreshed.acceptance_results, historical.acceptance_results);
+    assert_eq!(refreshed.current_acceptance_results()[1], manual);
+    assert_eq!(
+        refreshed
+            .acceptance_refresh
+            .as_ref()
+            .unwrap()
+            .completed_revision,
+        historical.revision
+    );
+    assert_eq!(
+        refreshed.acceptance_refresh.as_ref().unwrap().completed_at,
+        historical.updated_at
+    );
+    let mut failed = machine.clone();
+    failed.status = AcceptanceStatus::Failed;
+    failed.failure_reason = Some("Current checker rejected input".into());
+    let rejected = runtime
+        .refresh_evidence_by_user(
+            "owner",
+            "task",
+            "refresh-2",
+            refreshed.revision,
+            vec![failed.clone(), manual.clone()],
+            outputs.clone(),
+        )
+        .unwrap();
+    assert!(!rejected.completion_blockers().is_empty());
+    assert_eq!(rejected.acceptance_results, historical.acceptance_results);
+    assert_eq!(
+        rejected.state,
+        TaskState::Completed,
+        "historical completion is retained, reuse is blocked"
+    );
+    let history = runtime.evidence_refresh_history("owner", "task").unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0]["passed"], false);
+    assert_eq!(history[1]["passed"], true);
+    runtime
+        .refresh_evidence_by_user(
+            "owner",
+            "task",
+            "refresh-2",
+            refreshed.revision,
+            vec![failed, manual.clone()],
+            outputs.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        runtime
+            .evidence_refresh_history("owner", "task")
+            .unwrap()
+            .len(),
+        2,
+        "retry does not append a second audit record"
+    );
+    let mut changed_outputs = outputs.clone();
+    changed_outputs.insert("out.docx".into(), "changed".into());
+    assert!(
+        runtime
+            .refresh_evidence_by_user(
+                "owner",
+                "task",
+                "changed",
+                rejected.revision,
+                vec![machine.clone(), manual.clone()],
+                changed_outputs
+            )
+            .is_err()
+    );
+    let mut changed_manual = manual.clone();
+    changed_manual.evidence_refs.clear();
+    assert!(
+        runtime
+            .refresh_evidence_by_user(
+                "owner",
+                "task",
+                "manual",
+                rejected.revision,
+                vec![machine, changed_manual],
+                outputs
+            )
+            .is_err()
+    );
+    drop(runtime);
+    let reopened = fixture.open();
+    let durable = reopened.get("owner", "task").unwrap();
+    assert!(!durable.completion_blockers().is_empty());
+    assert_eq!(durable.acceptance_results, historical.acceptance_results);
+    assert_eq!(durable.current_acceptance_results()[1], manual);
+    assert_eq!(
+        reopened
+            .evidence_refresh_history("owner", "task")
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[test]

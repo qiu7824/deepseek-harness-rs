@@ -257,20 +257,24 @@ window.__ModuleLoader__.load({
 			const address = model.childId ? { parentSessionId, childSessionId: model.childId, mode: "continuable" } : null;
 			const progress = useChildProgress(address, entry?.activity ?? (snapshot.byId[model.childId]?.running ? "running" : "inactive"), loadProgress);
 			const state = address ? progress.state : model.state;
+			const catalog = snapshot.subagentsByParent[parentSessionId];
+			const navigable = entry?.mode === "continuable";
+			const navigationPending = !catalog || catalog.state === "loading";
 			return (0, react_jsx_runtime.jsxs)("div", { className: "dsh-subagent-tool", "data-tool": "subagent", "data-state": state, children: [
-				(0, react_jsx_runtime.jsxs)("button", { type: "button", className: "dsh-subagent-tool-trigger", title: `${t("tool.title")} · ${t("progress." + state)}`, "aria-expanded": open, onClick: () => setOpen(!open), children: [
+				(0, react_jsx_runtime.jsxs)("div", { className: "dsh-subagent-tool-header", children: [(0, react_jsx_runtime.jsxs)("button", { type: "button", className: "dsh-subagent-tool-trigger", disabled: !!address && !navigable, title: address && !navigable ? t(navigationPending ? "tool.waitingForCatalog" : "tool.catalogUnavailable") : `${t("tool.title")} · ${t("progress." + state)}`, "aria-label": address ? `${t("tool.open")}: ${model.label || model.childId}` : void 0, "aria-expanded": address ? void 0 : open, onClick: () => address ? openChild(address) : setOpen(!open), children: [
 					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: progressDot(state) }),
 					(0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintIcon", "aria-hidden": true, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconAgentPresetOutline16, { size: 14 }) }),
 					(0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintLabel", children: t("tool.title") }),
 					(0, react_jsx_runtime.jsx)("span", { className: "dsh-subagent-tool-label", children: model.label }),
 					(0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintLabel", children: t("progress." + state) }),
-					(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
-				] }),
+					!address && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
+				] }), address && (0, react_jsx_runtime.jsx)("button", { type: "button", className: "dsh-subagent-tool-expand", title: t("tool.progress"), "aria-label": t("tool.progress"), "aria-expanded": open, onClick: () => setOpen(!open), children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {}) })] }),
+				address && !navigable && (0, react_jsx_runtime.jsxs)("div", { className: "dsh-subagent-navigation-state", role: "status", children: [t(navigationPending ? "tool.waitingForCatalog" : "tool.catalogUnavailable"), !navigationPending && (0, react_jsx_runtime.jsx)("button", { type: "button", onClick: () => refresh(parentSessionId), children: t("team.refresh") })] }),
 				open && (0, react_jsx_runtime.jsxs)("div", { className: "dsh-subagent-tool-body", children: [
 					address ? (0, react_jsx_runtime.jsx)("div", { className: "dsh-subagent-tool-progress", children: (0, react_jsx_runtime.jsx)(ProgressContent, { progress, label: model.label || model.childId, mode: t("mode.continuable"), t }) }) : (0, react_jsx_runtime.jsx)("p", { children: t("progress." + model.state) }),
 					model.prompt && (0, react_jsx_runtime.jsx)("p", { children: model.prompt }),
 					!address && model.output && (0, react_jsx_runtime.jsx)(SubagentMarkdownOutput, { text: model.output, openFile, t }),
-					address && (0, react_jsx_runtime.jsx)("button", { type: "button", onClick: () => openChild(address), children: t("tool.open") }),
+					address && (0, react_jsx_runtime.jsx)("button", { type: "button", disabled: !navigable, onClick: () => openChild(address), children: t("tool.open") }),
 					inspect && (0, react_jsx_runtime.jsx)("button", { type: "button", onClick: inspect, children: t("tool.details") })
 				] })
 			] });
@@ -278,7 +282,7 @@ window.__ModuleLoader__.load({
 		if (typeof document !== "undefined" && !document.querySelector("style[data-subagent-progress]")) {
 			const style = document.createElement("style");
 			style.dataset.subagentProgress = "true";
-			style.textContent = ".dsh-subagent-tool{margin:4px 0;color:var(--dsw-alias-label-secondary);font-size:13px}.dsh-subagent-tool-trigger{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;border:0;background:none;color:inherit;text-align:left;cursor:pointer}.dsh-subagent-tool-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-subagent-tool-body{margin:4px 0 8px 18px;padding:8px 12px;border-left:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.dsh-subagent-tool-body p{margin:6px 0}.dsh-subagent-tool-body pre{white-space:pre-wrap;max-height:220px;overflow:auto}.dsh-subagent-tool-body>button{background:none;color:var(--dsw-alias-label-link);border:0;padding:6px 12px 6px 0;cursor:pointer}.dsh-subagent-tool-progress{display:flex;gap:8px;align-items:flex-start}";
+			style.textContent = ".dsh-subagent-tool{margin:4px 0;color:var(--dsw-alias-label-secondary);font-size:13px}.dsh-subagent-tool-header{display:flex;align-items:center;min-width:0}.dsh-subagent-tool-trigger{display:flex;flex:1;min-width:0;align-items:center;gap:8px;width:100%;min-height:32px;border:0;background:none;color:inherit;text-align:left;cursor:pointer}.dsh-subagent-tool-expand{display:grid;place-items:center;flex:none;width:32px;height:32px;border:0;border-radius:6px;background:none;color:inherit;cursor:pointer}.dsh-subagent-tool-expand:hover{background:var(--dsw-alias-interactive-bg-hover)}.dsh-subagent-tool-header button:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.dsh-subagent-tool-trigger:disabled{opacity:.6;cursor:default}.dsh-subagent-navigation-state{display:flex;gap:8px;align-items:center;margin:4px 8px;font-size:12px;color:var(--dsw-alias-label-tertiary)}.dsh-subagent-navigation-state button{font:inherit;color:inherit;background:transparent;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;cursor:pointer}.dsh-subagent-tool-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-subagent-tool-body{margin:4px 0 8px 18px;padding:8px 12px;border-left:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.dsh-subagent-tool-body p{margin:6px 0}.dsh-subagent-tool-body pre{white-space:pre-wrap;max-height:220px;overflow:auto}.dsh-subagent-tool-body>button{background:none;color:var(--dsw-alias-label-link);border:0;padding:6px 12px 6px 0;cursor:pointer}.dsh-subagent-tool-progress{display:flex;gap:8px;align-items:flex-start}";
 			style.textContent += "@media(max-width:520px){.HfG9eW_menu{position:fixed;left:16px;right:16px;top:var(--dsh-subagent-menu-top,96px);width:auto;max-width:none;max-height:calc(100dvh - var(--dsh-subagent-menu-top,96px) - 16px)}}";
 			document.head.appendChild(style);
 		}
@@ -727,11 +731,16 @@ window.__ModuleLoader__.load({
             "team.result": "结果与验收证据",
             "team.save": "保存",
             "team.cancel": "取消",
+            "team.taskChanged": "任务已在其他位置更新，编辑草稿已保留。载入最新内容后再保存。",
+            "team.loadLatest": "载入最新内容",
+            "tool.progress": "展开任务进展",
+            "tool.waitingForCatalog": "正在载入子任务目录…",
+            "tool.catalogUnavailable": "子任务目录不可用，请刷新后重试。",
             "team.edit": "编辑",
             "team.dispatch": "派发",
             "team.accept": "验收完成",
             "team.delete": "删除",
-            "team.showButton": "显示输入区协作按钮",
+            "team.showButton": "显示右上角协作按钮",
             "team.defaultMode": "新会话默认方式",
             "team.defaultProfile": "默认方案",
             "team.none": "未选择",
@@ -876,11 +885,16 @@ window.__ModuleLoader__.load({
             "team.result": "Result and evidence",
             "team.save": "Save",
             "team.cancel": "Cancel",
+            "team.taskChanged": "This task changed elsewhere. Your draft is preserved. Load the latest content before saving.",
+            "team.loadLatest": "Load latest content",
+            "tool.progress": "Expand task progress",
+            "tool.waitingForCatalog": "Loading child task directory…",
+            "tool.catalogUnavailable": "The child task directory is unavailable. Refresh to retry.",
             "team.edit": "Edit",
             "team.dispatch": "Dispatch",
             "team.accept": "Accept result",
             "team.delete": "Delete",
-            "team.showButton": "Show composer collaboration button",
+            "team.showButton": "Show top-right collaboration button",
             "team.defaultMode": "Default mode",
             "team.defaultProfile": "Default profile",
             "team.none": "None",
@@ -1012,7 +1026,7 @@ window.__ModuleLoader__.load({
             const active=react.useRef(parentSessionId),epoch=react.useRef(0),pending=react.useRef(false),operationError=react.useRef(null),trigger=react.useRef(null);
             active.current=parentSessionId;
             const scope=useTeamScope(teamSettings);
-            react.useEffect(()=>{epoch.current++;operationError.current=null;setState(null);setError(null);setBusy(false);pending.current=false;return()=>controller.close(parentSessionId);},[parentSessionId,controller]);
+            react.useEffect(()=>{epoch.current++;operationError.current=null;setState(null);setError(null);setBusy(false);pending.current=false;return()=>{epoch.current++;controller.close(parentSessionId);};},[parentSessionId,controller]);
             react.useEffect(()=>{
                 const abort=new AbortController();let alive=true,timer;
                 const load=async()=>{
@@ -1032,14 +1046,16 @@ window.__ModuleLoader__.load({
             const mutate=async args=>{
                 if(pending.current)return false;
                 pending.current=true;operationError.current=null;setBusy(true);setError(null);epoch.current++;
-                const owner=parentSessionId;
+                const owner=parentSessionId,generation=epoch.current,isCurrent=()=>active.current===owner&&epoch.current===generation;
                 try{
                     const value=await teamRequest(board?.teamId??owner,args);
                     if(refreshList)void refreshList().catch(()=>{});
-                    if(active.current===owner){setState(value);controller.update(owner,value);if(value.board?.receipt?.error)setError(value.board.receipt.error);}
+                    if(!isCurrent())return false;
+                    setState(value);controller.update(owner,value);
+                    if(value.board?.receipt?.error){operationError.current=String(value.board.receipt.error);setError(operationError.current);return false;}
                     return true;
-                }catch(cause){if(active.current===owner){operationError.current=String(cause.message||cause);setError(operationError.current);}return false;}
-                finally{if(active.current===owner){pending.current=false;setBusy(false);setRefresh(v=>v+1);}}
+                }catch(cause){if(isCurrent()){operationError.current=String(cause.message||cause);setError(operationError.current);}return false;}
+                finally{if(isCurrent()){pending.current=false;setBusy(false);setRefresh(v=>v+1);}}
             };
             const close=()=>{controller.close(parentSessionId);trigger.current?.focus();};
             const label=id=>id===board?.teamId?t('team.lead'):members.find(m=>m.id===id)?.description??t('team.unassigned');
@@ -1095,11 +1111,11 @@ window.__ModuleLoader__.load({
         function createTeamPanel(){let state={openFor:null,views:{}};const listeners=new Set();const emit=next=>{state=next;for(const fn of listeners)fn();};return{getSnapshot:()=>state,subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},open:id=>emit({...state,openFor:id}),close:id=>{if(state.openFor===id)emit({...state,openFor:null});},update:(id,value)=>emit({...state,views:{...state.views,[id]:value}})};}
         const EMPTY_TEAM_SCOPE={getSnapshot:()=>null,subscribe:()=>()=>{}};
         function useTeamScope(scope){const subscribe=react.useCallback(fn=>scope?scope.subscribe(fn):()=>{},[scope]),read=react.useCallback(()=>scope?.getSnapshot()??null,[scope]);return react.useSyncExternalStore(subscribe,read);}
-        function TeamComposerTrigger({parentSessionId,panel,teamSettings,t,header=false}){
-            const h=react.createElement,view=react.useSyncExternalStore(panel.subscribe,panel.getSnapshot).views[parentSessionId];
+        function TeamSidebarTrigger({parentSessionId,panel,teamSettings,t}){
+            const h=react.createElement,state=react.useSyncExternalStore(panel.subscribe,panel.getSnapshot);
             const settings=useTeamScope(teamSettings);
-            if(!header&&settings?.value?.showButton===false)return null;
-            return h('button',{type:'button',className:'dshTeamTrigger','aria-label':t('team.title'),onClick:()=>panel.open(parentSessionId)},teamIcon(),header?t('team.title'):t('team.mode.'+(view?.board?.config?.mode??'off')));
+            if(settings?.value?.showButton===false)return null;
+            return h('button',{type:'button',className:'dshTeamTrigger','aria-label':t('team.title'),title:t('team.title'),'aria-haspopup':'dialog','aria-expanded':state.openFor===parentSessionId,onClick:()=>panel.open(parentSessionId)},teamIcon(),t('team.title'));
         }
         function teamIdentity(prefix){return prefix+'-'+crypto.randomUUID().slice(0,12);}
         function TeamField({label,children}){return react.createElement('label',{className:'dshTeamField'},react.createElement('span',null,label),children);}
@@ -1120,9 +1136,13 @@ window.__ModuleLoader__.load({
                 h('button',{type:'submit',className:'dshTeamButton',disabled:busy||!text.trim()},t('team.send')));
         }
         function TeamTaskForm({task,members,tasks,busy,t,onSave,onCancel}){
-            const h=react.createElement,[draft,setDraft]=react.useState(()=>({subject:task?.subject??'',description:task?.description??'',acceptance:task?.acceptance??'',owner:task?.ownerId??'',blockedBy:task?.blockedBy??[],writeScopes:(task?.writeScopes??[]).join(', '),result:task?.result??'',status:task?.status??'pending'})),[id,setId]=react.useState(()=>task?.id??teamIdentity('task'));
+            const h=react.createElement,toDraft=value=>({subject:value?.subject??'',description:value?.description??'',acceptance:value?.acceptance??'',owner:value?.ownerId??'',blockedBy:value?.blockedBy??[],writeScopes:(value?.writeScopes??[]).join(', '),result:value?.result??'',status:value?.status??'pending'});
+            const [draft,setDraft]=react.useState(()=>toDraft(task)),[id,setId]=react.useState(()=>task?.id??teamIdentity('task')),[baseRevision,setBaseRevision]=react.useState(()=>task?.revision??0);
+            const conflicted=!!task&&task.revision!==baseRevision,submitting=react.useRef(false);
             const field=(name,value)=>setDraft(previous=>({...previous,[name]:value}));
-            return h('form',{className:'dshTeamCard',onSubmit:async e=>{e.preventDefault();if(await onSave({action:'task',taskId:id,expectedRevision:task?.revision??0,...draft,owner:draft.owner||null,writeScopes:draft.writeScopes.split(',').map(s=>s.trim()).filter(Boolean)})){if(onCancel)onCancel();else {setDraft({subject:'',description:'',acceptance:'',owner:'',blockedBy:[],writeScopes:'',result:'',status:'pending'});setId(teamIdentity('task'));}}}},
+            return h('form',{className:'dshTeamCard',onSubmit:async e=>{e.preventDefault();if(busy||conflicted||submitting.current||!draft.subject.trim())return;submitting.current=true;try{if(await onSave({action:'task',taskId:id,expectedRevision:baseRevision,...draft,owner:draft.owner||null,writeScopes:draft.writeScopes.split(',').map(s=>s.trim()).filter(Boolean)})){if(onCancel)onCancel();else {setDraft(toDraft(null));setId(teamIdentity('task'));}}}finally{submitting.current=false;}}},
+                conflicted&&h('p',{role:'alert',className:'dshTeamError'},t('team.taskChanged')),
+                conflicted&&h('button',{type:'button',className:'dshTeamButton',disabled:busy,onClick:()=>{setDraft(toDraft(task));setBaseRevision(task.revision);}},t('team.loadLatest')),
                 h('fieldset',{disabled:busy},h('legend',null,t(task?'team.editTask':'team.addTask')),
                     ['subject','description','acceptance'].map(name=>h(TeamField,{key:name,label:t('team.'+name)},h(name==='subject'?'input':'textarea',{required:name==='subject',rows:2,value:draft[name],maxLength:name==='subject'?256:8000,onChange:e=>field(name,e.target.value)}))),
                     h(TeamField,{label:t('team.owner')},h('select',{value:draft.owner,onChange:e=>field('owner',e.target.value)},h('option',{value:''},t('team.unassigned')),members.filter(m=>m.phase==='active').map(m=>h('option',{key:m.id,value:m.id},m.description||m.name)))),
@@ -1130,11 +1150,11 @@ window.__ModuleLoader__.load({
                     h(TeamField,{label:t('team.writeScopes')},h('input',{value:draft.writeScopes,onChange:e=>field('writeScopes',e.target.value)})),
                     task&&h(TeamField,{label:t('team.taskStatus')},h('select',{value:draft.status,onChange:e=>field('status',e.target.value)},['pending','review','blocked','completed','cancelled'].map(status=>h('option',{key:status,value:status},t('team.status.'+status))))),
                     task&&h(TeamField,{label:t('team.result')},h('textarea',{rows:3,value:draft.result,maxLength:16000,onChange:e=>field('result',e.target.value)})),
-                    h('div',{className:'dshTeamToolbar'},h('button',{type:'submit',className:'dshTeamButton',disabled:!draft.subject.trim()},t('team.save')),onCancel&&h('button',{type:'button',className:'dshTeamButton',onClick:onCancel},t('team.cancel')))));
+                    h('div',{className:'dshTeamToolbar'},h('button',{type:'submit',className:'dshTeamButton',disabled:conflicted||!draft.subject.trim()},t('team.save')),onCancel&&h('button',{type:'button',className:'dshTeamButton',onClick:onCancel},t('team.cancel')))));
         }
         function TeamTaskCard({task,tasks,members,label,busy,enabled,t,onSave}){
             const h=react.createElement,[editing,setEditing]=react.useState(false),active=['queued','in_progress'].includes(task.status);
-            if(editing)return h(TeamTaskForm,{key:task.id+':'+task.revision,task,tasks,members,busy,t,onSave,onCancel:()=>setEditing(false)});
+            if(editing)return h(TeamTaskForm,{key:task.id,task,tasks,members,busy,t,onSave,onCancel:()=>setEditing(false)});
             return h('article',{className:'dshTeamCard'},h('strong',null,task.subject),h('p',null,task.description),h('p',{className:'dshTeamHint'},`${label(task.ownerId)} · ${t('team.status.'+task.status)}`),
                 task.acceptance&&h('p',null,t('team.acceptance')+': '+task.acceptance),task.result&&h('p',null,t('team.result')+': '+task.result),
                 task.blockedBy.length>0&&h('p',{className:'dshTeamHint'},t('team.dependencies')+': '+task.blockedBy.map(id=>tasks.find(item=>item.id===id)?.subject??id).join(', ')),
@@ -1268,9 +1288,9 @@ window.__ModuleLoader__.load({
 				for (const key of ["subagent", "subagent_fork", "subagent_codex", "subagent_claude_code"]) yield ctx.slots.register({ name: "tool.call.toolview", key, locale: NS, inject: catalogActions }, SubagentToolRow);
 			});
 
-            ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({ name: "conversation.session.header.actions", id: "agent-team-board", order: 11, locale: NS, inject: id=>({...catalogActions(id),header:true}) }, TeamComposerTrigger));
+            ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({ name: "conversation.session.header.actions", id: "subagent-catalog", order: 11, locale: NS, inject: id=>({...catalogActions(id),sessionId:id}) }, SubagentCatalogAction));
             ctx.slots.inject("conversation.collaboration.panel",()=>ctx.slots.register({name:"conversation.collaboration.panel",locale:NS,inject:id=>({...catalogActions(id),panelOnly:true})},TeamBoardAction));
-            ctx.slots.inject("conversation.input.right",()=>ctx.slots.register({name:"conversation.input.right",id:"collaboration",order:90,locale:NS,inject:catalogActions},TeamComposerTrigger));
+            ctx.slots.inject("conversation.session.header.utilities",()=>ctx.slots.register({name:"conversation.session.header.utilities",id:"collaboration",order:670,locale:NS,inject:catalogActions},TeamSidebarTrigger));
 			ctx.slots.inject("conversation.composer", () => ctx.slots.register({
 				name: "conversation.composer",
 				priority: -10,

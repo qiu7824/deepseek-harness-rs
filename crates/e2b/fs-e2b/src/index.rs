@@ -31,6 +31,20 @@ use futures::stream::BoxStream;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
+struct OwnedByteStream(Option<Box<dyn E2bReadStream>>);
+impl Drop for OwnedByteStream {
+    fn drop(&mut self) {
+        if let Some(mut stream) = self.0.take() {
+            let cancel = stream.cancel();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), cancel).await;
+                });
+            }
+        }
+    }
+}
+
 /// Cordis plugin name (TS `name`).
 pub const FS_E2B_NAME: &str = "fs-e2b";
 
@@ -903,6 +917,68 @@ impl FileSystem for E2bFileSystem {
             }
         }
         Ok(whole)
+    }
+
+    async fn stream_bytes(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+        max_bytes: u64,
+    ) -> Result<BoxStream<'static, Result<Vec<u8>, FsError>>, FsError> {
+        let sandbox = self
+            .runtime()
+            .get_sandbox()
+            .await
+            .map_err(|message| FsError::new(message, FsErrorCode::FsIoError))?;
+        let info = self.require_regular(target, signal.as_ref()).await?;
+        if info.size.is_some_and(|size| size > max_bytes) {
+            return Err(FsError::new(
+                "file exceeds the byte limit",
+                FsErrorCode::FsTooLarge,
+            ));
+        }
+        let mut stream = OwnedByteStream(Some(
+            sandbox
+                .read_stream(target.target_key.as_str())
+                .await
+                .map_err(|e| map_error(e, "read", &target.display_path))?,
+        ));
+        let display_path = target.display_path.clone();
+        let output = async_stream::stream! {
+            let mut total = 0u64;
+            loop {
+                if signal.as_ref().is_some_and(|s| s()) {
+                    yield Err(FsError::new("read aborted", FsErrorCode::FsAborted)); return;
+                }
+                let next = stream.0.as_mut().expect("live stream").read();
+                tokio::pin!(next);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut next => break Some(result),
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+                            if signal.as_ref().is_some_and(|s| s()) { break None; }
+                        }
+                    }
+                };
+                let Some(result) = result else {
+                    yield Err(FsError::new("read aborted", FsErrorCode::FsAborted)); return;
+                };
+                match result {
+                    Ok(Some(chunk)) => {
+                        total = total.saturating_add(chunk.len() as u64);
+                        if total > max_bytes {
+                            yield Err(FsError::new("file grew beyond the byte limit", FsErrorCode::FsTooLarge)); return;
+                        }
+                        if !chunk.is_empty() { yield Ok(chunk); }
+                    }
+                    Ok(None) => { stream.0.take(); return; },
+                    Err(error) => {
+                        yield Err(map_error(error, "read", &display_path)); return;
+                    }
+                }
+            }
+        };
+        Ok(output.boxed())
     }
 
     async fn list_dir(

@@ -315,6 +315,21 @@ impl FileSystem for RemoteFileSystem {
         }
         Ok(bytes)
     }
+
+    async fn stream_bytes(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+        max_bytes: u64,
+    ) -> Result<futures::stream::BoxStream<'static, Result<Vec<u8>, FsError>>, FsError> {
+        if self.remote_target(target).is_none() {
+            return self.local.stream_bytes(target, signal, max_bytes).await;
+        }
+        // The current authenticated remote wire protocol already limits reads
+        // to 2 MiB. Preserve that contract without opening remote paths locally.
+        let bytes = self.read_bytes(target, signal, max_bytes).await?;
+        Ok(Box::pin(futures::stream::once(async move { Ok(bytes) })))
+    }
     async fn list_dir(
         &self,
         target: &FsTarget,

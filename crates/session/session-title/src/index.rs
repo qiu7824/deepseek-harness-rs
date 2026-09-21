@@ -501,7 +501,8 @@ pub const SESSION_LIST_METADATA_KEY: &str = "sessionListMetadata";
 // v1 used `lastPromptAt`; v2 stores the wire-ready `updatedAt` field. The
 // version bump makes old projection-cache rows miss and rebuild instead of
 // reaching `view_checkpoint` with an incompatible shape.
-pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 3;
+// v4 adds the durable last-turn outcome; idle alone never proves completion.
+pub const SESSION_LIST_METADATA_STATE_VERSION: u64 = 4;
 
 /// Fixed-size session-list state. The fold never retains event payloads.
 pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {
@@ -514,6 +515,29 @@ pub fn session_list_metadata_projection_definition() -> ProjectionDefinition {
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!({ "blank": true, "updatedAt": null }));
                 value["blank"] = JsonValue::Bool(false);
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("lastTurnReason");
+                    object.remove("lastTurnSeq");
+                }
+                arc(value)
+            }
+            "turn/end" => {
+                let mut value = downcast::<JsonValue>(state)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({ "blank": false, "updatedAt": null }));
+                let reason = match event
+                    .data
+                    .pointer("/reason/kind")
+                    .and_then(JsonValue::as_str)
+                {
+                    Some(
+                        reason @ ("completed" | "error" | "aborted" | "interrupted" | "cancelled"
+                        | "blocked" | "max-tokens" | "refusal"),
+                    ) => reason,
+                    _ => "unknown",
+                };
+                value["lastTurnReason"] = JsonValue::String(reason.into());
+                value["lastTurnSeq"] = JsonValue::from(event.seq.get());
                 arc(value)
             }
             "team/config"
@@ -624,6 +648,41 @@ mod session_list_metadata_tests {
             &serde_json::json!({
                 "provider": "explicit", "model": "e1", "reasoningEffort": "high"
             })
+        );
+    }
+
+    #[test]
+    fn durable_terminal_outcome_survives_checkpoint_and_clears_on_new_turn() {
+        let definition = session_list_metadata_projection_definition();
+        let mut state = (definition.init)(&test_header());
+        for (index, reason) in ["error", "aborted", "interrupted", "blocked", "completed"]
+            .iter()
+            .enumerate()
+        {
+            state = (definition.apply)(&state, &event(index as u64 * 2, 10, "turn/start"));
+            let reset = (definition.schema)(&(definition.view)(&state)).unwrap();
+            assert!(
+                reset.get("lastTurnReason").is_none(),
+                "a new turn cannot inherit the prior failure or success"
+            );
+            let mut ended = event(index as u64 * 2 + 1, 20, "turn/end");
+            ended.data =
+                serde_json::json!({"reason":{"kind":reason,"error":{"message":"not retained"}}});
+            state = (definition.apply)(&state, &ended);
+            let checkpoint = (definition.schema)(&(definition.view)(&state)).unwrap();
+            let serialized = serde_json::to_vec(&checkpoint).unwrap();
+            assert!(
+                serialized.len() < 160,
+                "sidebar status keeps a constant-size checkpoint, not event/error payloads"
+            );
+            let restored: JsonValue = serde_json::from_slice(&serialized).unwrap();
+            assert_eq!(restored["lastTurnReason"], *reason);
+            assert_eq!(restored["lastTurnSeq"], index as u64 * 2 + 1);
+            state = arc(restored);
+        }
+        assert_eq!(
+            definition.state_version, 4,
+            "cold caches without outcomes must rebuild from durable events"
         );
     }
 

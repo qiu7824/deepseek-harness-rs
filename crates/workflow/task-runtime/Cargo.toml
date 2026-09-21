@@ -15,3 +15,5 @@ uuid.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 roxmltree = "0.21"
+quick-xml = "=0.41.0"
+memchr = "=2.8.3"

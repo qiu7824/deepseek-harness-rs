@@ -174,6 +174,7 @@ window.__ModuleLoader__.load({
 				running: s.running,
 				runningSubagentCount: descendants.get(s.id)?.runningCount ?? 0,
 				completed: s.completed === true,
+				lastTurnReason: s.lastTurnReason ?? s.projectionValues?.sessionListMetadata?.lastTurnReason,
 				updatedAt: s.updatedAt,
 				...s.pendingInteraction === void 0 ? {} : { pendingInteraction: s.pendingInteraction }
 			};
@@ -290,6 +291,7 @@ window.__ModuleLoader__.load({
 						runningSubagentCount: descendants.get(summary.id)?.runningCount ?? 0,
 						...summary.pendingInteraction === void 0 ? {} : { pendingInteraction: summary.pendingInteraction },
 						completed: summary.completed === true,
+						lastTurnReason: summary.lastTurnReason ?? summary.projectionValues?.sessionListMetadata?.lastTurnReason,
 						...match === void 0 ? {} : { snippet: match.snippet }
 					};
 				}),
@@ -631,10 +633,18 @@ window.__ModuleLoader__.load({
 				return subagents === void 0 ? [primary] : [primary, subagents];
 			}
 			if (subagents !== void 0) return [subagents];
-			if (node.completed) return [{
-				state: "done",
-				label: t("status.completed")
-			}];
+			const terminal = {
+				error: { state: "error", label: t("status.failed") },
+				aborted: { state: "warning", label: t("status.stopped") },
+				interrupted: { state: "warning", label: t("status.stopped") },
+				cancelled: { state: "warning", label: t("status.stopped") },
+				blocked: { state: "warning", label: t("status.blocked") },
+				"max-tokens": { state: "warning", label: t("status.stopped") },
+				refusal: { state: "warning", label: t("status.stopped") },
+				completed: { state: "done", label: t("status.completed") }
+			}[node.lastTurnReason];
+			if (terminal) return [terminal];
+			if (node.completed) return [{ state: void 0, label: t("status.ended") }];
 			return [{
 				state: "done",
 				label: t("status.idle")
@@ -2595,6 +2605,10 @@ window.__ModuleLoader__.load({
 			"status.planReview": "计划待审",
 			"status.waitingAnswer": "等待回答",
 			"status.completed": "已完成",
+			"status.failed": "运行失败",
+			"status.stopped": "已停止",
+			"status.blocked": "等待处理",
+			"status.ended": "运行已结束",
 			"hover.created": "创建于 {time}",
 			"hover.copied": "已复制",
 			"date.ymd": "{y}年{m}月{d}日",
@@ -2682,6 +2696,10 @@ window.__ModuleLoader__.load({
 			"status.planReview": "Plan awaiting review",
 			"status.waitingAnswer": "Waiting for answer",
 			"status.completed": "Completed",
+			"status.failed": "Run failed",
+			"status.stopped": "Stopped",
+			"status.blocked": "Needs attention",
+			"status.ended": "Run ended",
 			"hover.created": "Created {time}",
 			"hover.copied": "Copied",
 			"date.ymd": "{y}-{m}-{d}",

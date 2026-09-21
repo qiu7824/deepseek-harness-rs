@@ -9,6 +9,7 @@ const context={ContextMeter:()=>null,react:React,react_jsx_runtime:jsx,window,do
  _deepseek_ai_dsh_client_ui_attachment:{AttachmentRail:({items,onRemove})=>h('div',null,items.map(item=>h('button',{key:item.id,'aria-label':item.removeLabel,onClick:()=>onRemove(item)},item.alt)))}};
 const begin=source.indexOf('function InputBar('),end=source.indexOf('\n\t\t//#endregion',begin);vm.runInNewContext(source.slice(begin,end),context);
 let tips='on';let active='a';const state=new Map(['a','b'].map(id=>[id,{draft:'',imageIds:[],phase:'editing',queue:[],claim:null}])),submissions=[];
+let activity={running:false,removed:false},stops=0;
 const image={id:'image',file:{name:'frame.png'},previewUrl:'data:image/png;base64,fixture'};
 const root=Client.createRoot(document.getElementById('root')),act=fn=>React.act(async()=>{await fn();await new Promise(resolve=>setTimeout(resolve,10));});
 const store={getSnapshot:()=>({mode:tips}),subscribe:()=>()=>{}};
@@ -19,7 +20,7 @@ const shell={notices:{},lexicon:{}};
 const factory=vm.runInNewContext('('+source.slice(injectStart,injectEnd)+')',{composerTips:{store},ABSENT_NOTICES:{},ABSENT_LEXICON:{},ABSENT_MENU_LAUNCHER:{},concreteConversation:()=>({}),ctx:{},inputHub:{shell:()=>shell,inputTriggers:()=>undefined}});
 assert.equal(factory(undefined).hooks.composerTips,store,'unscoped composer binds the preference hook');
 assert.equal(factory('a').hooks.composerTips,store,'scoped composer retains the same preference hook');
-const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,useComposerTips:select=>select({mode:tips}),useSession:select=>select({running:false,removed:false}),useInput:select=>select(state.get(active)),inputActions:{pruneImages(){},submit(){submissions.push({sessionId:active,...state.get(active)})}},keyboard:{snapshot:{},setDraft(value){state.set(active,{...state.get(active),draft:value});render()},track(){}},draftImages:ids=>ids.map(()=>image),removeImage:()=>{state.set(active,{...state.get(active),imageIds:[]});render()},useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),useProjection:(name,select)=>select?select(undefined):undefined,t:key=>key,renderSlot:()=>null}));
+const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,useComposerTips:select=>select({mode:tips}),useSession:select=>select(activity),stop:()=>stops++,useInput:select=>select(state.get(active)),inputActions:{pruneImages(){},submit(){submissions.push({sessionId:active,...state.get(active)})}},keyboard:{snapshot:{},setDraft(value){state.set(active,{...state.get(active),draft:value});render()},track(){}},draftImages:ids=>ids.map(()=>image),removeImage:()=>{state.set(active,{...state.get(active),imageIds:[]});render()},useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),useProjection:(name,select)=>select?select(undefined):undefined,t:key=>key,renderSlot:()=>null}));
 const send=()=>document.querySelector('button[aria-label="input.send"]');
 (async()=>{
  await act(render);assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').placeholder,'placeholder.default');
@@ -39,5 +40,9 @@ const send=()=>document.querySelector('button[aria-label="input.send"]');
  assert.equal(document.querySelector('[data-composer-tip-region]'),tipRegion,'blur must retain the same fixed-height region so buttons cannot move during a click');assert.equal(tipRegion.style.visibility,'hidden');
  await act(()=>{document.querySelector('textarea').dispatchEvent(new window.Event('pointerdown',{bubbles:true}));document.querySelector('textarea').focus()});assert.notEqual(document.querySelector('[data-composer-tip]').textContent,firstTip,'consecutive focuses rotate tips');
  tips='off';await act(render);assert.equal(!!document.querySelector('[data-composer-tip]'),false,'settings immediately hide focused tips');
+ state.set('a',{...state.get('a'),phase:'submitting'});activity={...activity,queue:[{id:'sending:r',placement:'sending'}]};await act(render);
+ let stop=document.querySelector('button[aria-label="input.stop"]');assert.ok(stop,'pending main admission exposes Stop before running status arrives');assert.equal(stop.disabled,false);await act(()=>stop.click());assert.equal(stops,1);
+ activity={...activity,subagent:{address:{mode:'continuable'},parentAvailable:false}};await act(render);stop=document.querySelector('button[aria-label="input.stop"]');assert.ok(stop,'a pending child admission can stop even while its parent is offline');assert.equal(stop.disabled,false);await act(()=>stop.click());assert.equal(stops,2);assert.equal(submissions.length,1,'Stop never submits a draft');
+ activity={...activity,subagent:{address:{mode:'one-shot'},parentAvailable:false}};await act(render);assert.equal(document.querySelector('button[aria-label="input.stop"]'),null,'read-only one-shot views never gain stop authority');
  await act(()=>root.unmount());dom.window.close();console.log('PASS actual InputBar DOM: whitespace, deletion, attachment-only submission, session switching and placeholder restoration');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close();});

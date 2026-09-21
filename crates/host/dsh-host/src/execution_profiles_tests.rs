@@ -19,7 +19,14 @@ async fn environment_controls_resume_and_release_an_idle_persistent_session() {
     use dsh_host_apiproxy::{Body, CarrierRequest, to_fetch_handler};
     let fixture = Fixture::new(SandboxMode::WorkspaceWrite);
     let ctx = Context::root();
-    let host = crate::compose_persistent_host_at(&ctx, &fixture.root.join("host"), None).unwrap();
+    let home = fixture.root.join("host");
+    // Release test executables do not have packaged presets beside deps/.
+    // Supply an isolated fixture through the same user-root discovery used
+    // by the public RPC, without relying on the developer's installation.
+    let preset = home.join(".agent-presets/environment-fixture");
+    std::fs::create_dir_all(&preset).unwrap();
+    std::fs::write(preset.join("agent.cordis.yml"), "[]\n").unwrap();
+    let host = crate::compose_persistent_host_at(&ctx, &home, None).unwrap();
     let service = ExecutionProfiles::install(
         &ctx.isolate("executionProfiles"),
         fixture.runtime.clone(),
@@ -31,7 +38,7 @@ async fn environment_controls_resume_and_release_an_idle_persistent_session() {
         path: "/api/session.create".into(),
         query: vec![],
         headers: vec![("content-type".into(), "application/json".into())],
-        body: Some(json!({"type":"client-request","rpcId":"retired-environment","method":"session.create","payload":{"cwd":fixture.cwd()}}).to_string().into_bytes()),
+        body: Some(json!({"type":"client-request","rpcId":"retired-environment","method":"session.create","payload":{"cwd":fixture.cwd(),"agentPreset":"environment-fixture"}}).to_string().into_bytes()),
     }).await;
     let value: Value = match response.into_body() {
         Body::Bytes(bytes) => serde_json::from_slice(&bytes).unwrap(),
@@ -212,7 +219,10 @@ impl SubprocessOutputReader for Reader {
         }
     }
 }
-struct Child(tokio::time::Instant);
+struct Child {
+    deadline: tokio::time::Instant,
+    completion: Option<Arc<tokio::sync::Notify>>,
+}
 impl SubprocessHandle for Child {
     fn stdin(&self) -> Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>> {
         None
@@ -230,8 +240,12 @@ impl SubprocessHandle for Child {
         }
     }
     fn done(&self) -> BoxFuture<'static, Result<SubprocessOutcome, String>> {
-        let deadline = self.0;
+        let deadline = self.deadline;
+        let completion = self.completion.clone();
         Box::pin(async move {
+            if let Some(completion) = completion {
+                completion.notified().await;
+            }
             tokio::time::sleep_until(deadline).await;
             Ok(SubprocessOutcome {
                 exit_code: Some(0),
@@ -249,6 +263,7 @@ struct Runtime {
     path: String,
     spawns: AtomicUsize,
     args: Mutex<Vec<Vec<String>>>,
+    completion: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 impl SubprocessRuntime for Runtime {
     fn resolve_executable(
@@ -263,10 +278,11 @@ impl SubprocessRuntime for Runtime {
     fn spawn(&self, spec: SubprocessSpawnSpec) -> Result<Arc<dyn SubprocessHandle>, String> {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         self.args.lock().push(spec.argv);
-        Ok(Arc::new(Child(
-            tokio::time::Instant::now()
+        Ok(Arc::new(Child {
+            deadline: tokio::time::Instant::now()
                 + Duration::from_millis(self.delay_ms.load(Ordering::SeqCst) as u64),
-        )))
+            completion: self.completion.lock().clone(),
+        }))
     }
     fn spawn_terminal(
         &self,
@@ -302,6 +318,7 @@ impl Fixture {
             path: executable.to_string_lossy().into_owned(),
             spawns: AtomicUsize::new(0),
             args: Mutex::new(Vec::new()),
+            completion: Mutex::new(None),
         });
         let host = EnvironmentCapabilities::new(runtime.clone(), paths.clone());
         let service = ExecutionProfiles::install(&ctx, runtime.clone(), paths.clone(), host);
@@ -598,6 +615,8 @@ async fn fixed_probe_cache_is_invalidated_by_binary_replacement_and_profile_revi
 async fn one_cancelled_waiter_does_not_cancel_shared_probe() {
     let f = Fixture::new(SandboxMode::DangerFullAccess);
     f.save().await;
+    let completion = Arc::new(tokio::sync::Notify::new());
+    *f.runtime.completion.lock() = Some(completion.clone());
     let abort = Arc::new(AtomicBool::new(false));
     let flag = abort.clone();
     let cwd = f.cwd();
@@ -619,11 +638,37 @@ async fn one_cancelled_waiter_does_not_cancel_shared_probe() {
         true,
         Arc::new(|| false),
     );
-    let cancel = async move {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    let first = async {
+        let result = first.await;
+        assert!(
+            result.is_err(),
+            "cancelled waiter completed before cancellation: {result:?}"
+        );
+        // The shared child may complete only after the cancelled waiter has
+        // returned; wall-clock scheduling cannot invert the intended race.
+        completion.notify_one();
+        result
+    };
+    let cancel = async {
+        loop {
+            let joined = f
+                .service
+                .flights
+                .lock()
+                .values()
+                .any(|flight| flight.waiters.load(Ordering::Acquire) == 2);
+            if joined && f.runtime.spawns.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         abort.store(true, Ordering::Release);
     };
-    let (a, b, _) = tokio::join!(first, second, cancel);
+    let (a, b, _) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(first, second, cancel)
+    })
+    .await
+    .expect("both admitted waiters settle after one cancellation");
     assert!(a.is_err());
     assert_eq!(b.unwrap()["status"], "ready");
     assert_eq!(f.runtime.spawns.load(Ordering::SeqCst), 1);
@@ -633,6 +678,8 @@ async fn one_cancelled_waiter_does_not_cancel_shared_probe() {
 async fn clearing_cache_fences_late_probe_results() {
     let f = Fixture::new(SandboxMode::DangerFullAccess);
     f.save().await;
+    let completion = Arc::new(tokio::sync::Notify::new());
+    *f.runtime.completion.lock() = Some(completion.clone());
     let cwd = f.cwd();
     let probe = f.service.inspect(
         "python",
@@ -644,13 +691,19 @@ async fn clearing_cache_fences_late_probe_results() {
         Arc::new(|| false),
     );
     let clear = async {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        while f.runtime.spawns.load(Ordering::SeqCst) != 1 {
+            tokio::task::yield_now().await;
+        }
         f.service
             .handle(json!({"action":"clearCache","cwd":cwd}))
             .await
             .unwrap();
+        completion.notify_one();
     };
-    let (result, _) = tokio::join!(probe, clear);
+    let (result, _) =
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(probe, clear) })
+            .await
+            .expect("probe completes after the cache generation is cleared");
     assert_eq!(
         result.unwrap()["invalidatedReason"],
         "cache_refreshed_during_probe"

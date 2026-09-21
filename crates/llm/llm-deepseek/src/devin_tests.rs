@@ -106,6 +106,34 @@ fn native_request_preserves_system_tools_results_and_inline_images() {
 }
 
 #[test]
+fn native_and_responses_transports_preserve_object_root_action_requirements() {
+    let parameters = json!({
+        "type":"object","properties":{"action":{"type":"string"},"id":{"type":"string"}},
+        "required":["action"],"additionalProperties":false,
+        "oneOf":[
+            {"type":"object","properties":{"action":{"type":"string","const":"list"}},"required":["action"]},
+            {"type":"object","properties":{"action":{"type":"string","const":"read"},"id":{}},"required":["action","id"]}
+        ]
+    });
+    let chat = json!({"model":"swe-2","messages":[{"role":"user","content":"inspect"}],"tools":[{
+        "type":"function","function":{"name":"workspace_scratch","description":"Manage scratch files","parameters":parameters}
+    }]});
+    let bytes = devin::chat_request(&chat, "token", "jwt", "cascade").unwrap();
+    let message = Message::parse(&bytes).unwrap();
+    let tools = message.repeated(10).unwrap();
+    assert_eq!(tools.len(), 1);
+    let tool = Message::parse(tools[0]).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(tool.text(3).unwrap()).unwrap(),
+        parameters
+    );
+    let responses = crate::responses::request_from_chat(&chat).unwrap();
+    assert_eq!(responses["tools"][0]["parameters"], parameters);
+    assert_eq!(responses["tools"][0]["parameters"]["type"], "object");
+    assert_eq!(responses["tools"][0]["strict"], false);
+}
+
+#[test]
 fn native_replay_preserves_tool_failure_flags() {
     let mut options = options();
     options.messages.push(dsh_llm::create_tool_result_message(
@@ -321,6 +349,116 @@ fn provider_errors_never_echo_session_credentials() {
         !error.message.contains(&"s".repeat(32)),
         "redaction must precede display truncation"
     );
+}
+
+#[test]
+fn account_quota_is_distinct_from_invalid_input_and_transient_rate_limits() {
+    for (period, status) in [
+        ("daily", reqwest::StatusCode::BAD_REQUEST),
+        ("weekly", reqwest::StatusCode::BAD_REQUEST),
+        ("weekly", reqwest::StatusCode::TOO_MANY_REQUESTS),
+    ] {
+        let body = json!({"error":{"code":"resource_exhausted","message":format!(
+            "Your {period} usage quota has been exhausted for secret-token user-jwt."
+        )}});
+        let error = safe_error(
+            status,
+            body.to_string().as_bytes(),
+            &["secret-token", "user-jwt"],
+        );
+        assert_eq!(error.code, dsh_llm::QUOTA_EXCEEDED_CODE);
+        assert_eq!(error.status, Some(u64::from(status.as_u16())));
+        assert_eq!(error.provider_retry_after_ms, None);
+        assert!(!error.message.contains("secret-token"));
+        assert!(!error.message.contains("user-jwt"));
+        assert!(error.message.contains(period));
+    }
+    for (status, message, expected) in [
+        (
+            reqwest::StatusCode::BAD_REQUEST,
+            "The model identifier is invalid",
+            "INVALID_REQUEST",
+        ),
+        (
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "Too many concurrent requests; try again shortly",
+            "RATE_LIMIT",
+        ),
+        (
+            reqwest::StatusCode::BAD_REQUEST,
+            "Invalid daily usage quota configuration",
+            "INVALID_REQUEST",
+        ),
+        (
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "Upstream unavailable",
+            "SERVER",
+        ),
+    ] {
+        let body = json!({"message":message});
+        assert_eq!(
+            safe_error(status, body.to_string().as_bytes(), &[]).code,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn http_and_connect_trailer_quota_errors_keep_the_same_account_class() {
+    for trailer in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (header, _) = read_request(&mut socket).await;
+            assert!(header.starts_with(&format!("POST {} ", devin::AUTH_PATH)));
+            let mut auth = Encoder::default();
+            auth.text(1, "user-jwt");
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/proto\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",auth.0.len()).as_bytes()).await.unwrap();
+            socket.write_all(&auth.0).await.unwrap();
+            drop(socket);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (header, _) = read_request(&mut socket).await;
+            assert!(header.starts_with(&format!("POST {} ", devin::CHAT_PATH)));
+            let error = json!({"error":{"code":"resource_exhausted","message":"Your weekly usage quota has been exhausted for test-token user-jwt."}}).to_string();
+            let (status, body) = if trailer {
+                ("200 OK", frame(2, error.as_bytes()))
+            } else {
+                ("400 Bad Request", error.into_bytes())
+            };
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            request(
+                &json!({"model":"swe-2","messages":[{"role":"user","content":"check"}]}),
+                &options(),
+                &connection(format!("http://{address}")),
+                "test-token",
+                &sender,
+                None,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        server.await.unwrap();
+        assert_eq!(result.code, dsh_llm::QUOTA_EXCEEDED_CODE);
+        assert_eq!(result.status, Some(if trailer { 429 } else { 400 }));
+        assert!(!result.message.contains("test-token"));
+        assert!(!result.message.contains("user-jwt"));
+    }
 }
 
 #[test]

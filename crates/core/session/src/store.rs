@@ -320,6 +320,7 @@ pub(crate) struct SessionInner {
     pub first_live_seq: SessionLogOffset,
     pub inherited_event_count: SessionLogOffset,
     pub state: Mutex<SessionState>,
+    derived_caches: Mutex<HashMap<std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -473,6 +474,7 @@ impl Session {
                 first_live_seq,
                 inherited_event_count,
                 state: Mutex::new(state),
+                derived_caches: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -491,6 +493,21 @@ impl Session {
     /// A process-unique opaque identity for map keys (TS object identity).
     pub fn identity(&self) -> usize {
         std::sync::Arc::as_ptr(&self.inner) as *const () as usize
+    }
+
+    /// Share a disposable projection cache within this exact Session's
+    /// lifetime. The cache is neither persisted nor shared by resumed or
+    /// independently created sessions that have the same durable id.
+    /// Cache values must not retain this Session or its owning agent.
+    pub fn derived_cache<T: Default + Send + Sync + 'static>(&self) -> Arc<T> {
+        self.inner
+            .derived_caches
+            .lock()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| Arc::new(T::default()))
+            .clone()
+            .downcast::<T>()
+            .expect("derived cache type agrees with its TypeId")
     }
 
     /// Only attached sessions emit lifecycle events that can retire service

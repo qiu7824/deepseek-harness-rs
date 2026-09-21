@@ -33,7 +33,7 @@ use crate::adapter_failure::normalize_llm_failure;
 use crate::api_key::{ApiKeyCheck, ApiKeyRejection, normalize_api_key};
 use crate::call_config::call_config_equals;
 use crate::error::INVALID_CREDENTIAL_CODE;
-use crate::message::{Message, MessageSource, Role};
+use crate::message::{MessageSource, Role};
 use crate::retry_policy::{ResolvedRetryPolicy, resolve_retry_policy};
 use crate::types::{
     FinishReason, GenerateOptions, ImageAttachmentRef, LlmCallConfig, LlmCallConfigAdapterDefaults,
@@ -1069,49 +1069,31 @@ impl LlmRuntime {
     /// adapter.
     fn for_adapter(
         &self,
-        options: GenerateOptions,
+        mut options: GenerateOptions,
         adapter: &Arc<dyn LlmAdapter>,
     ) -> GenerateOptions {
         let adapters = self.adapters.lock();
-        let mut changed = false;
-        let messages: Vec<Message> = options
-            .messages
-            .iter()
-            .map(|message| {
-                let MessageSource::Model {
-                    provider,
-                    model,
-                    replay_state: Some(_),
-                } = &message.source
-                else {
-                    return message.clone();
-                };
-                if message.role != Role::Assistant {
-                    return message.clone();
-                }
-                if adapters
+        for message in &mut options.messages {
+            if message.role != Role::Assistant {
+                continue;
+            }
+            let MessageSource::Model {
+                provider,
+                replay_state,
+                ..
+            } = &mut message.source
+            else {
+                continue;
+            };
+            if replay_state.is_some()
+                && !adapters
                     .get(provider)
                     .is_some_and(|registration| Arc::ptr_eq(&registration.adapter, adapter))
-                {
-                    return message.clone();
-                }
-                changed = true;
-                let mut stripped = message.clone();
-                stripped.source = MessageSource::Model {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    replay_state: None,
-                };
-                stripped
-            })
-            .collect();
-        drop(adapters);
-        if !changed {
-            return options;
+            {
+                *replay_state = None;
+            }
         }
-        let mut filtered = options;
-        filtered.messages = messages;
-        filtered
+        options
     }
 
     /// Final adapter boundary. Adapter selection, dispatch, iterator
@@ -1124,22 +1106,21 @@ impl LlmRuntime {
         prepared: Option<PreparedDispatch>,
     ) -> ChunkStream {
         let runtime = Arc::clone(self);
-        Box::pin(futures::stream::unfold(AdapterPhase::Setup, move |phase| {
-            let runtime = Arc::clone(&runtime);
-            let options = options.clone();
-            let prepared = prepared.clone();
-            async move { runtime.adapter_phase(phase, options, prepared).await }
-        }))
+        Box::pin(futures::stream::unfold(
+            AdapterPhase::Setup { options, prepared },
+            move |phase| {
+                let runtime = Arc::clone(&runtime);
+                async move { runtime.adapter_phase(phase).await }
+            },
+        ))
     }
 
     async fn adapter_phase(
         self: &Arc<Self>,
         phase: AdapterPhase,
-        options: GenerateOptions,
-        prepared: Option<PreparedDispatch>,
     ) -> Option<(StreamChunk, AdapterPhase)> {
         match phase {
-            AdapterPhase::Setup => {
+            AdapterPhase::Setup { options, prepared } => {
                 let signal = options.signal.clone();
                 let (registration, resolved_config, adapter) = match &prepared {
                     Some(binding) => (
@@ -1222,8 +1203,11 @@ impl LlmRuntime {
                         ));
                     }
                 };
+                // Adapters own their returned stream. The caller's complete
+                // context is needed only for dispatch, not for every delta.
+                drop(filtered);
                 match AssertUnwindSafe(stream.next()).catch_unwind().await {
-                    Ok(Some(chunk)) => Some((chunk, AdapterPhase::Iterating(stream))),
+                    Ok(Some(chunk)) => Some((chunk, AdapterPhase::Iterating { stream, signal })),
                     Ok(None) => None,
                     Err(payload) => {
                         let failure = normalize_llm_failure(&render_panic(payload));
@@ -1234,10 +1218,9 @@ impl LlmRuntime {
                     }
                 }
             }
-            AdapterPhase::Iterating(mut stream) => {
-                let signal = options.signal.clone();
+            AdapterPhase::Iterating { mut stream, signal } => {
                 match AssertUnwindSafe(stream.next()).catch_unwind().await {
-                    Ok(Some(chunk)) => Some((chunk, AdapterPhase::Iterating(stream))),
+                    Ok(Some(chunk)) => Some((chunk, AdapterPhase::Iterating { stream, signal })),
                     Ok(None) => None,
                     Err(payload) => {
                         let failure = normalize_llm_failure(&render_panic(payload));
@@ -1308,8 +1291,14 @@ impl LlmRuntime {
 }
 
 enum AdapterPhase {
-    Setup,
-    Iterating(ChunkStream),
+    Setup {
+        options: GenerateOptions,
+        prepared: Option<PreparedDispatch>,
+    },
+    Iterating {
+        stream: ChunkStream,
+        signal: Option<AbortSignal>,
+    },
     Done,
 }
 

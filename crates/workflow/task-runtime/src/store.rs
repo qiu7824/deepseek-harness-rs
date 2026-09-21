@@ -9,6 +9,9 @@ use std::{
 
 const MAX_CONTRACT: usize = 2 * 1024 * 1024;
 const MAX_STEPS: usize = 512;
+// Record format remains v1; older Hosts must not overwrite revision metadata.
+const DATABASE_VERSION: u32 = 2;
+mod revise;
 pub struct TaskRuntime {
     db: Mutex<Connection>,
     _lease: File,
@@ -110,16 +113,25 @@ impl TaskRuntime {
         lease
             .try_lock()
             .map_err(|e| format!("Task runtime is already owned by another Host: {e}"))?;
-        let db = Connection::open(path).map_err(|e| e.to_string())?;
+        let mut db = Connection::open(path).map_err(|e| e.to_string())?;
         let version: u32 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if version > FORMAT_VERSION {
+        if version > DATABASE_VERSION {
             return Err("Task runtime database was created by a newer version".into());
         }
         db.busy_timeout(Duration::from_secs(2))
             .map_err(|e| e.to_string())?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS tasks(owner TEXT NOT NULL,task_id TEXT NOT NULL,state TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(owner,task_id)); CREATE TABLE IF NOT EXISTS mutations(owner TEXT NOT NULL,task_id TEXT NOT NULL,key TEXT NOT NULL,digest TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(owner,task_id,key)); PRAGMA user_version=1;").map_err(|e|e.to_string())?;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+            .map_err(|e| e.to_string())?;
+        let migration = db.transaction().map_err(|e| e.to_string())?;
+        migration.execute_batch("CREATE TABLE IF NOT EXISTS tasks(owner TEXT NOT NULL,task_id TEXT NOT NULL,state TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(owner,task_id)); CREATE TABLE IF NOT EXISTS mutations(owner TEXT NOT NULL,task_id TEXT NOT NULL,key TEXT NOT NULL,digest TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(owner,task_id,key));").map_err(|e|e.to_string())?;
+        migration.execute_batch("CREATE TABLE IF NOT EXISTS acceptance_refreshes(owner TEXT NOT NULL,task_id TEXT NOT NULL,revision INTEGER NOT NULL,key TEXT NOT NULL,created_at INTEGER NOT NULL,passed INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(owner,task_id,revision));").map_err(|e|e.to_string())?;
+        migration.execute_batch("CREATE TABLE IF NOT EXISTS contract_revisions(owner TEXT NOT NULL,task_id TEXT NOT NULL,key TEXT NOT NULL,source_revision INTEGER NOT NULL,target_task_id TEXT NOT NULL,target_revision INTEGER NOT NULL,created_at INTEGER NOT NULL,prior_body TEXT NOT NULL,PRIMARY KEY(owner,task_id,key)); CREATE INDEX IF NOT EXISTS contract_revisions_target ON contract_revisions(owner,target_task_id);").map_err(|e|e.to_string())?;
+        migration
+            .pragma_update(None, "user_version", DATABASE_VERSION)
+            .map_err(|e| e.to_string())?;
+        migration.commit().map_err(|e| e.to_string())?;
         let store = Self {
             db: Mutex::new(db),
             _lease: lease,
@@ -181,10 +193,13 @@ impl TaskRuntime {
             task_id: id.into(),
             owner: owner.into(),
             revision: 1,
+            requirements_revision: 1,
+            based_on: None,
             spec,
             state: TaskState::Planned,
             steps: vec![],
             acceptance_results: vec![],
+            acceptance_refresh: None,
             validation_identity: None,
             output_identities: BTreeMap::new(),
             validation_subject_evidence: None,
@@ -202,6 +217,18 @@ impl TaskRuntime {
         key: &str,
         input: &Value,
         expected: Option<u64>,
+        operation: impl FnOnce(&mut TaskContract) -> Result<()>,
+    ) -> Result<TaskContract> {
+        self.mutate_audited(owner, id, key, input, expected, None, operation)
+    }
+    fn mutate_audited(
+        &self,
+        owner: &str,
+        id: &str,
+        key: &str,
+        input: &Value,
+        expected: Option<u64>,
+        audit: Option<&Value>,
         operation: impl FnOnce(&mut TaskContract) -> Result<()>,
     ) -> Result<TaskContract> {
         if !valid_id(key) {
@@ -244,6 +271,10 @@ impl TaskRuntime {
         task.revision += 1;
         task.updated_at = now();
         persist(&tx, &task)?;
+        if let Some(audit) = audit {
+            tx.execute("INSERT INTO acceptance_refreshes(owner,task_id,revision,key,created_at,passed,body) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![owner,id,task.revision,key,task.updated_at,task.completion_blockers().is_empty(),serde_json::to_string(audit).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+        }
         tx.execute(
             "INSERT INTO mutations(owner,task_id,key,digest,response) VALUES(?1,?2,?3,?4,'')",
             params![owner, id, key, fingerprint],
@@ -470,6 +501,7 @@ impl TaskRuntime {
                 }
                 task.spec.environment_fingerprint = fingerprint.into();
                 task.acceptance_results.clear();
+                task.acceptance_refresh = None;
                 task.validation_identity = None;
                 task.output_identities.clear();
                 task.validation_subject_evidence = None;
@@ -529,6 +561,15 @@ impl TaskRuntime {
                     AcceptanceStatus::Failed | AcceptanceStatus::Unverified
                 )
             });
+            if task.spec.acceptance_checks.iter().any(|check| {
+                results.iter().any(|result| {
+                    result.check_id == check.id && !check.checker.evidence_current(result)
+                })
+            }) {
+                return Err(
+                    "Machine acceptance results must use the current checker version".into(),
+                );
+            }
             let pending = results
                 .iter()
                 .any(|r| r.status == AcceptanceStatus::AwaitingUser);
@@ -543,6 +584,7 @@ impl TaskRuntime {
                 &serde_json::to_vec(&input).map_err(|e| e.to_string())?,
             ));
             task.acceptance_results = results;
+            task.acceptance_refresh = None;
             task.output_identities = outputs;
             Ok(())
         })
@@ -576,6 +618,52 @@ impl TaskRuntime {
             },
         )
     }
+    /// Append a current-checker receipt without replacing the historical
+    /// completion, immutable contract, output hashes, or human approval.
+    pub fn refresh_evidence_by_user(
+        &self,
+        owner: &str,
+        id: &str,
+        key: &str,
+        revision: u64,
+        results: Vec<AcceptanceResult>,
+        outputs: BTreeMap<String, String>,
+    ) -> Result<TaskContract> {
+        let input = serde_json::json!({"refreshEvidence":results,"outputs":outputs});
+        self.mutate_audited(owner,id,key,&input,Some(revision),Some(&input),|task| {
+            if task.state != TaskState::Completed { return Err("Evidence refresh requires a completed task".into()); }
+            if task.output_identities != outputs { return Err("Completed inputs changed; create a new validation task instead of reusing prior consent".into()); }
+            if results.len() != task.spec.acceptance_checks.len() { return Err("Refresh must cover every immutable check".into()); }
+            for check in &task.spec.acceptance_checks {
+                let matches = results.iter().filter(|result| result.check_id == check.id).collect::<Vec<_>>();
+                if matches.len() != 1 { return Err("Refresh must cover every immutable check exactly once".into()); }
+                let result = matches[0];
+                if matches!(check.checker, Checker::Manual { .. }) {
+                    if !task.acceptance_results.iter().any(|original| original == result && original.status == AcceptanceStatus::Passed) {
+                        return Err("Evidence refresh cannot change existing human confirmation".into());
+                    }
+                } else if !check.checker.evidence_current(result) || !matches!(result.status, AcceptanceStatus::Passed | AcceptanceStatus::Failed) {
+                    return Err("Refresh needs current machine checker results".into());
+                }
+            }
+            let (completed_revision, completed_at) = task.acceptance_refresh.as_ref()
+                .map(|refresh| (refresh.completed_revision, refresh.completed_at)).unwrap_or((task.revision, task.updated_at));
+            task.acceptance_refresh = Some(AcceptanceRefresh {
+                completed_revision, completed_at, refreshed_at:now(),
+                input_identity:digest(&serde_json::to_vec(&outputs).map_err(|e|e.to_string())?), results,
+            });
+            Ok(())
+        })
+    }
+
+    pub fn evidence_refresh_history(&self, owner: &str, id: &str) -> Result<Vec<Value>> {
+        let db = self.db.lock();
+        load(&db, owner, id)?;
+        let mut query = db.prepare("SELECT revision,key,created_at,passed FROM acceptance_refreshes WHERE owner=?1 AND task_id=?2 ORDER BY revision DESC LIMIT 64").map_err(|e|e.to_string())?;
+        query.query_map(params![owner,id],|row| Ok(serde_json::json!({"revision":row.get::<_,u64>(0)?,"idempotencyKey":row.get::<_,String>(1)?,"recordedAt":row.get::<_,u64>(2)?,"passed":row.get::<_,bool>(3)?})))
+            .map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())
+    }
+
     pub fn cancel(&self, owner: &str, id: &str, key: &str) -> Result<TaskContract> {
         self.mutate(
             owner,

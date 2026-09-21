@@ -154,10 +154,42 @@ impl AbortSignal {
     /// Resolve once the signal aborts (immediately when already aborted).
     pub async fn cancelled(&self) {
         loop {
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.aborted() {
                 return;
             }
-            self.inner.notify.notified().await;
+            notified.await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod abort_signal_tests {
+    use super::AbortSignal;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_abort_releases_every_waiter_and_future_subscribers() {
+        for _ in 0..32 {
+            let signal = AbortSignal::new();
+            let mut waiting = tokio::task::JoinSet::new();
+            for _ in 0..8 {
+                let observed = signal.clone();
+                waiting.spawn(async move { observed.cancelled().await });
+            }
+            tokio::task::yield_now().await;
+            signal.abort();
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while let Some(result) = waiting.join_next().await {
+                    result.unwrap();
+                }
+            })
+            .await
+            .expect("an abort must not be lost while a waiter is registering");
+            tokio::time::timeout(std::time::Duration::from_secs(1), signal.cancelled())
+                .await
+                .expect("late subscribers observe an already aborted signal");
         }
     }
 }

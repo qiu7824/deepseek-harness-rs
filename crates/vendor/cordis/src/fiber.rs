@@ -198,6 +198,87 @@ mod transition_tests {
         ctx.fiber.dispose().await;
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn pending_activation_dispose_drains_early_effects() {
+        let ctx = Context::root();
+        let payload = Arc::new(vec![0_u8; 1024 * 1024]);
+        let weak_payload = Arc::downgrade(&payload);
+        let fiber = ctx.plugin(Arc::new(CapturingPlugin(payload.clone())), arc(()));
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        let cleanup_count = cleaned.clone();
+        fiber.effect(
+            "early owned resource",
+            Box::pin(async move {
+                Some(make_disposer(move || {
+                    let payload = payload.clone();
+                    let cleanup_count = cleanup_count.clone();
+                    Box::pin(async move {
+                        assert_eq!(payload.len(), 1024 * 1024);
+                        cleanup_count.fetch_add(1, Ordering::SeqCst);
+                    })
+                }))
+            }),
+        );
+        assert!(
+            fiber.has_inertia(),
+            "activation must still be queued without a yield"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), fiber.dispose())
+            .await
+            .expect("pending activation must drain ownership before disposal returns");
+        assert_eq!(cleaned.load(Ordering::SeqCst), 1);
+        assert_eq!(fiber.state(), FiberState::Disposed);
+        fiber.dispose().await;
+        assert_eq!(cleaned.load(Ordering::SeqCst), 1, "cleanup is idempotent");
+        drop(fiber);
+        assert!(
+            weak_payload.upgrade().is_none(),
+            "pending plugin factory or effect retained its resource"
+        );
+        ctx.fiber.dispose().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_and_reentrant_disposal_runs_cleanup_once() {
+        let ctx = Context::root();
+        let fiber = ctx.plugin(Arc::new(CapturingPlugin(Arc::new(Vec::new()))), arc(()));
+        fiber.settle().await.unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cleanup_calls = calls.clone();
+        let weak_fiber = Arc::downgrade(&fiber);
+        fiber.effect(
+            "reentrant cleanup",
+            Box::pin(async move {
+                Some(make_disposer(move || {
+                    let weak_fiber = weak_fiber.clone();
+                    let cleanup_calls = cleanup_calls.clone();
+                    Box::pin(async move {
+                        cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                        if let Some(fiber) = weak_fiber.upgrade() {
+                            fiber.dispose().await;
+                        }
+                        tokio::task::yield_now().await;
+                    })
+                }))
+            }),
+        );
+        let work = (0..16).map(|_| {
+            let fiber = fiber.clone();
+            tokio::spawn(async move { fiber.dispose().await })
+        });
+        let joined = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            futures::future::join_all(work),
+        )
+        .await
+        .expect("concurrent disposal and cleanup reentry must not wait on themselves");
+        assert!(joined.into_iter().all(|result| result.is_ok()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fiber.state(), FiberState::Disposed);
+        drop(fiber);
+        ctx.fiber.dispose().await;
+    }
+
     struct CountedPlugin(Arc<AtomicUsize>);
     #[async_trait::async_trait]
     impl Plugin for CountedPlugin {
@@ -418,10 +499,9 @@ impl FiberCore {
             Box::pin(async move {
                 let Some(core) = core else { return };
                 let runtime = core.runtime.as_ref().expect("plugin runtime").clone();
-                if core.uid.lock().is_none() {
+                if core.uid.lock().take().is_none() {
                     return; // already disposed
                 }
-                *core.uid.lock() = None;
                 // emitPluginDisposed → internal/plugin with the fiber
                 if let Some(ctx) = core.ctx() {
                     ctx.events
@@ -434,13 +514,15 @@ impl FiberCore {
                     ctx.registry.remove_runtime(&runtime);
                 }
                 core.set_runner_epoch(None);
-                if !core.has_inertia() {
-                    let inner = core.clone();
-                    core.spawn_inertia(
-                        FiberState::Unloading,
-                        Box::pin(async move { inner.unload().await }),
-                    );
-                }
+                // Always reserve cleanup on the transition chain. A queued
+                // activation can observe the cleared epoch before applying
+                // anything and return early; it must not strand effects that
+                // were already registered on its pending scope.
+                let inner = core.clone();
+                core.spawn_inertia(
+                    FiberState::Unloading,
+                    Box::pin(async move { inner.unload().await }),
+                );
                 core.drain().await;
                 // Break the fiber ↔ context ownership cycle (TS sets
                 // `fiber.context = undefined` on dispose).
@@ -524,6 +606,7 @@ impl FiberCore {
         self.store.lock().runner_epoch = epoch;
     }
 
+    #[cfg(test)]
     fn has_inertia(&self) -> bool {
         self.inertia.lock().is_some()
     }

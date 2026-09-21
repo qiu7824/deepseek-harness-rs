@@ -264,6 +264,12 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
                 "服务限流时遵守 Retry-After，采用有界退避；继续失败时停止并报告当前状态。",
                 false,
             ),
+            dsh_llm::QUOTA_EXCEEDED_CODE => (
+                "provider-quota",
+                "account-quota",
+                "供应商账号额度已耗尽；停止当前请求的自动重试，等待额度恢复或由用户选择其他已配置账号。修改工具参数或上下文不能恢复账号额度。",
+                false,
+            ),
             "AUTH" | "INVALID_CREDENTIAL" | "401" | "403" => (
                 "provider-auth",
                 "authentication",
@@ -1284,6 +1290,7 @@ fn diagnostic(rule_id: &str) -> &'static str {
         "runtime-unavailable" => "工具依赖或目标不可用；需要核查当前环境。",
         "tool-preflight-denied" => "当前工具前置条件或权限检查未通过。",
         "provider-rate-limit" => "供应商返回限流状态。",
+        "provider-quota" => "供应商账号额度已耗尽；这是账号状态，不是 Agent 参数错误。",
         "provider-auth" => "供应商拒绝当前账号或模型访问。",
         "provider-error" => "模型请求失败；具体输出保留在原任务中。",
         "provider-request" => "供应商拒绝请求格式或模型参数；需核对 Agent 接入实现。",

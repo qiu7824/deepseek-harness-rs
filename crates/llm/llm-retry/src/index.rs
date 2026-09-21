@@ -236,9 +236,13 @@ async fn recover(
         retry_policy,
         signal,
     } = payload;
-    // Context overflow needs a changed request surface. Repeating the same
-    // oversized request under an "always" transport policy cannot recover.
-    if failure.code == dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE {
+    // Context overflow needs a changed request surface; exhausted account
+    // quota needs a reset or an account change. Transport retries cannot
+    // recover either, including under an "always" policy.
+    if matches!(
+        failure.code.as_str(),
+        dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE | dsh_llm::QUOTA_EXCEEDED_CODE
+    ) {
         return Some(next.call().await);
     }
     let Some(policy) = retry_policy else {

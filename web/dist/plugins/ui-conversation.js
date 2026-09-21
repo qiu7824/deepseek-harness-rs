@@ -131,17 +131,23 @@ window.__ModuleLoader__.load({
 			* @param imageIds - ordered draft-local attachment ids.
 			* @param mode - queue or steer delivery selected by composer policy.
 			*/
-			async sendSession(session, text, imageIds, mode) {
+			async sendSession(session, text, imageIds, mode, reservedRequestId) {
+				const cancelGeneration = session.promptCancelGeneration;
+				const ticket = _deepseek_ai_dsh_client_runtime_client.trackPromptRequest?.(session.address ?? { sessionId: session.sessionId }, reservedRequestId);
+				try {
 				const attachments = this.draftImages(imageIds);
 				if (attachments.length !== imageIds.length) throw new Error("conversation.sendSession: one or more draft images are no longer available");
 				const content = [...await this.serializeImages(attachments.map((attachment) => attachment.file)), ...text === "" ? [] : [{
 					type: "text",
 					text
 				}]];
-				const result = await session.prompt(content, mode);
-				if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`);
+				if (this.disposed || cancelGeneration !== session.promptCancelGeneration || ticket?.cancelled()) throw Object.assign(new Error("Message submission was stopped"), { code: "cancelled" });
+				const result = await session.prompt(content, mode, ticket?.requestId ?? reservedRequestId);
+				if (!result.ok) throw Object.assign(new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`), { code: result.error.code });
 				if (result.value?.accepted !== true) throw new Error("消息尚未被接收，请重试；输入内容已保留。 / Message was not accepted; your draft is preserved.");
+				if (this.disposed || cancelGeneration !== session.promptCancelGeneration || ticket?.cancelled()) throw Object.assign(new Error("Message submission was stopped"), { code: "cancelled" });
 				this.releaseDraftImages(attachments);
+				} finally { ticket?.release(); }
 			}
 			/**
 			* Create runtime-only draft images and their object URLs.
@@ -289,7 +295,9 @@ window.__ModuleLoader__.load({
 			}
 			/** Cancel the scoped session's in-flight turn while preserving Queue (failures land in promptError and reject, as in send). */
 			async cancel() {
-				const result = await this.scopedSession("cancel").cancel();
+				const session = this.scopedSession("cancel");
+				this.input.shells.get(session.sessionId)?.cancelPending();
+				const result = await session.cancel();
 				if (!result.ok) throw new Error(`conversation.cancel failed: ${result.error.code}: ${result.error.message}`);
 			}
 			/** Pull one older history page for the scoped Session. */
@@ -983,6 +991,9 @@ window.__ModuleLoader__.load({
 				}
 			};
 			core = new InputMachine({ now: () => Date.now() });
+			sendGeneration = 0;
+			preparations = new Set();
+			serializationControllers = new Set();
 			noticeSeq = 0;
 			lastDraft = "";
 			imageIds = [];
@@ -1128,6 +1139,7 @@ window.__ModuleLoader__.load({
 			* dismisses and the menu tracks frozen.
 			*/
 			submit(mode = "queue") {
+				if (this.preparations.size || this.serializationControllers.size) return;
 				if (this.snapshot.draft.trim() === "" && this.imageIds.length > 0) {
 					if (this.snapshot.phase === "plain") this.deps.defaultSink("", [...this.imageIds], mode, { draft: this.snapshot.draft, draftRev: this.snapshot.draftRev });
 					return;
@@ -1279,9 +1291,17 @@ window.__ModuleLoader__.load({
 					seq: this.noticeSeq
 				});
 			}
+			cancelPending() {
+				this.sendGeneration++;
+				for (const controller of this.serializationControllers) controller.abort();
+				this.serializationControllers.clear();
+				this.preparations.clear();
+				this.run(this.core.dispatch({ type: "release" }));
+			}
 			/** Teardown: abort any in-flight attempt and stop accepting async settlements. */
 			dispose() {
 				this.disposed = true;
+				this.cancelPending();
 				this.unsubscribeQueue?.();
 				this.unsubscribeQueue = undefined;
 				this.run(this.core.dispatch({ type: "release" }));
@@ -1347,14 +1367,20 @@ window.__ModuleLoader__.load({
 				}
 				const inputTriggers = this.deps.inputTriggers?.();
 				const controller = new AbortController();
+				const generation = this.sendGeneration;
+				const scope = this.deps.requestScope?.();
+				const ticket = scope ? _deepseek_ai_dsh_client_runtime_client.trackPromptRequest?.(scope) : undefined;
+				if (ticket) sourceDraft.requestId = ticket.requestId;
+				this.serializationControllers.add(controller);
+				this.publish();
 				Promise.all(occurrences.map(async (o) => {
 					if (inputTriggers === void 0) throw new Error(`no serializer for reference source "${o.source}"`);
 					return {
 						offset: o.offset,
 						text: await inputTriggers.serializeReference(o.source, o.ref, controller.signal)
 					};
-				})).then((parts) => {
-					if (this.disposed) return;
+				})).then(async (parts) => {
+					if (this.disposed || generation !== this.sendGeneration || controller.signal.aborted || ticket?.cancelled()) return;
 					let out = "";
 					let cursor = 0;
 					for (const part of parts) {
@@ -1362,13 +1388,13 @@ window.__ModuleLoader__.load({
 						cursor = part.offset + 1;
 					}
 					out += draft.slice(cursor);
-					this.deps.defaultSink(out.trim(), imageIds, mode, sourceDraft);
-				}, (error) => {
+					await this.deps.defaultSink(out.trim(), imageIds, mode, sourceDraft);
+				}).catch((error) => {
 					controller.abort();
-					if (this.disposed) return;
+					if (this.disposed || generation !== this.sendGeneration || ticket?.cancelled()) return;
 					const message = error instanceof Error ? error.message : String(error);
 					this.notify("error", message);
-				});
+				}).finally(() => { ticket?.release(); this.serializationControllers.delete(controller); if (!this.disposed) this.publish(); });
 			}
 			/** Enter adjudication: poll the session controller; failure = notice + draft retained (never a silent downgrade). */
 			adjudicate(attempt, draft) {
@@ -1426,6 +1452,7 @@ window.__ModuleLoader__.load({
 			compose() {
 				return {
 					...this.core.state,
+					phase: this.preparations.size || this.serializationControllers.size ? "submitting" : this.core.state.phase,
 					imageIds: this.imageIds,
 					queue: this.deps.queue?.getSnapshot() ?? EMPTY_QUEUE
 				};
@@ -1482,8 +1509,9 @@ window.__ModuleLoader__.load({
 					inputTriggers: () => this.controller(actx),
 					popup: () => this.popup(actx),
 					queue: queueReadFaceOf(session),
+					requestScope: () => session.address ?? { sessionId: session.sessionId },
 					defaultSink: (text, imageIds, mode, sourceDraft) => {
-						this.sink(session, text, imageIds, mode, sourceDraft);
+						return this.sink(session, text, imageIds, mode, sourceDraft);
 					},
 					steerQueue: () => {
 						this.steerQueue(session, shell);
@@ -1550,10 +1578,13 @@ window.__ModuleLoader__.load({
 			async sink(session, text, imageIds, mode, sourceDraft) {
 				if (text === "" && imageIds.length === 0) return;
 				const shell = this.shells.get(session.sessionId);
+				const generation = shell?.sendGeneration, preparation = {};
+				shell?.preparations.add(preparation); shell?.publish();
 				try {
-					await this.conversation().sendSession(session, text, imageIds, mode);
-					if (this.shells.get(session.sessionId) === shell) shell?.commitAcceptedSend(text, imageIds, sourceDraft);
+					await this.conversation().sendSession(session, text, imageIds, mode, sourceDraft?.requestId);
+					if (this.shells.get(session.sessionId) === shell && generation === shell?.sendGeneration) shell?.commitAcceptedSend(text, imageIds, sourceDraft);
 				} catch (error) {
+					if (error?.code === "cancelled" || generation !== shell?.sendGeneration) return;
 					if (this.shells.get(session.sessionId) === shell) {
 						const message = error instanceof Error ? error.message : String(error);
 						shell?.notify("error", message);
@@ -1561,6 +1592,9 @@ window.__ModuleLoader__.load({
 					}
 					const conversation = this.rootCtx.get("conversation");
 					for (const id of imageIds) conversation?.releaseDraftImage(id);
+				} finally {
+					shell?.preparations.delete(preparation);
+					if (this.shells.get(session.sessionId) === shell) shell?.publish();
 				}
 			}
 			/**
@@ -3788,6 +3822,7 @@ window.__ModuleLoader__.load({
 			const commandMenuOpen = useMenuLauncher((source) => source === "command");
 			const promptError = useSession((s) => s.promptError) ?? null;
 			const running = useSession((s) => s.running) ?? false;
+			const sending = useSession((s) => (s.queue ?? []).some((item) => item.placement === "sending"));
 			const [runningSeconds, setRunningSeconds] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
 				if (!running) {
@@ -4121,8 +4156,8 @@ window.__ModuleLoader__.load({
 				const el = inputRef.current;
 				if (el !== null) toggleCommandMenu?.(selectionOf(el));
 			};
-			const primaryStops = running && subagent === null;
-			const interruptible = running && continuable;
+			const primaryStops = (running || sending || machineBusy) && subagent === null;
+			const interruptible = (running || sending || machineBusy) && continuable;
 			const primaryLabel = primaryStops ? t("input.stop") : t("input.send");
 			const onPrimary = () => {
 				if (primaryStops) {
@@ -8177,7 +8212,7 @@ window.__ModuleLoader__.load({
 		/**
 		* Renders Session header chrome above the resident conversation scrollport.
 		* @param props - Strict Session store, view ledger, navigation, render, and locale shares.
-		* @returns the hidden blank-session header or visible title and tabs.
+		* @returns title and tabs with persistent top-right utilities.
 		*/
 		function ConversationSessionHeader({ sessionId, useSession, useSessions, useStore, actions, renderSlot, views, open, t }) {
 			(0, react.useSyncExternalStore)(views.subscribe, views.version);
@@ -8187,12 +8222,13 @@ window.__ModuleLoader__.load({
 			const composerPhase = useSession((s) => s.composerPhase);
 			const hideChrome = useSession((s) => s.blank) && composerPhase === "blank";
 			return (0, react_jsx_runtime.jsx)("header", {
-				className: clsx(ConversationRoot_module_css_default.header, hideChrome && ConversationRoot_module_css_default.headerHidden),
-				"aria-hidden": hideChrome || void 0,
-				children: !hideChrome && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsxs)("div", {
+				className: ConversationRoot_module_css_default.header,
+				children: (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsxs)("div", {
 					className: ConversationRoot_module_css_default.titleRow,
 					children: [(0, react_jsx_runtime.jsxs)("div", {
 						className: ConversationRoot_module_css_default.titleCluster,
+						style: hideChrome ? { visibility: "hidden", pointerEvents: "none" } : void 0,
+						"aria-hidden": hideChrome || void 0,
 						children: [(0, react_jsx_runtime.jsxs)("nav", {
 							className: ConversationRoot_module_css_default.crumbs,
 							"aria-label": t("session.hierarchy"),
@@ -8225,7 +8261,7 @@ window.__ModuleLoader__.load({
 						className: ConversationRoot_module_css_default.headerUtilities,
 						children: renderSlot("conversation.session.header.utilities", {})
 					})]
-				}), tabs.length > 1 && (0, react_jsx_runtime.jsx)("div", {
+				}), !hideChrome && tabs.length > 1 && (0, react_jsx_runtime.jsx)("div", {
 					className: ConversationRoot_module_css_default.tabs,
 					role: "tablist",
 					children: tabs.map((viewTab) => (0, react_jsx_runtime.jsx)("button", {
@@ -11094,7 +11130,6 @@ window.__ModuleLoader__.load({
 					const conversation = concreteConversation(ctx);
 					const shell = inputHub.shell(sessionId);
 					const inputTriggers = inputHub.inputTriggers(sessionId);
-					let stopPending = false;
 					return {
 						keyboard: shell,
 						addImages: (files) => {
@@ -11132,14 +11167,10 @@ window.__ModuleLoader__.load({
 							inputTriggers.toggleSource("session-reference", { trigger: "@", query: "", position: snapshot.draft.slice(0, selection.start).trim() === "" ? "leading" : "inline", span: { ...selection, draftRev: snapshot.draftRev } });
 						},
 						stop: async () => {
-							if (stopPending) return;
-							stopPending = true;
 							try {
 								await scopedConversation(sessions, sessionId).cancel();
 							} catch {
 								// Session.cancel already publishes the normalized failure through promptError.
-							} finally {
-								stopPending = false;
 							}
 						},
 						command: async (line) => {

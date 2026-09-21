@@ -33,6 +33,10 @@ pub struct InboxSplice {
     )]
     pub removed_count: Option<u64>,
     pub inserted: Vec<dsh_llm::Message>,
+    /// Submissions stopped during resource preparation. These retain their
+    /// request identity and resources without ever entering a runnable queue.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled: Vec<dsh_llm::UserMessage>,
     /// Read-only context bound to a particular queued message and claimed
     /// only with that message, rather than injected into the active turn.
     #[serde(

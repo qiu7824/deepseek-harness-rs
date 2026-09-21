@@ -45,8 +45,9 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 
+		const sharedSettingsCss = "._7h7_Oq_options h2{font-size:18px;line-height:1.45;margin:0 0 12px;font-weight:600}._7h7_Oq_options h3{font-size:15px;line-height:1.5;font-weight:600}._7h7_Oq_options input[type=checkbox]{width:16px;height:16px;accent-color:var(--dsw-alias-state-business-primary);flex-shrink:0}";
 		const mobileSettingsCss = "@media(max-width:768px){body ._7h7_Oq_panel{width:100%;max-width:100%;height:100%;height:100dvh;max-height:100dvh;border-radius:0;flex-direction:column}body ._7h7_Oq_nav{width:100%;padding:12px 8px 0;gap:10px;min-width:0}body ._7h7_Oq_navTitle{padding-right:48px}body ._7h7_Oq_navTitle{padding:0 48px 0 8px;min-height:32px;display:flex;align-items:center}body ._7h7_Oq_navList{flex-direction:row;gap:4px;overflow-x:auto;overscroll-behavior-x:contain;padding-bottom:8px;scrollbar-width:thin}body ._7h7_Oq_navCell{flex:none;min-height:40px;padding:8px 12px}body ._7h7_Oq_content{min-height:0}body ._7h7_Oq_header{height:40px}body ._7h7_Oq_header{height:40px;padding:2px 12px 4px;align-items:center}body ._7h7_Oq_close{position:absolute;right:8px;top:8px;width:40px;height:40px}body ._7h7_Oq_options{padding:0 12px max(20px,env(safe-area-inset-bottom));overflow-x:hidden;overscroll-behavior:contain}body ._7h7_Oq_options :where(section ,body article ,body fieldset ,body label ,body form){min-width:0;max-width:100%;box-sizing:border-box}body ._7h7_Oq_options :where(input ,body textarea ,body select){min-width:0;max-width:100%;box-sizing:border-box}body ._7h7_Oq_options :where(input:not([type=checkbox]):not([type=radio]) ,body select){min-height:40px}body ._7h7_Oq_options :where(button){min-height:36px;max-width:100%}body ._7h7_Oq_options :where(p ,body h2 ,body h3 ,body h4 ,body code){overflow-wrap:anywhere}body .feE0ya_themeCube{flex:1 1 100px;padding:16px 12px;border-radius:16px}body .dshMemory ,body .dshSubagents ,body .dshCaps{width:100%;max-width:100%;box-sizing:border-box}body .dshMemoryGrid{grid-template-columns:minmax(0,1fr);gap:6px}body .dshMemoryGrid>label{text-align:left}body .dshMemoryItemHead{flex-wrap:wrap}body .dshMemoryItemHead strong{flex:1 1 100%}body .dshMemoryItem p{overflow-wrap:anywhere}body .dshMemoryEditor ,body .dshCapsEditor{padding:12px}body .dshExperienceFilters input{min-width:0;flex:1 1 100%}body .dshExperienceFilters select{max-width:100%;flex:1}body .dshExperienceFacts{grid-template-columns:1fr;gap:2px}body .dshExperienceFacts dd{margin-bottom:5px}body .-\\35 oaCW_rowHead ,body .-\\35 oaCW_editorHeader ,body .-\\35 oaCW_modelListHead{flex-wrap:wrap}body .-\\35 oaCW_rowActions{flex-wrap:wrap}body .-\\35 oaCW_rowActions{flex-wrap:wrap;margin-left:0;gap:4px}body .-\\35 oaCW_rowName{overflow-wrap:anywhere}body .-\\35 oaCW_rowIdentity{flex-wrap:wrap}body .-\\35 oaCW_modelRow{grid-template-columns:minmax(0,1fr) 56px 36px 36px}body .-\\35 oaCW_modelRow>input:first-child{grid-column:1/-1}body .-\\35 oaCW_modelAdvanced ,body .dshModelFields{grid-template-columns:minmax(0,1fr)}body .-\\35 oaCW_editorActions{flex-wrap:wrap}body .-\\35 oaCW_addButton{min-width:0;flex-basis:100%}body .dshModelToolbar input{min-width:0;flex-basis:100%}body .dshModelVisibility{min-height:36px;white-space:nowrap}body .dshCapsBar{min-width:0}body .dshCaps input[type=search]{min-width:0;flex-basis:100%}body .a2nWpa_search input{box-sizing:border-box;min-width:0}body .a2nWpa_cards{grid-template-columns:minmax(0,1fr)}body .a2nWpa_groupTitleRow{flex-wrap:wrap}body .a2nWpa_switcher{max-width:100%}body .a2nWpa_headerEnd{max-width:100%}body .a2nWpa_switcherLabel{min-width:0;max-width:100%}\n}";
-		if (typeof document !== "undefined" && !document.querySelector("style[data-plugin-css='mobileSettingsCss']")) { const style = document.createElement("style"); style.dataset.pluginCss = "mobileSettingsCss"; style.textContent = mobileSettingsCss; document.head.appendChild(style); }
+		if (typeof document !== "undefined" && !document.querySelector("style[data-plugin-css='mobileSettingsCss']")) { const style = document.createElement("style"); style.dataset.pluginCss = "mobileSettingsCss"; style.textContent = sharedSettingsCss + mobileSettingsCss; document.head.appendChild(style); }
 		var SettingsRoot_module_css_default = {
 			"navIcon": "_7h7_Oq_navIcon",
 			"navTitle": "_7h7_Oq_navTitle",
@@ -302,6 +303,8 @@ window.__ModuleLoader__.load({
 						ref: triggerButton,
 						type: "button",
 						className: clsx(SettingsRoot_module_css_default.trigger, !wide && SettingsRoot_module_css_default.rail),
+						"aria-label": t("trigger"),
+						title: t("trigger"),
 						"aria-haspopup": "dialog",
 						"aria-expanded": open,
 						onClick: () => {
@@ -527,6 +530,7 @@ window.__ModuleLoader__.load({
             const [showDiagnostics,setShowDiagnostics]=react.useState(false);
             const allRows=report?.items??[],diagnosticCount=report?.diagnosticTotal??allRows.filter(entry=>entry.disposition==="diagnostic").length;
             const rows=showDiagnostics?allRows:allRows.filter(entry=>entry.disposition!=="diagnostic");
+            const experienceTotal=Number.isSafeInteger(report?.total)?Math.max(0,report.total-diagnosticCount):allRows.filter(entry=>entry.disposition!=="diagnostic").length;
             const button=(text,onClick,disabled=false)=>h("button",{type:"button",disabled:!!busy||disabled,onClick},text);
             const facts=(entry)=>{
                 const count=Number.isSafeInteger(entry.occurrences)&&entry.occurrences>0?entry.occurrences:null;
@@ -540,7 +544,7 @@ window.__ModuleLoader__.load({
                 report&&masterEnabled===true&&!report.effectiveEnabled&&h("div",{className:"dshMemoryHint",role:"status"},"自动捕获与经验复用已暂停，已有记录仍可查询。"),
                 h("div",{className:"dshExperienceFilters"},h("input",{type:"search",value:query,disabled:!!busy,"aria-label":"查询自动经验",placeholder:"查询错误、工具、修正建议或来源模型",onChange:event=>setQuery(event.target.value)}),h("select",{value:status,disabled:!!busy,"aria-label":"经验验证状态",onChange:event=>setStatus(event.target.value)},h("option",{value:""},"全部状态"),h("option",{value:"pending"},"待验证"),h("option",{value:"verified"},"已验证 / 已确认")),h("select",{value:cause,disabled:!!busy,"aria-label":"诊断原因",onChange:event=>{setCause(event.target.value);setShowDiagnostics(true)}},Object.entries({"":"全部原因",unreviewed:"未核对",agent_implementation:"Agent 实现缺陷",agent_usage:"调用或业务脚本",environment:"环境与能力",provider:"提供方与账号",task_state:"任务状态",expected_control:"预期控制结果",mixed:"混合原因",insufficient_evidence:"证据不足"}).map(([value,label])=>h("option",{key:value,value},label))),!compact&&h("select",{value:workspace,disabled:!!busy,"aria-label":"经验工作区",onChange:event=>setWorkspace(event.target.value)},h("option",{value:""},"全部工作区"),workspaces.map(item=>h("option",{key:item.key,value:item.key},item.label)))),
                 !report&&loading&&h("div",{className:"dshMemoryHint",role:"status"},"正在读取自动经验…"),
-                report&&h("div",{className:"dshMemoryHint"},`共 ${experienceCount(report.total)} 条，显示 ${rows.length} 条${loading?" · 刷新中…":""}`),
+                report&&h("div",{className:"dshMemoryHint"},`经验 ${experienceCount(experienceTotal)} 条 · 运行诊断 ${experienceCount(diagnosticCount)} 条 · 当前显示 ${rows.length} 条${loading?" · 刷新中…":""}`),
                 diagnosticCount>0&&button(showDiagnostics?"收起运行诊断":`查看运行诊断（${diagnosticCount}）`,()=>setShowDiagnostics(value=>!value)),
                 preview&&h("div",{className:"dshMemoryHint dshExperienceMatch","data-experience-preview":true},
                     h("div",null,`${preview.mode==="historical-context-preview"?"历史快照匹配预览":"下次请求匹配预览"}：${preview.items.length} 条。${preview.enabled?"":"自动复用当前暂停。"}预览不增加实际应用次数，实际请求会重新匹配。`),
@@ -549,7 +553,7 @@ window.__ModuleLoader__.load({
                     h("details",null,h("summary",null,"查看具体复用建议与匹配依据"),preview.items.length?h("ol",null,preview.items.map(item=>h("li",{key:item.id},h("strong",null,item.tool||experienceCategory(item.category)),h("p",null,item.suggestion),h("div",null,experienceMatchReason(item.matchReason,preview.toolSource))))):h("p",null,"当前没有符合条件的已验证经验。")),
                     preview.text&&h("details",null,h("summary",null,"查看将加入上下文的内容"),h("pre",null,preview.text))),
                 (readError||actionError||report?.lastError)&&h("div",{className:"dshMemoryError",role:"alert"},[actionError,readError,report?.lastError].filter(Boolean).join("\n")),notice&&h("div",{className:"dshMemoryHint",role:"status"},notice),
-                report&&!rows.length&&h("div",{className:"dshMemoryHint"},query||status||workspace?"没有匹配的经验。":"尚无自动捕获记录。发生失败并被捕获后会在此显示。"),
+                report&&!rows.length&&h("div",{className:"dshMemoryHint"},query||status||workspace||cause?"没有匹配的记录。":diagnosticCount>0&&!showDiagnostics?"尚无可复用经验；已有运行诊断可展开查看。":"尚无自动捕获记录。发生失败并被捕获后会在此显示。"),
                 h("div",{className:"dshMemoryList"},rows.map(entry=>{
                     const assessment=experienceAssessment(entry),editing=confirmation?.id===entry.id,changed=editing&&confirmation.revision!==entry.revision;
                     return h("article",{key:entry.id,className:"dshMemoryItem","data-experience-id":entry.id},

@@ -84,13 +84,27 @@ fn safe_error(status: reqwest::StatusCode, bytes: &[u8], secrets: &[&str]) -> Ll
             message = message.replace(secret, "[redacted]")
         }
     }
+    // Devin reports exhausted daily/weekly account allowances as HTTP 400,
+    // and as resource_exhausted (429) in Connect trailers. Neither is a
+    // malformed model request or a transient per-minute rate limit.
+    let exhausted_quota = message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+        .contains("usage quota has been exhausted");
     let message = message.chars().take(2048).collect::<String>();
-    http_failure(
+    let mut error = http_failure(
         status,
         &Default::default(),
         json!({"error":{"message":message}}).to_string().as_bytes(),
         "Devin",
-    )
+    );
+    if exhausted_quota && matches!(status.as_u16(), 400 | 429) {
+        error.code = dsh_llm::QUOTA_EXCEEDED_CODE.into();
+        error.provider_retry_after_ms = None;
+    }
+    error
 }
 
 async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {

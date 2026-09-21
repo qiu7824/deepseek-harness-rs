@@ -408,7 +408,7 @@ impl SubagentRuntime {
         &self,
         admission: crate::continuation::SubagentFollowupAdmission,
         content: &[dsh_llm::ContentBlock],
-    ) -> dsh_llm::MessageId {
+    ) -> Result<dsh_llm::MessageId, SubagentError> {
         self.manager().submit_followup(admission, content)
     }
 
@@ -418,9 +418,18 @@ impl SubagentRuntime {
         admission: crate::continuation::SubagentFollowupAdmission,
         content: &[dsh_llm::ContentBlock],
         context: Option<dsh_llm::UserMessage>,
-    ) -> dsh_llm::MessageId {
+    ) -> Result<dsh_llm::MessageId, SubagentError> {
         self.manager()
             .submit_followup_with_context(admission, content, context)
+    }
+
+    /// Retain resources from a rejected preparation without queuing the message.
+    pub fn record_cancelled_followup(
+        &self,
+        admission: crate::continuation::SubagentFollowupAdmission,
+        content: Vec<dsh_llm::ContentBlock>,
+    ) -> Result<(), SubagentError> {
+        self.manager().record_cancelled_followup(admission, content)
     }
 
     /// Roll back one unaccepted preflight admission.
@@ -467,6 +476,16 @@ impl SubagentRuntime {
             .get()
             .and_then(std::sync::Weak::upgrade)
             .is_some_and(|manager| manager.has_pending_descendants(parent))
+    }
+
+    /// Inspect descendant residency without waiting while an Agent control
+    /// guard is held. None means a concurrent manager mutation; callers must
+    /// treat it as busy. Only Some(false) proves no pending descendant delivery.
+    pub fn try_has_pending_descendants(&self, parent: &Arc<dyn Agent>) -> Option<bool> {
+        match self.continuations.get().and_then(std::sync::Weak::upgrade) {
+            Some(manager) => manager.try_has_pending_descendants(parent),
+            None => Some(false),
+        }
     }
 
     /// The continuable-subagent manager behind this runtime.

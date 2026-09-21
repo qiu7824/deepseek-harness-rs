@@ -40,6 +40,61 @@ use crate::zstd::{
 const DEFAULT_PACK_CHUNKS: bool = true;
 const DEFAULT_COMPRESSION: JsonlCompression = JsonlCompression::Zstd;
 
+const MAX_AUTHORITY_HEADER_BYTES: u64 = 256 * 1024;
+// The repository's default streaming writer advertises a 2 MiB window
+// (descriptor 0x58), even when the header itself is only a few hundred bytes.
+const MAX_AUTHORITY_WINDOW_LOG: u32 = 21;
+
+#[cfg(test)]
+#[path = "authority_header_tests.rs"]
+mod authority_header_tests;
+
+/// Read only the first header record, never the conversation body.
+fn read_authority_header(
+    path: &Path,
+    compression: JsonlCompression,
+) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if is_not_found(&error) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut bytes = Vec::new();
+    match compression {
+        JsonlCompression::Zstd => {
+            let mut decoder = zstd::stream::read::Decoder::new(file)
+                .map_err(|error| error.to_string())?
+                .single_frame();
+            decoder
+                .window_log_max(MAX_AUTHORITY_WINDOW_LOG)
+                .map_err(|error| error.to_string())?;
+            decoder
+                .take(MAX_AUTHORITY_HEADER_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+        }
+        JsonlCompression::None => {
+            BufReader::new(file.take(MAX_AUTHORITY_HEADER_BYTES + 1))
+                .read_until(b'\n', &mut bytes)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    if bytes.len() as u64 > MAX_AUTHORITY_HEADER_BYTES {
+        return Err("session authority header exceeds 256 KiB".into());
+    }
+    if bytes.is_empty() {
+        return Err("session authority header is empty".into());
+    }
+    if compression == JsonlCompression::Zstd {
+        crate::zstd::parse_zstd_header_plaintext(&bytes).map(Some)
+    } else {
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+}
+
 fn move_history_window(events: Vec<SessionEvent>, start: usize, count: usize) -> Vec<SessionEvent> {
     // In-place iterator collect can preserve the entire scan Vec's capacity.
     // Move payloads into an explicitly sized page instead of cloning them or
@@ -835,16 +890,20 @@ impl JsonlSessionPersistence {
         if scan.frames.is_empty() {
             return Err("empty or header-less Zstandard session log".to_string());
         }
-        let plaintexts = decode_zstd_frames(buffer, &scan.frames)?;
-        let mut frames = plaintexts.into_iter();
-        let header_plaintext = frames
+        let mut frames = scan.frames.iter();
+        let header_frame = frames
             .next()
             .ok_or_else(|| "empty or header-less Zstandard session log".to_string())?;
+        let header_plaintext =
+            decompress_zstd_frame(&buffer[header_frame.start..header_frame.end])?;
         // Validate the header line (errors propagate); the scanner below
         // re-parses it.
         decode_zstd_header_line_single(&header_plaintext)?;
         let mut scanner = SessionLogScanner::new(&header_plaintext)?;
-        for plaintext in frames {
+        // A resumed session needs the decoded event log, but not another
+        // whole-history copy of all frame plaintexts beside it.
+        for frame in frames {
+            let plaintext = decompress_zstd_frame(&buffer[frame.start..frame.end])?;
             scanner.write(&plaintext)?;
         }
         let complete = scanner.checkpoint();
@@ -1978,6 +2037,53 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             .into_iter()
             .map(|(meta, _)| meta)
             .collect())
+    }
+
+    async fn read_snapshot(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<dsh_session_persistence::SessionPersistenceSnapshot>, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Ok(None);
+        };
+        for _ in 0..3 {
+            let before = file_revision(
+                &tokio::fs::metadata(&path)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            );
+            let reading = path.clone();
+            let compression = self.compression;
+            let first =
+                tokio::task::spawn_blocking(move || read_authority_header(&reading, compression))
+                    .await
+                    .map_err(|error| error.to_string())??;
+            let Some(first) = first else {
+                return Ok(None);
+            };
+            let header = parse_header_meta(&first)
+                .ok_or_else(|| "invalid session authority header".to_string())?;
+            if header.version != dsh_session::SESSION_FORMAT_VERSION
+                && header.version != dsh_session::LEGACY_SESSION_FORMAT_VERSION
+            {
+                return Err("unsupported session authority header version".into());
+            }
+            self.assert_stored_identity(&path, &header, Some(id))
+                .await?;
+            let revision = file_revision(
+                &tokio::fs::metadata(&path)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            );
+            if before == revision {
+                return Ok(Some(dsh_session_persistence::SessionPersistenceSnapshot {
+                    header,
+                    revision,
+                }));
+            }
+        }
+        Err("session header changed repeatedly during authority validation".into())
     }
 
     async fn list_snapshots(

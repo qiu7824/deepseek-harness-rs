@@ -175,7 +175,7 @@ async fn read(
         }
         let selector = args["selector"].as_str().unwrap_or("video");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-        let info = loop {
+        let mut info = loop {
             match call(json!({"action":"video_info","selector":selector})).await {
                 Ok(value) => break value.value["video"].clone(),
                 Err(error) => {
@@ -194,10 +194,34 @@ async fn read(
         let store = ctx
             .get_typed::<Arc<dyn AttachmentStore>>("attachments", false)
             .ok_or("Image attachment store is unavailable")?;
+        let automatic = args.get("times").is_none();
         let mut frames = Vec::new();
         let mut bytes = 0usize;
-        for time in times {
-            let output=call(json!({"action":"video_frame","selector":selector,"timeSeconds":time,"includeScreenshot":true})).await?;
+        for (index, requested_time) in times.into_iter().enumerate() {
+            let mut retries = 0;
+            let (time, output) = loop {
+                let time = if automatic {
+                    let latest = call(json!({"action":"video_info","selector":selector})).await?;
+                    ensure_same_video(&info, &latest.value["video"])?;
+                    info = latest.value["video"].clone();
+                    automatic_frame_time(args, &info, index)?
+                } else {
+                    requested_time
+                };
+                match call(json!({"action":"video_frame","selector":selector,"timeSeconds":time,"includeScreenshot":true})).await {
+                    Ok(output) => {
+                        ensure_same_video(&info, &output.value["video"])?;
+                        break (time, output);
+                    }
+                    Err(error) if automatic && retries < 2 && error.contains("Frame time is outside the video duration") => {
+                        // A streaming timeline can shrink between info and seek.
+                        // Refresh automatic samples only; explicit timestamps keep
+                        // their original meaning and must never be silently clamped.
+                        retries += 1;
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
             let screenshot = output.screenshot.ok_or("Video returned no decoded frame")?;
             bytes = bytes.saturating_add(screenshot.data.len());
             if bytes > 32 * 1024 * 1024 {
@@ -268,6 +292,32 @@ async fn read(
         .and_then(|r| r);
     let _ = tokio::time::timeout(Duration::from_secs(5), browser.shutdown()).await;
     result
+}
+fn ensure_same_video(previous: &Value, current: &Value) -> Result<(), String> {
+    for field in ["source", "elementId"] {
+        let (Some(previous), Some(current)) = (previous[field].as_str(), current[field].as_str())
+        else {
+            return Err(
+                "Video identity is unavailable; refresh the browser session before sampling".into(),
+            );
+        };
+        if previous != current || (field == "elementId" && previous.is_empty()) {
+            return Err(
+                "Video source changed during sampling; retry after playback stabilizes".into(),
+            );
+        }
+    }
+    Ok(())
+}
+fn automatic_frame_time(args: &Value, info: &Value, index: usize) -> Result<f64, String> {
+    let times = frame_times(
+        args,
+        info["duration"].as_f64(),
+        info["currentTime"].as_f64().unwrap_or(0.0),
+    )?;
+    times.get(index).copied().ok_or_else(|| {
+        "Video timeline changed during sampling; retry after playback stabilizes".into()
+    })
 }
 fn frame_times(args: &Value, duration: Option<f64>, current: f64) -> Result<Vec<f64>, String> {
     if let Some(times) = args["times"].as_array() {
@@ -357,6 +407,57 @@ async fn transcribe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_sampling_refreshes_duration_without_rewriting_explicit_times() {
+        let args = json!({"frame_count": 3});
+        assert_eq!(
+            automatic_frame_time(&args, &json!({"duration": 10}), 2).unwrap(),
+            9.95
+        );
+        assert_eq!(
+            automatic_frame_time(&args, &json!({"duration": 2}), 2).unwrap(),
+            1.95
+        );
+        assert!(frame_times(&json!({"times":[9.95]}), Some(2.0), 0.0).is_err());
+        assert!(
+            automatic_frame_time(&args, &json!({"duration":null,"currentTime":23}), 2).is_err()
+        );
+    }
+    #[test]
+    fn frames_from_replaced_media_are_not_mixed() {
+        assert!(
+            ensure_same_video(
+                &json!({"source":"blob:first","elementId":"first"}),
+                &json!({"source":"blob:second","elementId":"first"})
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_same_video(
+                &json!({"source":"blob:first","elementId":"first","duration":10}),
+                &json!({"source":"blob:first","elementId":"first","duration":2})
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_same_video(
+                &json!({"source":"same-url","elementId":"first"}),
+                &json!({"source":"same-url","elementId":"replacement"})
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_same_video(&json!({"source":"same-url"}), &json!({"source":"same-url"}))
+                .is_err()
+        );
+        assert!(
+            ensure_same_video(
+                &json!({"source":"","elementId":"live-stream"}),
+                &json!({"source":"","elementId":"live-stream"})
+            )
+            .is_ok()
+        );
+    }
     #[test]
     fn sampling_is_bounded_and_timestamped() {
         assert_eq!(

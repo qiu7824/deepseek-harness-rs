@@ -88,6 +88,9 @@ pub struct SubagentFollowupAdmission {
     options: SubagentFollowupOptions,
     _gate: tokio::sync::OwnedMutexGuard<()>,
     rollback_on_drop: bool,
+    cutoff: Arc<FollowupCutoff>,
+    generation: u64,
+    parent_wake: ParentWake,
 }
 
 impl SubagentFollowupAdmission {
@@ -169,11 +172,69 @@ struct MaterializeRequest<'a> {
     signal: &'a Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
+/// Serialize the final synchronous submit against interruption without holding
+/// the activation mutex through Agent callbacks.
+#[derive(Default)]
+struct FollowupCutoff(parking_lot::Mutex<u64>);
+
+impl FollowupCutoff {
+    fn snapshot(&self) -> u64 {
+        *self.0.lock()
+    }
+
+    fn interrupt(&self, cancel: impl FnOnce()) {
+        let mut generation = self.0.lock();
+        *generation = generation.wrapping_add(1);
+        cancel();
+    }
+
+    fn commit<T>(
+        &self,
+        expected: u64,
+        aborted: impl FnOnce() -> bool,
+        publish: impl FnOnce(bool) -> T,
+    ) -> T {
+        let generation = self.0.lock();
+        publish(*generation != expected || aborted())
+    }
+}
+
+/// Permission captured from the exact live parent for this delegation.
+#[derive(Clone)]
+struct ParentWake {
+    parent: std::sync::Weak<dyn Agent>,
+    generation: Option<u64>,
+}
+
+impl ParentWake {
+    fn capture(parent: &Arc<dyn Agent>) -> Self {
+        Self {
+            parent: Arc::downgrade(parent),
+            generation: parent.cancellation_generation(),
+        }
+    }
+
+    fn send(
+        &self,
+        parent: &Arc<dyn Agent>,
+        message: dsh_llm::UserMessage,
+        target: dsh_agent::InboxTarget,
+    ) -> bool {
+        let generation = self
+            .parent
+            .upgrade()
+            .filter(|original| Arc::ptr_eq(original, parent))
+            .and(self.generation);
+        parent.send_from_generation(message, target, generation)
+    }
+}
+
 /// One residency epoch for a reconstructed continuable child Agent.
 struct Activation {
     ultra_permit: Option<crate::ultra::UltraPermit>,
     child_id: SessionId,
     parent_session: SessionId,
+    parent_wake: ParentWake,
     handle: AgentHandle,
     ancestry: HashSet<usize>,
     owned_children: HashSet<String>,
@@ -183,6 +244,7 @@ struct Activation {
     announced: bool,
     notify_on_settlement: bool,
     poke: Arc<tokio::sync::Notify>,
+    followup_cutoff: Arc<FollowupCutoff>,
 }
 
 impl Activation {
@@ -217,6 +279,39 @@ impl ChildLock {
         operation().await
     }
 }
+
+/// A control check must never wait for manager locks while it holds Agent
+/// publication guards. Lock contention conservatively leaves the result unknown.
+fn try_pending_descendants<A>(
+    parent_key: usize,
+    materializations: &parking_lot::Mutex<HashMap<u64, HashSet<usize>>>,
+    activations: &parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<A>>>>,
+    is_descendant: impl Fn(&A) -> bool,
+) -> Option<bool> {
+    if materializations
+        .try_lock()?
+        .values()
+        .any(|lineage| lineage.contains(&parent_key))
+    {
+        return Some(true);
+    }
+    let activations = activations
+        .try_lock()?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for activation in activations {
+        let activation = activation.try_lock()?;
+        if is_descendant(&activation) {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+#[cfg(test)]
+#[path = "control_pending_descendants_tests.rs"]
+mod control_pending_descendants_tests;
 
 /// The continuable-subagent orchestration service behind `ctx.subagents`.
 pub struct SubagentContinuationManager {
@@ -407,6 +502,18 @@ impl SubagentContinuationManager {
             let activation = activation.lock();
             activation.child_id != *parent.id() && activation.ancestry.contains(&key)
         })
+    }
+
+    /// Non-blocking form for callers already holding Agent control guards.
+    /// An idle resident activation still owns its eventual settlement delivery.
+    pub fn try_has_pending_descendants(&self, parent: &Arc<dyn Agent>) -> Option<bool> {
+        let key = Arc::as_ptr(parent).cast::<()>() as usize;
+        try_pending_descendants(
+            key,
+            &self.materializations,
+            &self.activations,
+            |activation| activation.child_id != *parent.id() && activation.ancestry.contains(&key),
+        )
     }
 
     fn persistence(&self) -> Option<Arc<dyn SessionPersistenceApi>> {
@@ -756,8 +863,21 @@ impl SubagentContinuationManager {
         content: &[ContentBlock],
         options: &SubagentFollowupOptions,
     ) -> Result<SubagentFollowupAdmission, SubagentError> {
+        let parent_wake = ParentWake::capture(&parent);
         self.assert_admitting(parent.as_ref())?;
+        if (options.signal)() {
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted before admission",
+            ));
+        }
         let gate = self.locks.acquire(child_id).await;
+        if (options.signal)() {
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted before materialization",
+            ));
+        }
         let existing = {
             let activations = self.activations.lock();
             activations.get(child_id.as_str()).cloned()
@@ -770,6 +890,8 @@ impl SubagentContinuationManager {
                 true,
             ),
         };
+        let cutoff = activation.lock().followup_cutoff.clone();
+        let generation = cutoff.snapshot();
         if dsh_llm::content_has_image(content)
             && accepted_request(&activation.lock().handle().agent, &options.source).is_none()
         {
@@ -793,17 +915,20 @@ impl SubagentContinuationManager {
             options: options.clone(),
             _gate: gate,
             rollback_on_drop,
+            cutoff,
+            generation,
+            parent_wake,
         })
     }
 
     /// Accept one message after a caller completed any post-admission resource
-    /// persistence. The held child gate is the reservation: drain/disposal
-    /// waits for this infallible commit so persisted resources cannot orphan.
+    /// persistence. Drain/disposal waits for the child gate; interruption can
+    /// still cancel this admission while retaining its resources durably.
     pub fn submit_followup(
         &self,
         admission: SubagentFollowupAdmission,
         content: &[ContentBlock],
-    ) -> MessageId {
+    ) -> Result<MessageId, SubagentError> {
         self.submit_followup_with_context(admission, content, None)
     }
 
@@ -812,16 +937,69 @@ impl SubagentContinuationManager {
         mut admission: SubagentFollowupAdmission,
         content: &[ContentBlock],
         context: Option<dsh_llm::UserMessage>,
-    ) -> MessageId {
-        let message_id = self.commit_admitted(
-            &admission.activation,
-            content,
-            &admission.options.source,
-            admission.options.steer,
-            context,
-        );
-        admission.commit();
-        message_id
+    ) -> Result<MessageId, SubagentError> {
+        let cutoff = admission.cutoff.clone();
+        let signal = admission.options.signal.clone();
+        cutoff.commit(
+            admission.generation,
+            || signal(),
+            |cancelled| {
+                let child = admission.agent();
+                if let Some(message_id) = accepted_request(&child, &admission.options.source) {
+                    let was_cancelled = match &admission.options.source {
+                        MessageSource::User {
+                            rpc_id: Some(id), ..
+                        } => child.inbox().request_was_cancelled(id),
+                        _ => false,
+                    };
+                    admission.commit();
+                    return if was_cancelled {
+                        Err(SubagentError::new(
+                            "CANCELLED",
+                            "subagent request was cancelled",
+                        ))
+                    } else {
+                        Ok(message_id)
+                    };
+                }
+                if cancelled {
+                    let message =
+                        create_user_message(content.to_vec(), admission.options.source.clone());
+                    child
+                        .inbox()
+                        .record_cancelled(message, context)
+                        .map_err(|error| SubagentError::new("INBOX_PERSISTENCE_FAILED", error))?;
+                    return Err(SubagentError::new(
+                        "CANCELLED",
+                        "subagent request was stopped before submission",
+                    ));
+                }
+                admission.activation.lock().parent_wake = admission.parent_wake.clone();
+                let message_id = self.commit_admitted(
+                    &admission.activation,
+                    content,
+                    &admission.options.source,
+                    admission.options.steer,
+                    context,
+                );
+                admission.commit();
+                Ok(message_id)
+            },
+        )
+    }
+
+    /// Retain resources prepared for a rejected followup without accepting work.
+    pub fn record_cancelled_followup(
+        &self,
+        admission: SubagentFollowupAdmission,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), SubagentError> {
+        let message = create_user_message(content, admission.options.source.clone());
+        admission
+            .agent()
+            .inbox()
+            .record_cancelled(message, None)
+            .map_err(|error| SubagentError::new("INBOX_PERSISTENCE_FAILED", error))
     }
 
     /// Roll back a freshly materialized but not yet accepted admission.
@@ -948,13 +1126,17 @@ impl SubagentContinuationManager {
         target_session_id: &SessionId,
         authority: &SubagentInterruptAuthority,
     ) -> Result<(), SubagentError> {
-        let activations = self.activations.lock();
-        let Some(activation) = activations.get(target_session_id.as_str()).cloned() else {
+        let Some(activation) = self
+            .activations
+            .lock()
+            .get(target_session_id.as_str())
+            .cloned()
+        else {
             return Ok(());
         };
         let agent = activation.lock().handle().agent.clone();
-        let activation = activation.lock();
-        match authority {
+        let cutoff = activation.lock().followup_cutoff.clone();
+        let cause = match authority {
             SubagentInterruptAuthority::User { parent_session_id } => {
                 if agent.session().header().parent_session.as_ref() != Some(parent_session_id) {
                     return Err(SubagentError::new(
@@ -964,14 +1146,11 @@ impl SubagentContinuationManager {
                         ),
                     ));
                 }
-                agent.cancel(
-                    dsh_session::AgentCancelCause::User,
-                    Some(&dsh_agent::CancelOptions { keep_inbox: true }),
-                );
+                dsh_session::AgentCancelCause::User
             }
             SubagentInterruptAuthority::Ancestor { agent: caller } => {
                 let caller_key = Arc::as_ptr(caller).cast::<()>() as usize;
-                if !activation.ancestry.contains(&caller_key) {
+                if !activation.lock().ancestry.contains(&caller_key) {
                     return Err(SubagentError::new(
                         "UNAUTHORIZED",
                         format!(
@@ -980,12 +1159,12 @@ impl SubagentContinuationManager {
                         ),
                     ));
                 }
-                agent.cancel(
-                    dsh_session::AgentCancelCause::Parent,
-                    Some(&dsh_agent::CancelOptions { keep_inbox: true }),
-                );
+                dsh_session::AgentCancelCause::Parent
             }
-        }
+        };
+        cutoff.interrupt(|| {
+            agent.cancel(cause, Some(&dsh_agent::CancelOptions { keep_inbox: true }))
+        });
         Ok(())
     }
 
@@ -1134,6 +1313,7 @@ impl SubagentContinuationManager {
             delegated_policies,
             signal,
         } = input;
+        let parent_wake = ParentWake::capture(&parent);
         let _materialization = self.begin_materialization(&parent)?;
         let mut ultra_permit = if let Some(control) = crate::ultra::UltraControl::get(&self.ctx) {
             control
@@ -1235,6 +1415,7 @@ impl SubagentContinuationManager {
             ultra_permit,
             child_id: child_id.clone(),
             parent_session: parent.id().clone(),
+            parent_wake,
             handle,
             ancestry,
             owned_children: HashSet::new(),
@@ -1244,6 +1425,7 @@ impl SubagentContinuationManager {
             announced: false,
             notify_on_settlement: true,
             poke: Arc::new(tokio::sync::Notify::new()),
+            followup_cutoff: Arc::new(FollowupCutoff::default()),
         }));
         if let Err(error) = self.acquire_ownership(&parent, child_id, &activation) {
             let _ = self.dispose(&activation).await;
@@ -1382,8 +1564,10 @@ impl SubagentContinuationManager {
         parent: Arc<dyn Agent>,
         signal: &Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<MessageId, SubagentError> {
+        let parent_wake = ParentWake::capture(&parent);
         let child_id = activation.lock().child_id.clone();
         self.prepare_submit(activation, &parent, &child_id, signal)?;
+        activation.lock().parent_wake = parent_wake;
         Ok(self.commit_admitted(activation, content, source, false, None))
     }
 
@@ -1395,8 +1579,10 @@ impl SubagentContinuationManager {
         parent: Arc<dyn Agent>,
         signal: &Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<MessageId, SubagentError> {
+        let parent_wake = ParentWake::capture(&parent);
         let child_id = activation.lock().child_id.clone();
         self.prepare_submit(activation, &parent, &child_id, signal)?;
+        activation.lock().parent_wake = parent_wake;
         Ok(match options {
             ChildDeliveryOptions::Queue(options) => {
                 self.commit_admitted(activation, content, &options.source, options.steer, None)
@@ -1507,7 +1693,13 @@ impl SubagentContinuationManager {
                 ),
             ));
         }
-        let parent_id = activation.lock().parent_session.clone();
+        let (parent_id, parent_wake) = {
+            let activation = activation.lock();
+            (
+                activation.parent_session.clone(),
+                activation.parent_wake.clone(),
+            )
+        };
         let parent = self.agents().get(&parent_id).ok_or_else(|| {
             SubagentError::new(
                 "PARENT_UNAVAILABLE",
@@ -1524,7 +1716,15 @@ impl SubagentContinuationManager {
             .filter(|candidate| Arc::ptr_eq(&candidate.lock().handle().agent, &parent))
         {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::send_waking(&parent_activation, &message_id, || parent.steer(message));
+                let mut woke = false;
+                Self::send_waking(&parent_activation, &message_id, || {
+                    woke = parent_wake.send(&parent, message, dsh_agent::InboxTarget::NextStep);
+                });
+                if !woke {
+                    let mut activation = parent_activation.lock();
+                    activation.accepted.remove(message_id.as_str());
+                    activation.poke.notify_waiters();
+                }
             }));
             return match result {
                 Ok(()) => Ok(message_id),
@@ -1534,14 +1734,16 @@ impl SubagentContinuationManager {
                 )),
             };
         }
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parent.steer(message)))
-            .map(|()| message_id)
-            .map_err(|_| {
-                SubagentError::new(
-                    "PARENT_UNAVAILABLE",
-                    "direct parent is not live; the message was not delivered",
-                )
-            })
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parent_wake.send(&parent, message, dsh_agent::InboxTarget::NextStep)
+        }))
+        .map(|_| message_id)
+        .map_err(|_| {
+            SubagentError::new(
+                "PARENT_UNAVAILABLE",
+                "direct parent is not live; the message was not delivered",
+            )
+        })
     }
 
     /// Authorize one operation against the durable direct-parent lineage.
@@ -1808,12 +2010,13 @@ impl SubagentContinuationManager {
         activation: &Arc<parking_lot::Mutex<Activation>>,
         failure: Option<&str>,
     ) -> Option<Arc<dyn Agent>> {
-        let (announced, child_id, parent_session, terminal) = {
+        let (announced, child_id, parent_session, parent_wake, terminal) = {
             let activation = activation.lock();
             (
                 activation.announced && activation.notify_on_settlement,
                 activation.child_id.clone(),
                 activation.parent_session.clone(),
+                activation.parent_wake.clone(),
                 activation.observer.terminal(failure),
             )
         };
@@ -1850,11 +2053,12 @@ impl SubagentContinuationManager {
                 sender_session_id: child_id.as_str().to_string(),
             },
         );
-        if parent.status() == dsh_agent::AgentStatus::Idle {
-            parent.followup(message);
+        let target = if parent.status() == dsh_agent::AgentStatus::Idle {
+            dsh_agent::InboxTarget::NextTurn
         } else {
-            parent.steer(message);
-        }
+            dsh_agent::InboxTarget::NextStep
+        };
+        parent_wake.send(&parent, message, target);
         Some(parent)
     }
 
@@ -1960,6 +2164,67 @@ pub use crate::types::SubagentResult as _SubagentResultAnchor;
 #[cfg(test)]
 mod settlement_wait_tests {
     use super::*;
+
+    #[test]
+    fn stopped_followup_cannot_publish_after_resource_preparation() {
+        let cutoff = FollowupCutoff::default();
+        let prepared = cutoff.snapshot();
+        let sent = std::sync::atomic::AtomicBool::new(false);
+        cutoff.interrupt(|| {});
+        let cancelled = cutoff.commit(
+            prepared,
+            || false,
+            |cancelled| {
+                if !cancelled {
+                    sent.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                cancelled
+            },
+        );
+        assert!(cancelled);
+        assert!(!sent.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            cutoff.commit(cutoff.snapshot(), || true, |cancelled| cancelled),
+            "an aborted transport also fences the final submit"
+        );
+        assert!(
+            !cutoff.commit(cutoff.snapshot(), || false, |cancelled| cancelled),
+            "a fresh explicit followup after stop is allowed"
+        );
+    }
+
+    #[test]
+    fn final_publish_and_interrupt_have_one_ordered_cutoff() {
+        let cutoff = Arc::new(FollowupCutoff::default());
+        let expected = cutoff.snapshot();
+        let (inside, entered) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let published = cutoff.clone();
+        let writer = std::thread::spawn(move || {
+            published.commit(
+                expected,
+                || false,
+                |cancelled| {
+                    assert!(!cancelled);
+                    inside.send(()).unwrap();
+                    released.recv().unwrap();
+                },
+            )
+        });
+        entered.recv().unwrap();
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = stopped.clone();
+        let interrupted = cutoff.clone();
+        let stopper = std::thread::spawn(move || {
+            interrupted.interrupt(|| observed.store(true, std::sync::atomic::Ordering::SeqCst))
+        });
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        stopper.join().unwrap();
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(cutoff.commit(expected, || false, |cancelled| cancelled));
+    }
 
     #[tokio::test]
     async fn idle_child_waits_for_descendants_without_polling_resolved_idle_future() {

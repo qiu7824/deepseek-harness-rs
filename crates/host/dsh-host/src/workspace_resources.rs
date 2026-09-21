@@ -10,6 +10,58 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(test)]
+#[path = "workspace_resources_contract_tests.rs"]
+mod contract_tests;
+
+fn scratch_parameters() -> Value {
+    let mut schema = json!({
+        "type":"object",
+        "properties":{
+            "action":{"type":"string","enum":["allocate","prepare_copy","inspect","promote","write","read","list","pin","release"],"description":"write requires id,path,content; read requires id,path; inspect requires target; promote requires id,path,target,expectedSha256; pin/release require id."},
+            "id":{"type":"string","minLength":1},
+            "kind":{"type":"string","enum":["script","candidate","log","copy"]},
+            "label":{"type":"string"},
+            "path":{"type":"string","minLength":1},
+            "content":{"type":"string"},
+            "offset":{"type":"integer","minimum":0,"description":"Non-negative character offset"},
+            "limit":{"type":"integer","minimum":1,"maximum":32000,"description":"1 to 32000 characters"},
+            "pinned":{"type":"boolean"},
+            "target":{"type":"string","minLength":1},
+            "expectedSha256":{"oneOf":[{"type":"string"},{"type":"null"}],"description":"Required for promote: use inspect's sha256, or null only when the target does not exist."},
+            "files":{"type":"array","items":{"type":"string"}}
+        },
+        "required":["action"],"additionalProperties":false
+    });
+    let variants: &[(&[&str], &[&str])] = &[
+        (&["allocate", "prepare_copy", "list"], &["action"]),
+        (&["inspect"], &["action", "target"]),
+        (
+            &["promote"],
+            &["action", "id", "path", "target", "expectedSha256"],
+        ),
+        (&["write"], &["action", "id", "path", "content"]),
+        (&["read"], &["action", "id", "path"]),
+        (&["pin", "release"], &["action", "id"]),
+    ];
+    schema["oneOf"] = Value::Array(
+        variants
+            .iter()
+            .map(|(actions, required)| {
+                // Root properties supply the types; each disjoint branch contributes
+                // the fields that its action requires without duplicating the schema.
+                let mut properties = serde_json::Map::new();
+                for field in *required {
+                    properties.insert((*field).into(), json!({}));
+                }
+                properties.insert("action".into(), json!({"type":"string","enum":actions}));
+                json!({"type":"object","properties":properties,"required":required})
+            })
+            .collect(),
+    );
+    schema
+}
+
 fn validate_location(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("垃圾槽位置必须为绝对路径".into());
@@ -448,7 +500,7 @@ impl Resources {
         let manager = self.clone();
         tools.register(ctx,dsh_tools::ToolDefinition {
             name:"workspace_scratch".into(),description:"Manage task-owned scratch files outside the project. prepare_copy creates a Git worktree including local changes or a bounded input copy (optional files list); use its workdir for tools that write in place. allocate creates script/candidate/log storage; write(id,path,content), read(id,path,offset,limit), list, pin and release manage it. inspect(target relative to project) returns the current sha256 or null for a new target. promote(id,path,target,expectedSha256) delivers one verified file, rejecting target version conflicts. Candidates stay protected until release. read is never spilled again.".into(),
-            parameters:json!({"type":"object","properties":{"action":{"type":"string","enum":["allocate","prepare_copy","inspect","promote","write","read","list","pin","release"]},"id":{"type":"string"},"kind":{"type":"string","enum":["script","candidate","log","copy"]},"label":{"type":"string"},"path":{"type":"string"},"content":{"type":"string"},"offset":{"type":"integer","description":"Non-negative character offset"},"limit":{"type":"integer","description":"1 to 32000 characters"},"pinned":{"type":"boolean"},"target":{"type":"string"},"expectedSha256":{"oneOf":[{"type":"string"},{"type":"null"}]},"files":{"type":"array","items":{"type":"string"}}},"required":["action"],"additionalProperties":false}),
+            parameters:scratch_parameters(),
             output:dsh_tools::ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
             timeout_ms:Some(30000),is_concurrency_safe:None,finalize_content:None,present_call:None,present_result:None,
             execute:Arc::new(move |args,run| {

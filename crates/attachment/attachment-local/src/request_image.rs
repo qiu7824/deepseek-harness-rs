@@ -5,7 +5,6 @@ use dsh_attachment::{
     AttachmentAbort, AttachmentError, ImageAttachmentRef, ImageMediaType, RequestImageAttachment,
     RequestImagePolicy, request_image_variant_id,
 };
-use image::imageops::FilterType;
 
 use crate::image::probe_image;
 use crate::store::read_image_file;
@@ -321,7 +320,7 @@ pub async fn read_request_image_file(
             let scale = (policy.max_pixels as f64 / pixels as f64).sqrt();
             let width = (f64::from(image.width()) * scale).floor().max(1.0) as u32;
             let height = (f64::from(image.height()) * scale).floor().max(1.0) as u32;
-            image = image.resize_exact(width, height, FilterType::Lanczos3);
+            image = crate::request_resize::resize(image, width, height, signal)?;
         }
         let (data, width, height) = loop {
             if aborted(signal) {
@@ -340,11 +339,9 @@ pub async fn read_request_image_file(
                     "Request image cannot satisfy the encoded-byte budget.",
                 ));
             }
-            image = image.resize_exact(
-                (image.width() * 3 / 4).max(1),
-                (image.height() * 3 / 4).max(1),
-                FilterType::Lanczos3,
-            );
+            let width = (image.width() * 3 / 4).max(1);
+            let height = (image.height() * 3 / 4).max(1);
+            image = crate::request_resize::resize(image, width, height, signal)?;
         };
         if aborted(signal) {
             return Err(AttachmentError::new(

@@ -19,6 +19,7 @@
 //! - `runMaintenance` erases its generic result (Rust
 //!   `BoxFuture<'static, ()>`).
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -44,7 +45,7 @@ use dsh_system_prompt::{
     PromptAssembly, join_context_sections, render_context_sections, render_prompt,
 };
 use futures::{FutureExt, StreamExt};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, ReentrantMutex, ReentrantMutexGuard};
 
 use crate::runtime_context::RuntimeContextProjection;
 use crate::tool_calls::execute_tool_calls;
@@ -216,10 +217,42 @@ pub struct ReactLoopAgent {
     phase: Mutex<Phase>,
     activity: Arc<Mutex<Activity>>,
     cancelled_inbox: Mutex<Vec<dsh_llm::MessageId>>,
+    control_boundary: ReentrantMutex<AgentControlState>,
     request_header_logged: AtomicBool,
     request_surface_generation: Mutex<Option<u64>>,
     runtime_context: RuntimeContextProjection,
 }
+
+#[derive(Default)]
+struct AgentControlState {
+    generation: Cell<u64>,
+    mutation_depth: Cell<usize>,
+}
+
+struct AgentMutationGuard<'a> {
+    guard: ReentrantMutexGuard<'a, AgentControlState>,
+}
+
+impl<'a> AgentMutationGuard<'a> {
+    fn enter(boundary: &'a ReentrantMutex<AgentControlState>) -> Self {
+        Self::from_locked(boundary.lock())
+    }
+
+    fn from_locked(guard: ReentrantMutexGuard<'a, AgentControlState>) -> Self {
+        guard.mutation_depth.set(guard.mutation_depth.get() + 1);
+        Self { guard }
+    }
+}
+
+impl Drop for AgentMutationGuard<'_> {
+    fn drop(&mut self) {
+        self.guard
+            .mutation_depth
+            .set(self.guard.mutation_depth.get() - 1);
+    }
+}
+
+impl dsh_agent::AgentControlGuard for AgentMutationGuard<'_> {}
 
 struct DriverGuard {
     agent: Arc<ReactLoopAgent>,
@@ -323,6 +356,7 @@ impl ReactLoopAgent {
                 phase: Mutex::new(Phase::Idle { last_turn }),
                 activity: Arc::new(Mutex::new(Activity::resolved())),
                 cancelled_inbox: Mutex::new(Vec::new()),
+                control_boundary: ReentrantMutex::new(AgentControlState::default()),
                 request_header_logged: AtomicBool::new(false),
                 request_surface_generation: Mutex::new(None),
                 runtime_context,
@@ -405,6 +439,7 @@ impl ReactLoopAgent {
         wakeup: bool,
         context: Option<UserMessage>,
     ) {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
         let waking_after_abort = wakeup
             && matches!(
                 &*self.phase.lock(),
@@ -425,10 +460,12 @@ impl ReactLoopAgent {
     }
 
     pub(crate) fn hold_publication(&self) {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
         self.published.store(false, Ordering::Release);
     }
 
     pub(crate) fn release_publication(&self) {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
         self.published.store(true, Ordering::Release);
         if self.inbox.has_pending() {
             self.wake_driver(false);
@@ -436,6 +473,7 @@ impl ReactLoopAgent {
     }
 
     fn wake_driver(&self, _wake_after_abort: bool) {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
         if !self.published.load(Ordering::Acquire) {
             return;
         }
@@ -969,25 +1007,21 @@ impl ReactLoopAgent {
                 .replace_generation;
             let starts_series =
                 explicit_series || previous_generation != Some(generation) || route_changed;
-            let boundary_messages = self
+            let has_boundary_messages = !self
                 .session
                 .derive_messages()
-                .map_err(LoopCancelled::hook)?;
+                .map_err(LoopCancelled::hook)?
+                .is_empty();
             let mut request = self.build_request(
                 &assembly.tools,
                 config,
                 prepared_call.as_ref(),
                 starts_series,
-                boundary_messages.as_ref(),
+                has_boundary_messages,
                 &signal,
             )?;
             *self.request_surface_generation.lock() = Some(generation);
-            request.messages = self
-                .session
-                .derive_messages()
-                .map_err(LoopCancelled::hook)?
-                .as_ref()
-                .clone();
+
             let mut assembler = BlockAssembler::new();
             let mut saw_tool_call = false;
             let mut chunk_seqs = Vec::new();
@@ -999,13 +1033,15 @@ impl ReactLoopAgent {
                 *measurement.lock() = Some(phase.clone());
                 let _ = phase_sender.send(phase);
             })));
+            // The loop needs response attribution and telemetry after
+            // dispatch, not another complete copy of the request context.
+            let request_provider = request.provider.clone();
+            let request_model = request.model.clone();
+            let request_telemetry = request.telemetry.clone();
             let stream = match &prepared_call {
-                Some(prepared) => {
-                    let request_for_stream = request.clone();
-                    (prepared.stream)(request_for_stream)
-                        .map_err(|error| LoopCancelled::failure(error.failure))?
-                }
-                None => self.llm().stream(request.clone()),
+                Some(prepared) => (prepared.stream)(request)
+                    .map_err(|error| LoopCancelled::failure(error.failure))?,
+                None => self.llm().stream(request),
             };
             throw_if_aborted(&signal)?;
             let mut stream = stream;
@@ -1015,7 +1051,7 @@ impl ReactLoopAgent {
                     biased;
                     _ = signal.cancelled() => {
                         request_metrics.waited(next_wait_started.elapsed());
-                        if let Some(telemetry) = &request.telemetry {
+                        if let Some(telemetry) = &request_telemetry {
                             telemetry.cancel_pending();
                         }
                         while let Ok(phase) = phase_receiver.try_recv() {
@@ -1029,8 +1065,8 @@ impl ReactLoopAgent {
                             let message = create_assistant_message(
                                 content,
                                 ModelMessageSource {
-                                    provider: request.provider.clone(),
-                                    model: request.model.clone(),
+                                    provider: request_provider.clone(),
+                                    model: request_model.clone(),
                                     replay_state: None,
                                 },
                             );
@@ -1104,8 +1140,8 @@ impl ReactLoopAgent {
                     let message = create_assistant_message(
                         content,
                         ModelMessageSource {
-                            provider: request.provider.clone(),
-                            model: request.model.clone(),
+                            provider: request_provider.clone(),
+                            model: request_model.clone(),
                             replay_state: None,
                         },
                     );
@@ -1177,7 +1213,7 @@ impl ReactLoopAgent {
                                     agent: Arc::clone(agent),
                                     turn,
                                     step,
-                                    provider: request.provider.clone(),
+                                    provider: request_provider.clone(),
                                     failure: failure.clone(),
                                     retry_policy: prepared_call
                                         .as_ref()
@@ -1198,8 +1234,8 @@ impl ReactLoopAgent {
                         let message = create_assistant_message(
                             content,
                             ModelMessageSource {
-                                provider: request.provider.clone(),
-                                model: request.model.clone(),
+                                provider: request_provider.clone(),
+                                model: request_model.clone(),
                                 replay_state: None,
                             },
                         );
@@ -1230,7 +1266,7 @@ impl ReactLoopAgent {
                 .and_then(|state| state.get("responseModel"))
                 .and_then(serde_json::Value::as_str)
                 .filter(|model| !model.is_empty() && model.len() <= 1024)
-                .unwrap_or(&request.model);
+                .unwrap_or(&request_model);
             let content = assembler.blocks();
             let unsafe_replay = finish == FinishReason::MaxTokens && (
                 saw_tool_call || assembler.replay_state().is_some_and(|state| state["truncatedToolCalls"] == true)
@@ -1239,7 +1275,7 @@ impl ReactLoopAgent {
             let message = create_assistant_message(
                 content,
                 ModelMessageSource {
-                    provider: request.provider.clone(),
+                    provider: request_provider.clone(),
                     model: response_model.to_string(),
                     replay_state: (!unsafe_replay)
                         .then(|| assembler.replay_state().cloned())
@@ -1504,7 +1540,7 @@ impl ReactLoopAgent {
         config: LlmCallConfig,
         prepared_call: Option<&dsh_llm::PreparedLlmCall>,
         starts_series: bool,
-        boundary_messages: &[dsh_llm::Message],
+        has_boundary_messages: bool,
         signal: &Arc<CancellationSignal>,
     ) -> Result<GenerateOptions, LoopCancelled> {
         let header = canonical_header(&EpochHeader {
@@ -1522,7 +1558,7 @@ impl ReactLoopAgent {
         let baseline = self.session.request_header();
         let mut persisted_header = header.clone();
         persisted_header.system = None;
-        let notice = if boundary_messages.is_empty() {
+        let notice = if !has_boundary_messages {
             None
         } else {
             dsh_agent::model_selection::model_switch_notice(
@@ -1613,7 +1649,12 @@ impl ReactLoopAgent {
             provider: header.config.provider.clone(),
             model: header.config.model.clone(),
             reasoning_effort: header.config.reasoning_effort.clone(),
-            messages: boundary_messages.to_vec(),
+            messages: self
+                .session
+                .derive_messages()
+                .map_err(LoopCancelled::hook)?
+                .as_ref()
+                .clone(),
             // V3 carries system instructions exactly once in messages.
             system: None,
             tools: header.tools.clone(),
@@ -1626,9 +1667,6 @@ impl ReactLoopAgent {
             agent_loop_request: false,
             telemetry: None,
         };
-        if let Some(notice) = notice {
-            request.messages.push(notice.into());
-        }
         mark_agent_loop_request(&mut request);
         let signal_for_request = Arc::clone(signal);
         request.signal = Some(Arc::new(move || signal_for_request.aborted()));
@@ -1727,6 +1765,33 @@ impl Agent for ReactLoopAgent {
         self.status()
     }
 
+    fn try_idle_control(
+        &self,
+    ) -> Result<Box<dyn dsh_agent::AgentControlGuard + '_>, dsh_agent::AgentControlBusy> {
+        use dsh_agent::AgentControlBusy;
+        let boundary = self
+            .control_boundary
+            .try_lock()
+            .ok_or(AgentControlBusy::Contended)?;
+        // Reentrant event dispatch must not observe the half-published window
+        // between the durable inbox event and its in-memory projection.
+        if boundary.mutation_depth.get() != 0 {
+            return Err(AgentControlBusy::Contended);
+        }
+        if !self.published.load(Ordering::Acquire) {
+            return Err(AgentControlBusy::Unavailable);
+        }
+        let activity = self.activity.lock();
+        let phase = self.phase.lock();
+        if !matches!(&*phase, Phase::Idle { .. }) || !activity.active.is_empty() {
+            return Err(AgentControlBusy::Active);
+        }
+        if self.inbox.has_pending() {
+            return Err(AgentControlBusy::PendingInput);
+        }
+        Ok(Box::new(AgentMutationGuard::from_locked(boundary)))
+    }
+
     fn ctx(&self) -> &Context {
         &self.ctx
     }
@@ -1736,6 +1801,9 @@ impl Agent for ReactLoopAgent {
     }
 
     fn cancel(&self, cause: AgentCancelCause, options: Option<&CancelOptions>) {
+        let control = AgentMutationGuard::enter(&self.control_boundary);
+        let generation = &control.guard.generation;
+        generation.set(generation.get().wrapping_add(1));
         let keep_inbox = options.map(|options| options.keep_inbox).unwrap_or(false);
         let clear_now = {
             let mut phase = self.phase.lock();
@@ -1767,6 +1835,41 @@ impl Agent for ReactLoopAgent {
         }
     }
 
+    fn cancellation_generation(&self) -> Option<u64> {
+        Some(self.control_boundary.lock().generation.get())
+    }
+
+    fn send_from_generation(
+        &self,
+        message: UserMessage,
+        target: InboxTarget,
+        expected: Option<u64>,
+    ) -> bool {
+        // Inbox listeners execute synchronously and may call cancel again on
+        // this thread. A reentrant guard keeps that legal while excluding a
+        // concurrent Stop from crossing the enqueue/wake boundary.
+        let control = AgentMutationGuard::enter(&self.control_boundary);
+        let current = || expected == Some(control.guard.generation.get());
+        let target = if !current()
+            || matches!(
+                &*self.phase.lock(),
+                Phase::Maintenance { abort, .. } | Phase::Running { abort, .. }
+                    if abort.aborted()
+            ) {
+            InboxTarget::NextTurn
+        } else {
+            target
+        };
+        self.inbox.append(target, message).expect("inbox splice");
+        // An inbox notification may have synchronously stopped this agent.
+        if current() {
+            self.wake_driver(false);
+            true
+        } else {
+            false
+        }
+    }
+
     fn when_idle(&self) -> BoxFuture<'static, ()> {
         let activity = Arc::clone(&self.activity);
         Box::pin(async move {
@@ -1789,6 +1892,7 @@ impl Agent for ReactLoopAgent {
         &self,
         task: Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
     ) -> BoxFuture<'static, ()> {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
         let activity_token = {
             let mut activity = self.activity.lock();
             let mut phase = self.phase.lock();
@@ -1835,6 +1939,7 @@ impl Agent for ReactLoopAgent {
     }
 
     fn steer_queued(&self, message_id: &dsh_llm::MessageId) -> Result<bool, String> {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
         let moved = self.inbox.move_to_next_step(message_id)?;
         if moved {
             self.wake_driver(true);

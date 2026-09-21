@@ -1,7 +1,10 @@
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '../../web/dist/plugins/ui-conversation.js'), 'utf8');
+const source = fs.readFileSync(process.env.DSH_RUNTIME_PLUGINS_DIR ? path.join(process.env.DSH_RUNTIME_PLUGINS_DIR, 'ui-conversation.js') : path.join(__dirname, '../../web/dist/plugins/ui-conversation.js'), 'utf8');
 const context = { console, AbortController, TextEncoder, TextDecoder, Uint8Array, atob, btoa,
   _deepseek_ai_dsh_client_runtime_client: { createSnapshotStore: value => ({ getSnapshot: () => value, set: next => { value = next; }, subscribe: () => () => {} }) } };
+const runtimeSource=fs.readFileSync(path.join(__dirname,'../../web/src/runtime-plugins/client-runtime.js'),'utf8'),tracker={};
+vm.runInNewContext(runtimeSource.slice(runtimeSource.indexOf('const activePromptRequests ='),runtimeSource.indexOf('function resolvedClientTimeZone(')),tracker);
+Object.assign(context._deepseek_ai_dsh_client_runtime_client,{trackPromptRequest:tracker.trackPromptRequest,pendingPromptRequestIds:tracker.pendingPromptRequestIds,cancelPromptRequests:tracker.cancelPromptRequests});
 const helperStart = source.indexOf('function sessionReferenceMention('), helperEnd = source.indexOf('/** Mounts the conversation plugin.', helperStart);
 vm.runInNewContext(source.slice(helperStart, helperEnd), context);
 const shellStart = source.indexOf('const EMPTY_QUEUE$1'), shellEnd = source.indexOf('//#region lib/types/client/input/hub.js', shellStart);
@@ -10,7 +13,7 @@ const snapshots = { ids: ['self', 'source-中文', 'duplicate'], byId: { self: {
 const references = context.createSessionReferenceSource({ list: { getSnapshot: () => snapshots } });
 (async () => {
 const sendStart=source.indexOf('async sendSession('),sendEnd=source.indexOf('\n\t\t\t/**',sendStart);
-const sender=vm.runInNewContext('({'+source.slice(sendStart,sendEnd)+'})',{});
+const sender=vm.runInNewContext('({'+source.slice(sendStart,sendEnd)+'})',{_deepseek_ai_dsh_client_runtime_client:context._deepseek_ai_dsh_client_runtime_client});
 let released=0;const attachment={file:{}};
 Object.assign(sender,{draftImages:()=>[attachment],serializeImages:async()=>[{type:'image'}],releaseDraftImages:()=>released++});
 for(const reply of [{ok:true,value:{accepted:false}},{ok:false,error:{code:'offline',message:'offline'}}]) {
@@ -18,6 +21,11 @@ for(const reply of [{ok:true,value:{accepted:false}},{ok:false,error:{code:'offl
   assert.equal(released,0,'a rejected admission must retain attachment ownership and draft');
 }
 await sender.sendSession({prompt:async()=>({ok:true,value:{accepted:true}})},'draft',['image'],'queue');assert.equal(released,1);
+let completeUpload, dispatched=0;const uploadSession={promptCancelGeneration:0,prompt:async()=>{dispatched++;return{ok:true,value:{accepted:true}}}};
+sender.serializeImages=()=>new Promise(resolve=>{completeUpload=resolve});
+const uploading=sender.sendSession(uploadSession,'old upload',['image'],'queue');uploadSession.promptCancelGeneration++;
+completeUpload([{type:'image'}]);await assert.rejects(()=>uploading,error=>error.code==='cancelled');assert.equal(dispatched,0,'Stop before attachment serialization completes prevents a new request ID from being dispatched');assert.equal(released,1,'a stopped unsent attachment stays available in the draft');
+sender.serializeImages=async()=>[{type:'image'}];
 const abort = new AbortController(), candidates = await references.candidates({ sessionId: 'self' }, { query: '', signal: abort.signal });
 assert.equal(candidates.length, 2); assert.notEqual(candidates[0].name, candidates[1].name, 'duplicate titles have distinct menu identities');
 const selected = references.onPick({ candidate: candidates[0] }).insert;
@@ -64,6 +72,13 @@ const deps = { queue: { getSnapshot: () => [], subscribe: fn => { subscribers.ad
   shell.setDraft('older'); shell.submit(); const earlier = sent.at(-1); shell.setDraft('newer');
   assert.equal(shell.commitAcceptedSend(earlier[0], earlier[1], earlier[3]), false, 'late acceptance preserves text edited while sending');
   assert.equal(shell.snapshot.draft, 'newer');
+  let finishReference, referenceSignal;
+  const cancelledSends=[];
+  const cancellingShell=new context.SessionInputShell({defaultSink:(...args)=>cancelledSends.push(args),inputTriggers:()=>({track(){},serializeReference:(_source,_ref,signal)=>{referenceSignal=signal;return new Promise(resolve=>{finishReference=resolve})}})});
+  cancellingShell.setDraft('Before ');cancellingShell.insertReference(selected,{start:7,end:7,draftRev:cancellingShell.snapshot.draftRev});
+  const keptDraft=cancellingShell.snapshot.draft;cancellingShell.submit();assert.equal(cancellingShell.snapshot.phase,'submitting');
+  cancellingShell.cancelPending();assert.equal(referenceSignal.aborted,true);assert.equal(cancellingShell.snapshot.phase,'plain');assert.equal(cancellingShell.snapshot.draft,keptDraft);
+  finishReference(text);await new Promise(resolve=>setImmediate(resolve));assert.equal(cancelledSends.length,0,'late reference serialization cannot revive a stopped send');cancellingShell.dispose();
   shell.dispose(); restored.dispose(); controller.dispose(); assert.equal(subscribers.size, 0);
   for (let i = 0; i < 200; i++) { const transient = new context.SessionInputShell(deps); transient.setDraft('x'.repeat(10000)); transient.dispose(); }
   assert.equal(subscribers.size, 0, 'repeated open/close cannot retain input shells through queue subscriptions');

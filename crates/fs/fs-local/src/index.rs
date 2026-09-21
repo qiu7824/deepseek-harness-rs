@@ -23,7 +23,7 @@ use crate::fsio::{
     FsIoInternals, LocalTarget, PathKind, PathLinkKind, apply_literal_edit, list_directory,
     normalize_line_endings, probe, probe_no_follow, read_for_edit, read_text_for_diff,
     read_whole_bytes, read_whole_text, resolve_local_target, restore_line_endings,
-    stream_whole_text, write_file_atomic,
+    stream_whole_bytes, stream_whole_text, write_file_atomic,
 };
 
 /// Configuration for the local filesystem backend (TS `Config`).
@@ -293,6 +293,19 @@ impl FileSystem for LocalFileSystem {
             target_key: target.target_key.clone(),
         };
         read_whole_bytes(&local, signal.as_ref(), max_bytes, &self.internals).await
+    }
+
+    async fn stream_bytes(
+        &self,
+        target: &FsTarget,
+        signal: Option<AbortPredicate>,
+        max_bytes: u64,
+    ) -> Result<futures::stream::BoxStream<'static, Result<Vec<u8>, FsError>>, FsError> {
+        let local = LocalTarget {
+            display_path: target.display_path.clone(),
+            target_key: target.target_key.clone(),
+        };
+        stream_whole_bytes(&local, signal.as_ref(), max_bytes, &self.internals).await
     }
 
     async fn list_dir(

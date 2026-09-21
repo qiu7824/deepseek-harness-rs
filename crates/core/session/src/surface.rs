@@ -639,10 +639,10 @@ mod streaming_tests {
 
 impl SurfaceManager {
     pub(crate) fn project_message(&self, seq: u64, message: Message) -> Message {
-        self.state.omitted.get(&seq).map_or_else(
-            || message.clone(),
-            |selected| crate::image_offload::project(message.clone(), selected),
-        )
+        match self.state.omitted.get(&seq) {
+            Some(selected) => crate::image_offload::project(message, selected),
+            None => message,
+        }
     }
     /// Create a manager for a contiguous complete log or loaded event
     /// window starting at `base_seq`.

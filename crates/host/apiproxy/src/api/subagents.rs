@@ -165,6 +165,8 @@ pub struct SubagentInterruptRequest {
     pub parent_session_id: SessionId,
     pub child_session_id: SessionId,
     pub mode: SubagentMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub request_ids: Vec<String>,
 }
 
 /// Subagent-domain unary methods.
