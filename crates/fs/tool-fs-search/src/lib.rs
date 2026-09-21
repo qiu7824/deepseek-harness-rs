@@ -311,9 +311,9 @@ impl Service {
         ToolDefinition {
             name: "glob".into(),
             description: format!(
-                "Find files whose paths match a glob pattern. Returns at most {max} paths inline."
+                "Find files whose paths match a glob pattern. Respects ignore files by default; set include_ignored to true when deliberately searching generated or ignored files. Returns at most {max} paths inline."
             ),
-            parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}),
+            parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"pattern":{"type":"string"},"path":{"type":"string"},"include_ignored":{"type":"boolean","description":"Include ignored build outputs and dependencies; defaults to false. Prefer a narrow path for large directories."}},"required":["pattern"]}),
             output: output(
                 move |_, v| {
                     let paths = v["paths"].as_array().unwrap();
@@ -359,13 +359,27 @@ impl Service {
                             "path must be a non-empty string when given",
                         ));
                     }
+                    let pattern = pattern.replace('\\', "/");
+                    let matcher = globset::GlobBuilder::new(&pattern)
+                        .literal_separator(true)
+                        .build()
+                        .map_err(|error| {
+                            err(
+                                format!("invalid glob pattern: {error}"),
+                                "TOOL_INPUT_INVALID",
+                            )
+                        })?
+                        .compile_matcher();
+                    let basename_only = !pattern.contains('/');
                     let mut argv = vec![
                         "--files".into(),
-                        format!("--glob={pattern}"),
                         "--sort=modified".into(),
-                        "--no-ignore".into(),
+                        "--no-require-git".into(),
                         "--hidden".into(),
                     ];
+                    if a["include_ignored"] == true {
+                        argv.push("--no-ignore".into());
+                    }
                     for name in VCS {
                         argv.push(format!("--glob=!**/{name}"));
                         argv.push(format!("--glob=!**/{name}/**"));
@@ -374,6 +388,7 @@ impl Service {
                         argv.extend(["--".into(), path.into()]);
                     }
                     let workdir = cwd(&e);
+                    let search_root = std::path::Path::new(&workdir).join(path.unwrap_or("."));
                     let paths = match run(
                         &s.runtime,
                         "glob",
@@ -393,6 +408,18 @@ impl Service {
                             } else {
                                 out.lines()
                                     .filter(|x| !x.is_empty())
+                                    .filter(|value| {
+                                        let full = std::path::Path::new(&workdir).join(value);
+                                        let relative =
+                                            full.strip_prefix(&search_root).unwrap_or(&full);
+                                        if basename_only {
+                                            relative
+                                                .file_name()
+                                                .is_some_and(|name| matcher.is_match(name))
+                                        } else {
+                                            matcher.is_match(relative)
+                                        }
+                                    })
                                     .map(|x| display(x, &workdir))
                                     .collect()
                             }
@@ -608,6 +635,41 @@ mod cancellation_tests {
             stderr_max: 10000,
             timeout_ms,
         }
+    }
+    #[tokio::test]
+    async fn glob_respects_ignored_outputs_unless_explicitly_requested() {
+        let ctx = Context::root();
+        let _runtime = dsh_subprocess_local::LocalSubprocessRuntime::install(&ctx);
+        dsh_system_prompt::SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
+            .unwrap();
+        let tools = dsh_tools::ToolRuntime::install(&ctx, dsh_tools::Config::default()).unwrap();
+        let _service = Service::install(&ctx, config(10000)).unwrap();
+        let dir = std::env::temp_dir().join(format!("glob-ignore-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(dir.join("src/proof.txt"), "source").unwrap();
+        std::fs::write(dir.join("target/proof.txt"), "generated").unwrap();
+        for (pattern, ignored, expected) in [
+            ("*.txt", false, 1),
+            ("*.txt", true, 2),
+            ("src/*.txt", false, 1),
+        ] {
+            let result = tools.execute(dsh_tools::ToolExecutionInput {
+                call_id: dsh_llm::call_id(uuid::Uuid::new_v4().to_string()), root_call_id: None,
+                name: "glob".into(), arguments: serde_json::json!({"pattern":pattern,"path":dir,"include_ignored":ignored}),
+                agent: None, parent: None, signal: Arc::new(|| false),
+            }).await;
+            assert!(!result.is_error, "{:?}", result.error);
+            assert_eq!(
+                result.value.as_ref().unwrap()["paths"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                expected
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
     async fn hung_executable_resolution_is_cancelled_promptly() {

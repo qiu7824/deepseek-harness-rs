@@ -14,7 +14,13 @@ pub(super) struct RoutedSearch {
     pub fallback: Arc<dyn WebSearchProvider>,
 }
 fn error(message: impl Into<String>) -> WebError {
-    WebError::new("WEB_HOSTED_SEARCH_ERROR", message)
+    let message = message.into();
+    let code = if message.starts_with("NATIVE_TOOL_UNSUPPORTED:") {
+        "NATIVE_TOOL_UNSUPPORTED"
+    } else {
+        "WEB_HOSTED_SEARCH_ERROR"
+    };
+    WebError::new(code, message)
 }
 
 #[async_trait::async_trait]
@@ -86,7 +92,8 @@ impl RoutedSearch {
                 Some("openai-responses" | "openai-completions")
             )
         {
-            return Err(error(
+            return Err(WebError::new(
+                "NATIVE_TOOL_UNSUPPORTED",
                 "This connection does not support hosted Responses search; select a supported connection or DeepSeek search in plugin settings",
             ));
         }
@@ -273,7 +280,10 @@ fn map_response(value: &Value) -> Result<WebSearchResult, WebError> {
         .as_array()
         .ok_or_else(|| error("Hosted search returned no output items"))?;
     if !output.iter().any(|v| v["type"] == "web_search_call") {
-        return Err(error("The provider did not execute native web search"));
+        return Err(WebError::new(
+            "NATIVE_TOOL_UNSUPPORTED",
+            "The provider did not execute native web search. Select a connection that supports hosted search, or configure DeepSeek search in plugin settings; retrying the same route cannot validate search capability.",
+        ));
     }
     if output
         .iter()
@@ -341,6 +351,10 @@ mod tests {
     use super::*;
     #[test]
     fn hosted_protocol_keeps_native_sources_and_rejects_unsourced_answers() {
+        assert_eq!(
+            error("NATIVE_TOOL_UNSUPPORTED: unsupported route").code(),
+            "NATIVE_TOOL_UNSUPPORTED"
+        );
         let body = search_body("fixture", "query", false);
         assert_eq!(body["tools"][0]["external_web_access"], false);
         assert_eq!(body["store"], false);
@@ -359,6 +373,12 @@ mod tests {
             Some("Answer".into())
         );
         assert!(map_response(&json!({"output":[{"type":"message","content":[{"type":"output_text","text":"Invented"}]}]})).is_err());
+        assert_eq!(
+            map_response(&json!({"output":[{"type":"message"}]}))
+                .unwrap_err()
+                .code(),
+            "NATIVE_TOOL_UNSUPPORTED"
+        );
         assert!(parse_response(b"data: [DONE]\n").is_err());
         assert!(endpoint("https://user:key@example.test").is_err());
         assert_eq!(sse_boundary(b"data: {}\r\n\r\n"), Some((8, 4)));

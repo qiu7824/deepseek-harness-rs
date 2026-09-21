@@ -1,5 +1,6 @@
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_LAYER_ALE_AUTH_CONNECT_V4;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_LAYER_ALE_AUTH_CONNECT_V6;
+use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::{FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6};
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6;
 use windows_sys::Win32::Networking::WinSock::IPPROTO_ICMP;
@@ -23,6 +24,34 @@ pub(super) struct FilterSpec {
 }
 
 pub(super) const FILTER_SPECS: &[FilterSpec] = &[
+    FilterSpec {
+        key: GUID::from_u128(0x8c133d02_4a82_4bfe_828d_64327281af88),
+        name: "dsh_native_wfp_offline_bind_v4",
+        description: "Deny offline-account IPv4 socket resource allocation before connect authorization",
+        layer_key: FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4,
+        conditions: &[ConditionSpec::User],
+    },
+    FilterSpec {
+        key: GUID::from_u128(0x2fc9af68_c08c_43e2_807d_733d9b27b73e),
+        name: "dsh_native_wfp_offline_bind_v6",
+        description: "Deny offline-account IPv6 socket resource allocation before connect authorization",
+        layer_key: FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6,
+        conditions: &[ConditionSpec::User],
+    },
+    FilterSpec {
+        key: GUID::from_u128(0xac973fd4_ef54_4bce_a03b_7b06c80540d5),
+        name: "dsh_native_wfp_offline_accept_v4",
+        description: "Block offline sandbox incoming IPv4 connections including loopback",
+        layer_key: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+        conditions: &[ConditionSpec::User],
+    },
+    FilterSpec {
+        key: GUID::from_u128(0x39eac4d3_0615_4465_abb8_5b683865bc46),
+        name: "dsh_native_wfp_offline_accept_v6",
+        description: "Block offline sandbox incoming IPv6 connections including loopback",
+        layer_key: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+        conditions: &[ConditionSpec::User],
+    },
     FilterSpec {
         key: GUID::from_u128(0x9c08b767_650c_530e_a5c5_71c54e9b5021),
         name: "dsh_native_wfp_offline_connect_v4",

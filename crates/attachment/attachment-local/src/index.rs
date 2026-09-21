@@ -15,12 +15,12 @@ use dsh_home_paths::resolve_dsh_home;
 pub use crate::image::{DetectedImage, detect_image, encoded_alpha_is_compatible, probe_image};
 pub use crate::store::{read_image_file, save_image_file, validate_image_file};
 
-/// Default maximum encoded bytes for one image.
-pub const DEFAULT_MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+/// Zero disables the local encoded-byte limit; provider request limits remain separate.
+pub const DEFAULT_MAX_IMAGE_BYTES: u64 = 0;
 /// Default maximum images in one prompt.
 pub const DEFAULT_MAX_IMAGES_PER_MESSAGE: u64 = 20;
 /// Default maximum aggregate image bytes in one prompt.
-pub const DEFAULT_MAX_MESSAGE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
+pub const DEFAULT_MAX_MESSAGE_IMAGE_BYTES: u64 = 0;
 /// Default maximum intrinsic pixels for one image.
 pub const DEFAULT_MAX_IMAGE_PIXELS: u64 = 40_000_000;
 
@@ -29,12 +29,12 @@ pub const DEFAULT_MAX_IMAGE_PIXELS: u64 = 40_000_000;
 pub struct Config {
     /// Explicit harness home; omitted follows `DSH_HOME`, then `~/.dsh`.
     pub dsh_home: Option<String>,
-    /// Maximum encoded bytes accepted for one image.
+    /// Maximum encoded bytes accepted for one image; zero means unlimited.
     pub max_image_bytes: Option<u64>,
     /// Maximum image count accepted in one submitted message.
     pub max_images_per_message: Option<u64>,
     /// Maximum aggregate encoded image bytes accepted in one submitted
-    /// message.
+    /// message; zero means unlimited.
     pub max_message_image_bytes: Option<u64>,
     /// Maximum intrinsic width multiplied by height accepted for one image.
     pub max_image_pixels: Option<u64>,
@@ -49,7 +49,7 @@ pub fn config_schema() -> dsh_schemastery::Schema {
             "maxImageBytes".to_string(),
             Schema::number()
                 .step(1.0)
-                .min(1.0)
+                .min(0.0)
                 .default(Data::Number(DEFAULT_MAX_IMAGE_BYTES as f64)),
         ),
         (
@@ -63,7 +63,7 @@ pub fn config_schema() -> dsh_schemastery::Schema {
             "maxMessageImageBytes".to_string(),
             Schema::number()
                 .step(1.0)
-                .min(1.0)
+                .min(0.0)
                 .default(Data::Number(DEFAULT_MAX_MESSAGE_IMAGE_BYTES as f64)),
         ),
         (
@@ -82,6 +82,42 @@ pub struct LocalAttachmentStore {
     /// Absolute versioned storage root.
     pub root: PathBuf,
     limits: ImageAttachmentLimits,
+}
+
+#[cfg(test)]
+mod upload_limit_tests {
+    use super::*;
+    #[tokio::test]
+    async fn default_accepts_images_over_five_mib_and_explicit_limit_is_enforced() {
+        let mut data = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(&mut data, image::ImageFormat::Png)
+            .unwrap();
+        let mut data = data.into_inner();
+        data.resize(6 * 1024 * 1024, 0);
+        let input = SaveImageAttachment {
+            data,
+            media_type: ImageMediaType::Png,
+            name: None,
+        };
+        let ctx = Context::root();
+        let store = LocalAttachmentStore::install(&ctx, Config::default());
+        assert_eq!(store.image_limits().max_image_bytes, 0);
+        assert_eq!(store.image_limits().image_byte_limit(), u64::MAX);
+        store.validate_image(&input).await.unwrap();
+        let limited_ctx = Context::root();
+        let limited = LocalAttachmentStore::install(
+            &limited_ctx,
+            Config {
+                max_image_bytes: Some(5 * 1024 * 1024),
+                ..Config::default()
+            },
+        );
+        assert_eq!(
+            limited.validate_image(&input).await.unwrap_err().code,
+            "IMAGE_TOO_LARGE"
+        );
+    }
 }
 
 impl LocalAttachmentStore {

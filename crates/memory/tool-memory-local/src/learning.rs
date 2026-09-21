@@ -286,6 +286,7 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
             false,
         ),
         "SANDBOX_SETUP_FAILED"
+        | "SANDBOX_SETUP_REQUIRED"
         | "SANDBOX_SETUP_TIMEOUT"
         | "SANDBOX_RUNNER_FAILED"
         | "SANDBOX_RUNNER_TIMEOUT"
@@ -1006,7 +1007,7 @@ impl LearningStore {
             .get("limit")
             .and_then(Value::as_u64)
             .unwrap_or(100)
-            .min(200) as usize;
+            .min(MAX_ENTRIES as u64) as usize;
         let memory_enabled = self.policy_enabled.load(Ordering::Acquire);
         let diagnostic_total = rows.iter().filter(|entry| !reusable_rule(entry)).count();
         let items = rows
@@ -1190,7 +1191,7 @@ fn evidence_id(value: &str) -> Option<String> {
         && value.len() <= 200
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-_:".contains(&byte)))
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_:#".contains(&byte)))
     .then(|| value.to_string())
 }
 fn confirmed_suggestion(value: &str) -> Result<String, String> {

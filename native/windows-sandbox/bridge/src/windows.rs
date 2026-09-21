@@ -1,5 +1,5 @@
 use crate::{
-    args::{Action, Request},
+    args::{Action, Implementation, Request},
     environment,
 };
 use anyhow::{Result, ensure};
@@ -15,10 +15,9 @@ use std::{sync::Arc, time::Duration};
 
 pub fn run(request: Request) -> Result<i32> {
     use crate::pool;
-    ensure!(
-        request.action != Action::Run || request.network,
-        "[NETWORK_POLICY_UNAVAILABLE] offline network enforcement has not passed runtime validation; command not dispatched"
-    );
+    if request.implementation == Implementation::Unelevated {
+        return run_unelevated(request);
+    }
     let owned = pool::validate_owner(&request.home, request.action == Action::Setup)?;
     let indices = if request.read_only {
         0..pool::READ_SLOTS
@@ -28,15 +27,17 @@ pub fn run(request: Request) -> Result<i32> {
     if request.action == Action::Status {
         let initialized = owned
             && indices.clone().all(|index| {
-                codex_windows_sandbox::sandbox_setup_is_complete(&pool::home(
+                let home = pool::home(
                     &request.home,
                     &request.workspace,
                     index,
-                ))
+                );
+                codex_windows_sandbox::sandbox_setup_is_complete(&home)
+                    && (request.network || offline_ready(&home).is_ok())
             });
         println!(
             "{}",
-            serde_json::json!({"backend":"windows-native","protocolVersion":1,"initialized":initialized,"home":request.home,"poolSize":pool::SIZE,"offlineNetworkValidated":false,"networkModes":["enabled"]})
+            serde_json::json!({"backend":"windows-native","protocolVersion":1,"initialized":initialized,"home":request.home,"poolSize":pool::SIZE,"implementation":"elevated","networkModes":["enabled","restricted"],"networkIsolation":"account-firewall"})
         );
         return Ok(0);
     }
@@ -105,15 +106,71 @@ pub fn run(request: Request) -> Result<i32> {
     )
 }
 
+
+fn offline_ready(home: &std::path::Path) -> Result<()> {
+    ensure!(home.join(".sandbox/wfp-scoped-v4.json").is_file(), "SETUP_REQUIRED: update the account-scoped network policy before offline execution");
+    let (account,_) = codex_windows_sandbox::sandbox_account_names(home);
+    codex_windows_sandbox::verify_wfp_filters_for_account(&account)
+}
+
+fn token_prepared_marker(home: &std::path::Path, workspace: &std::path::Path) -> Result<std::path::PathBuf> {
+    use sha2::{Digest,Sha256};
+    let path=std::fs::canonicalize(workspace)?;
+    let created=std::fs::metadata(&path)?.created().ok().and_then(|v|v.duration_since(std::time::UNIX_EPOCH).ok()).map(|v|v.as_nanos()).unwrap_or(0);
+    let key=format!("{:x}",Sha256::digest(format!("{}:{created}",path.to_string_lossy().to_lowercase()).as_bytes()));
+    Ok(home.join(format!("prepared-{}.json",&key[..24])))
+}
+
+fn run_unelevated(mut request: Request) -> Result<i32> {
+    let shared_home=request.home.clone();
+    let token_home=shared_home.join("unelevated");
+    let selected=token_home.join(if request.read_only {"readonly"} else {"write"});
+    if request.action==Action::Status {
+        if shared_home.exists() { crate::pool::validate_owner(&shared_home,false)?; }
+        let initialized=request.read_only || token_prepared_marker(&selected,&request.workspace).is_ok_and(|p|p.is_file());
+        println!("{}",serde_json::json!({"backend":"windows-native","implementation":"unelevated","protocolVersion":1,"initialized":initialized,"requiresSetup":!initialized,"requiresAdministrator":false,"networkModes":["enabled","restricted"],"networkIsolation":"environment","readScope":"current-user"}));
+        return Ok(0);
+    }
+    ensure!(!codex_windows_sandbox::setup_caller_is_restricted()?,"SETUP_DENIED: confined callers cannot initialize token state");
+    if request.action==Action::Run && request.read_only {
+        crate::pool::initialize_token_owner(&shared_home)?;
+        crate::pool::initialize_token_owner(&token_home)?;
+        request.home=selected;
+        return run_slot(request);
+    }
+    if request.action==Action::Setup {
+        crate::pool::initialize_token_owner(&shared_home)?;
+        crate::pool::initialize_token_owner(&token_home)?;
+        let lock_path=token_home.join("preparation.lock");
+        let lock=std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(lock_path)?;
+        fs2::FileExt::try_lock_exclusive(&lock).map_err(|_|anyhow::anyhow!("SETUP_BUSY: token permissions are already being prepared"))?;
+        for read_only in [true,false] {
+            let mut slot=request.clone();slot.read_only=read_only;
+            slot.home=token_home.join(if read_only {"readonly"} else {"write"});
+            let marker=token_prepared_marker(&slot.home,&slot.workspace)?;
+            let system=std::env::var_os("SystemRoot").map(std::path::PathBuf::from).ok_or_else(||anyhow::anyhow!("SystemRoot is unavailable"))?;
+            slot.command=vec![system.join("System32/whoami.exe").to_string_lossy().into_owned()];
+            slot.timeout_ms=Some(10000);
+            ensure!(run_slot(slot)?==0,"token preparation probe failed");
+            std::fs::write(marker,b"{\"version\":1,\"prepared\":true}")?;
+        }
+        println!("{}",serde_json::json!({"implementation":"unelevated","initialized":true,"requiresAdministrator":false}));
+        return Ok(0);
+    }
+    ensure!(crate::pool::validate_owner(&shared_home,false)? && token_prepared_marker(&selected,&request.workspace)?.is_file(),"SETUP_REQUIRED: initialize this project's token permissions before execution; no administrator approval is required");
+    request.home=selected;
+    run_slot(request)
+}
+
 fn run_slot(mut request: Request) -> Result<i32> {
     if request.home.exists() {
         request.home = codex_windows_sandbox::canonicalize_path(&request.home);
     }
     codex_windows_sandbox::assert_state_namespace(&request.home)?;
-    ensure!(
-        request.action != Action::Run || request.network,
-        "[NETWORK_POLICY_UNAVAILABLE] offline network enforcement has not passed runtime validation on this platform; command not dispatched"
-    );
+    let elevated = request.implementation == Implementation::Elevated;
+    if elevated && request.action == Action::Run && !request.network {
+        offline_ready(&request.home)?;
+    }
     let engine = std::env::current_exe()?
         .parent()
         .ok_or_else(|| anyhow::anyhow!("missing binary directory"))?
@@ -131,7 +188,7 @@ fn run_slot(mut request: Request) -> Result<i32> {
         );
         return Ok(0);
     }
-    if request.action == Action::Run {
+    if elevated && request.action == Action::Run {
         ensure!(
             codex_windows_sandbox::sandbox_setup_is_complete(&request.home),
             "[SETUP_REQUIRED] run explicit native sandbox setup before dispatch"
@@ -150,12 +207,13 @@ fn run_slot(mut request: Request) -> Result<i32> {
             .get("TEMP")
             .ok_or_else(|| anyhow::anyhow!("missing private temporary directory"))?,
     ))?;
+    let legacy_writes = env.writes.iter().cloned().map(AbsolutePathBuf::try_from).collect::<std::result::Result<Vec<_>, _>>()?;
     let workspace = AbsolutePathBuf::try_from(request.workspace.clone())?;
     let workspace_roots = vec![workspace];
     let mut policy = if request.read_only {
         PermissionProfile::read_only()
     } else {
-        PermissionProfile::workspace_write_with(&[], NetworkSandboxPolicy::Enabled, true, true)
+        PermissionProfile::workspace_write_with(if elevated { &[] } else { &legacy_writes }, NetworkSandboxPolicy::Enabled, true, true)
     };
     if let PermissionProfile::Managed { network, .. } = &mut policy {
         *network = if request.network {
@@ -175,7 +233,7 @@ fn run_slot(mut request: Request) -> Result<i32> {
         .cloned()
         .map(AbsolutePathBuf::try_from)
         .collect::<std::result::Result<_, _>>()?;
-    if request.action == Action::Setup {
+    if request.action == Action::Setup && elevated {
         let permissions =
             ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(
                 &policy,
@@ -203,11 +261,10 @@ fn run_slot(mut request: Request) -> Result<i32> {
         );
         return Ok(0);
     }
-    ensure!(
-        codex_windows_sandbox::sandbox_setup_is_complete(&request.home),
-        "[SETUP_REQUIRED] run explicit native sandbox setup before dispatch"
-    );
-    let cwd = std::env::current_dir()?;
+    if elevated {
+        ensure!(codex_windows_sandbox::sandbox_setup_is_complete(&request.home), "[SETUP_REQUIRED] run explicit native sandbox setup before dispatch");
+    }
+    let cwd = request.workspace.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -222,15 +279,15 @@ fn run_slot(mut request: Request) -> Result<i32> {
                 command: env.command,
                 cwd: &cwd,
                 env_map: env.values,
-                windows_sandbox_level: WindowsSandboxLevel::Elevated,
+                windows_sandbox_level: if elevated { WindowsSandboxLevel::Elevated } else { WindowsSandboxLevel::RestrictedToken },
                 proxy_enforced: false,
                 network_proxy_restricting_sid: None,
                 proxy_settings_mode: WindowsSandboxProxySettingsMode::Reconcile,
-                timeout_ms: request.timeout_ms,
+                timeout_ms: None,
                 read_roots_override: Some(&env.reads),
                 read_roots_include_platform_defaults: false,
                 write_roots_override: Some(&writes),
-                deny_read_paths_override: &denied,
+                deny_read_paths_override: if elevated { &denied } else { &[] },
                 deny_write_paths_override: &[],
                 tty,
                 stdin_open: true,
@@ -239,7 +296,7 @@ fn run_slot(mut request: Request) -> Result<i32> {
         )
         .await?;
         signal_event(request.ready_event.as_deref())?;
-        let code = forward(spawned, tty).await;
+        let code = forward(spawned, tty, request.timeout_ms).await;
         if code == 124 {
             if let Some(name) = &request.ready_event {
                 let _ = signal_event(Some(&format!("{name}-timeout")));
@@ -282,7 +339,7 @@ fn console_size() -> Option<codex_utils_pty::TerminalSize> {
     })
 }
 
-async fn forward(spawned: codex_utils_pty::SpawnedProcess, tty: bool) -> i32 {
+async fn forward(spawned: codex_utils_pty::SpawnedProcess, tty: bool, timeout_ms: Option<u64>) -> i32 {
     use std::io::{Read, Write};
     let session = Arc::new(spawned.session);
     let input = session.writer_sender();
@@ -345,7 +402,12 @@ async fn forward(spawned: codex_utils_pty::SpawnedProcess, tty: bool) -> i32 {
         })
     });
     let mut exit = spawned.exit_rx;
-    let code = tokio::select! {code=&mut exit=>code.unwrap_or(125),_=tokio::signal::ctrl_c()=>{session.request_terminate();exit.await.unwrap_or(130)}};
+    let deadline = async { match timeout_ms { Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await, None => std::future::pending().await } };
+    let code = tokio::select! {
+        code=&mut exit=>code.unwrap_or(125),
+        _=deadline=>{session.request_terminate();let _=tokio::time::timeout(Duration::from_secs(5), &mut exit).await;124},
+        _=tokio::signal::ctrl_c()=>{session.request_terminate();let _=tokio::time::timeout(Duration::from_secs(5), &mut exit).await;130}
+    };
     closer.abort();
     if let Some(task) = resizer {
         task.abort();

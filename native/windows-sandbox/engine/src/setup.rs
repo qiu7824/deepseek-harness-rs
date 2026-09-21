@@ -45,7 +45,7 @@ use windows_sys::Win32::Security::CheckTokenMembership;
 use windows_sys::Win32::Security::FreeSid;
 use windows_sys::Win32::Security::SECURITY_NT_AUTHORITY;
 
-pub const SETUP_VERSION: u32 = 5;
+pub const SETUP_VERSION: u32 = 6;
 pub const OFFLINE_USERNAME: &str = "DshSandboxOffline";
 pub const ONLINE_USERNAME: &str = "DshSandboxOnline";
 

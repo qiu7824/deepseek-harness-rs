@@ -41,7 +41,9 @@ mod rejection_tests {
                         functions: vec![(
                             "wait".into(),
                             Arc::new(|_| {
-                                Box::pin(async { futures::future::pending::<Value>().await })
+                                Box::pin(async {
+                                    futures::future::pending::<Result<Value, String>>().await
+                                })
                             }),
                         )],
                     }],
@@ -62,9 +64,9 @@ mod rejection_tests {
         let function: CodeBindingFunction = Arc::new(|args| {
             Box::pin(async move {
                 if args["prompt"].as_str().is_none_or(|s| s.trim().is_empty()) {
-                    panic!("agent input requires a non-empty prompt string");
+                    return Err("agent input requires a non-empty prompt string".into());
                 }
-                json!({"accepted":args["prompt"]})
+                Ok(json!({"accepted":args["prompt"]}))
             })
         });
         let result = runtime.run(CodeRunRequest {
@@ -522,12 +524,13 @@ async fn run_one(
                 let args = frame.get("args").cloned().unwrap_or(Value::Null);
                 let output = output.clone();
                 binding_tasks.spawn(async move {
-                    // Bindings use panic as their rejection channel. Let JavaScript
-                    // catch the rejection instead of terminating the whole worker.
+                    // Expected errors reject only this JavaScript call. Unexpected
+                    // panics remain isolated at the same binding boundary.
                     let result = std::panic::AssertUnwindSafe(async move { function(args).await })
                         .catch_unwind().await;
                     let frame = match result {
-                        Ok(value) => json!({ "type": "binding_result", "id": id, "ok": true, "value": value }),
+                        Ok(Ok(value)) => json!({ "type": "binding_result", "id": id, "ok": true, "value": value }),
+                        Ok(Err(message)) => json!({ "type": "binding_result", "id": id, "ok": false, "name": "Error", "message": message }),
                         Err(payload) => {
                             let message = payload.downcast_ref::<String>().cloned()
                                 .or_else(|| payload.downcast_ref::<&str>().map(|v| v.to_string()))

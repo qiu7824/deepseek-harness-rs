@@ -8,6 +8,24 @@ use std::{
 pub const READ_SLOTS: usize = 2;
 pub const WRITE_SLOTS: usize = 4;
 pub const SIZE: usize = READ_SLOTS + WRITE_SLOTS;
+
+pub fn initialize_token_owner(root: &Path) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let parent = root.parent().ok_or_else(||anyhow::anyhow!("state directory has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let identity = format!("{:x}",Sha256::digest(root.to_string_lossy().to_lowercase().as_bytes()));
+    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(parent.join(format!(".dsh-token-{}.lock",&identity[..20])))?;
+    lock.lock_exclusive()?;
+    validate_owner(root,true)?;
+    let path = root.join("dsh-native-pool.json");
+    let mut owner: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    if owner["protected"] != true {
+        protect_owner(root)?;
+        owner["protected"] = serde_json::json!(true);
+        std::fs::write(path,serde_json::to_vec(&owner)?)?;
+    }
+    Ok(())
+}
 pub fn home(root: &Path, workspace: &Path, index: usize) -> PathBuf {
     if index < READ_SLOTS {
         return root.join("readonly").join(index.to_string());

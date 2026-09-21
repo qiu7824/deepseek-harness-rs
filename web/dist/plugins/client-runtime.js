@@ -7343,7 +7343,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @returns the prompt result (also mirrored into promptError on failure).
 			*/
 			prompt(content, mode) {
-				const same = attempt => attempt.mode === mode && JSON.stringify(attempt.content) === JSON.stringify(content);
+				const same = attempt => attempt.mode === mode && attempt.content.length === content.length && attempt.content.every((part, index) => {
+                    const other = content[index], keys = Object.keys(part);
+                    return keys.length === Object.keys(other).length && keys.every(key => part[key] === other[key]);
+                });
 				const active = this.promptInFlight.find(same);
 				if (active) return active.promise;
 				const retry = this.promptRetry;
@@ -7353,7 +7356,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				this.queueMirror.begin(requestId, content);
 				this.notifier.markDirty();
 				attempt.promise = this.sendPrompt(content, mode, requestId).then(result => {
-					if (!result.ok && result.error?.code !== "cancelled") this.promptRetry = attempt;
+					if (!this.disposed && !result.ok && ["internal", "transport-error"].includes(result.error?.code)) this.promptRetry = attempt;
 					return result;
 				}).finally(() => {
 					this.promptInFlight = this.promptInFlight.filter(item => item !== attempt);
@@ -7960,6 +7963,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			/** Cancel pending history work before the owning scope drops the instance. */
 			dispose() {
                 this.disposed = true;
+                this.promptRetry = null;
                 if (this.gapRetryTimer != null) clearTimeout(this.gapRetryTimer);
                 this.gapRetryTimer = null;
                 this.releaseHistory();

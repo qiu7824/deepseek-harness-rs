@@ -59,19 +59,11 @@ fn main() {
             .try_init();
     }
     #[cfg(windows)]
-    if let Err(error) = dsh_sandbox_local::register_embedded_windows_runner() {
-        eprintln!("dsh: cannot register embedded sandbox runner: {error}");
-        std::process::exit(1);
-    }
-    #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("__dsh-sandbox-windows") {
-        match dsh_sandbox_local::run_windows_sandbox(std::env::args().skip(2)) {
-            Ok(exit_code) => std::process::exit(exit_code),
-            Err(error) => {
-                eprintln!("dsh-sandbox-windows: {error}");
-                std::process::exit(125);
-            }
-        }
+        eprintln!(
+            "[SANDBOX_SETUP_REQUIRED] AppContainer execution is retired; select the elevated or unelevated Windows native backend"
+        );
+        std::process::exit(125);
     }
     #[cfg(windows)]
     {
@@ -113,6 +105,18 @@ fn main() {
 
 async fn async_main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    if args.first().is_some_and(|arg| arg == "sandbox") {
+        let result = windows_sandbox_cli(&args[1..]).await;
+        match result {
+            Ok(value) => println!("{}", value),
+            Err(error) => {
+                eprintln!("dsh sandbox: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "__dsh-sdk-jsonrpc") {
         if let Err(error) = dsh_host_cli::sdk_stdio::run().await {
             eprintln!("dsh-sdk-jsonrpc: {error}");
@@ -277,4 +281,37 @@ fn selected_home() -> std::path::PathBuf {
         eprintln!("dsh: {error}");
         std::process::exit(1);
     })
+}
+
+#[cfg(windows)]
+async fn windows_sandbox_cli(args: &[String]) -> Result<serde_json::Value, String> {
+    let home = selected_home();
+    let state = dsh_sandbox_local::windows_backend_configuration(&home)?;
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    if action == "status" {
+        return Ok(state);
+    }
+    if !matches!(action, "setup" | "configure") {
+        return Err("Usage: dsh sandbox status|setup|configure [--workspace PATH] [--implementation elevated|unelevated] [--network enabled|restricted]".into());
+    }
+    let mut request = serde_json::json!({"action":action,"expectedRevision":state["revision"],"implementation":state["implementation"],"network":state["network"],"workspace":std::env::current_dir().map_err(|e|e.to_string())?});
+    let mut flags = args[1..].iter();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(flag) = flags.next() {
+        if !seen.insert(flag) {
+            return Err(format!("Duplicate option {flag}"));
+        }
+        let field = match flag.as_str() {
+            "--workspace" => "workspace",
+            "--implementation" => "implementation",
+            "--network" => "network",
+            _ => return Err(format!("Unknown option {flag}")),
+        };
+        request[field] = serde_json::json!(
+            flags
+                .next()
+                .ok_or_else(|| format!("Missing value for {flag}"))?
+        );
+    }
+    dsh_sandbox_local::windows_backend_manage(home, request).await
 }

@@ -261,6 +261,12 @@ pub use resolved_permissions::token_mode_for_permission_profile;
 #[cfg(target_os = "windows")]
 pub use setup::SETUP_VERSION;
 #[cfg(target_os = "windows")]
+pub use setup::account_names as sandbox_account_names;
+#[cfg(target_os = "windows")]
+pub use wfp::verify_wfp_filters_for_account;
+#[cfg(target_os = "windows")]
+pub use wfp::install_wfp_filters_for_account_with_reader;
+#[cfg(target_os = "windows")]
 pub use setup::SandboxSetupRequest;
 #[cfg(target_os = "windows")]
 pub use setup::SetupRootOverrides;

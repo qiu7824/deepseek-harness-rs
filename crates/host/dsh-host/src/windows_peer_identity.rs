@@ -9,7 +9,9 @@ use windows_sys::Win32::{
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
     },
-    Security::{GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser},
+    Security::{
+        GetLengthSid, GetTokenInformation, IsTokenRestricted, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    },
     System::Threading::{
         GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
     },
@@ -30,6 +32,11 @@ fn principal(process: windows_sys::Win32::Foundation::HANDLE) -> Option<Vec<u8>>
         return None;
     }
     let token = Handle(raw);
+    // The unelevated backend retains the host SID, but its restricted token
+    // must never gain control-plane authority through a loopback request.
+    if unsafe { IsTokenRestricted(token.0) } != 0 {
+        return None;
+    }
     let mut bytes = 0;
     unsafe {
         GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut bytes);

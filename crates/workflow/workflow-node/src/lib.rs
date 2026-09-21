@@ -355,22 +355,21 @@ async fn drive(
             if child_abort.load(Ordering::Acquire)
                 || external_abort.as_ref().is_some_and(|signal| signal())
             {
-                panic!("workflow cancelled");
+                return Err("WORKFLOW_CANCELLED: workflow cancelled".into());
             }
+            let call = read_agent_input(input)?;
             let permit = match concurrency {
-                Some(semaphore) => Some(
-                    semaphore
-                        .acquire_owned()
-                        .await
-                        .unwrap_or_else(|_| panic!("workflow concurrency gate closed")),
-                ),
+                Some(semaphore) => Some(semaphore.acquire_owned().await.map_err(|_| {
+                    "WORKFLOW_CANCELLED: workflow concurrency gate closed".to_string()
+                })?),
                 None => None,
             };
-            let call = read_agent_input(input);
             let seq = sequence.fetch_add(1, Ordering::AcqRel) + 1;
             if seq > total_cap {
                 sequence.fetch_sub(1, Ordering::AcqRel);
-                panic!("workflow agent cap exceeded ({total_cap})");
+                return Err(format!(
+                    "WORKFLOW_AGENT_LIMIT: workflow agent cap exceeded ({total_cap})"
+                ));
             }
             let child = subagents
                 .start(
@@ -393,7 +392,7 @@ async fn drive(
                     },
                 )
                 .await
-                .unwrap_or_else(|error| panic!("workflow agent start failed: {error}"));
+                .map_err(|error| format!("WORKFLOW_AGENT_START_FAILED: {error}"))?;
             // Close the async admission window: disposal may begin while the
             // provider is constructing the child. Such a late publication is
             // retired here and never escapes workflow ownership.
@@ -401,7 +400,7 @@ async fn drive(
                 || external_abort.as_ref().is_some_and(|signal| signal())
             {
                 let _ = child.dispose().await;
-                panic!("workflow cancelled during child admission");
+                return Err("WORKFLOW_CANCELLED: workflow cancelled during child admission".into());
             }
             active_children.lock().insert(seq, child.clone());
             if child_abort.load(Ordering::Acquire)
@@ -409,7 +408,9 @@ async fn drive(
             {
                 active_children.lock().remove(&seq);
                 let _ = child.dispose().await;
-                panic!("workflow cancelled during child publication");
+                return Err(
+                    "WORKFLOW_CANCELLED: workflow cancelled during child publication".into(),
+                );
             }
             let info = WorkflowAgentInfo {
                 seq,
@@ -424,7 +425,7 @@ async fn drive(
                     let _ = child.dispose().await;
                     active_children.lock().remove(&seq);
                     drop(permit);
-                    panic!("workflow child result failed: {error}");
+                    return Err(format!("WORKFLOW_CHILD_FAILED: {error}"));
                 }
             };
             let outcome = match settled.stop_reason {
@@ -446,7 +447,6 @@ async fn drive(
             active_children.lock().remove(&seq);
             drop(permit);
             child_value(child.id().as_str(), settled, call.schema.is_some())
-                .unwrap_or_else(|error| panic!("{error}"))
         })
     });
     let phase_ctx = ctx.clone();
@@ -464,7 +464,7 @@ async fn drive(
             if !title.is_empty() {
                 phase_ctx.emit("workflow/phase", vec![cordis::arc(title)]);
             }
-            Value::Null
+            Ok(Value::Null)
         })
     });
     let args = request.args.unwrap_or(Value::Null);
@@ -552,30 +552,36 @@ struct AgentInput {
     schema: Option<Value>,
 }
 
-fn read_agent_input(input: Value) -> AgentInput {
+fn read_agent_input(input: Value) -> Result<AgentInput, String> {
     let input = input
         .as_array()
         .and_then(|args| args.first())
         .cloned()
         .unwrap_or(input);
     match input {
-        Value::String(prompt) if !prompt.trim().is_empty() => AgentInput {
+        Value::String(prompt) if !prompt.trim().is_empty() => Ok(AgentInput {
             prompt,
             label: None,
             schema: None,
-        },
-        Value::Object(mut input) => AgentInput {
+        }),
+        Value::Object(mut input) => Ok(AgentInput {
             prompt: input
                 .remove("prompt")
                 .and_then(|value| value.as_str().map(str::to_string))
                 .filter(|prompt| !prompt.trim().is_empty())
-                .unwrap_or_else(|| panic!("agent input requires a non-empty prompt string")),
+                .ok_or_else(|| {
+                    "WORKFLOW_INPUT_INVALID: agent input requires a non-empty prompt string"
+                        .to_string()
+                })?,
             label: input
                 .remove("label")
                 .and_then(|value| value.as_str().map(str::to_string)),
             schema: input.remove("schema"),
-        },
-        _ => panic!("agent input must be a prompt string or object"),
+        }),
+        _ => Err(
+            "WORKFLOW_INPUT_INVALID: agent input must be a non-empty prompt string or object"
+                .into(),
+        ),
     }
 }
 
@@ -609,6 +615,29 @@ fn child_value(
 #[cfg(test)]
 mod result_tests {
     use super::*;
+    #[test]
+    fn invalid_agent_inputs_are_errors_without_panicking() {
+        for input in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"prompt":12}),
+            serde_json::json!({"prompt":" "}),
+            serde_json::json!([]),
+        ] {
+            assert!(
+                read_agent_input(input)
+                    .err()
+                    .unwrap()
+                    .starts_with("WORKFLOW_INPUT_INVALID:")
+            );
+        }
+        assert_eq!(
+            read_agent_input(serde_json::json!([{"prompt":"work"}]))
+                .unwrap()
+                .prompt,
+            "work"
+        );
+    }
     #[test]
     fn failed_children_cannot_resolve_as_successful_null() {
         for stop_reason in [

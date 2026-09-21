@@ -8,9 +8,16 @@ pub enum Action {
     Status,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Implementation { Elevated, Unelevated }
+impl Implementation {
+    pub fn as_str(self) -> &'static str { match self { Self::Elevated => "elevated", Self::Unelevated => "unelevated" } }
+}
+
 #[derive(Debug, Clone)]
 pub struct Request {
     pub action: Action,
+    pub implementation: Implementation,
     pub home: PathBuf,
     pub workspace: PathBuf,
     pub read_only: bool,
@@ -29,6 +36,7 @@ impl Request {
         let mut args = args.peekable();
         let mut request = Self {
             action: Action::Run,
+            implementation: Implementation::Elevated,
             home: PathBuf::new(),
             workspace: PathBuf::new(),
             read_only: false,
@@ -73,6 +81,11 @@ impl Request {
                     );
                     match flag.as_str() {
                         "--native-home" => request.home = PathBuf::from(value),
+                        "--implementation" => request.implementation = match value.as_str() {
+                            "elevated" => Implementation::Elevated,
+                            "unelevated" => Implementation::Unelevated,
+                            _ => bail!("unsupported Windows sandbox implementation"),
+                        },
                         "--workspace" => request.workspace = PathBuf::from(value),
                         "--mode" => {
                             request.read_only = match value.as_str() {

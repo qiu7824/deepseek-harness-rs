@@ -509,7 +509,7 @@ window.__ModuleLoader__.load({
                         if(!["next-request-preview","historical-context-preview"].includes(nextPreview?.mode)||typeof nextPreview.workspaceKey!=="string"||!nextPreview.workspaceKey||!Array.isArray(nextPreview.items)||typeof nextPreview.enabled!=="boolean")throw new Error("经验预览返回的数据不完整");
                         workspaceKey=nextPreview.workspaceKey;
                     }
-                    const next=experienceList(experienceUnwrap(await api.memory.learningList({...workspaceKey?{workspaceKey}:{},...status?{status}:{},...query.trim()?{query:query.trim()}:{},limit:compact&&!expanded?6:100})));
+                    const next=experienceList(experienceUnwrap(await api.memory.learningList({...workspaceKey?{workspaceKey}:{},...status?{status}:{},...query.trim()?{query:query.trim()}:{},limit:compact&&!expanded?6:1000})));
                     if(!mounted.current||version!==generation.current)return;
                     setReport(next);setPreview(nextPreview);setWorkspaces(current=>{const known=new Map(current.map(item=>[item.key,item]));for(const entry of next.items)if(entry.workspaceKey)known.set(entry.workspaceKey,{key:entry.workspaceKey,label:experienceWorkspace(entry)});return[...known.values()]});
                 }catch(error){if(mounted.current&&version===generation.current)setReadError(error instanceof Error?error.message:String(error))}

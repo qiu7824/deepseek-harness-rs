@@ -24,10 +24,10 @@ pub type CodeJsonValue = serde_json::Value;
 /// `CodeBindingFunction`). The runtime bridges calls to it (possibly across a
 /// serialization boundary), so `args` and the resolution value MUST be
 /// lossless JSON. A rejection of this function surfaces inside the program
-/// as a rejection of the corresponding call. The Rust collapse: the future
-/// panics (the repo-wide rejection channel).
+/// as a rejection of the corresponding JavaScript call. Expected failures
+/// return `Err`; panics are reserved for unexpected implementation defects.
 pub type CodeBindingFunction =
-    Arc<dyn Fn(CodeJsonValue) -> BoxFuture<'static, CodeJsonValue> + Send + Sync>;
+    Arc<dyn Fn(CodeJsonValue) -> BoxFuture<'static, Result<CodeJsonValue, String>> + Send + Sync>;
 
 /// Program-visible typed rejection for one binding namespace (TS
 /// `CodeBindingErrorClass`).

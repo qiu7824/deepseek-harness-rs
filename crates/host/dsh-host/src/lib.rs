@@ -67,6 +67,7 @@ mod web_preview;
 mod web_search_settings;
 #[cfg(windows)]
 mod windows_peer_identity;
+mod windows_sandbox_http;
 mod workspace_copy;
 mod workspace_resources;
 mod workspace_ssh;
@@ -1674,7 +1675,7 @@ async fn bridge_api_request(
         })
         .collect();
     #[cfg(windows)]
-    let collect_after_response = matches!(
+    let collect_after_response = bytes.len() >= 256 * 1024 || matches!(
         parts.uri.path(),
         "/api/session.history" | "/api/session.models"
     );
@@ -1684,7 +1685,7 @@ async fn bridge_api_request(
             path: parts.uri.path().to_string(),
             query,
             headers,
-            body: (!bytes.is_empty()).then(|| bytes.to_vec()),
+            body: (!bytes.is_empty()).then(|| bytes.into()),
         })
         .await;
     let (parts, body) = response.into_parts();
@@ -1745,6 +1746,7 @@ pub struct HostSpine {
     runtime_route: RouteDisposer,
     environment_route: RouteDisposer,
     task_execution_route: RouteDisposer,
+    windows_sandbox_route: RouteDisposer,
     discovery_settings_route: RouteDisposer,
     plugin_manager_route: RouteDisposer,
     pub runtime_paths: Arc<runtime_paths::RuntimePaths>,
@@ -1823,6 +1825,7 @@ impl HostSpine {
                 (self.runtime_route)();
                 (self.environment_route)();
                 (self.task_execution_route)();
+                (self.windows_sandbox_route)();
                 (self.plugin_manager_route)();
                 (self.discovery_settings_route)();
                 (self.api_route)();
@@ -2163,11 +2166,12 @@ fn compose_host_in_fiber(
         .collect::<Vec<_>>();
     path_prefixes.extend(runtime_roots.iter().cloned());
     subprocess.set_path_prefixes(path_prefixes);
-    let sandbox = LocalSandboxProvider::install_with_runtimes(
+    let sandbox = LocalSandboxProvider::install_with_runtimes_at_home(
         ctx,
         Default::default(),
         runtime_roots,
         runtime_paths.paths["cacheDirectory"].join("runtime-read-permissions"),
+        data_root.clone(),
     );
     let _sandbox_policy = SandboxPolicyService::install(
         ctx,
@@ -4181,8 +4185,10 @@ fn compose_host_in_fiber(
     #[cfg(windows)]
     let connection_filter = {
         let backend = dsh_sandbox::SandboxProvider::backend_id(sandbox.as_ref());
-        if matches!(backend, "windows-native" | "windows-unavailable")
-            && bind_host != BindHost::Loopback
+        if matches!(
+            backend,
+            "windows-native" | "windows-elevated" | "windows-unelevated" | "windows-unavailable"
+        ) && bind_host != BindHost::Loopback
         {
             return Err(
                 "Windows native sandbox requires a same-user loopback control interface".into(),
@@ -4435,6 +4441,8 @@ fn compose_host_in_fiber(
         api_proxy.clone(),
         allow_remote_host,
     );
+    let windows_sandbox_route =
+        windows_sandbox_http::register(&web_server, data_root.clone(), allow_remote_host);
     let task_models_route = task_models.register_http(&web_server);
     let productivity_route = productivity::install(
         ctx,
@@ -4549,6 +4557,7 @@ fn compose_host_in_fiber(
         runtime_route,
         environment_route,
         task_execution_route,
+        windows_sandbox_route,
         discovery_settings_route,
         plugin_manager_route,
         runtime_paths,

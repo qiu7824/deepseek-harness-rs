@@ -467,7 +467,7 @@ async fn run_search_queries(
     queries: Vec<String>,
     max_results: usize,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
-) -> Result<WebSearchResult, String> {
+) -> Result<WebSearchResult, dsh_web::WebError> {
     if queries.len() == 1 {
         return web
             .search(
@@ -477,8 +477,7 @@ async fn run_search_queries(
                 },
                 cancelled,
             )
-            .await
-            .map_err(|error| error.to_string());
+            .await;
     }
     let batch_cancelled = Arc::new(AtomicBool::new(false));
     let mut futures = queries
@@ -501,8 +500,7 @@ async fn run_search_queries(
                         },
                         fused,
                     )
-                    .await
-                    .map_err(|error| error.to_string()),
+                    .await,
                 )
             }
         })
@@ -621,7 +619,9 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                         parse_search_args(&queries, max_queries).map_err(ToolBodyError::plain)?;
                     let result = run_search_queries(web, queries, max_results, cancelled)
                         .await
-                        .map_err(ToolBodyError::plain)?;
+                        .map_err(|error| {
+                            ToolBodyError::coded(error.to_string(), "WebSearchError", error.code())
+                        })?;
                     Ok(result_to_value(&result))
                 })
             }),

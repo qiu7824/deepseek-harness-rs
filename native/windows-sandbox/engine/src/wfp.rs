@@ -70,31 +70,66 @@ const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for DSH Windows sand
 // These values are Codex-owned identities; do not regenerate them unless we
 // intentionally want to orphan old objects and create a new WFP namespace.
 const PROVIDER_KEY: GUID = GUID::from_u128(0x0eecc184f7d75bfb9f8085e430034e52);
-const SUBLAYER_KEY: GUID = GUID::from_u128(0xa2108d4659b457aa9d67b4697841491b);
+// Versioned sublayer: an existing older sublayer retains its old priority.
+// Install the account-scoped policy at the intended priority without deleting
+// any other account's filters or third-party firewall configuration.
+const SUBLAYER_KEY: GUID = GUID::from_u128(0x581a4b86_c420_4913_9f20_c7e6ba3897ce);
 
 /// Installs the persistent Codex WFP filters for `account`.
 ///
 /// This is intended to run from the already-elevated setup helper. Callers
-/// should treat any returned error as non-fatal to the rest of setup.
+/// must fail setup if any filter cannot be installed.
 pub fn install_wfp_filters_for_account(account: &str) -> Result<usize> {
+    install_wfp_filters_for_account_with_reader(account,None)
+}
+
+pub fn install_wfp_filters_for_account_with_reader(account: &str, reader: Option<&str>) -> Result<usize> {
     let engine = Engine::open()?;
     let mut transaction = engine.begin_transaction()?;
     ensure_provider(engine.handle)?;
-    for spec in FILTER_SPECS { delete_filter_if_present(engine.handle, &spec.key)?; }
-    let removed = unsafe { windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmSubLayerDeleteByKey0(engine.handle, &SUBLAYER_KEY) };
-    ensure_success_or(removed, "FwpmSubLayerDeleteByKey0", &[windows_sys::Win32::Foundation::FWP_E_SUBLAYER_NOT_FOUND as u32, FWP_E_NOT_FOUND as u32])?;
     ensure_sublayer(engine.handle)?;
 
     let user_condition = UserMatchCondition::for_account(account)?;
+    let descriptor = reader.map(UserMatchCondition::for_filter_reader).transpose()?;
     let mut installed_filter_count = 0;
     for spec in FILTER_SPECS {
+        let spec = FilterSpec { key: account_filter_key(account, &spec.key), ..*spec };
         delete_filter_if_present(engine.handle, &spec.key)?;
-        add_filter(engine.handle, spec, &user_condition)?;
+        add_filter(engine.handle, &spec, &user_condition, descriptor.as_ref().map_or(null_mut(),|d|d.security_descriptor))?;
         installed_filter_count += 1;
     }
 
     transaction.commit()?;
     Ok(installed_filter_count)
+}
+
+/// Persistent filters can be disabled by a BFE restart or removed externally.
+/// A setup marker alone must never authorize offline command dispatch.
+pub fn verify_wfp_filters_for_account(account: &str) -> Result<()> {
+    let same = |a: GUID,b: GUID| (a.data1,a.data2,a.data3,a.data4)==(b.data1,b.data2,b.data3,b.data4);
+    let engine = Engine::open()?;
+    for spec in FILTER_SPECS {
+        let key = account_filter_key(account, &spec.key);
+        let mut filter: *mut FWPM_FILTER0 = null_mut();
+        let result = unsafe { windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmFilterGetByKey0(engine.handle,&key,&mut filter) };
+        ensure_success(result,"offline filter lookup; rerun sandbox setup")?;
+        let active = unsafe {
+            !filter.is_null()
+                && (*filter).flags & windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_FILTER_FLAG_DISABLED == 0
+                && (*filter).action.r#type == FWP_ACTION_BLOCK
+                && same((*filter).layerKey, spec.layer_key)
+                && same((*filter).subLayerKey, SUBLAYER_KEY)
+        };
+        unsafe { windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmFreeMemory0((&mut filter as *mut *mut FWPM_FILTER0).cast()); }
+        anyhow::ensure!(active,"offline network filter is inactive; rerun sandbox setup before executing commands");
+    }
+    Ok(())
+}
+
+fn account_filter_key(account: &str, base: &GUID) -> GUID {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("dsh-offline-v2\0{}\0{:08x}{:04x}{:04x}{:02x?}", account.to_lowercase(), base.data1, base.data2, base.data3, base.data4).as_bytes());
+    GUID::from_u128(u128::from_be_bytes(digest[..16].try_into().expect("SHA-256 prefix")))
 }
 
 /// Owns an open WFP engine handle and closes it on drop.
@@ -176,6 +211,23 @@ struct UserMatchCondition {
 }
 
 impl UserMatchCondition {
+    fn for_filter_reader(reader: &str) -> Result<Self> {
+        let reader_sid = reader.starts_with("S-1-").then(||crate::token::LocalSid::from_string(reader)).transpose()?;
+        let names = [to_wide(OsStr::new("SYSTEM")),to_wide(OsStr::new("Administrators")),to_wide(OsStr::new(reader))];
+        let mut entries: [EXPLICIT_ACCESS_W;3] = unsafe { zeroed() };
+        for (index,name) in names.iter().enumerate() {
+            unsafe { BuildExplicitAccessWithNameW(&mut entries[index],name.as_ptr(),if index<2 {0x10000000} else {0x80000000},GRANT_ACCESS,0); }
+        }
+        if let Some(sid) = &reader_sid {
+            entries[2].Trustee.TrusteeForm = windows_sys::Win32::Security::Authorization::TRUSTEE_IS_SID;
+            entries[2].Trustee.ptstrName = sid.as_ptr().cast();
+        }
+        let mut descriptor = null_mut();
+        let mut length = 0;
+        let result = unsafe { BuildSecurityDescriptorW(null(),null(),entries.len() as u32,entries.as_ptr(),0,null(),null_mut(),&mut length,&mut descriptor) };
+        ensure_success(result,"BuildSecurityDescriptorW for sandbox host filter reader")?;
+        Ok(Self {security_descriptor:descriptor,blob:FWP_BYTE_BLOB{size:length,data:descriptor.cast()}})
+    }
     fn for_account(account: &str) -> Result<Self> {
         let account_w = to_wide(OsStr::new(account));
         let mut access: EXPLICIT_ACCESS_W = unsafe { zeroed() };
@@ -271,6 +323,7 @@ fn add_filter(
     engine: HANDLE,
     spec: &FilterSpec,
     user_condition: &UserMatchCondition,
+    descriptor: PSECURITY_DESCRIPTOR,
 ) -> Result<()> {
     let filter_name = to_wide(OsStr::new(spec.name));
     let filter_description = to_wide(OsStr::new(spec.description));
@@ -282,7 +335,7 @@ fn add_filter(
             name: filter_name.as_ptr() as *mut _,
             description: filter_description.as_ptr() as *mut _,
         },
-        flags: FWPM_FILTER_FLAG_PERSISTENT | windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT,
+        flags: FWPM_FILTER_FLAG_PERSISTENT,
         providerKey: &provider_key as *const _ as *mut _,
         providerData: empty_blob(),
         layerKey: spec.layer_key,
@@ -303,7 +356,7 @@ fn add_filter(
     };
 
     let mut filter_id = 0_u64;
-    let result = unsafe { FwpmFilterAdd0(engine, &filter, null_mut(), &mut filter_id) };
+    let result = unsafe { FwpmFilterAdd0(engine, &filter, descriptor, &mut filter_id) };
     ensure_success(result, &format!("FwpmFilterAdd0({})", spec.name))
 }
 
@@ -397,6 +450,19 @@ mod tests {
     use super::FILTER_SPECS;
     use pretty_assertions::assert_eq;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn account_pool_filters_never_replace_other_accounts() {
+        let mut keys = BTreeSet::new();
+        for account in ["dsh_read_0", "dsh_read_1", "dsh_write_0", "dsh_write_1"] {
+            for spec in FILTER_SPECS {
+                let key = super::account_filter_key(account, &spec.key);
+                assert!(keys.insert((key.data1, key.data2, key.data3, key.data4)));
+                let upper = super::account_filter_key(&account.to_uppercase(), &spec.key);
+                assert_eq!((key.data1,key.data2,key.data3,key.data4),(upper.data1,upper.data2,upper.data3,upper.data4));
+            }
+        }
+    }
 
     #[test]
     fn filter_keys_are_unique() {

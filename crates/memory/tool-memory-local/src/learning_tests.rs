@@ -69,6 +69,52 @@ async fn diagnostics_keep_safe_evidence_ids_and_reclassify_legacy_codes() {
     );
     assert!(evidence_id("../../credentials").is_none());
     assert!(evidence_id("<script>").is_none());
+    assert_eq!(
+        evidence_id("call_123#456:code:1").as_deref(),
+        Some("call_123#456:code:1")
+    );
+}
+
+#[tokio::test]
+async fn complete_diagnostic_inventory_is_bounded_and_survives_reload() {
+    let root = root();
+    let store = LearningStore::open(root.clone()).await.unwrap();
+    let entry = store
+        .record_failure(failure("call_123#456:code:1"))
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .change(|document| {
+            document.entries = (0..251)
+                .map(|index| {
+                    let mut row = entry.clone();
+                    row.id = format!("row-{index}");
+                    row.workspace_key = format!("{index:064x}");
+                    row.code = "SHELL_FAILED".into();
+                    row.rule_id = "command-exit".into();
+                    row.last_seen = index;
+                    row
+                })
+                .collect();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    drop(store);
+    let store = LearningStore::open(root).await.unwrap();
+    let report = store.list(&json!({"limit":1000}));
+    assert_eq!(report["total"], 251);
+    assert_eq!(report["diagnosticTotal"], 251);
+    assert_eq!(report["items"].as_array().unwrap().len(), 251);
+    assert_eq!(report["items"][250]["lastCallId"], "call_123#456:code:1");
+    assert_eq!(
+        store.list(&json!({"limit":6}))["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
 }
 
 #[tokio::test]

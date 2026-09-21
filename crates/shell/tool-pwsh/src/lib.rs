@@ -19,6 +19,7 @@ fn shell_runtime_failure(message: String) -> ToolBodyError {
     for code in [
         "SANDBOX_UNAVAILABLE",
         "SANDBOX_SETUP_FAILED",
+        "SANDBOX_SETUP_REQUIRED",
         "SANDBOX_SETUP_TIMEOUT",
         "SANDBOX_RUNNER_TIMEOUT",
         "SANDBOX_DENIED",

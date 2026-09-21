@@ -498,11 +498,10 @@ async fn tool_progress_cannot_refill_the_turns_truncation_budget() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn truncated_tools_and_reasoning_only_limits_are_not_retried_or_executed() {
+async fn truncated_tools_are_not_retried_or_executed() {
     for (reply, code) in [
         (Reply::TruncatedTool, "TRUNCATED_TOOL_CALL"),
         (Reply::TruncatedToolMetadata, "TRUNCATED_TOOL_CALL"),
-        (Reply::ReasoningLimit, "OUTPUT_LIMIT_WITHOUT_ANSWER"),
     ] {
         let harness = harness().await;
         let executed = Arc::new(AtomicBool::new(false));
@@ -536,6 +535,37 @@ async fn truncated_tools_and_reasoning_only_limits_are_not_retried_or_executed()
                     .all(|block| block["type"] != "tool-call")
             );
             assert!(event.data["message"]["source"].get("replayState").is_none());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_only_output_limit_has_one_bounded_recovery() {
+    for (second, expected) in [
+        (Reply::Final("Verified result"), "completed"),
+        (Reply::ReasoningLimit, "error"),
+    ] {
+        let harness = harness().await;
+        let adapter = Arc::new(Adapter::new(vec![Reply::ReasoningLimit, second]));
+        register_adapter(&harness, adapter.clone());
+        harness.agent.followup(message("work"));
+        tokio::time::timeout(Duration::from_secs(3), harness.agent.when_idle())
+            .await
+            .unwrap();
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(turn_end_kinds(&harness.agent), [expected]);
+        let budgets = adapter.output_budgets.lock().unwrap();
+        assert!(budgets.iter().all(|budget| *budget == budgets[0]));
+        if expected == "error" {
+            assert!(
+                harness
+                    .agent
+                    .session()
+                    .events()
+                    .iter()
+                    .any(|event| event.type_ == "turn/end"
+                        && event.data["reason"]["error"]["code"] == "OUTPUT_LIMIT_WITHOUT_ANSWER")
+            );
         }
     }
 }

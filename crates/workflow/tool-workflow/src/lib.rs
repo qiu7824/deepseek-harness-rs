@@ -31,7 +31,7 @@ pub fn apply(ctx: &Context) -> Result<Disposer, String> {
                 "properties": {
                     "script": {
                         "type": "string",
-                        "description": "The body of an async JavaScript workflow function."
+                        "description": "The body of an async JavaScript workflow function. Use args for the supplied JSON arguments (default null), await agent({prompt, label?, schema?}) for a child, and await phase(title) for progress. agent requires a non-empty prompt; failures reject and can be caught with try/catch."
                     },
                     "meta": {
                         "type": "object",
@@ -40,7 +40,19 @@ pub fn apply(ctx: &Context) -> Result<Disposer, String> {
                             "name": { "type": "string" },
                             "description": { "type": "string" },
                             "whenToUse": { "type": "string" },
-                            "phases": { "type": "array" }
+                            "phases": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object", "additionalProperties": false,
+                                    "properties": {
+                                        "title": { "type": "string" },
+                                        "detail": { "type": "string" },
+                                        "provider": { "type": "string" },
+                                        "model": { "type": "string" }
+                                    },
+                                    "required": ["title"]
+                                }
+                            }
                         },
                         "required": ["name", "description"]
                     },

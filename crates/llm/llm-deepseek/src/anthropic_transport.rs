@@ -68,8 +68,6 @@ pub(crate) async fn request(
     }
     let mut parser = sse::SseParser::new();
     let mut translator = anthropic::AnthropicTranslator::new(&options.model, &connection.base_url);
-    let mut bytes_read = 0usize;
-    let mut chunks_read = 0usize;
     let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
         let read = tokio::time::timeout(connection.stream_idle_timeout, response.next_data());
@@ -89,20 +87,13 @@ pub(crate) async fn request(
         let Some(bytes) = bytes else {
             break;
         };
-        bytes_read = bytes_read.saturating_add(bytes.len());
-        if bytes_read > MAX_SUCCESS_RESPONSE_BYTES {
-            return Err(failure(
-                "Anthropic response exceeded 8 MiB",
-                "RESPONSE_TOO_LARGE",
-            ));
-        }
         for payload in parser.push(&bytes) {
             let payload = payload?;
             let chunks = translator.consume(&payload)?;
-            chunks_read = chunks_read.saturating_add(chunks.len());
-            if chunks_read > MAX_SUCCESS_STREAM_CHUNKS {
+
+            if chunks.len() > MAX_STREAM_EVENT_CHUNKS {
                 return Err(failure(
-                    "Anthropic response emitted too many chunks",
+                    "Anthropic event emitted too many chunks",
                     "RESPONSE_TOO_LARGE",
                 ));
             }
@@ -124,10 +115,10 @@ pub(crate) async fn request(
     for payload in parser.finish_at_eof() {
         let payload = payload?;
         let chunks = translator.consume(&payload)?;
-        chunks_read = chunks_read.saturating_add(chunks.len());
-        if chunks_read > MAX_SUCCESS_STREAM_CHUNKS {
+
+        if chunks.len() > MAX_STREAM_EVENT_CHUNKS {
             return Err(failure(
-                "Anthropic response emitted too many chunks",
+                "Anthropic event emitted too many chunks",
                 "RESPONSE_TOO_LARGE",
             ));
         }

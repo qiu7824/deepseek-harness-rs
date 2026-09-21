@@ -78,6 +78,64 @@ fn adapter(base_url: String) -> Arc<DeepSeekAdapter> {
 }
 
 #[tokio::test]
+async fn healthy_long_stream_is_not_limited_by_total_wire_bytes_or_chunk_count() {
+    const EVENTS: usize = 100_010;
+    for responses in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload = if responses {
+            serde_json::json!({"type":"response.output_text.delta","delta":"x","padding":"p".repeat(64)})
+        } else {
+            serde_json::json!({"choices":[{"index":0,"delta":{"content":"x"}}],"padding":"p".repeat(64)})
+        };
+        let mut body = format!("data: {payload}\n\n").repeat(EVENTS);
+        body.push_str(if responses {
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":100010}}}\n\n"
+        } else {
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+        });
+        assert!(body.len() > 8 * 1024 * 1024);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",body.len()).as_bytes()).await.unwrap();
+            socket.write_all(body.as_bytes()).await.unwrap();
+        });
+        let ctx = Context::root();
+        let runtime = LlmRuntime::install(&ctx);
+        apply(
+            &ctx,
+            &runtime,
+            adapter_for_api(
+                format!("http://{address}"),
+                responses.then(|| "openai-responses".into()),
+            ),
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let mut stream = runtime.stream(options());
+            let mut text_bytes = 0;
+            let mut finishes = 0;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    StreamChunk::TextDelta { text, .. } => text_bytes += text.len(),
+                    StreamChunk::Finish { reason, .. } => {
+                        assert!(matches!(reason, FinishReason::Stop), "{reason:?}");
+                        finishes += 1;
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(text_bytes, EVENTS);
+            assert_eq!(finishes, 1);
+        })
+        .await
+        .expect("long stream should finish normally");
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn idle_deadline_survives_cancellation_polling_and_heartbeats_do_not_count_as_progress() {
     for heartbeat in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

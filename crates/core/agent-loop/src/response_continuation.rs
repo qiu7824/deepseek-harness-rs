@@ -4,6 +4,7 @@ use serde_json::Value;
 const EMPTY_NUDGE: &str = "上一条模型响应没有产生可交付的内容。继续处理当前请求，给出有内容的最终答复，或发出当前任务所需的完整工具调用；不要只说明将要继续。保持现有权限和用户约束。";
 const DROPPED_TOOL_NUDGE: &str = "上一条响应声明需要调用工具，却没有提供任何工具调用，因此没有执行操作。若仍需操作，请重新发出完整的工具调用；否则给出实际结果。保持现有权限和用户约束。";
 const TRUNCATION_NUDGE: &str = "上一条答复因单次输出上限而被截断。继续完成同一答复，从已输出内容的结尾继续，避免重复已有段落；保持原任务范围、权限和用户约束。";
+const NO_ANSWER_NUDGE: &str = "上一轮达到单次输出上限，尚未产生可交付答复。请基于已有工作给出简洁的最终结果，明确未完成或无法验证的部分；不要重复长篇推理、重放已执行操作或扩大任务范围。保持现有权限和用户约束。";
 
 /// Recovery is bounded independently from transport retry. Tool progress resets
 /// stalled-response counters, but cannot replenish a turn's truncation budget.
@@ -12,6 +13,7 @@ pub(crate) struct ResponseContinuation {
     stalled: u8,
     empty_recoveries: u8,
     truncation_recoveries: u8,
+    no_answer_recovery_used: bool,
 }
 
 fn incomplete(code: &str, message: &str) -> LlmFailure {
@@ -55,6 +57,11 @@ impl ResponseContinuation {
                 ));
             }
             if !has_text {
+                if !self.no_answer_recovery_used && self.truncation_recoveries < 2 {
+                    self.no_answer_recovery_used = true;
+                    self.truncation_recoveries += 1;
+                    return Ok(Some(NO_ANSWER_NUDGE));
+                }
                 return Err(incomplete(
                     "OUTPUT_LIMIT_WITHOUT_ANSWER",
                     "模型已达到单次输出上限，但没有产生可交付的答复；任务尚未完成",

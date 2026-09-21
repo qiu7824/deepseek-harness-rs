@@ -39,11 +39,13 @@ fn exempt(name: &str) -> bool {
             | "present"
     )
 }
-fn effect(name: &str) -> EffectKind {
+fn effect(name: &str, arguments: &Value) -> EffectKind {
     if matches!(
         name,
         "read"
             | "read_file"
+            | "read_image"
+            | "read_video"
             | "list_directory"
             | "glob"
             | "grep"
@@ -54,7 +56,8 @@ fn effect(name: &str) -> EffectKind {
             | "web_fetch"
             | "job_output"
             | "job_list"
-    ) {
+    ) || name == "agent_team" && matches!(arguments["action"].as_str(), Some("status" | "wait"))
+    {
         EffectKind::ReadOnly
     } else {
         EffectKind::Write
@@ -162,7 +165,7 @@ impl TaskExecution {
             return Ok(());
         };
         if !exempt(&execution.name)
-            && effect(&execution.name) != EffectKind::ReadOnly
+            && effect(&execution.name, &execution.arguments) != EffectKind::ReadOnly
             && self.environment(owner, cwd)? != task.spec.environment_fingerprint
         {
             return Err("TASK_ENVIRONMENT_CHANGED: 当前权限或运行环境与任务契约不一致。请在本会话的「任务验收」中选择「切换到当前环境」并确认，然后继续；旧验收证据将失效，任务要求和未知效果记录保留。不要重试写入、换工具或重建同一契约；running 状态不表示环境已迁移。".into());
@@ -578,7 +581,7 @@ pub(crate) async fn install(
         if task.steps.iter().any(|step|step.effect!=EffectKind::ReadOnly && matches!(step.state,StepState::Unknown|StepState::Running|StepState::Dispatched) && step.tool==execution.name && step.input_identity==input_identity) {
             return Some("An identical operation may already have effects or still be running; inspect its execution before retrying".into());
         }
-        let step=Step{id:id.clone(),execution_id:id.clone(),idempotency_key:id.clone(),input_identity:digest(&serde_json::to_vec(&execution.arguments).unwrap_or_default()),tool:execution.name.clone(),effect:effect(&execution.name),state:StepState::Prepared,updated_at:now(),process:None,result_identity:None,result:None,evidence_refs:vec![],failure_reason:None};
+        let step=Step{id:id.clone(),execution_id:id.clone(),idempotency_key:id.clone(),input_identity:digest(&serde_json::to_vec(&execution.arguments).unwrap_or_default()),tool:execution.name.clone(),effect:effect(&execution.name, &execution.arguments),state:StepState::Prepared,updated_at:now(),process:None,result_identity:None,result:None,evidence_refs:vec![],failure_reason:None};
         runtime.prepare(&owner,&task.task_id,step).and_then(|_|runtime.dispatch(&owner,&task.task_id,&id)).err()
     }))?;
     let runtime = service.runtime.clone();
@@ -786,6 +789,30 @@ pub(crate) fn register_route(
 mod tests {
     use super::*;
     #[test]
+    fn team_observation_does_not_require_environment_migration() {
+        for action in ["status", "wait"] {
+            assert_eq!(
+                effect("agent_team", &json!({"action":action})),
+                EffectKind::ReadOnly
+            );
+        }
+        for action in [
+            "create",
+            "message",
+            "task",
+            "dispatch",
+            "interrupt",
+            "unknown",
+            "",
+        ] {
+            assert_eq!(
+                effect("agent_team", &json!({"action":action})),
+                EffectKind::Write
+            );
+        }
+        assert_eq!(effect("agent_team", &json!({})), EffectKind::Write);
+    }
+    #[test]
     fn invalid_acceptance_references_are_rejected_before_contract_creation() {
         let mut spec: ContractSpec=serde_json::from_value(json!({"objective":"Check build","acceptanceChecks":[{"id":"test","description":"test succeeds","checker":{"kind":"tool_result","step_id":"invented-test-step","assertions":{"exitCode":0}}}]})).unwrap();
         let error = validate_model_contract(&spec).unwrap_err();
@@ -799,8 +826,14 @@ mod tests {
     }
     #[test]
     fn silent_terminal_observation_is_not_command_success() {
-        assert!(matches!(effect("consult_model"), EffectKind::ReadOnly));
-        assert!(matches!(effect("computer_use_js"), EffectKind::Write));
+        assert!(matches!(
+            effect("consult_model", &json!({})),
+            EffectKind::ReadOnly
+        ));
+        assert!(matches!(
+            effect("computer_use_js", &json!({})),
+            EffectKind::Write
+        ));
         assert_eq!(
             outcome_flags(
                 "terminal_send",

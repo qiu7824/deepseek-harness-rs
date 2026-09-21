@@ -147,7 +147,7 @@ impl ResponsesTranslator {
             return Ok(chunks);
         }
         let error = failure(
-            "Responses success response emitted too many chunks",
+            "Responses event emitted too many chunks",
             "RESPONSE_TOO_LARGE",
         );
         if !self.ended {

@@ -245,8 +245,6 @@ def main() -> None:
             raise SystemExit(f"archive {icon_name} differs from the standard tray icon")
 
     forbidden_launchers = {
-        prefix + "dsh-desktop.exe",
-        prefix + "docs/desktop-reader.zh.md",
         prefix + "DshServiceManager.ps1",
         prefix + "启动DeepSeek Harness-rs.cmd",
         prefix + "deepseek-harness-rs-web",

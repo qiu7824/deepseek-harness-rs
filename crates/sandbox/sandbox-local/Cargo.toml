@@ -8,6 +8,8 @@ description = "Local platform sandbox runner selection with fail-closed confinem
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-sandbox = { path = "../sandbox" }
+dsh-atomic-write = { path = "../../util/atomic-write" }
+dsh-home-paths = { path = "../../util/home-paths" }
 tokio = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }

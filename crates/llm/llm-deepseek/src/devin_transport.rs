@@ -254,9 +254,6 @@ pub(crate) async fn request(
     let mut response = response;
     let mut buffer = BytesMut::new();
     let mut translator = devin::NativeTranslator::new();
-    let mut bytes_read = 0usize;
-    let mut expanded_bytes = 0usize;
-    let mut frames = 0usize;
     let mut ended = false;
     let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
@@ -274,13 +271,6 @@ pub(crate) async fn request(
             }
         };
         let Some(chunk) = chunk else { break };
-        bytes_read = bytes_read.saturating_add(chunk.len());
-        if bytes_read > MAX_SUCCESS_RESPONSE_BYTES {
-            return Err(failure(
-                "Devin response exceeded 8 MiB",
-                "RESPONSE_TOO_LARGE",
-            ));
-        }
         buffer.extend_from_slice(&chunk);
         while buffer.len() >= 5 {
             let flags = buffer[0];
@@ -301,20 +291,6 @@ pub(crate) async fn request(
             } else {
                 data.to_vec()
             };
-            expanded_bytes = expanded_bytes.saturating_add(payload.len());
-            if expanded_bytes > MAX_SUCCESS_RESPONSE_BYTES {
-                return Err(failure(
-                    "Expanded Devin response exceeded 8 MiB",
-                    "RESPONSE_TOO_LARGE",
-                ));
-            }
-            frames += 1;
-            if frames > MAX_SUCCESS_STREAM_CHUNKS {
-                return Err(failure(
-                    "Devin emitted too many frames",
-                    "RESPONSE_TOO_LARGE",
-                ));
-            }
             if flags & 2 != 0 {
                 let trailer: Value = serde_json::from_slice(&payload)
                     .map_err(|_| failure("Invalid Devin stream trailer", "MALFORMED_RESPONSE"))?;

@@ -149,7 +149,6 @@ window.__ModuleLoader__.load({
 			* @returns ordered draft descriptors.
 			*/
 			createDraftImages(files) {
-				for (const file of files) { if (!isRasterFile(file) && file.size > 16 * 1024 * 1024) throw new Error("Each file must be at most 16 MiB"); }
 				return files.map((file) => {
 					// Image result path: conversation.resolveImage(sessionId, attachment)
 					const attachment = browserDraftAttachment(file);
@@ -336,13 +335,15 @@ window.__ModuleLoader__.load({
 				return sessions;
 			}
 			/** Convert browser files to canonical base64 prompt parts. */
-			serializeImages(images) {
-				return Promise.all(images.map(async (file) => ({
+			async serializeImages(images) {
+				const parts = [];
+				for (const file of images) parts.push({
 					type: isRasterFile(file) ? "image" : "file",
 					mediaType: isRasterFile(file) ? imageMediaType(file.type) : (file.type || "application/octet-stream"),
 					data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
 					...file.name === "" ? {} : { name: file.name }
-				})));
+				});
+				return parts;
 			}
 		};
 		function isRasterFile(file) { return ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type); }
@@ -2669,10 +2670,10 @@ window.__ModuleLoader__.load({
 					if (limits !== void 0) return t("image.tooMany", { count: limits.maxImagesPerMessage });
 					break;
 				case "IMAGE_TOO_LARGE":
-					if (limits !== void 0) return t("image.fileTooLarge", { size: imageSizeText(limits.maxImageBytes) });
+					if (limits?.maxImageBytes > 0) return t("image.fileTooLarge", { size: imageSizeText(limits.maxImageBytes) });
 					break;
 				case "IMAGES_TOO_LARGE":
-					if (limits !== void 0) return t("image.totalTooLarge", { size: imageSizeText(limits.maxMessageImageBytes) });
+					if (limits?.maxMessageImageBytes > 0) return t("image.totalTooLarge", { size: imageSizeText(limits.maxMessageImageBytes) });
 					break;
 				default: break;
 			}
@@ -4047,10 +4048,10 @@ window.__ModuleLoader__.load({
                 const generic = all.filter(file => !isRasterFile(file));
                 const images = all.filter(isRasterFile);
                 let rejected = null;
-                if (generic.length > 16 || generic.some(file => file.size > 16 * 1024 * 1024) || generic.reduce((sum, file) => sum + file.size, 0) > 64 * 1024 * 1024) rejected = t("file.limits");
+                if (generic.length > 16) rejected = t("file.limits");
                 else if (imageLimits !== undefined && images.length > imageLimits.maxImagesPerMessage) rejected = t("image.tooMany", { count: imageLimits.maxImagesPerMessage });
-                else if (imageLimits !== undefined && images.some(file => file.size > imageLimits.maxImageBytes)) rejected = t("image.fileTooLarge", { size: imageSizeText(imageLimits.maxImageBytes) });
-                else if (imageLimits !== undefined && images.reduce((sum, file) => sum + file.size, 0) > imageLimits.maxMessageImageBytes) rejected = t("image.totalTooLarge", { size: imageSizeText(imageLimits.maxMessageImageBytes) });
+                else if (imageLimits !== undefined && imageLimits.maxImageBytes > 0 && images.some(file => file.size > imageLimits.maxImageBytes)) rejected = t("image.fileTooLarge", { size: imageSizeText(imageLimits.maxImageBytes) });
+                else if (imageLimits !== undefined && imageLimits.maxMessageImageBytes > 0 && images.reduce((sum, file) => sum + file.size, 0) > imageLimits.maxMessageImageBytes) rejected = t("image.totalTooLarge", { size: imageSizeText(imageLimits.maxMessageImageBytes) });
                 else rejected = addImages(files);
                 if (rejected !== null) showToast(rejected);
             }, [addImages, attachments, imageLimits, showToast, t]);
@@ -4216,7 +4217,7 @@ window.__ModuleLoader__.load({
 				children: [
 					dragActive && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.DropOverlay, {
 						disabled: !canAcceptDrop,
-						labels: dropOverlayLabels(t, canAcceptDrop, imageLimits === void 0 ? void 0 : {
+						labels: dropOverlayLabels(t, canAcceptDrop, imageLimits === void 0 || !imageLimits.maxImageBytes ? void 0 : {
 							count: imageLimits.maxImagesPerMessage,
 							size: imageSizeText(imageLimits.maxImageBytes)
 						})
@@ -5489,7 +5490,7 @@ window.__ModuleLoader__.load({
             const match = /^Attached file: ([^\r\n]+)\nPath: ([^\r\n]+)\nSize: (\d+) bytes$/.exec(text);
             if (!match || !/(?:^|[\\/])\.dsh-attachments[\\/][a-f0-9]{64}[\\/][a-f0-9]{64}[\\/][^\\/]+$/.test(match[2])) return null;
             const size = Number(match[3]);
-            if (!Number.isSafeInteger(size) || size < 0 || size > 16 * 1024 * 1024) return null;
+            if (!Number.isSafeInteger(size) || size < 0) return null;
             return { name: match[1], path: match[2], size };
         }
         function uploadedFileSize(size) {
@@ -6549,7 +6550,7 @@ window.__ModuleLoader__.load({
             "tool.action.upload_files":"上传文件",
             "tool.action.video_info":"查看视频信息",
             "tool.action.video_frame":"查看视频画面",
-            "file.open": "打开文件 {name}", "file.upload": "上传文件", "file.remove": "移除文件 {name}", "file.limits": "每条消息最多 16 个文件，单个不超过 16 MiB，合计不超过 64 MiB",
+            "file.open": "打开文件 {name}", "file.upload": "上传文件", "file.remove": "移除文件 {name}", "file.limits": "每条消息最多 16 个文件",
             "tool.title.codeContext": "代码上下文",
             "tool.title.codeCallers": "代码调用者",
             "tool.title.codeCallees": "代码被调用者",
@@ -6666,7 +6667,7 @@ window.__ModuleLoader__.load({
 			"image.tooManyPixels": "图片分辨率过大，请压缩后重试",
 			"image.modelUnsupported": "当前模型不支持图片，请切换支持图片的模型",
 			"image.subagentUnsupported": "子智能体会话暂不支持图片",
-			"image.sendFailed": "图片发送失败（{reason}），请重新添加图片后再试",
+			"image.sendFailed": "图片发送失败（{reason}），附件已保留，请检查后重试",
 			"context.aria": "上下文已用 {percent}",
 			"context.used": "上下文已用",
 			"context.runtimeBudget": "运行预算，模型容量未提供",
@@ -6866,7 +6867,7 @@ window.__ModuleLoader__.load({
             "tool.action.upload_files":"upload files",
             "tool.action.video_info":"video info",
             "tool.action.video_frame":"video frame",
-            "file.open": "Open file {name}", "file.upload": "Upload files", "file.remove": "Remove file {name}", "file.limits": "Up to 16 files per message, 16 MiB each and 64 MiB total",
+            "file.open": "Open file {name}", "file.upload": "Upload files", "file.remove": "Remove file {name}", "file.limits": "Up to 16 files per message",
             "tool.title.codeContext": "Code context",
             "tool.title.codeCallers": "Code callers",
             "tool.title.codeCallees": "Code callees",

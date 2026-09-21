@@ -5252,9 +5252,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			lastPromptAt: number().nullable()
 		});
 		object({
-			maxImageBytes: number().int().positive(),
+			maxImageBytes: number().int().nonnegative(),
 			maxImagesPerMessage: number().int().positive(),
-			maxMessageImageBytes: number().int().positive(),
+			maxMessageImageBytes: number().int().nonnegative(),
 			maxImagePixels: number().int().positive(),
 			mediaTypes: array(string())
 		});
@@ -7668,9 +7668,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			values["contextBreakdown"] = contextBreakdownOf(log);
 			values["sessionStats"] = sessionStatsOf(log);
 			values["imageLimits"] = {
-				maxImageBytes: 5 * 1024 * 1024,
+				maxImageBytes: 0,
 				maxImagesPerMessage: 20,
-				maxMessageImageBytes: 100 * 1024 * 1024,
+				maxMessageImageBytes: 0,
 				maxImagePixels: 4e7,
 				mediaTypes: [
 					"image/png",

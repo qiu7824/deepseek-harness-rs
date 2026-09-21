@@ -129,16 +129,13 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                                     })
                                     .await;
                                 if result.is_error {
-                                    panic!(
-                                        "{}",
-                                        result
-                                            .error
-                                            .as_ref()
-                                            .map(|error| error.message.as_str())
-                                            .unwrap_or("tool call failed")
-                                    );
+                                    return Err(result
+                                        .error
+                                        .as_ref()
+                                        .map(|error| error.message.clone())
+                                        .unwrap_or_else(|| "tool call failed".into()));
                                 }
-                                result.value.clone().unwrap_or(JsonValue::Null)
+                                Ok(result.value.clone().unwrap_or(JsonValue::Null))
                             })
                         });
                         (name, function)

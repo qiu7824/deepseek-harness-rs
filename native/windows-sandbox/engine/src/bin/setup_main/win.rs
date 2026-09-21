@@ -318,7 +318,9 @@ fn lock_sandbox_dir(
             FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
             GRANT_ACCESS,
         ),
-        (real_sid, real_user_mask, GRANT_ACCESS),
+        // The trusted broker maintains this ACL during non-elevated refreshes.
+        // Dedicated sandbox identities retain only the separate group mask.
+        (real_sid, real_user_mask | windows_sys::Win32::Storage::FileSystem::WRITE_DAC, GRANT_ACCESS),
     ];
     unsafe {
         let mut eas: Vec<EXPLICIT_ACCESS_W> = Vec::new();
@@ -622,9 +624,11 @@ fn configure_offline_sandbox_network(
             format!("ensure offline outbound block failed: {err}"),
         )));
     }
-    let count=codex_windows_sandbox::install_wfp_filters_for_account(&payload.offline_username)
+    let count=codex_windows_sandbox::install_wfp_filters_for_account_with_reader(&payload.offline_username,Some(&payload.real_user))
         .context("offline WFP policy installation failed; setup is not ready")?;
     log_line(log,&format!("DSH WFP policy ready with {count} filters"))?;
+    std::fs::write(sandbox_dir(&payload.codex_home).join("wfp-scoped-v4.json"),
+        serde_json::to_vec(&serde_json::json!({"version":4,"account":payload.offline_username,"filterCount":count}))?)?;
     Ok(())
 }
 

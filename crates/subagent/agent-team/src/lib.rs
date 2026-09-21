@@ -932,7 +932,9 @@ impl AgentTeams {
         if !settings.enabled && matches!(action, "create" | "configure" | "dispatch") {
             return Err("collaboration is disabled in settings".into());
         }
-        let pending_errors = if settings.enabled && matches!(action, "status" | "message") {
+        // A status query must not dispatch queued work, including after an
+        // environment change. Explicit communication retains mailbox recovery.
+        let pending_errors = if settings.enabled && matches!(action, "message" | "recover") {
             self.recover(&lead, &board, signal.clone()).await?
         } else {
             vec![]
@@ -943,7 +945,7 @@ impl AgentTeams {
         }
         board = self.read(caller.id().as_str()).await?;
         match args["action"].as_str().unwrap_or("status") {
-            "status" => {}
+            "status" | "recover" => {}
             "configure" => {
                 if actor != "lead" {
                     return Err("only the main conversation may configure collaboration".into());
@@ -1501,6 +1503,26 @@ mod tests {
     #[test]
     fn tool_parameters_use_the_enforced_schema_subset() {
         dsh_tools::assert_object_json_schema(&parameters()).unwrap();
+        for timeout in [0, 99, 50001, 600000] {
+            assert!(
+                !dsh_tools::validate_json_schema_value(
+                    &parameters(),
+                    &json!({"action":"wait","timeoutMs":timeout}),
+                    "arguments"
+                )
+                .is_empty()
+            );
+        }
+        for timeout in [100, 30000, 50000] {
+            assert!(
+                dsh_tools::validate_json_schema_value(
+                    &parameters(),
+                    &json!({"action":"wait","timeoutMs":timeout}),
+                    "arguments"
+                )
+                .is_empty()
+            );
+        }
     }
 
     fn event(seq: u64, kind: &str, team: &str, mut data: Value) -> SessionEvent {
@@ -1603,7 +1625,7 @@ mod tests {
 
 fn parameters() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
-            "action":{"type":"string","enum":["status","create","message","task","dispatch","interrupt","wait"]},"timeoutMs":{"type":"integer"},"roleId":{"type":"string"},"requestId":{"type":"string"},"acceptance":{"type":"string"},"result":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"prompt":{"type":"string"},"context":{"type":"string","enum":["fresh","fork"]},"target":{"type":"string"},"message":{"type":"string"},"messageId":{"type":"string","description":"Stable id for retrying the same peer message; reuse it after a queued receipt."},"taskId":{"type":"string"},"expectedRevision":{"type":"integer"},"subject":{"type":"string"},"owner":{"oneOf":[{"type":"string"},{"type":"null"}],"description":"Teammate name or lead; null releases ownership (set status to pending)."},"status":{"type":"string","enum":["pending","queued","in_progress","review","blocked","completed","cancelled","deleted"]},"blockedBy":{"type":"array","items":{"type":"string"}},"writeScopes":{"type":"array","items":{"type":"string"}}}})
+            "action":{"type":"string","enum":["status","create","message","task","dispatch","interrupt","wait","recover"]},"timeoutMs":{"type":"integer","minimum":100,"maximum":50000,"description":"Wait budget in milliseconds, 100–50000; defaults to 30000. Call wait again if members are still running."},"roleId":{"type":"string"},"requestId":{"type":"string"},"acceptance":{"type":"string"},"result":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"prompt":{"type":"string"},"context":{"type":"string","enum":["fresh","fork"]},"target":{"type":"string"},"message":{"type":"string"},"messageId":{"type":"string","description":"Stable id for retrying the same peer message; reuse it after a queued receipt."},"taskId":{"type":"string"},"expectedRevision":{"type":"integer"},"subject":{"type":"string"},"owner":{"oneOf":[{"type":"string"},{"type":"null"}],"description":"Teammate name or lead; null releases ownership (set status to pending)."},"status":{"type":"string","enum":["pending","queued","in_progress","review","blocked","completed","cancelled","deleted"]},"blockedBy":{"type":"array","items":{"type":"string"}},"writeScopes":{"type":"array","items":{"type":"string"}}}})
 }
 
 pub fn install(ctx: &Context, max_members: usize) -> Result<Arc<AgentTeams>, String> {
@@ -1651,7 +1673,7 @@ pub fn install(ctx: &Context, max_members: usize) -> Result<Arc<AgentTeams>, Str
     });
     let runtime = service.clone();
     tools.register(ctx,ToolDefinition{
-        name:"agent_team".into(),description:"Manage an explicitly requested agent team. Use create only when the user asks for a team or teammates. The lead creates named fresh/fork teammates; members share a durable task board and peer mailbox. Read status before task updates and supply expectedRevision (0 for creation). Only claim work for yourself unless you are the lead. Wait for required results before finishing. Task ownership and writeScopes are coordination metadata, not filesystem locks.".into(),
+        name:"agent_team".into(),description:"Manage an explicitly requested agent team. Use create only when the user asks for a team or teammates. The lead creates named fresh/fork teammates; members share a durable task board and peer mailbox. Use recover to retry durable queued deliveries under current permissions; status and wait do not dispatch queued messages. Read status before task updates and supply expectedRevision (0 for creation). Only claim work for yourself unless you are the lead. Wait for required results before finishing. Task ownership and writeScopes are coordination metadata, not filesystem locks.".into(),
         parameters: parameters(),
         output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
         timeout_ms:Some(60_000),is_concurrency_safe:Some(Arc::new(|_| false)),execute:Arc::new(move|args,exec|{let runtime=runtime.clone();let caller=exec.agent.clone();let signal=exec.signal.lock().clone();let args=args.clone();Box::pin(async move{runtime.execute(caller.ok_or_else(||ToolBodyError::plain("team tools require an agent"))?,args,signal).await.map_err(ToolBodyError::plain)})}),

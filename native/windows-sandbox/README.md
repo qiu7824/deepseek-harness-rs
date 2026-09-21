@@ -1,93 +1,91 @@
 # Windows native sandbox
 
-This standalone Rust workspace provides the DSH native Windows process backend.
-The primary application communicates with the bridge through literal argv and
-standard streams. The bridge uses authenticated IPC to a separate local-account
-command runner. Setup is explicit; an uninitialized backend does not dispatch commands.
+Windows execution uses the Codex-derived native engine in two explicit modes:
 
-## Build
+| Mode | Identity | Filesystem | Restricted networking |
+| --- | --- | --- | --- |
+| `elevated` (default) | Dedicated low-privilege account | Project write boundaries and protected host state | Account-scoped Windows Firewall and WFP rules |
+| `unelevated` (fallback) | Restricted token derived from the host user | Read access follows the host user; writes remain restricted | Environment-level offline controls; weaker than elevated isolation |
+
+AppContainer is no longer an execution backend. A failed native backend never
+silently runs a command without confinement or switches implementation.
+
+## Configuration and initialization
+
+Use **Settings → Windows sandbox** to select the implementation and network
+policy, and initialize each writable project. Elevated setup requests Windows
+administrator authorization when necessary. Subsequent commands run from an
+ordinary host account. Unelevated project permission preparation requires no account provisioning or administrator approval. Both modes require explicit project initialization; large-tree ACL preparation is kept outside command startup budgets.
+
+```powershell
+deepseek-harness-rs.exe sandbox status
+deepseek-harness-rs.exe sandbox setup --workspace E:\projects\app --implementation elevated --network restricted
+deepseek-harness-rs.exe sandbox configure --implementation unelevated --network enabled
+```
+
+New configurations default to elevated execution with restricted networking.
+Existing configurations retain their previous network policy until changed.
+Changes apply to subsequent commands and change the execution fingerprint;
+existing task contracts require environment migration and fresh validation.
+
+`windows-sandbox.json` resides in the active data directory. It contains version
+1, backend `windows-native`, implementation `elevated` or `unelevated`, network
+`enabled` or `restricted`, absolute runner and state paths, and SHA-256 identities
+for all three helpers. Legacy `workspaces` remains readable but no longer routes
+other projects to AppContainer. Writable accounts remain project-specific.
+
+## Build and distribution
 
 ```powershell
 cargo build --locked --release --workspace --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
-cargo test --locked -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+cargo test --locked --release --manifest-path native/windows-sandbox/Cargo.toml -p codex-windows-sandbox --lib
 ```
 
 Distribute `dsh-windows-native.exe`, `dsh-command-runner.exe`, and
-`dsh-windows-sandbox-setup.exe` together, with `engine/LICENSE`, `engine/NOTICE`,
-and `UPSTREAM.json`. Initial setup requests elevation explicitly; the helper's
-asInvoker manifest also permits non-elevated workspace refreshes. Normal
-commands execute under a restricted sandbox account.
+`dsh-windows-sandbox-setup.exe` together with license, notice and upstream identity.
+Helper hashes are checked before dispatch. Setup version 6 includes the trusted
+host's ACL-maintenance rights and read-only network-policy access; older setup
+state requires explicit initialization before reuse.
 
-Bare Windows command names follow PATHEXT; extensionless POSIX wrappers are not
-selected ahead of Windows launchers. npm/npx wrappers resolve to the matching
-installed npm JavaScript entry point and node.exe, preserving literal argv
-without cmd.exe interpolation. Other scripts require an explicit interpreter.
+## Execution protocol
 
-## Protocol
+The bridge accepts `--implementation elevated|unelevated`, `--native-home`,
+`--workspace`, `--mode read-only|workspace-write`, `--network enabled|restricted`,
+optional read/runtime/temp roots, timeout and terminal flags, and literal argv
+after `--`. `--status` checks readiness; `--setup` initializes the selected mode.
+Timeouts return 124, setup or transport failures return 125 with authenticated
+startup evidence, and ordinary commands retain their exit codes. Child output
+cannot impersonate startup failure merely by printing a runner marker.
 
-`--status --native-home <absolute-directory>` returns readiness without exposing
-credentials. `--setup --native-home <directory> --workspace <project>` performs
-explicit provisioning. Runtime reads may be supplied as `--runtime-root` or
-`--read-root`. Run a command using `--mode read-only|workspace-write`, a workspace,
-an optional command timeout in milliseconds, and `-- <program> <literal args>`.
-`--tty` requests ConPTY; a console attached to the bridge is also detected.
-`--network enabled` preserves normal networking. Requests for `restricted`
-networking currently fail closed before dispatch because the offline network
-acceptance test has not passed on the validated host. Provisioned firewall
-objects alone are not treated as evidence of network isolation.
+Both modes use a private desktop and owned process trees. Completion, timeout,
+cancellation and IPC loss reclaim descendants. Use the Host background-job
+interface for long-running commands instead of detaching untracked processes.
 
-The bridge returns the child's exit code. Runner-owned timeouts return 124;
-setup/transport failures return 125 with `DSH_NATIVE_SANDBOX_FAILED` evidence.
-Missing setup never enables unconfined execution.
+Windows command discovery honors executable suffixes. npm/npx launchers resolve
+to Node and the installed JavaScript entry point; arguments never pass through
+`cmd.exe`. Other scripts require an explicit interpreter.
 
-The host loads `windows-sandbox.json` from its data directory only at startup.
-It requires version 1, backend `windows-native`, an absolute runner path and
-stateDirectory, and SHA-256 identities for the bridge (`sha256`), command runner
-(`commandRunnerSha256`) and setup helper (`setupSha256`). Remove this explicit
-selection and restart to use the existing AppContainer backend. An optional
-`workspaces` array explicitly limits native routing to the named project roots;
-other projects continue using AppContainer. A failure in a selected native
-workspace never falls back to unconfined execution.
+## Isolation and lifecycle
 
-The pool has two read-only account slots and four write-capable slots per
-initialized workspace. Write accounts are never reused for another workspace
-or read-only execution. An exclusive lease and a recorded runner process
-lifetime fence account reuse. Helpers start suspended, receive a broker-only
-process DACL, and are resumed before any untrusted command is dispatched.
-Full slots return `NATIVE_SLOT_BUSY`. An interrupted startup with unverifiable
-process identity is quarantined instead of reusing the account.
+Elevated execution reserves two read-only slots and four writable slots per
+initialized workspace. Writable identities are not reused for other projects or
+read-only execution. Leases, process creation identity and quarantine protect
+reuse. Setup requires affected native executions to be idle.
 
-Initialize each writable workspace explicitly. Setup requires all existing
-native executions to be idle. It does not occur automatically in a command's
-failure/retry path. Read-only slots and writable workspace slots use different
-OS principals. Credentials and account ownership are bound to their canonical
-state path and the initializing user's SID.
+Offline rules have stable account-specific identifiers and cover IPv4/IPv6
+socket allocation, connection and receive authorization. Runtime checks reject
+missing or disabled filters instead of trusting a stale setup marker. The
+unelevated fallback advertises its environment-based network controls.
 
-## Upstream and local changes
+Host HTTP control access requires the host principal and rejects restricted
+tokens, including same-user unelevated children. Credentials remain protected
+in the owned state directory. Initialization refuses foreign ownership and
+workspace overlap with helper binaries or private state. Publicly readable
+host files are not promised to be hidden as in a virtual machine.
 
-The engine is derived from OpenAI Codex at the immutable revision recorded in
-`UPSTREAM.json`, under Apache-2.0. Dependency versions are locked. DSH changes
-product account names and ownership markers, group and helper names, firewall
-rules and WFP keys; no existing Codex identities are used. Account/group
-collisions without DSH ownership markers are rejected before password changes.
-Executable helper copies are placed in a state-owner-scoped ProgramData directory;
-DPAPI credentials remain in the protected state directory. Identity is resolved
-from the OS token SID, not an environment display name. Offline identities use
-WFP connection block definitions covering IPv4/IPv6; offline dispatch remains
-disabled until actual connection-denial acceptance passes.
-Upstream metrics exporters are not initialized and setup metrics settings are
-not forwarded. Command lifetime includes descendants and IPC disconnect cleanup.
-The DSH bridge and execution policy adapter are maintained separately.
+## Upstream
 
-Pool state belongs to the OS principal that initialized it; another owner
-receives an ownership error rather than resetting existing credentials.
-Use a stable ProgramData state path and the canonical path returned by setup;
-MSIX launcher AppData redirection is not a persistent installation location.
-Local-account isolation is not a VM and does not promise that all
-publicly readable host paths are hidden. Read/write and confidentiality claims
-must match the accepted policy and the negative-test evidence.
-
-Offline networking is unavailable in this version. Standard-user host launch
-still needs validation in a genuine non-administrator Windows login; a lowered
-token in the development desktop failed before the bridge initialized. Do not
-equate that incomplete check with a successful standard-user acceptance test.
+The engine derives from OpenAI Codex at the revision recorded in `UPSTREAM.json`
+under Apache-2.0. DSH uses separate account names, ownership markers, helper paths,
+firewall rules and WFP object keys. Existing Codex identities are not reused.
+Upstream metrics exporters are not initialized by the DSH bridge.

@@ -417,7 +417,7 @@ impl Service {
                     if info.kind != FsInfoType::File { return Err(body_error(FsError::new(format!("cannot read \"{}\": not a regular file", target.display_path), FsErrorCode::FsNotRegularFile))); }
                     let attachments = service.ctx.get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false).map(|slot| slot.as_ref().clone()).ok_or_else(|| ToolBodyError::plain("read_image requires the attachments service"))?;
                     let limits = attachments.image_limits();
-                    let data = service.fs.read_bytes(&target, Some(signal(&exec)), limits.max_image_bytes.min(limits.max_message_image_bytes)).await.map_err(body_error)?;
+                    let data = service.fs.read_bytes(&target, Some(signal(&exec)), limits.image_byte_limit().min(limits.message_byte_limit())).await.map_err(body_error)?;
                     if data.starts_with(b"%PDF-"){return Err(ToolBodyError::coded("PDF is a document; render its pages with the PDF workflow before using read_image. Do not retry the PDF as an image.","ImageFormatError","IMAGE_FORMAT_UNSUPPORTED"));}
                     let media_type = image_media_type_for_path(path).or_else(|| sniff_image_media_type(&data)).ok_or_else(|| ToolBodyError::plain(format!("cannot read \"{}\": the file content is not a supported PNG/JPEG/WebP/GIF image", target.display_path)))?;
                     if !limits.media_types.contains(&media_type) { return Err(ToolBodyError::plain(format!("cannot read \"{}\": {} images are not accepted by this deployment", target.display_path, media_type.as_str()))); }

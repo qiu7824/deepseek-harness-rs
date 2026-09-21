@@ -97,7 +97,7 @@ pub(crate) async fn read_references(
                 .read_bytes(
                     &target,
                     Some(signal.clone()),
-                    store.image_limits().max_image_bytes,
+                    store.image_limits().image_byte_limit(),
                 )
                 .await
                 .map_err(|e| e.to_string())?;

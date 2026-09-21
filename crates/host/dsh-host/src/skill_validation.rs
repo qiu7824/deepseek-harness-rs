@@ -31,7 +31,14 @@ pub(crate) fn environment_fingerprint(
     let mut roots = policy.read_only_roots.clone();
     roots.sort();
     roots.dedup();
-    let identity = serde_json::json!({"version":1,"contextId":profile.context_id,"mode":policy.mode.as_str(),"workspace":policy.workspace_root,"readOnlyRoots":roots});
+    let backend = if policy.mode == dsh_sandbox::SandboxMode::DangerFullAccess {
+        "unconfined".to_string()
+    } else {
+        ctx.get_typed::<Arc<dyn dsh_sandbox::SandboxProvider>>("sandbox", false)
+            .map(|provider| provider.backend_fingerprint_for(&policy))
+            .unwrap_or_else(|| "unavailable".into())
+    };
+    let identity = serde_json::json!({"version":2,"contextId":profile.context_id,"backend":backend,"mode":policy.mode.as_str(),"workspace":policy.workspace_root,"readOnlyRoots":roots});
     Ok(format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&identity).map_err(|e| e.to_string())?)

@@ -1,40 +1,23 @@
 #[cfg(windows)]
 mod native_backend;
+#[cfg(windows)]
+pub use native_backend::{windows_backend_configuration, windows_backend_manage};
 
 use std::sync::Arc;
 
-#[cfg(windows)]
-mod installed_runtime;
-
-#[cfg(windows)]
-static EMBEDDED_RUNNER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-/// Register the current host only when its entry point implements the sandbox subcommand.
-/// Executable relocation and renaming do not change this capability.
+/// Retained for older callers; Windows native helpers are discovered from the
+/// installation and no embedded AppContainer runner is registered.
 #[cfg(windows)]
 pub fn register_embedded_windows_runner() -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    if let Some(registered) = EMBEDDED_RUNNER.get() {
-        return if registered == &executable {
-            Ok(())
-        } else {
-            Err("embedded sandbox runner was already registered for a different executable".into())
-        };
-    }
-    EMBEDDED_RUNNER
-        .set(executable)
-        .map_err(|_| "embedded sandbox runner registration raced".to_string())
+    Ok(())
 }
 
-fn embedded_runner_path() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    {
-        EMBEDDED_RUNNER.get().cloned()
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+#[cfg(windows)]
+pub fn run_windows_sandbox(_args: impl IntoIterator<Item = String>) -> Result<i32, String> {
+    Err(
+        "AppContainer execution is retired; use the elevated or unelevated native Windows backend"
+            .into(),
+    )
 }
 
 use cordis::Context;
@@ -65,68 +48,10 @@ pub struct Config {
 pub struct LocalSandboxProvider {
     #[cfg(windows)]
     native: Result<Option<native_backend::NativeBackend>, String>,
+    #[cfg(windows)]
+    native_home: Option<std::path::PathBuf>,
     platform: String,
     runtime_roots: Vec<std::path::PathBuf>,
-    runtime_cache: Option<std::path::PathBuf>,
-    #[cfg(windows)]
-    preparation: Arc<std::sync::Mutex<RuntimePreparation>>,
-    #[cfg(windows)]
-    preparation_gate: Arc<tokio::sync::Semaphore>,
-}
-
-#[cfg(windows)]
-#[derive(Default)]
-struct RuntimePreparation {
-    generation: u64,
-    active: std::collections::HashMap<
-        String,
-        (
-            u64,
-            futures::future::Shared<futures::future::BoxFuture<'static, Result<(), String>>>,
-        ),
-    >,
-}
-
-#[cfg(windows)]
-impl RuntimePreparation {
-    fn evict_failed(&mut self, key: &str) {
-        if self
-            .active
-            .get(key)
-            .is_some_and(|(_, flight)| matches!(flight.peek(), Some(Err(_))))
-        {
-            self.active.remove(key);
-        }
-    }
-}
-
-#[cfg(all(test, windows))]
-mod preparation_tests {
-    use super::*;
-    use futures::FutureExt;
-
-    #[tokio::test]
-    async fn failed_shared_preparation_is_retryable_without_evicting_live_or_successful_work() {
-        let mut state = RuntimePreparation::default();
-        let failed = async { Err::<(), String>("ACL preparation failed".into()) }
-            .boxed()
-            .shared();
-        let success = async { Ok::<(), String>(()) }.boxed().shared();
-        let pending = futures::future::pending::<Result<(), String>>()
-            .boxed()
-            .shared();
-        state.active.insert("failed".into(), (1, failed.clone()));
-        state.active.insert("success".into(), (2, success.clone()));
-        state.active.insert("pending".into(), (3, pending));
-        assert!(failed.await.is_err());
-        success.await.unwrap();
-        for key in ["failed", "success", "pending"] {
-            state.evict_failed(key);
-        }
-        assert!(!state.active.contains_key("failed"));
-        assert!(state.active.contains_key("success"));
-        assert!(state.active.contains_key("pending"));
-    }
 }
 
 impl LocalSandboxProvider {
@@ -134,13 +59,12 @@ impl LocalSandboxProvider {
         Arc::new(Self {
             #[cfg(windows)]
             native: Ok(None),
+            #[cfg(windows)]
+            native_home: Some(dsh_home_paths::resolve_dsh_home(None, &|key| {
+                std::env::var(key).ok()
+            })),
             platform: config.platform.unwrap_or_else(host_platform),
             runtime_roots: Vec::new(),
-            runtime_cache: None,
-            #[cfg(windows)]
-            preparation: Default::default(),
-            #[cfg(windows)]
-            preparation_gate: Arc::new(tokio::sync::Semaphore::new(2)),
         })
     }
 
@@ -160,14 +84,46 @@ impl LocalSandboxProvider {
         let provider = Arc::new(Self {
             #[cfg(windows)]
             native: native_backend::NativeBackend::load(&cache),
+            #[cfg(windows)]
+            native_home: cache
+                .parent()
+                .and_then(std::path::Path::parent)
+                .map(std::path::Path::to_path_buf),
             platform: config.platform.unwrap_or_else(host_platform),
             runtime_roots: roots,
-            runtime_cache: Some(cache),
-            #[cfg(windows)]
-            preparation: Default::default(),
-            #[cfg(windows)]
-            preparation_gate: Arc::new(tokio::sync::Semaphore::new(2)),
         });
+        let erased: Arc<dyn SandboxProvider> = provider.clone();
+        ctx.register_service(erased);
+        provider
+    }
+
+    #[cfg(windows)]
+    fn native_selection(&self) -> Result<Option<native_backend::NativeBackend>, String> {
+        match &self.native_home {
+            Some(home) => native_backend::NativeBackend::load_from_home(home),
+            None => self.native.clone(),
+        }
+    }
+
+    pub fn install_with_runtimes_at_home(
+        ctx: &Context,
+        config: Config,
+        roots: Vec<std::path::PathBuf>,
+        cache: std::path::PathBuf,
+        home: std::path::PathBuf,
+    ) -> Arc<Self> {
+        let mut provider = Self::new(config);
+        let state = Arc::get_mut(&mut provider).expect("new provider");
+        state.runtime_roots = roots;
+        let _ = cache;
+        #[cfg(windows)]
+        {
+            state.native_home = Some(home);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = home;
+        }
         let erased: Arc<dyn SandboxProvider> = provider.clone();
         ctx.register_service(erased);
         provider
@@ -176,7 +132,14 @@ impl LocalSandboxProvider {
     pub fn capability(&self) -> SandboxCapability {
         match self.platform.as_str() {
             "linux" | "darwin" => SandboxCapability::Full,
-            "win32" if embedded_runner_path().is_some() => SandboxCapability::Full,
+            #[cfg(windows)]
+            "win32"
+                if self
+                    .native_selection()
+                    .is_ok_and(|v| v.is_some_and(|v| v.verify().is_ok())) =>
+            {
+                SandboxCapability::Full
+            }
             _ => SandboxCapability::Unavailable,
         }
     }
@@ -203,16 +166,7 @@ impl LocalSandboxProvider {
 }
 
 impl SandboxProvider for LocalSandboxProvider {
-    fn backend_id_for(&self, policy: &SandboxExecutionPolicy) -> &'static str {
-        #[cfg(windows)]
-        if self.platform == "win32"
-            && self.native.as_ref().is_ok_and(|n| {
-                n.as_ref()
-                    .is_some_and(|n| !n.matches_workspace(&policy.workspace_root))
-            })
-        {
-            return "windows-appcontainer";
-        }
+    fn backend_id_for(&self, _policy: &SandboxExecutionPolicy) -> &'static str {
         self.backend_id()
     }
     fn backend_fingerprint_for(&self, policy: &SandboxExecutionPolicy) -> String {
@@ -225,10 +179,16 @@ impl SandboxProvider for LocalSandboxProvider {
     fn backend_id(&self) -> &'static str {
         #[cfg(windows)]
         if self.platform == "win32" {
-            return match &self.native {
-                Ok(Some(native)) if native.verify().is_ok() => "windows-native",
+            return match self.native_selection() {
+                Ok(Some(native)) if native.verify().is_ok() => {
+                    if native.implementation == "unelevated" {
+                        "windows-unelevated"
+                    } else {
+                        "windows-elevated"
+                    }
+                }
                 Ok(Some(_)) => "windows-unavailable",
-                Ok(None) => "windows-appcontainer",
+                Ok(None) => "windows-unavailable",
                 Err(_) => "windows-unavailable",
             };
         }
@@ -241,13 +201,15 @@ impl SandboxProvider for LocalSandboxProvider {
 
     fn backend_fingerprint(&self) -> String {
         #[cfg(windows)]
-        if let Ok(Some(native)) = &self.native {
+        if let Ok(Some(native)) = self.native_selection() {
             return format!(
-                "windows-native:{}:{}:{}:{}",
+                "windows-native:{}:{}:{}:{}:{}:{}",
                 native.sha256,
                 native.command_runner_sha256,
                 native.setup_sha256,
-                native.state_directory.display()
+                native.state_directory.display(),
+                native.implementation,
+                native.network
             );
         }
         self.backend_id().to_owned()
@@ -260,18 +222,7 @@ impl SandboxProvider for LocalSandboxProvider {
     ) -> Result<ConfinedArgv, SandboxUnavailableError> {
         let mut confined = self.confine(argv, policy)?;
         #[cfg(windows)]
-        if self.platform == "win32"
-            && (self.native.as_ref().is_ok_and(|backend| {
-                backend
-                    .as_ref()
-                    .is_some_and(|n| n.matches_workspace(&policy.workspace_root))
-            }) || embedded_runner_path().is_some_and(|runner| {
-                confined
-                    .argv
-                    .first()
-                    .is_some_and(|program| std::path::Path::new(program) == runner)
-            }))
-        {
+        if self.platform == "win32" {
             let (name, startup) = windows_startup_signal()
                 .map_err(|error| SandboxUnavailableError::new(policy.mode, Some(&error)))?;
             let separator = confined.argv.len() - argv.len() - 1;
@@ -288,12 +239,12 @@ impl SandboxProvider for LocalSandboxProvider {
     ) -> futures::future::BoxFuture<'static, Result<(), String>> {
         #[cfg(windows)]
         if self.platform == "win32" && policy.mode != SandboxMode::DangerFullAccess {
-            match &self.native {
+            match self.native_selection() {
                 Err(error) => {
                     let error = error.clone();
                     return Box::pin(async move { Err(error) });
                 }
-                Ok(Some(native)) if native.matches_workspace(&policy.workspace_root) => {
+                Ok(Some(native)) => {
                     let native = native.clone();
                     let workspace = policy.workspace_root.clone();
                     let read_only = policy.mode == SandboxMode::ReadOnly;
@@ -303,100 +254,12 @@ impl SandboxProvider for LocalSandboxProvider {
                             .map_err(|e| format!("native readiness task: {e}"))?
                     });
                 }
-                Ok(_) => {}
-            }
-        }
-        #[cfg(windows)]
-        if self.platform == "win32"
-            && policy.mode != SandboxMode::DangerFullAccess
-            && self.runtime_cache.is_some()
-        {
-            use futures::FutureExt;
-            let roots = self.runtime_roots.clone();
-            let cache = self.runtime_cache.clone();
-            let workspace = std::path::PathBuf::from(&policy.workspace_root);
-            let writable = policy.mode == SandboxMode::WorkspaceWrite;
-            let preparation_key =
-                format!("{}:{writable}", policy.workspace_root.to_ascii_lowercase());
-            let gate = self.preparation_gate.clone();
-            let candidate: futures::future::BoxFuture<'static, Result<(), String>> =
-                Box::pin(async move {
-                    let permit = gate
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| "[SANDBOX_SETUP_FAILED] permission worker closed")?;
-                    let cache = cache.ok_or(
-                        "[SANDBOX_SETUP_FAILED] runtime permission state is not configured",
-                    )?;
-                    // A cold installed Python tree can take longer than the PTY
-                    // prompt budget. Complete its cached read-only preparation once
-                    // outside that budget; cancellation never launches user code.
-                    let preparation = tokio::task::spawn_blocking(move || {
-                        let _permit = permit;
-                        embedded_windows_runner::windows_runner::prepare_workspace_permissions(
-                            &workspace, &cache, writable,
-                        )?;
-                        embedded_windows_runner::windows_runner::prepare_runtime_permissions(
-                            &roots, &cache,
-                        )
+                Ok(None) => {
+                    return Box::pin(async {
+                        Err("[SANDBOX_SETUP_REQUIRED] packaged Windows native sandbox is unavailable".into())
                     });
-                    match preparation.await {
-                        Ok(Ok(())) => Ok(()),
-                        Ok(Err(error)) => Err(format!("[SANDBOX_SETUP_FAILED] {error}")),
-                        Err(error) => Err(format!(
-                            "[SANDBOX_SETUP_FAILED] runtime preparation task failed: {error}"
-                        )),
-                    }
-                });
-            let state = self.preparation.clone();
-            let (generation, preparation) = {
-                let mut state = state.lock().unwrap();
-                // A shared attempt that already settled with an error must not
-                // be served again: the only caller that could have evicted it
-                // was the one that timed out (120 s) before the failure landed,
-                // so the poisoned entry would otherwise fail every later prepare
-                // for this workspace until restart.
-                state.evict_failed(&preparation_key);
-                if let Some(active) = state.active.get(&preparation_key) {
-                    active.clone()
-                } else {
-                    if state.active.len() >= 64 {
-                        state
-                            .active
-                            .retain(|_, (_, flight)| flight.peek().is_none());
-                    }
-                    if state.active.len() >= 64 {
-                        return Box::pin(async {
-                            Err("[SANDBOX_SETUP_FAILED] workspace preparation limit reached".into())
-                        });
-                    }
-                    state.generation = state.generation.wrapping_add(1);
-                    let active = (state.generation, candidate.shared());
-                    state.active.insert(preparation_key.clone(), active.clone());
-                    active
                 }
-            };
-            return Box::pin(async move {
-                // Retaining one shared attempt prevents cancelled or concurrent
-                // callers from creating an unbounded set of blocking ACL workers.
-                // A timed-out spawn_blocking job keeps running. Retain its shared
-                // join handle so retries cannot start duplicate ACL walks.
-                let result = match tokio::time::timeout(std::time::Duration::from_secs(120), preparation).await {
-                    Ok(result) => result,
-                    Err(_) => return Err("[SANDBOX_SETUP_TIMEOUT] phase=permission_preparation; the shared workspace/runtime ACL preparation is still tracked; command not started. Subsequent checks join this preparation rather than restarting it.".into()),
-                };
-                if result.is_err() {
-                    let mut state = state.lock().unwrap();
-                    if state
-                        .active
-                        .get(&preparation_key)
-                        .is_some_and(|active| active.0 == generation)
-                    {
-                        state.active.remove(&preparation_key);
-                    }
-                }
-                result
-            });
+            }
         }
         let _ = policy;
         Box::pin(async { Ok(()) })
@@ -409,16 +272,21 @@ impl SandboxProvider for LocalSandboxProvider {
     ) -> Result<ConfinedArgv, SandboxUnavailableError> {
         #[cfg(windows)]
         if self.platform == "win32" {
-            match &self.native {
-                Err(error) => return Err(SandboxUnavailableError::new(policy.mode, Some(error))),
-                Ok(Some(native)) if native.matches_workspace(&policy.workspace_root) => {
+            match self.native_selection() {
+                Err(error) => return Err(SandboxUnavailableError::new(policy.mode, Some(&error))),
+                Ok(Some(native)) => {
                     native
                         .verify()
                         .and_then(|_| native.validate_scope(&policy.workspace_root))
                         .map_err(|e| SandboxUnavailableError::new(policy.mode, Some(&e)))?;
                     return Ok(native.confine(argv, policy, &self.runtime_roots));
                 }
-                Ok(_) => {}
+                Ok(None) => {
+                    return Err(SandboxUnavailableError::new(
+                        policy.mode,
+                        Some("packaged native Windows sandbox is unavailable"),
+                    ));
+                }
             }
         }
         let (mut wrapped, denial_signatures, runner_failure_rules) = match self.platform.as_str() {
@@ -440,70 +308,8 @@ impl SandboxProvider for LocalSandboxProvider {
                     informational_lines: None,
                 }],
             ),
-            "win32" => (
-                windows_profile_args(policy)?,
-                vec![
-                    "access is denied".to_string(),
-                    "permission denied".to_string(),
-                    "unauthorizedaccessexception".to_string(),
-                ],
-                vec![RunnerFailureRule {
-                    allowed_exit_codes: None,
-                    fatal_signatures: vec!["dsh-sandbox-windows:".to_string()],
-                    informational_lines: None,
-                }],
-            ),
             _ => return Err(SandboxUnavailableError::new(policy.mode, None)),
         };
-        if self.platform == "win32" {
-            if let Some(cache) = &self.runtime_cache {
-                wrapped.extend([
-                    "--runtime-cache".into(),
-                    cache.to_string_lossy().into_owned(),
-                ]);
-                for root in &self.runtime_roots {
-                    wrapped.extend(["--runtime-root".into(), root.to_string_lossy().into_owned()]);
-                }
-            }
-        }
-        #[cfg(windows)]
-        if self.platform == "win32"
-            && embedded_runner_path().is_some_and(|runner| {
-                wrapped
-                    .first()
-                    .is_some_and(|program| std::path::Path::new(program) == runner)
-            })
-        {
-            if let Some(cache) = self.runtime_cache.as_ref().and_then(|cache| cache.parent()) {
-                wrapped.extend([
-                    "--cleanup-state".into(),
-                    cache.join("sandbox-cleanup").to_string_lossy().into_owned(),
-                ]);
-            }
-        }
-        #[cfg(windows)]
-        if self.platform == "win32" {
-            if let Some(root) = argv
-                .first()
-                .and_then(|program| installed_runtime::powershell_root(program))
-            {
-                if !self
-                    .runtime_roots
-                    .iter()
-                    .any(|existing| std::fs::canonicalize(existing).ok().as_ref() == Some(&root))
-                {
-                    wrapped.extend([
-                        if self.runtime_cache.is_some() {
-                            "--runtime-root"
-                        } else {
-                            "--read-root"
-                        }
-                        .into(),
-                        root.to_string_lossy().into_owned(),
-                    ]);
-                }
-            }
-        }
         wrapped.push("--".to_string());
         wrapped.extend_from_slice(argv);
         Ok(ConfinedArgv {
@@ -669,85 +475,4 @@ fn seatbelt_profile_args(policy: &SandboxPolicy) -> Vec<String> {
         "-p".to_string(),
         forms.join(" "),
     ]
-}
-
-fn windows_profile_args(policy: &SandboxPolicy) -> Result<Vec<String>, SandboxUnavailableError> {
-    let current = std::env::current_exe().ok();
-    let runner = match std::env::var_os("DSH_SANDBOX_WINDOWS_RUNNER") {
-        Some(configured) => {
-            let configured = std::path::PathBuf::from(configured);
-            if !configured.is_file() {
-                return Err(SandboxUnavailableError::new(
-                    policy.mode,
-                    Some("the configured Windows sandbox runner does not exist"),
-                ));
-            }
-            configured
-        }
-        None => embedded_runner_path()
-            .filter(|candidate| candidate.is_file())
-            .or_else(|| {
-                current.clone().filter(|candidate| {
-                    candidate
-                        .file_stem()
-                        .is_some_and(|stem| stem.eq_ignore_ascii_case("dsh"))
-                })
-            })
-            .or_else(|| {
-                current
-                    .as_ref()
-                    .and_then(|executable| executable.parent())
-                    .map(|parent| parent.join("dsh-sandbox-windows.exe"))
-                    .filter(|candidate| candidate.is_file())
-            })
-            // Cargo integration binaries live under target/<profile>/deps,
-            // while the sandbox runner is emitted one directory above.
-            .or_else(|| {
-                current
-                    .as_ref()
-                    .and_then(|executable| executable.parent())
-                    .and_then(std::path::Path::parent)
-                    .map(|parent| parent.join("dsh-sandbox-windows.exe"))
-                    .filter(|candidate| candidate.is_file())
-            })
-            .ok_or_else(|| {
-                SandboxUnavailableError::new(
-                    policy.mode,
-                    Some("no Windows sandbox runner is installed or embedded in dsh.exe"),
-                )
-            })?,
-    };
-    let embedded = embedded_runner_path().as_ref() == Some(&runner)
-        || runner
-            .file_stem()
-            .is_some_and(|stem| stem.eq_ignore_ascii_case("dsh"));
-    let mut args = vec![runner.to_string_lossy().into_owned()];
-    if embedded {
-        args.push("__dsh-sandbox-windows".to_string());
-    }
-    args.extend([
-        "--mode".to_string(),
-        policy.mode.as_str().to_string(),
-        "--workspace".to_string(),
-        policy.workspace_root.clone(),
-    ]);
-    if policy.mode == ConfinedSandboxMode::WorkspaceWrite {
-        for root in dsh_sandbox::roots::managed_temp_roots() {
-            args.extend(["--temp-root".to_string(), root]);
-        }
-    }
-    for root in &policy.read_only_roots {
-        args.extend(["--read-root".into(), root.clone()]);
-    }
-    Ok(args)
-}
-
-#[cfg(windows)]
-#[allow(dead_code)]
-#[path = "bin/dsh-sandbox-windows.rs"]
-mod embedded_windows_runner;
-
-#[cfg(windows)]
-pub fn run_windows_sandbox(args: impl IntoIterator<Item = String>) -> Result<i32, String> {
-    embedded_windows_runner::windows_runner::run_args(args.into_iter())
 }

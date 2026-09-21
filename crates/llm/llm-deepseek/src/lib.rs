@@ -44,8 +44,7 @@ pub const PROVIDER: &str = "deepseek-official";
 pub use compat::{ProviderCompatibility, ThinkingTokenBudgetField};
 pub const PUBLIC_BASE_URL: &str = "https://api.deepseek.com";
 
-const MAX_SUCCESS_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_SUCCESS_STREAM_CHUNKS: usize = 100_000;
+const MAX_STREAM_EVENT_CHUNKS: usize = 100_000;
 pub const DEFAULT_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
 pub const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
 pub const DEFAULT_MAX_TOKENS: u64 = 256_000;
@@ -1712,8 +1711,6 @@ async fn request_chunks(
 
     let mut parser = sse::SseParser::new();
     let mut translator = translate::Translator::new();
-    let mut emitted_chunks = 0_usize;
-    let mut received_bytes = 0_usize;
     let done_seen = false;
     let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
@@ -1736,30 +1733,13 @@ async fn request_chunks(
         let Some(bytes) = bytes else {
             break;
         };
-        received_bytes = received_bytes
-            .checked_add(bytes.len())
-            .ok_or_else(|| failure("DeepSeek response size overflowed", "RESPONSE_TOO_LARGE"))?;
-        if received_bytes > MAX_SUCCESS_RESPONSE_BYTES {
-            return Err(failure(
-                "DeepSeek success response exceeded 8 MiB",
-                "RESPONSE_TOO_LARGE",
-            ));
-        }
         for payload in parser.push(&bytes) {
             let payload = payload?;
             let done = payload == sse::DONE;
             let translated = translator.consume(&payload)?;
-            emitted_chunks = emitted_chunks
-                .checked_add(translated.len())
-                .ok_or_else(|| {
-                    failure(
-                        "DeepSeek stream chunk count overflowed",
-                        "RESPONSE_TOO_LARGE",
-                    )
-                })?;
-            if emitted_chunks > MAX_SUCCESS_STREAM_CHUNKS {
+            if translated.len() > MAX_STREAM_EVENT_CHUNKS {
                 return Err(failure(
-                    "DeepSeek success response emitted too many chunks",
+                    "DeepSeek event emitted too many chunks",
                     "RESPONSE_TOO_LARGE",
                 ));
             }
@@ -1782,17 +1762,9 @@ async fn request_chunks(
         let payload = payload?;
         let done = payload == sse::DONE;
         let translated = translator.consume(&payload)?;
-        emitted_chunks = emitted_chunks
-            .checked_add(translated.len())
-            .ok_or_else(|| {
-                failure(
-                    "DeepSeek stream chunk count overflowed",
-                    "RESPONSE_TOO_LARGE",
-                )
-            })?;
-        if emitted_chunks > MAX_SUCCESS_STREAM_CHUNKS {
+        if translated.len() > MAX_STREAM_EVENT_CHUNKS {
             return Err(failure(
-                "DeepSeek success response emitted too many chunks",
+                "DeepSeek event emitted too many chunks",
                 "RESPONSE_TOO_LARGE",
             ));
         }
@@ -1928,8 +1900,6 @@ async fn request_responses_chunks(
     }
     let mut parser = sse::SseParser::new();
     let mut translator = responses::ResponsesTranslator::default();
-    let mut emitted_chunks = 0_usize;
-    let mut received_bytes = 0_usize;
     let outcome: Result<(), LlmFailure> = async {
     let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
@@ -1947,17 +1917,10 @@ async fn request_responses_chunks(
             } => return Err(failure("Responses stream cancelled", "CANCELLED")),
         };
         let Some(bytes) = bytes else { break };
-        received_bytes = received_bytes.saturating_add(bytes.len());
-        if received_bytes > MAX_SUCCESS_RESPONSE_BYTES {
-            return Err(failure(
-                "Responses success response exceeded 8 MiB",
-                "RESPONSE_TOO_LARGE",
-            ));
-        }
         for payload in parser.push(&bytes) {
         let payload = payload?;
-            let translated = translator.consume_limited(&payload, MAX_SUCCESS_STREAM_CHUNKS.saturating_sub(emitted_chunks))?;
-            emitted_chunks = emitted_chunks.saturating_add(translated.len());
+            let translated = translator.consume_limited(&payload, MAX_STREAM_EVENT_CHUNKS)?;
+
             for mut chunk in translated {
                 if dsh_llm::is_token_delta(&chunk) { progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout; }
                 responses::bind_replay_metadata_for_account(
@@ -1980,8 +1943,8 @@ async fn request_responses_chunks(
     }
     for payload in parser.finish_at_eof() {
         let payload = payload?;
-        let translated = translator.consume_limited(&payload, MAX_SUCCESS_STREAM_CHUNKS.saturating_sub(emitted_chunks))?;
-        emitted_chunks = emitted_chunks.saturating_add(translated.len());
+        let translated = translator.consume_limited(&payload, MAX_STREAM_EVENT_CHUNKS)?;
+
         for mut chunk in translated {
             responses::bind_replay_metadata_for_account(&mut chunk, &connection.base_url, model.unwrap_or(""), account_scope.as_deref());
             sender
