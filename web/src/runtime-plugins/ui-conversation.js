@@ -4638,10 +4638,10 @@ window.__ModuleLoader__.load({
 			const [expanded, setExpanded] = (0, react.useState)(false);
 			const expandable = node.summary !== null;
 			const open = expandable && expanded;
-			const summary = node.pending ? t("message.compaction.running") : node.shadowedItemCount !== null && node.shadowedTokenCount !== null ? t("message.compaction.completed", {
+			const summary = node.pending ? t("message.compaction.running") : node.failure ?? (node.shadowedItemCount !== null && node.shadowedTokenCount !== null ? t("message.compaction.completed", {
 				items: node.shadowedItemCount,
 				tokens: node.shadowedTokenCount
-			}) : fallbackSummary ?? (expandable ? t("message.compaction.expand") : t("message.compaction.unavailable"));
+			}) : fallbackSummary ?? (expandable ? t("message.compaction.expand") : t("message.compaction.unavailable")));
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: MessageItem_module_css_default.compactionRow,
 				children: [(0, react_jsx_runtime.jsxs)("button", {
@@ -4668,7 +4668,7 @@ window.__ModuleLoader__.load({
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: MessageItem_module_css_default.compactionTitle,
-						children: node.pending ? t("message.compaction.running") : title ?? t("message.compaction")
+						children: node.pending ? t("message.compaction.running") : node.failure ? t("message.compaction.failed") : title ?? t("message.compaction")
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: MessageItem_module_css_default.compactionSep,
@@ -6803,6 +6803,7 @@ window.__ModuleLoader__.load({
 			"message.context.recall.truncated": "已截断",
 			"message.compaction": "上下文已压缩",
 			"message.compaction.running": "正在压缩…",
+			"message.compaction.failed": "上下文压缩未完成",
 			"message.compaction.completed": "已压缩 {items} 条历史记录（约 {tokens} tokens）",
 			"message.compaction.expand": "点击查看压缩摘要",
 			"message.compaction.unavailable": "压缩摘要不可用",
@@ -7137,6 +7138,7 @@ window.__ModuleLoader__.load({
 			"message.context.recall.truncated": "truncated",
 			"message.compaction": "Context compacted",
 			"message.compaction.running": "Compacting context…",
+			"message.compaction.failed": "Context compaction incomplete",
 			"message.compaction.completed": "Compacted {items} history items (~{tokens} tokens)",
 			"message.compaction.expand": "View compaction summary",
 			"message.compaction.unavailable": "Compaction summary unavailable",
@@ -9174,7 +9176,7 @@ window.__ModuleLoader__.load({
 			if (source.kind !== "plugin" || source.plugin !== COMPACT_PLUGIN || typeof source.compactionId !== "string") return void 0;
 			return {
 				compactionId: source.compactionId,
-				...source.sourceCommandId === void 0 ? {} : { sourceCommandId: source.sourceCommandId }
+				...typeof source.sourceCommandId !== "string" || !source.sourceCommandId ? {} : { sourceCommandId: source.sourceCommandId }
 			};
 		}
 		/**
@@ -9237,6 +9239,8 @@ window.__ModuleLoader__.load({
 		* @returns adopted State, preserving reference identity when the Match adds no evidence.
 		*/
 		function updateCompactionState(state, match) {
+			if (match.event.type === "compaction/start") return { ...state, started: match };
+			if (match.event.type === "compaction/end") return { ...state, ended: match };
 			if (match.event.type === "compaction/summary") return {
 				...state,
 				summary: match
@@ -9266,7 +9270,7 @@ window.__ModuleLoader__.load({
 					role: "update"
 				};
 				if (event.type === "compaction/start" || event.type === "compaction/summary" || event.type === "compaction/end") {
-					if (event.data.sourceCommandId !== void 0) return {
+					if (typeof event.data.sourceCommandId === "string" && event.data.sourceCommandId) return {
 						id: String(event.data.sourceCommandId),
 						role: "update"
 					};
@@ -9305,7 +9309,10 @@ window.__ModuleLoader__.load({
 		function fallbackState$2(context) {
 			const summary = context.matches.find((match) => match.event.type === "compaction/summary");
 			const checkpoint = context.matches.find((match) => compactSource(match.event) !== void 0);
+			const started = context.matches.find((match) => match.event.type === "compaction/start");
+			const ended = context.matches.find((match) => match.event.type === "compaction/end");
 			return {
+				started, ended,
 				...summary === void 0 ? {} : { summary },
 				...checkpoint === void 0 ? {} : { checkpoint }
 			};
@@ -9321,7 +9328,7 @@ window.__ModuleLoader__.load({
 					role: "update"
 				};
 				if (event.type === "compaction/start" || event.type === "compaction/summary" || event.type === "compaction/end") {
-					if (event.data.sourceCommandId !== void 0) return null;
+					if (typeof event.data.sourceCommandId === "string" && event.data.sourceCommandId) return null;
 					const compactionId = event.data.compactionId;
 					if (typeof compactionId !== "string" || compactionId === "") return null;
 					return {
@@ -9331,13 +9338,15 @@ window.__ModuleLoader__.load({
 				}
 				return null;
 			},
-			start: () => ({}),
+			start: (_context, match) => ({ started: match }),
 			update: (context, match) => updateCompactionState(context.state, match),
 			buildViewNode: (context) => {
 				const state = context.state ?? fallbackState$2(context);
 				if (state.checkpoint === void 0) {
-					const start = context.matches?.[0]?.event;
-					return start === void 0 ? null : chatNode(context, "compaction", start.seq, { pending: true, seq: start.seq, summary: null, shadowedItemCount: null, shadowedTokenCount: null });
+					const event = (state.started ?? state.ended)?.event;
+					if (!event) return null;
+					const failure = state.ended ? String(state.ended.event.data.error || "No compaction checkpoint was committed") : null;
+					return chatNode(context, "compaction", event.seq, { pending: !state.ended, failure, seq: event.seq, time: event.time, summary: null, shadowedItemCount: null, shadowedTokenCount: null });
 				}
 				const marker = compactSummary(state.summary, state.checkpoint);
 				return chatNode(context, "compaction", marker.seq, marker);

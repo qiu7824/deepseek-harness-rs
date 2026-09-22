@@ -8,7 +8,6 @@ use dsh_session::SessionEvent;
 use dsh_session_projection::{ProjectionApply, ProjectionDefinition};
 use serde_json::Value;
 
-use crate::surface_projection::{ShadowPriceClaim, fold_surface_projection};
 use crate::types::TokenUsageProjection;
 
 fn zero_buckets() -> Value {
@@ -264,13 +263,10 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
         Arc::new(|_header| arc(serde_json::json!({"surfaceTokens": 0})));
     let apply: ProjectionApply = Arc::new(|state_value: &ArcValue, event: &SessionEvent| {
         let state: &Value = cordis::downcast(state_value).expect("contextPressure state");
-        let claim: Option<ShadowPriceClaim> = state
-            .get("claim")
-            .and_then(|claim| serde_json::from_value(claim.clone()).ok());
-        let fold = match fold_surface_projection(claim.as_ref(), event) {
-            Ok(fold) => fold,
-            Err(_) => return Arc::clone(state_value),
-        };
+        let surface_event = dsh_session::surface::is_surface_event(event);
+        if !surface_event && event.type_ != "request/context" && usage_of(event).is_none() {
+            return Arc::clone(state_value);
+        }
         let mut next = state.clone();
         if event.type_ == "request/context" {
             let window = event.data.get("contextWindow").and_then(|v| v.as_u64());
@@ -314,24 +310,34 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
                 next["sampledSurfaceTokens"] = serde_json::json!(surface_tokens);
             }
         }
-        if fold.delta_tokens != 0 {
-            let surface_tokens = next
-                .get("surfaceTokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            next["surfaceTokens"] =
-                serde_json::json!((surface_tokens as i64 + fold.delta_tokens).max(0) as u64);
-        }
-        if state.get("claim").is_none() && fold.claim.is_none() {
-            return if &next == state {
-                Arc::clone(state_value)
-            } else {
-                arc(next)
-            };
-        }
-        next.as_object_mut().expect("object").remove("claim");
-        if let Some(claim) = &fold.claim {
-            next["claim"] = serde_json::to_value(claim).expect("claim JSON");
+        if surface_event {
+            // Retain only active sequence/price pairs. Historical summaries
+            // incorrectly recorded message counts as token prices, so replay
+            // must derive removal prices from the actual replaced surface.
+            let mut nodes: Vec<(u64, u64)> = state.get("nodes")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default();
+            let price = dsh_session::derive_event_message(event)
+                .as_ref().map(crate::estimate_message).unwrap_or(0);
+            let node = (event.seq.get(), price);
+            match event.surface_op {
+                Some(dsh_session::SurfaceOp::Append) => {
+                    if event.type_ == "system/message" && event.data["prefix"] == true {
+                        nodes.insert(0, node);
+                    } else { nodes.push(node); }
+                }
+                Some(dsh_session::SurfaceOp::Replace { start, end }) => {
+                    let range = nodes.iter().position(|row| row.0 == start)
+                        .zip(nodes.iter().position(|row| row.0 == end));
+                    let Some((first, last)) = range.filter(|(first, last)| first <= last) else {
+                        return Arc::clone(state_value);
+                    };
+                    nodes.splice(first..=last, [node]);
+                }
+                None => return Arc::clone(state_value),
+            }
+            next["surfaceTokens"] = serde_json::json!(nodes.iter().map(|row| row.1).fold(0u64, u64::saturating_add));
+            next["nodes"] = serde_json::json!(nodes);
         }
         if &next == state {
             Arc::clone(state_value)
@@ -360,7 +366,7 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
                 .unwrap_or(0);
             view.insert(
                 "projectedTokens".to_string(),
-                serde_json::json!((pressure as i64 + surface as i64 - sampled as i64).max(0) as u64),
+                serde_json::json!(if surface >= sampled { pressure.saturating_add(surface - sampled) } else { pressure.saturating_sub(sampled - surface) }),
             );
         }
         arc(Value::Object(view))
@@ -375,7 +381,7 @@ pub fn context_pressure_projection_definition() -> ProjectionDefinition {
         init,
         apply,
         view,
-        state_version: 5,
+        state_version: 6,
     }
 }
 

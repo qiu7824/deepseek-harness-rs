@@ -94,16 +94,13 @@ impl BasicCompactionEngine {
                 "the protected system head cannot be included in a compaction range",
             ));
         }
-        let open_turn =
-            agent
-                .session
-                .events()
+        let open_turn = agent.session.with_events(|events| events
                 .iter()
                 .fold(None, |open, event| match event.type_.as_str() {
                     "turn/start" => event.data.get("turn").and_then(|value| value.as_u64()),
                     "turn/end" => None,
                     _ => open,
-                });
+                }));
         if manual && open_turn.is_some() {
             return Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Busy,
@@ -178,7 +175,16 @@ impl BasicCompactionEngine {
                 "the compacted history changed during summarization",
             ));
         }
-        let shadowed_token_count = shadowed_seqs.len() as u64;
+        // Use the same per-message heuristic as the context projections. The
+        // summary input also contains a protected system head; only replaced
+        // surface nodes are deducted, and message count is a separate metric.
+        let shadowed_token_count = agent.session.with_events(|events| {
+            shadowed_seqs.iter()
+                .filter_map(|seq| events.get(*seq as usize))
+                .filter_map(dsh_session::derive_event_message)
+                .map(|message| self.meter.estimate_message(&message))
+                .fold(0u64, u64::saturating_add)
+        });
         let summary_event = agent
             .session
             .append(
