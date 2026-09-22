@@ -409,7 +409,7 @@ window.__ModuleLoader__.load({
 			const tabsId = (0, react.useId)();
 			const tabRefs = (0, react.useRef)([]);
 			const rows = useTabs((value) => value);
-			const [activeId, setActiveId] = (0, react.useState)();
+			const [activeId, setActiveId] = (0, react.useState)(() => { try { return globalThis.localStorage?.getItem("dsh.settings.plugins.active") || void 0; } catch { return void 0; } });
 			const [visitedIds, setVisitedIds] = (0, react.useState)(() => /* @__PURE__ */ new Set());
 			const active = rows.find((row) => row.id === activeId)?.id ?? rows[0]?.id;
 			(0, react.useEffect)(() => {
@@ -453,6 +453,7 @@ window.__ModuleLoader__.load({
 								tabIndex: selected ? 0 : -1,
 								onClick: () => {
 									setActiveId(row.id);
+									try { globalThis.localStorage?.setItem("dsh.settings.plugins.active", row.id); } catch {}
 								},
 								onKeyDown: (event) => {
 									let nextIndex;

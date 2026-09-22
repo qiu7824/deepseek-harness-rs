@@ -4327,6 +4327,8 @@ window.__ModuleLoader__.load({
 											"aria-haspopup": workspaceTrigger ? "menu" : void 0,
 											"aria-expanded": workspaceTrigger ? workspacePickerOpen : void 0,
 											"data-phase": input?.phase ?? "inert",
+											"data-composer-input": true,
+											"data-session-id": sessionId,
 											placeholder: input?.claim == null ? placeholderText : "",
                                             onPointerDown: focusTip, onFocus: event => { if(event.relatedTarget) focusTip(); }, onBlur: () => setTipFocused(false),
 											rows: 2,
