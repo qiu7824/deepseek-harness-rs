@@ -4638,7 +4638,7 @@ window.__ModuleLoader__.load({
 			const [expanded, setExpanded] = (0, react.useState)(false);
 			const expandable = node.summary !== null;
 			const open = expandable && expanded;
-			const summary = node.shadowedItemCount !== null && node.shadowedTokenCount !== null ? t("message.compaction.completed", {
+			const summary = node.pending ? t("message.compaction.running") : node.shadowedItemCount !== null && node.shadowedTokenCount !== null ? t("message.compaction.completed", {
 				items: node.shadowedItemCount,
 				tokens: node.shadowedTokenCount
 			}) : fallbackSummary ?? (expandable ? t("message.compaction.expand") : t("message.compaction.unavailable"));
@@ -4668,7 +4668,7 @@ window.__ModuleLoader__.load({
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: MessageItem_module_css_default.compactionTitle,
-							children: title ?? t("message.compaction")
+						children: node.pending ? t("message.compaction.running") : title ?? t("message.compaction")
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: MessageItem_module_css_default.compactionSep,
@@ -9334,7 +9334,10 @@ window.__ModuleLoader__.load({
 			update: (context, match) => updateCompactionState(context.state, match),
 			buildViewNode: (context) => {
 				const state = context.state ?? fallbackState$2(context);
-				if (state.checkpoint === void 0) return null;
+				if (state.checkpoint === void 0) {
+					const start = context.matches?.[0]?.event;
+					return start === void 0 ? null : chatNode(context, "compaction", start.seq, { pending: true, seq: start.seq, summary: null, shadowedItemCount: null, shadowedTokenCount: null });
+				}
 				const marker = compactSummary(state.summary, state.checkpoint);
 				return chatNode(context, "compaction", marker.seq, marker);
 			}
