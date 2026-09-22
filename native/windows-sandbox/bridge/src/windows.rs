@@ -57,8 +57,8 @@ pub fn run(request: Request) -> Result<i32> {
         )?);
         for index in 0..pool::SIZE {
             leases.push(
-                pool::acquire(&request.home, &request.workspace, index)?.ok_or_else(|| {
-                    anyhow::anyhow!("NATIVE_SLOT_BUSY: stop native commands before setup")
+                pool::acquire_retry(&request.home, &request.workspace, index)?.ok_or_else(|| {
+                    anyhow::anyhow!("NATIVE_SLOT_BUSY: another native command still owns the current workspace slot after the cleanup grace period")
                 })?,
             );
         }

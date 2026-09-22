@@ -187,6 +187,11 @@ pub fn acquire(root: &Path, workspace: &Path, index: usize) -> Result<Option<Fil
     acquire_directory(&slot)
 }
 
+pub fn acquire_retry(root: &Path, workspace: &Path, index: usize) -> Result<Option<File>> {
+    let slot = home(root, workspace, index);
+    acquire_directory_retry(&slot)
+}
+
 fn acquire_directory(slot: &Path) -> Result<Option<File>> {
     std::fs::create_dir_all(&slot)?;
     let file = OpenOptions::new()
@@ -206,6 +211,20 @@ fn acquire_directory(slot: &Path) -> Result<Option<File>> {
     Ok(Some(file))
 }
 
+/// Setup can race the final cleanup of a previous runner. Give that runner a
+/// bounded grace period before reporting a slot as permanently busy; the old
+/// code failed immediately on the first transient Windows sharing violation.
+fn acquire_directory_retry(slot: &Path) -> Result<Option<File>> {
+    for attempt in 0..50 {
+        match acquire_directory(slot)? {
+            Some(lease) => return Ok(Some(lease)),
+            None if attempt < 49 => std::thread::sleep(std::time::Duration::from_millis(100)),
+            None => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
 pub fn acquire_other_projects(root: &Path, workspace: &Path) -> Result<Vec<File>> {
     let current = home(root, workspace, READ_SLOTS)
         .parent()
@@ -222,8 +241,8 @@ pub fn acquire_other_projects(root: &Path, workspace: &Path) -> Result<Vec<File>
             for index in 0..WRITE_SLOTS {
                 let slot = project.join(index.to_string());
                 if slot.exists() {
-                    leases.push(acquire_directory(&slot)?.ok_or_else(|| {
-                        anyhow::anyhow!("NATIVE_SLOT_BUSY: stop all native commands before setup")
+                    leases.push(acquire_directory_retry(&slot)?.ok_or_else(|| {
+                        anyhow::anyhow!("NATIVE_SLOT_BUSY: another native command still owns {} after the cleanup grace period", slot.display())
                     })?);
                 }
             }
