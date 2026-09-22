@@ -6204,11 +6204,12 @@ window.__ModuleLoader__.load({
             const phaseLabel = t(phase === "text" ? "turn.generating" : phase === "reasoning" ? "turn.reasoning" : knownRequestPhase?`requestPhase.${requestPhase}`:"turn.waiting");
 			const safeToolName = typeof toolName === "string" && toolName.length > 0 && toolName.length <= 96 ? toolName : null;
 			const baseLabel = (toolActive ? `${t("turn.executingTool")}${safeToolName ? ` · ${safeToolName}` : ""}` : phaseLabel).replace(/[…\.]+$/, "");
+			const visibleLabel = !toolActive && phase === "waiting" && elapsedMs >= 10000 ? t("input.waitingModel", { seconds: Math.floor(elapsedMs / 1000) }) : baseLabel;
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ChatView_module_css_default.turnStatus,
 				role: "status",
 				"aria-live": "polite",
-				children: [(0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintIcon", title: baseLabel, "aria-hidden": true, children: (0, react_jsx_runtime.jsx)(phase === "reasoning" ? _deepseek_ai_dsh_client_ui_primitives.IconThinkOutline14 : _deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 }) }), (0, react_jsx_runtime.jsx)("span", { className: "dshTurnStatusLabel", children: baseLabel }), (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dots", "aria-hidden": true, children: ".".repeat(dotCount) }), showClock && (0, react_jsx_runtime.jsx)("span", {
+				children: [(0, react_jsx_runtime.jsx)("span", { className: "dshReplyHintIcon", title: visibleLabel, "aria-hidden": true, children: (0, react_jsx_runtime.jsx)(phase === "reasoning" ? _deepseek_ai_dsh_client_ui_primitives.IconThinkOutline14 : _deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 }) }), (0, react_jsx_runtime.jsx)("span", { className: "dshTurnStatusLabel", children: visibleLabel }), (0, react_jsx_runtime.jsx)("span", { className: "dsh-turn-dots", "aria-hidden": true, children: ".".repeat(dotCount) }), showClock && (0, react_jsx_runtime.jsx)("span", {
 					className: ChatView_module_css_default.turnStatusClock,
 					"aria-hidden": true,
 					children: formatRunDuration(elapsedMs, t)
