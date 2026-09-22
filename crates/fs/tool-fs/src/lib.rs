@@ -13,6 +13,8 @@ use dsh_tools::{
 };
 use futures::{FutureExt, StreamExt};
 mod read_window;
+#[cfg(test)]
+mod read_numeric_tests;
 use std::sync::Arc;
 
 pub const NAME: &str = "tool-fs";
@@ -21,6 +23,15 @@ const READ_LIMIT: u64 = 2000;
 const READ_MAX_LINE_LENGTH: usize = 2000;
 const READ_MAX_BYTES: usize = 50 * 1024;
 const STREAM_MIN_SIZE: u64 = 10 * 1024 * 1024;
+
+// JSON Schema treats 1 and 1.0 as the same integer. serde_json preserves their
+// representation, so as_u64 alone rejects valid model arguments. Float forms
+// must be integral and exactly representable; strings and fractions stay errors.
+fn line_integer(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_f64()
+        .filter(|number| number.is_finite() && *number >= 0.0 && *number <= 9_007_199_254_740_991.0 && number.fract() == 0.0)
+        .map(|number| number as u64))
+}
 
 fn body_error(error: FsError) -> ToolBodyError {
     let remedy = match error.code {
@@ -244,7 +255,7 @@ impl Service {
                         .join("\n");
                     let requested = args
                         .get("limit")
-                        .and_then(|v| v.as_u64())
+                        .and_then(line_integer)
                         .unwrap_or(READ_LIMIT);
                     let footer = if rows.len() < requested as usize && end < total {
                         format!(
@@ -289,7 +300,7 @@ impl Service {
                     let integer = |name: &str, default: u64| -> Result<u64, ToolBodyError> {
                         match args.get(name) {
                             None => Ok(default),
-                            Some(v) => v.as_u64().filter(|v| *v > 0).ok_or_else(|| {
+                            Some(v) => line_integer(v).filter(|v| *v > 0).ok_or_else(|| {
                                 ToolBodyError::plain(format!("{name} must be a positive integer"))
                             }),
                         }
@@ -300,8 +311,7 @@ impl Service {
                     // into a contract error.
                     let offset = match args.get("offset") {
                         None => 1,
-                        Some(value) => value
-                            .as_u64()
+                        Some(value) => line_integer(value)
                             .map(|value| value.max(1))
                             .ok_or_else(|| ToolBodyError::plain("offset must be an integer"))?,
                     };
@@ -367,7 +377,7 @@ impl Service {
                     content: None,
                     locations: Some(vec![FileLocation {
                         path: args["file_path"].as_str().unwrap_or("").into(),
-                        line: args.get("offset").and_then(|v| v.as_u64()).or(Some(1)),
+                        line: args.get("offset").and_then(line_integer).map(|value| value.max(1)).or(Some(1)),
                     }]),
                 })
             })),
