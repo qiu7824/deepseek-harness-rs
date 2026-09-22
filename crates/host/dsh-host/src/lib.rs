@@ -3258,6 +3258,7 @@ fn compose_host_in_fiber(
                 outside_write_policy: match text("outsideWritePolicy") {
                     "deny" => dsh_tools::OutsideWritePolicy::Deny,
                     "ask-every-time" => dsh_tools::OutsideWritePolicy::AskEveryTime,
+                    "allow" => dsh_tools::OutsideWritePolicy::Allow,
                     _ => dsh_tools::OutsideWritePolicy::AskDirectory,
                 },
                 sensitive_read_policy: if text("sensitiveReadPolicy") == "deny" {
@@ -3288,6 +3289,7 @@ fn compose_host_in_fiber(
                 outside_write_policy: match text("outsideWritePolicy") {
                     "deny" => dsh_tools::OutsideWritePolicy::Deny,
                     "ask-every-time" => dsh_tools::OutsideWritePolicy::AskEveryTime,
+                    "allow" => dsh_tools::OutsideWritePolicy::Allow,
                     _ => dsh_tools::OutsideWritePolicy::AskDirectory,
                 },
                 sensitive_read_policy: if text("sensitiveReadPolicy") == "deny" {

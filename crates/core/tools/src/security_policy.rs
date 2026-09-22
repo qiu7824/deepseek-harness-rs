@@ -33,6 +33,9 @@ pub enum OutsideWritePolicy {
     AskDirectory,
     AskEveryTime,
     Deny,
+    /// Explicitly selected for a fully trusted execution profile. The normal
+    /// workspace and sensitive-path checks still run before this branch.
+    Allow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -354,6 +357,9 @@ fn classify_tool_security_with_config(
             {
                 return SecurityDecision::Allow;
             }
+            if config.outside_write_policy == OutsideWritePolicy::Allow {
+                return SecurityDecision::Allow;
+            }
             if config.outside_write_policy == OutsideWritePolicy::Deny {
                 return SecurityDecision::Deny {
                     reason: "安全盾策略禁止写入工作区外路径".to_string(),
@@ -637,6 +643,21 @@ mod tests {
             },
         );
         assert!(matches!(decision, SecurityDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn explicit_full_access_policy_allows_cross_workspace_write() {
+        let decision = classify_tool_security_with_config(
+            "write",
+            &json!({"file_path": "../other-workspace/report.txt", "content": "x"}),
+            Some("D:/workspace"),
+            false,
+            &SecurityPolicyConfig {
+                outside_write_policy: OutsideWritePolicy::Allow,
+                ..SecurityPolicyConfig::default()
+            },
+        );
+        assert_eq!(decision, SecurityDecision::Allow);
     }
 
     #[test]
