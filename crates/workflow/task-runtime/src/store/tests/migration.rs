@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn legacy_database_migrates_atomically_without_rewriting_tasks_and_reopens_at_version_two() {
+fn legacy_database_migrates_atomically_without_rewriting_tasks_and_reopens_at_current_schema() {
     let fixture = Fixture::new();
     let runtime = fixture.open();
     runtime.create("owner", "task", spec()).unwrap();
@@ -33,7 +33,7 @@ fn legacy_database_migrates_atomically_without_rewriting_tasks_and_reopens_at_ve
             .unwrap();
         assert_eq!(version, DATABASE_VERSION);
         assert!(
-            version > 1,
+            version > 2,
             "legacy Hosts reject the schema instead of dropping revision metadata"
         );
         assert_eq!(

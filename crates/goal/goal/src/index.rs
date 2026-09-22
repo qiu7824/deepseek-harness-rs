@@ -6,9 +6,8 @@
 //!
 //! - The `@Remote` annotations collapse (the typert remote runtime is a
 //!   later milestone); `remote_export_create` is kept as the plain method.
-//! - The `goal` projection-unit registration (the `ctx.inject` child) is
-//!   omitted; [`apply_goal_projection`] ships as the pure last-wins fold the
-//!   unit runs.
+//! - The Host registers the bounded requirements projection supplied by this
+//!   crate for both live and cold session caches.
 //! - The config schema validation collapses into [`Config`] field checks.
 //! - Session caches use exact object identity and are retired on
 //!   `session/disposed`, preserving the TS WeakMap lifetime boundary.
@@ -30,6 +29,10 @@ use crate::domain::{
 };
 use crate::fold::{
     GoalFoldState, apply_goal_event, decode_goal_change, empty_goal_fold_state, goal_change_ref,
+};
+use crate::requirements::{
+    GOAL_COMPLETION_GUARD_SERVICE, GoalCompletionError, GoalCompletionGuard,
+    GoalRequirementsIdentity,
 };
 use crate::runtime::GOAL_CHANGE_VERSION;
 use crate::types::{
@@ -102,6 +105,32 @@ struct GoalCache {
     activation: GoalActivation,
     observed_seq: usize,
     pending_activation: Option<(u64, GoalActivation)>,
+    replay_valid: bool,
+}
+
+/// Short reservation of a goal requirements generation while a Host commits
+/// its trusted task binding. No cache mutex remains held. Release before await.
+pub struct GoalRequirementsLease {
+    identity: Option<GoalRequirementsIdentity>,
+    phase: Option<GoalPhase>,
+    _claim: MutationClaim,
+}
+
+impl GoalRequirementsLease {
+    pub fn phase(&self) -> Option<GoalPhase> {
+        self.phase
+    }
+
+    pub fn identity(&self) -> Option<&GoalRequirementsIdentity> {
+        self.identity.as_ref()
+    }
+}
+
+fn requirements_identity(cache: &GoalCache) -> Option<GoalRequirementsIdentity> {
+    Some(GoalRequirementsIdentity {
+        goal_id: cache.state.goal.as_ref()?.id.as_str().to_owned(),
+        objective_revision: cache.state.objective_revision?,
+    })
 }
 
 /// Stable process-local state for one exact Session object.
@@ -304,6 +333,79 @@ impl GoalService {
         Ok(self.view(&cache))
     }
 
+    /// Exact round authority from the validated incremental fold, without
+    /// cloning or replaying the full transcript for every tool invocation.
+    pub fn validated_authority_view(
+        &self,
+        agent: &Arc<dyn Agent>,
+    ) -> Result<Option<GoalView>, GoalError> {
+        self.assert_live(agent)?;
+        let state = self.state_for(agent);
+        let mut cache = state.cache.lock();
+        self.sync(&state.session, &mut cache);
+        if !cache.replay_valid {
+            return Err(GoalError::new(
+                "goal replay is invalid",
+                GoalErrorCode::CommitFailed,
+            ));
+        }
+        Ok(self.view(&cache))
+    }
+
+    /// Read the replay-derived requirements identity without waking an Agent.
+    pub fn requirements_identity_for_session(
+        &self,
+        session: &Session,
+    ) -> Option<GoalRequirementsIdentity> {
+        let state = self.state_for_session(session.clone());
+        let mut cache = state.cache.lock();
+        self.sync(&state.session, &mut cache);
+        requirements_identity(&cache)
+    }
+
+    /// Only the current goal requirements for a live read; no other session
+    /// projections or transcript bodies are materialized.
+    pub fn requirements_view_for_session(&self, session: &Session) -> Option<Value> {
+        let state = self.state_for_session(session.clone());
+        let mut cache = state.cache.lock();
+        self.sync(&state.session, &mut cache);
+        if !cache.replay_valid {
+            return Some(serde_json::json!({"unavailable":true}));
+        }
+        let identity = requirements_identity(&cache)?;
+        Some(
+            serde_json::json!({"goalId":identity.goal_id,"objectiveRevision":identity.objective_revision,"objective":cache.state.goal.as_ref()?.objective}),
+        )
+    }
+
+    pub fn requirements_identity(
+        &self,
+        agent: &Arc<dyn Agent>,
+    ) -> Result<Option<GoalRequirementsIdentity>, GoalError> {
+        self.assert_live(agent)?;
+        Ok(self.requirements_identity_for_session(agent.session()))
+    }
+
+    /// Reserve a trusted binding across a short Host database transaction.
+    /// A competing edit/create/clear fails immediately, never waits on TaskDB.
+    pub fn claim_requirements(
+        &self,
+        agent: &Arc<dyn Agent>,
+    ) -> Result<GoalRequirementsLease, GoalError> {
+        let (_state, cache, claim) = self.prepare_mutation(agent)?;
+        if !cache.replay_valid {
+            return Err(GoalError::new(
+                "goal replay is invalid; requirements cannot be attested",
+                GoalErrorCode::CommitFailed,
+            ));
+        }
+        Ok(GoalRequirementsLease {
+            identity: requirements_identity(&cache),
+            phase: cache.state.goal.as_ref().map(|goal| goal.phase),
+            _claim: claim,
+        })
+    }
+
     /// Remove process-local continuation authority without changing durable
     /// goal phase or revision.
     pub fn disarm(&self, agent: &Arc<dyn Agent>) -> Result<Option<GoalView>, GoalError> {
@@ -318,6 +420,44 @@ impl GoalService {
             state.disarm_requested.store(false, Ordering::Release);
         }
         Ok(view)
+    }
+
+    /// User controls change requirements only at a true idle boundary, so an
+    /// old model request cannot publish work for a newer user goal.
+    pub fn create_for_user(
+        &self,
+        agent: &Arc<dyn Agent>,
+        request: CreateGoalRequest,
+    ) -> Result<GoalView, GoalError> {
+        let _control = agent.try_idle_control().map_err(|_| {
+            GoalError::new(
+                "stop current work and resolve pending input before creating a new goal",
+                GoalErrorCode::AgentBusy,
+            )
+        })?;
+        self.create(agent, request)
+    }
+
+    pub fn edit_for_user(
+        &self,
+        agent: &Arc<dyn Agent>,
+        ref_: &GoalRef,
+        request: &EditGoalRequest,
+    ) -> Result<GoalView, GoalError> {
+        let current = self.get(agent)?;
+        let changes_requirements = current.as_ref().is_some_and(|goal| {
+            request
+                .objective
+                .as_ref()
+                .is_some_and(|objective| objective.trim() != goal.objective)
+        });
+        let needs_idle = changes_requirements
+            && current
+                .as_ref()
+                .is_some_and(|goal| goal.phase != GoalPhase::Complete);
+        let _control = needs_idle.then(|| agent.try_idle_control().map_err(|_| GoalError::new(
+            "stop current work and resolve pending input before changing goal requirements", GoalErrorCode::AgentBusy))).transpose()?;
+        self.edit(agent, ref_, request)
     }
 
     /// Create and arm a goal. A completed goal may be replaced; every other
@@ -384,12 +524,19 @@ impl GoalService {
                 GoalErrorCode::InvalidEdit,
             ));
         }
+        let objective = match &request.objective {
+            Some(objective) => resolve_objective(objective)?,
+            None => current.objective.clone(),
+        };
+        if current.phase == GoalPhase::Complete && objective != current.objective {
+            return Err(GoalError::new(
+                "completed goal requirements are immutable; create a new goal for the changed objective",
+                GoalErrorCode::InvalidTransition,
+            ));
+        }
         let goal = GoalSnapshot {
             revision: current.revision + 1,
-            objective: match &request.objective {
-                Some(objective) => resolve_objective(objective)?,
-                None => current.objective,
-            },
+            objective,
             max_goal_rounds: match request.max_goal_rounds {
                 Some(rounds) => resolve_max_goal_rounds(rounds)?,
                 None => current.max_goal_rounds,
@@ -463,14 +610,107 @@ impl GoalService {
         )
     }
 
-    /// Mark a current non-complete goal complete and disarm it.
-    pub fn complete(&self, agent: &Arc<dyn Agent>, ref_: &GoalRef) -> Result<GoalView, GoalError> {
-        self.transition(
+    /// Verify acceptance without holding Goal locks, then atomically complete
+    /// this exact requirements and cancellation generation.
+    pub async fn complete(
+        &self,
+        agent: &Arc<dyn Agent>,
+        ref_: &GoalRef,
+    ) -> Result<GoalView, GoalError> {
+        let cancellation_generation = agent.cancellation_generation();
+        self.assert_live(agent)?;
+        let state = self.state_for(agent);
+        let identity = {
+            let mut cache = state.cache.lock().clone();
+            self.sync(&state.session, &mut cache);
+            if !cache.replay_valid {
+                return Err(GoalError::new(
+                    "goal replay is invalid; completion is unavailable",
+                    GoalErrorCode::CompletionBlocked,
+                ));
+            }
+            let current = self.expect_current(&cache, ref_)?;
+            if !matches!(
+                current.phase,
+                GoalPhase::Active | GoalPhase::Paused | GoalPhase::Blocked
+            ) {
+                return Err(self.transition_error(
+                    current,
+                    GoalOperation::Complete,
+                    &["active", "paused", "blocked"],
+                ));
+            }
+            requirements_identity(&cache).ok_or_else(|| {
+                GoalError::new(
+                    "goal requirements identity is unavailable",
+                    GoalErrorCode::CompletionBlocked,
+                )
+            })?
+        };
+        let guard = agent
+            .ctx()
+            .get_typed::<Arc<dyn GoalCompletionGuard>>(GOAL_COMPLETION_GUARD_SERVICE, false)
+            .map(|slot| slot.as_ref().clone());
+        let prepared = match guard {
+            Some(guard) => guard.prepare(agent, &identity).await.map(Some),
+            None => Ok(None),
+        };
+        if cancellation_generation != agent.cancellation_generation() {
+            return Err(GoalError::new(
+                "goal completion was cancelled during verification",
+                GoalErrorCode::Cancelled,
+            ));
+        }
+        let completion_error = |error| match error {
+            GoalCompletionError::Cancelled => {
+                GoalError::new("goal completion was cancelled", GoalErrorCode::Cancelled)
+            }
+            GoalCompletionError::Blocked(message) => {
+                GoalError::new(message, GoalErrorCode::CompletionBlocked)
+            }
+        };
+        let permit = prepared.map_err(completion_error)?;
+        // The short Agent guard serializes the final Goal commit with Stop.
+        // Legacy Agents without this capability retain direct Goal CAS semantics.
+        let _generation_guard = cancellation_generation
+            .map(|expected| {
+                agent.try_generation_control(expected).map_err(|_| {
+                    GoalError::new(
+                        "agent changed or is busy before goal completion",
+                        GoalErrorCode::AgentBusy,
+                    )
+                })
+            })
+            .transpose()?;
+        let (state, cache, claim) = self.prepare_mutation(agent)?;
+        let current = self.expect_current(&cache, ref_)?.clone();
+        if requirements_identity(&cache).as_ref() != Some(&identity) {
+            return Err(GoalError::new(
+                "goal requirements changed during verification",
+                GoalErrorCode::StaleRevision,
+            ));
+        }
+        // Keep the Host's cancellation/commit cutoff through the durable
+        // Goal append and its synchronous notifications, without a TaskDB lock.
+        let checked = permit
+            .as_ref()
+            .map(|permit| permit.check(agent, &identity))
+            .transpose();
+        if cancellation_generation != agent.cancellation_generation() {
+            return Err(GoalError::new(
+                "goal completion was cancelled before commit",
+                GoalErrorCode::Cancelled,
+            ));
+        }
+        let _commit_guard = checked.map_err(completion_error)?;
+        let goal = self.with_phase(&current, GoalPhase::Complete);
+        self.commit_current(
             agent,
-            ref_,
+            &state,
+            claim,
+            cache,
             GoalOperation::Complete,
-            &[GoalPhase::Active, GoalPhase::Paused, GoalPhase::Blocked],
-            GoalPhase::Complete,
+            goal,
             GoalActivation::Disarmed,
         )
     }
@@ -595,15 +835,22 @@ impl GoalService {
         }
 
         let mut fold = empty_goal_fold_state();
-        for event in session.events().iter() {
-            let _ = apply_goal_event(&mut fold, event);
-        }
+        let mut replay_valid = true;
+        let observed_seq = session.with_events(|events| {
+            for event in events {
+                if apply_goal_event(&mut fold, event).is_err() {
+                    replay_valid = false;
+                }
+            }
+            events.len()
+        });
         let state = Arc::new(SessionGoalState {
             cache: Mutex::new(GoalCache {
                 state: fold,
                 activation: GoalActivation::Disarmed,
-                observed_seq: session.seq().get() as usize,
+                observed_seq,
                 pending_activation: None,
+                replay_valid,
             }),
             session,
             mutating: AtomicBool::new(false),
@@ -620,18 +867,21 @@ impl GoalService {
     /// Incrementally observe durable events and reconcile local activation
     /// intent.
     fn sync(&self, session: &Session, cache: &mut GoalCache) {
-        let events = session.events();
-        while cache.observed_seq < events.len() {
-            let event = &events[cache.observed_seq];
-            let _ = apply_goal_event(&mut cache.state, event);
-            if event.type_ == "goal/change" {
-                cache.activation = match &cache.pending_activation {
-                    Some((seq, activation)) if *seq == event.seq => *activation,
-                    _ => GoalActivation::Disarmed,
-                };
+        session.with_events(|events| {
+            while cache.observed_seq < events.len() {
+                let event = &events[cache.observed_seq];
+                if apply_goal_event(&mut cache.state, event).is_err() {
+                    cache.replay_valid = false;
+                }
+                if event.type_ == "goal/change" {
+                    cache.activation = match &cache.pending_activation {
+                        Some((seq, activation)) if *seq == event.seq => *activation,
+                        _ => GoalActivation::Disarmed,
+                    };
+                }
+                cache.observed_seq += 1;
             }
-            cache.observed_seq += 1;
-        }
+        });
     }
 
     /// Build a new revision with one replacement phase.

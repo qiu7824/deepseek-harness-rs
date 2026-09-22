@@ -11185,6 +11185,56 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		exports.cancelPromptRequests = cancelPromptRequests;
 		exports.pendingPromptStop = pendingPromptStop;
 		exports.stopPromptRequests = stopPromptRequests;
+		/** Immutable browser drafts. Writers never replace another window's key. */
+		function createRevisionDraftStore(namespace, options = {}) {
+			const prefix = `dsh:revision-drafts:v1:${encodeURIComponent(namespace)}:`;
+			const memory = new Map(); let sequence = 0;
+			const uid = options.uid ?? (() => globalThis.crypto.randomUUID());
+			const storage = () => { try { return options.storage ?? globalThis.localStorage ?? globalThis.window?.localStorage; } catch { return null; } };
+			const scopePrefix = scope => prefix + encodeURIComponent(scope) + ":";
+			const entries = scope => {
+				const values = new Map(), selected = scopePrefix(scope), disk = storage();
+				try { if (disk) for (let i = 0; i < disk.length; i++) { const key = disk.key(i); if (key?.startsWith(selected)) values.set(key, disk.getItem(key)); } } catch {}
+				for (const [key, raw] of memory) if (key.startsWith(selected)) values.set(key, raw);
+				const result = [];
+				for (const [key, raw] of values) try { const value = JSON.parse(raw); if (value.scope === scope) result.push({ key, raw, value }); } catch {}
+				return result;
+			};
+			const remove = row => { memory.delete(row.key); try { storage()?.removeItem(row.key); } catch {} };
+			const list = scope => {
+				const all = entries(scope), retired = new Set(), latest = new Map();
+				for (const row of all) if (row.value.kind === "receipt") for (const key of row.value.keys ?? []) retired.add(key);
+				for (const row of all) {
+					const value = row.value;
+					if (value.kind !== "draft" || retired.has(row.key) || row.key !== scopePrefix(scope) + "draft:" + value.writer + ":" + value.token) continue;
+					if (!latest.has(value.writer) || latest.get(value.writer).value.sequence < value.sequence) latest.set(value.writer, row);
+				}
+				return [...latest.values()].sort((a, b) => b.value.time - a.value.time || b.value.sequence - a.value.sequence);
+			};
+			return {
+				list,
+				write(scope, writer, data) {
+					const value = { kind: "draft", scope, writer, token: uid(), sequence: ++sequence, time: Date.now(), data };
+					const key = scopePrefix(scope) + "draft:" + writer + ":" + value.token, raw = JSON.stringify(value), record = { key, raw, value };
+					let persisted = false;
+					try { const disk = storage(); if (disk) { disk.setItem(key, raw); persisted = true; } } catch {}
+					if (!persisted) memory.set(key, raw);
+					for (const row of entries(scope)) if (row.value.kind === "draft" && row.value.writer === writer && row.value.sequence < value.sequence) {
+						if (persisted) remove(row); else memory.delete(row.key);
+					}
+					return { record, persisted };
+				},
+				complete(scope, submitted, matches) {
+					const winners = list(scope).filter(row => matches(row.value.data, submitted));
+					const writers = new Map(winners.map(row => [row.value.writer, row.value.sequence]));
+					const rows = entries(scope).filter(row => row.value.kind === "draft" && row.value.sequence <= (writers.get(row.value.writer) ?? -1));
+					const receipt = { kind: "receipt", scope, keys: rows.map(row => row.key) }, key = scopePrefix(scope) + "receipt:" + uid(), raw = JSON.stringify(receipt);
+					try { const disk = storage(); if (!disk) throw Error("storage unavailable"); disk.setItem(key, raw); for (const row of rows) remove(row); return true; }
+					catch { memory.set(key, raw); return false; }
+				}
+			};
+		}
+		exports.createRevisionDraftStore = createRevisionDraftStore;
 		exports.defineStore = defineStore;
 		exports.displayFailureMessage = displayFailureMessage;
 		exports.emptyAssistantBlock = emptyAssistantBlock;

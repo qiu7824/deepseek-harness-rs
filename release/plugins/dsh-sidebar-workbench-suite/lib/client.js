@@ -628,7 +628,7 @@ window.__ModuleLoader__.load({
       const activating = React.useRef(false);
       const keys = React.useRef(new Set()), buttons = React.useRef(new Set()), queue = React.useRef([]), pumping = React.useRef(false), drain = React.useRef([]);
       const lastMove = React.useRef(0), pendingMove = React.useRef(null), moveTimer = React.useRef(null);
-      const [hasFrame, setHasFrame] = React.useState(false), [fps, setFps] = React.useState(0), [focused, setFocused] = React.useState(false), [actualSize, setActualSize] = React.useState(false);
+      const [hasFrame, setHasFrame] = React.useState(false), [fps, setFps] = React.useState(0), [focused, setFocused] = React.useState(false), [actualSize, setActualSize] = React.useState(false), [pointer, setPointer] = React.useState(null);
       const [activation,setActivation]=React.useState("");
       const connected = state?.connected === true;
       const updateMode = value => current.current.updateControl(previous => !previous || (value.generation ?? 0) >= (previous.generation ?? 0) ? value : previous);
@@ -783,8 +783,10 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { if (hasFrame && document.activeElement === canvas.current) focusKeyboard(); }, [hasFrame]);
       const flushMove = () => { if (pendingMove.current) { enqueue("mouse_move", pendingMove.current); pendingMove.current = null; } lastMove.current = window.performance.now(); moveTimer.current = null; };
       const move = event => {
+        const position = point(event);
+        if (position) setPointer(position);
         if (!ready.current || needsActivation() || activating.current || (current.current.control?.mode !== "manual" && !buttons.current.size && !focused)) return;
-        pendingMove.current = point(event);
+        pendingMove.current = position;
         if (!moveTimer.current) { const delay = Math.max(0, 16 - (window.performance.now() - lastMove.current)); moveTimer.current = setTimeout(flushMove, delay); }
       };
       const down = event => {
@@ -841,7 +843,7 @@ window.__ModuleLoader__.load({
       }, []);
       const fullscreen = async () => { try { if (document.fullscreenElement) { window.navigator.keyboard?.unlock?.(); await document.exitFullscreen(); return; } await root.current.requestFullscreen?.(); if (document.fullscreenElement && window.navigator.keyboard?.lock) await window.navigator.keyboard.lock(); keyboard.current.focus({ preventScroll: true }); setFocused(true); } catch { current.current.reportError("浏览器未开启全屏键盘捕获"); } };
       return h("div", { className: "dswDesktopVideo", ref: root, "data-video-ready": hasFrame || undefined },
-        h("div", { className: "dswDesktopCanvas", "data-actual-size": actualSize || undefined }, h("canvas", { ref: canvas, width: 1920, height: 1080, tabIndex: 0, role: "application", "aria-label": (video ? "远程桌面" : "本机窗口") + "：点击后直接使用键盘和鼠标", style: { visibility: hasFrame ? "visible" : "hidden" }, onFocus: focusKeyboard, onPointerDown: down, onPointerUp: up, onPointerMove: move, onPointerCancel: release, onLostPointerCapture: () => { if (buttons.current.size) release(); }, onContextMenu: event => event.preventDefault() }), !hasFrame && h("div", { className: "dswDesktopWaiting", role: "status" }, connected ? video ? "正在连接实时视频…" : "正在获取桌面画面…" : "连接桌面后显示画面"), h(ScreenAnnotation, { enabled: annotate && hasFrame, frameRef: canvas, onSubmit: annotations => { if (!hasFrame || !connected || !visible) throw new Error("当前桌面画面不可用，请重新连接后提交批注"); return onSubmit(annotations, annotationFrame(canvas.current)); }, storageKey: annotationStorageKey(ownerId, sessionId) })),
+        h("div", { className: "dswDesktopCanvas", "data-actual-size": actualSize || undefined }, h("canvas", { ref: canvas, width: 1920, height: 1080, tabIndex: 0, role: "application", "aria-label": (video ? "远程桌面" : "本机窗口") + "：点击后直接使用键盘和鼠标", style: { visibility: hasFrame ? "visible" : "hidden" }, onFocus: focusKeyboard, onPointerDown: down, onPointerUp: up, onPointerMove: move, onPointerCancel: release, onLostPointerCapture: () => { if (buttons.current.size) release(); }, onContextMenu: event => event.preventDefault() }), pointer && hasFrame && state?.viewport && h("span", { "aria-hidden": true, style: { position: "absolute", left: `${pointer.x / Math.max(1, state.viewport.width) * 100}%`, top: `${pointer.y / Math.max(1, state.viewport.height) * 100}%`, width: 14, height: 14, border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 0 0 1px #111,0 1px 5px #0008", transform: "translate(-50%,-50%)", pointerEvents: "none", zIndex: 2 } }), !hasFrame && h("div", { className: "dswDesktopWaiting", role: "status" }, connected ? video ? "正在连接实时视频…" : "正在获取桌面画面…" : "连接桌面后显示画面"), h(ScreenAnnotation, { enabled: annotate && hasFrame, frameRef: canvas, onSubmit: annotations => { if (!hasFrame || !connected || !visible) throw new Error("当前桌面画面不可用，请重新连接后提交批注"); return onSubmit(annotations, annotationFrame(canvas.current)); }, storageKey: annotationStorageKey(ownerId, sessionId) })),
         h("textarea", { ref: keyboard, tabIndex: -1, "aria-label": "桌面键盘输入", className: "dswDesktopKeyboard", autoComplete: "off", spellCheck: false, onKeyDown: keyDown, onKeyUp: keyUp, onBlur: release, onPaste: paste, onCompositionStart: compositionStart, onCompositionEnd: compositionEnd }),
         h("div", { className: "dswDesktopStatus" }, h("span", null, !playing?"画面已暂停，恢复后可操作":activation==="pending"?"正在激活目标窗口…":needsActivation()?"目标窗口在后台，点击画面激活":activation==="ready"?"目标窗口已激活，请继续操作":focused ? "正在操作桌面 · Esc 释放键鼠" : "点击画面后直接使用键盘和鼠标"), h("span", null, hasFrame ? `${state?.viewport?.width || 0}×${state?.viewport?.height || 0}` + (video ? ` · ${fps} 帧/秒` : "") : ""), h(Button, { variant: "ghost", size: "sm", "aria-pressed": actualSize, onClick: () => setActualSize(value => !value) }, actualSize ? "适应窗口" : "100%"), h(Button, { variant: "ghost", size: "sm", onClick: fullscreen }, "全屏")));
     }
@@ -1083,6 +1085,12 @@ window.__ModuleLoader__.load({
       SettingsSwitch=ctx.settingsScope.controls.Switch;
       const sidebar = ctx.betterSidebar || ctx.get("betterSidebar");
       if (!sidebar) throw new Error("dsh-sidebar-workbench-suite requires betterSidebar");
+      const openComputerUse = event => {
+        const sessionId = event?.detail?.sessionId || globalThis.__DSH_BETTER_SIDEBAR_SESSION__;
+        if (!sessionId) return;
+        sidebar.openTab({ type: "suite:controlled-browser", id: "suite:controlled-browser", title: "Computer Use", path: "about:blank", meta: { browserSessionId: "default", target: "browser" } }, { sessionId });
+      };
+      globalThis.addEventListener?.("dsh:computer-use-start", openComputerUse);
       const computerUseScope = ctx.settingsScope.bind({ namespace: "computer-use", decode: value => value && typeof value === "object" && !Array.isArray(value) ? value : undefined });
       const disposers = [
         sidebar.registerFileViewer({ id: "suite:markdown", title: "Markdown 工作台", exts: ["md", "mdx", "markdown"], priority: 120, fetchStrategy: "fsRead", settings: { pluginToggles: [{ key: "outline", title: "显示 Markdown 大纲", type: "switch", defaultValue: true }, { key: "mermaid", title: "渲染 Mermaid 图表", type: "switch", defaultValue: true }] }, component: MarkdownWorkbench }),
@@ -1096,7 +1104,7 @@ window.__ModuleLoader__.load({
         sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar,key:props.scope.sessionId+"\u0000"+props.tab.id}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void desktopClose(scope.sessionId,tab.meta?.browserSessionId||"default",{ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", target: tab.meta?.target || (/^https?:/i.test(tab.path||"")?"browser":"local"), action: "close", includeScreenshot: false }) }).catch(() => {}); } })
       ];
       ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({ name: "settings.plugin.item", id: "computer-use", order: 40, label: "Computer Use" }, () => h("details", {className:"dshSettingsDisclosure"},h("summary",null,"Computer Use 与远程设备"),h(ComputerUseSettings, { scope: computerUseScope }))));
-      ctx.effect?.(() => () => { clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");
+      ctx.effect?.(() => () => { globalThis.removeEventListener?.("dsh:computer-use-start", openComputerUse); clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");
     }
     exports.apply = apply;
     exports.inject = inject;

@@ -208,9 +208,26 @@ pub trait Agent: Send + Sync + 'static {
     /// active turn or between-turn task.
     fn cancel(&self, cause: AgentCancelCause, options: Option<&CancelOptions>);
 
+    /// Hold the short publication boundary if this cancellation generation is
+    /// still current. Unlike idle control, this also permits a running agent to
+    /// commit its verified outcome. Unsupported implementations reject it.
+    fn try_generation_control(
+        &self,
+        _expected: u64,
+    ) -> Result<Box<dyn AgentControlGuard + '_>, AgentControlBusy> {
+        Err(AgentControlBusy::Unavailable)
+    }
+
     /// Capture the current cancellation boundary for work delegated by this agent.
     /// Agents without an atomic cancellation boundary cannot grant wake permission.
     fn cancellation_generation(&self) -> Option<u64> {
+        None
+    }
+
+    /// Capture wake permission only for an active, non-aborted model turn.
+    /// User edits use this before changing metadata, so edits made after Stop
+    /// or while idle cannot revive the driver when their notification arrives.
+    fn running_cancellation_generation(&self) -> Option<u64> {
         None
     }
 

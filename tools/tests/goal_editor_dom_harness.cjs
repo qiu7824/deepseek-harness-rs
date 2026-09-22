@@ -1,0 +1,47 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const modules=process.argv[2]||process.env.DSH_REACT_TEST_MODULES;
+const {JSDOM}=require(path.join(modules,'jsdom'));
+const dom=new JSDOM('<main></main>',{pretendToBeVisual:true,url:'http://goal-editor.test'});
+Object.assign(global,{window:dom.window,document:dom.window.document,IS_REACT_ACT_ENVIRONMENT:true});
+const React=require(path.join(modules,'react')),jsx=require(path.join(modules,'react/jsx-runtime')),crypto=require('node:crypto').webcrypto;
+const root=require(path.join(modules,'react-dom/client')).createRoot(document.querySelector('main'));
+const runtime=fs.readFileSync(path.join(__dirname,'../../web/src/runtime-plugins/client-runtime.js'),'utf8');
+const begin=runtime.indexOf('function createRevisionDraftStore('),end=runtime.indexOf('exports.createRevisionDraftStore',begin);
+const shared={window,crypto};vm.runInNewContext(runtime.slice(begin,end),shared);
+const primitives=new Proxy({Tooltip:({children})=>React.createElement(React.Fragment,null,children)},{get:(value,key)=>value[key]||(()=>null)});
+const source=fs.readFileSync(path.join(__dirname,'../../web/src/runtime-plugins/ui-goal.js'),'utf8');
+let plugin,dock,goal,calls=[],pending=[];
+const ctx={window:{__ModuleLoader__:{load:module=>{plugin=module.factory(name=>name==='react'?React:name==='react/jsx-runtime'?jsx:name.endsWith('runtime/client')?shared:primitives);}}},document,crypto};
+vm.runInNewContext(source,ctx);
+plugin.apply({conversationEvents:{register:()=>{}},effect:fn=>fn(),locale:{register:()=>()=>{}},slots:{inject:(_,fn)=>fn(),register:(options,component)=>{if(options.id==='goal')dock={options,component};return()=>{};}},sessions:{},remote:{goals:{edit:(session,ref,value)=>{calls.push({session,ref:JSON.parse(JSON.stringify(ref)),value});return new Promise(resolve=>pending.push(resolve));},pause:async()=>({ok:true}),resume:async()=>({ok:true}),clear:async()=>({ok:true})}}});
+const act=fn=>React.act(async()=>{fn?.();await new Promise(resolve=>setImmediate(resolve));});
+const render=(session='s')=>act(()=>root.render(React.createElement(plugin.GoalBar,{goal,...dock.options.inject(session),t:key=>key})));
+const button=label=>{const element=document.querySelector(`button[aria-label="${label}"]`)||[...document.querySelectorAll('button')].find(value=>value.textContent===label);assert.ok(element,'button '+label);return element;};
+const click=label=>act(()=>button(label).click());
+const textarea=()=>document.querySelector('textarea');
+const input=value=>act(()=>{Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(textarea(),value);textarea().dispatchEvent(new window.Event('input',{bubbles:true}));});
+const createGoal=(id,revision,objective)=>({id,revision,objective,phase:'paused'});
+(async()=>{
+ goal=createGoal('a',1,'Original\nsecond line');await render();await click('action.edit');
+ assert.equal(textarea().value,'Original\nsecond line','multiline objective is preserved');
+ await input('Unsaved\nrequirements');goal=createGoal('a',2,'Concurrent goal');await render();
+ assert.equal(textarea().value,'Unsaved\nrequirements');assert.equal(button('action.save').disabled,true,'a concurrent revision cannot be silently adopted');
+ await click('action.save');assert.equal(calls.length,0);
+ await click('draft.rebase');await click('action.save');assert.equal(calls[0].ref.revision,2,'explicit user rebase selects the new revision');assert.equal(calls[0].value.objective,'Unsaved\nrequirements');
+ assert.equal(textarea().disabled,true,'pending submission does not accept untracked edits');
+ goal=createGoal('b',1,'Replacement');await render();assert.equal(button('action.edit').disabled,false,'old request does not lock replacement goal');await click('action.edit');await input('New goal draft');
+ await act(()=>pending[0]({ok:false,error:{code:'OLD',message:'old failure'}}));assert.equal(textarea().value,'New goal draft');assert.doesNotMatch(document.body.textContent,/old failure/);
+ await click('action.save');assert.equal(calls[1].ref.id,'b');assert.equal(calls[1].ref.revision,1);
+ await act(()=>pending[1]({ok:false,error:{code:'network',message:'receipt lost'}}));assert.equal(textarea().value,'New goal draft','failure keeps editable draft');
+ await click('action.cancel');await click('action.edit');assert.equal(textarea().value,'New goal draft','close and reopen recover draft');
+ await act(()=>root.render(null));await render();await click('action.edit');assert.equal(textarea().value,'New goal draft','unmount and remount recover persistent draft');
+ await click('action.save');assert.equal(calls[2].ref.revision,1,'retry keeps original CAS ref');
+ await act(()=>pending[2]({ok:true}));assert.equal(textarea(),null);
+
+ // A→B→A must not accept an earlier generation's successful callback.
+ goal=createGoal('race',1,'A');await render();await click('action.edit');await input('old A');await click('action.save');const old=pending.at(-1);
+ goal=createGoal('away',1,'Away');await render();goal=createGoal('race',1,'A');await render();await click('action.edit');await input('new A');
+ await act(()=>old({ok:true}));assert.equal(textarea().value,'new A');
+ await act(()=>root.unmount());dom.window.close();
+ console.log('PASS goal editor: captured CAS, explicit conflict rebase, multiline text, persistent draft, save failures and late-response isolation');
+})().catch(error=>{console.error(error);process.exitCode=1;dom.window.close();});

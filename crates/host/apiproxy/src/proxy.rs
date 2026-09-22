@@ -607,6 +607,10 @@ async fn retire_idle_agent(
 mod control_agent_admission_tests;
 
 #[cfg(test)]
+#[path = "goal_completion_api_tests.rs"]
+mod goal_completion_api_tests;
+
+#[cfg(test)]
 mod idle_retirement_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -639,6 +643,9 @@ mod idle_retirement_tests {
         idle_observed: Option<Arc<AtomicBool>>,
     }
 
+    struct IdleControl;
+    impl dsh_agent::AgentControlGuard for IdleControl {}
+
     impl Agent for StatusAgent {
         fn id(&self) -> &SessionId {
             &self.id
@@ -662,6 +669,19 @@ mod idle_retirement_tests {
             } else {
                 AgentStatus::Idle
             }
+        }
+
+        fn try_idle_control(
+            &self,
+        ) -> Result<Box<dyn dsh_agent::AgentControlGuard + '_>, dsh_agent::AgentControlBusy>
+        {
+            if self.running.load(Ordering::SeqCst) {
+                return Err(dsh_agent::AgentControlBusy::Active);
+            }
+            if self.inbox.has_pending() {
+                return Err(dsh_agent::AgentControlBusy::PendingInput);
+            }
+            Ok(Box::new(IdleControl))
         }
 
         fn ctx(&self) -> &Context {
@@ -2463,13 +2483,24 @@ impl ApiProxyService {
     /// internal, the stable GoalError code dropped from the empty details
     /// slot exactly like the TS schema strips it).
     fn goal_error<T>(rpc_id: RpcId, error: dsh_goal::GoalError) -> RpcResponse<T> {
-        err(
-            rpc_id,
-            RpcError::Internal(RpcErrorBody {
-                message: error.message,
+        let message = error.message;
+        let error = match error.code {
+            dsh_goal::GoalErrorCode::AgentBusy => RpcError::AgentBusy(RpcErrorBody {
+                message,
+                details: crate::api::rpc::ReasonDetails {
+                    reason: "goal-requirements-active".into(),
+                },
+            }),
+            dsh_goal::GoalErrorCode::Cancelled => RpcError::Cancelled(RpcErrorBody {
+                message,
                 details: EmptyDetails {},
             }),
-        )
+            _ => RpcError::Internal(RpcErrorBody {
+                message,
+                details: EmptyDetails {},
+            }),
+        };
+        err(rpc_id, error)
     }
 
     fn wire_goal_ref(view: &dsh_goal::GoalView) -> crate::api::goals::GoalRef {
@@ -2515,11 +2546,23 @@ impl ApiProxyService {
         let session_id = request.payload.session_id.clone();
         let objective = request.payload.objective.clone();
         let max_goal_rounds = request.payload.max_goal_rounds;
+        let _admission = match self.resolver.admission(&session_id).try_lock_owned() {
+            Ok(lease) => lease,
+            Err(_) => {
+                return Self::goal_error(
+                    rpc_id,
+                    dsh_goal::GoalError::new(
+                        "another input or control operation is pending; finish or stop it before creating a goal",
+                        dsh_goal::GoalErrorCode::AgentBusy,
+                    ),
+                );
+            }
+        };
         self.mutate_goal(
             rpc_id,
             &session_id,
             Arc::new(move |goals, agent| {
-                goals.create(
+                goals.create_for_user(
                     &agent,
                     dsh_goal::CreateGoalRequest {
                         objective: objective.clone(),
@@ -2540,11 +2583,15 @@ impl ApiProxyService {
         let goal_ref = request.payload.goal_ref;
         let objective = request.payload.objective.clone();
         let max_goal_rounds = request.payload.max_goal_rounds;
+        let admission = self.resolver.admission(&session_id);
         self.mutate_goal(
             rpc_id,
             &session_id,
             Arc::new(move |goals, agent| {
-                goals.edit(
+                let current = goals.get(&agent)?;
+                let changes_requirements = current.as_ref().is_some_and(|goal| objective.as_ref().is_some_and(|objective| objective.trim() != goal.objective));
+                let _admission = changes_requirements.then(|| admission.clone().try_lock_owned().map_err(|_| dsh_goal::GoalError::new("another input or control operation is pending; finish or stop it before changing goal requirements", dsh_goal::GoalErrorCode::AgentBusy))).transpose()?;
+                goals.edit_for_user(
                     &agent,
                     &dsh_goal::GoalRef {
                         id: dsh_goal::goal_id(goal_ref.id.to_string()),
@@ -2567,11 +2614,40 @@ impl ApiProxyService {
         }
     }
 
+    async fn goal_complete(
+        &self,
+        request: RpcRequest<crate::api::goals::GoalVerbRequest>,
+    ) -> RpcResponse<serde_json::Value> {
+        let agent = match self.resolver.resolve(&request.payload.session_id).await {
+            crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => agent,
+            crate::agent_lookup::ApiRemoteAgentResult::Error(error) => {
+                return err(request.rpc_id, error);
+            }
+        };
+        let goals = match self.goal_service_for(&agent) {
+            Ok(goals) => goals,
+            Err(error) => return err(request.rpc_id, error),
+        };
+        let goal_ref = Self::goal_verb_ref(&request.payload.goal_ref);
+        match goals.complete(&agent, &goal_ref).await {
+            Ok(view) => ok(
+                request.rpc_id,
+                crate::api::goals::GoalRefResult {
+                    goal_ref: Self::wire_goal_ref(&view),
+                },
+            ),
+            Err(error) => Self::goal_error(request.rpc_id, error),
+        }
+    }
+
     async fn goal_verb(
         &self,
         request: RpcRequest<crate::api::goals::GoalVerbRequest>,
         verb: GoalVerb,
     ) -> RpcResponse<serde_json::Value> {
+        if matches!(verb, GoalVerb::Complete) {
+            return self.goal_complete(request).await;
+        }
         let rpc_id = request.rpc_id.clone();
         let session_id = request.payload.session_id.clone();
         let goal_ref = request.payload.goal_ref.clone();
@@ -2590,7 +2666,9 @@ impl ApiProxyService {
                         Ok(view)
                     }
                     GoalVerb::Resume => goals.resume(&agent, &goal_ref),
-                    GoalVerb::Complete => goals.complete(&agent, &goal_ref),
+                    GoalVerb::Complete => {
+                        unreachable!("completion uses the shared asynchronous acceptance boundary")
+                    }
                 }
             }),
         )
@@ -2620,6 +2698,22 @@ impl ApiProxyService {
             Err(error) => Self::goal_error(rpc_id, error),
         }
     }
+}
+
+/// Read/control verbs stay available while a prior prompt is being prepared.
+/// Requirement-changing slash commands share the session RPC admission fence.
+fn goal_requirements_command(line: &str) -> bool {
+    let Some(command) = dsh_commands::parse_command(line) else {
+        return false;
+    };
+    if command.name != "goal" {
+        return false;
+    }
+    let input = command.raw_input.trim();
+    !input.is_empty()
+        && !["clear", "pause", "resume", "edit"]
+            .iter()
+            .any(|verb| input.eq_ignore_ascii_case(verb))
 }
 
 /// The ref-carrying goal verbs.
@@ -5638,6 +5732,7 @@ impl ApiProxyService {
                 }),
             );
         }
+        let running_generation = agent.running_cancellation_generation();
         let mut replacement = request.payload.expected.clone();
         let (_was_active, notice) = match &request.payload.action {
             crate::api::sessions::TodoAction::Edit { index, content } => {
@@ -5716,8 +5811,8 @@ impl ApiProxyService {
                         source_command_id: None,
                     },
                 );
-                if agent.status() == dsh_agent::AgentStatus::Running {
-                    agent.steer(message);
+                if let Some(generation) = running_generation {
+                    agent.send_from_generation(message, dsh_agent::InboxTarget::NextStep, Some(generation));
                 } else {
                     agent.inject(message);
                 }
@@ -8212,6 +8307,22 @@ impl ApiProxyCarrier for ApiProxyService {
                             details: crate::api::rpc::BadRequestDetails { issues: vec![] },
                         }),
                     );
+                };
+                let _goal_admission = if goal_requirements_command(line) {
+                    match self.resolver.admission(&session_id).try_lock_owned() {
+                        Ok(lease) => Some(lease),
+                        Err(_) => {
+                            return Self::goal_error(
+                                rpc_id,
+                                dsh_goal::GoalError::new(
+                                    "another input or control operation is pending; finish or stop it before changing goal requirements",
+                                    dsh_goal::GoalErrorCode::AgentBusy,
+                                ),
+                            );
+                        }
+                    }
+                } else {
+                    None
                 };
                 let agent = match self.resolver.resolve(&session_id).await {
                     crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => agent,

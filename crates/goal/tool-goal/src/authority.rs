@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_agent::{Agent, AgentRegistry, AgentStatus};
-use dsh_goal::{GoalService, GoalView, fold_goal};
-use dsh_session::SessionEvent;
+use dsh_goal::{GoalService, GoalView};
 use dsh_tools::{ToolBodyError, ToolRunContext};
+use serde_json::Value;
 
 pub(crate) const AGENT_REQUIRED: &str = "GOAL_TOOL_AGENT_REQUIRED";
 pub(crate) const DRIVER_REQUIRED: &str = "GOAL_TOOL_DRIVER_REQUIRED";
@@ -15,7 +15,7 @@ pub(crate) const AUTHORITY_REQUIRED: &str = "GOAL_TOOL_AUTHORITY_REQUIRED";
 /// Authenticated calling agent and the events accepted in its current open turn.
 pub(crate) struct GoalToolExecution {
     pub agent: Arc<dyn Agent>,
-    pub events: Vec<SessionEvent>,
+    pub sources: Vec<Value>,
 }
 
 /// Hard authority granted to a terminal state-changing call.
@@ -37,18 +37,25 @@ fn reject<T>(message: impl Into<String>, code: &str) -> Result<T, ToolBodyError>
 }
 
 /// Locate the open turn enclosing a model tool call.
-fn open_turn(agent: &Arc<dyn Agent>) -> Result<Vec<SessionEvent>, ToolBodyError> {
-    let events = agent.session().events();
-    for index in (0..events.len()).rev() {
-        match events[index].type_.as_str() {
-            "turn/end" => {
-                return reject("goal tools require an open model turn", DRIVER_REQUIRED);
+fn open_turn(agent: &Arc<dyn Agent>) -> Result<Vec<Value>, ToolBodyError> {
+    agent.session().with_events(|events| {
+        for index in (0..events.len()).rev() {
+            match events[index].type_.as_str() {
+                "turn/end" => return reject("goal tools require an open model turn", DRIVER_REQUIRED),
+                "turn/start" => return Ok(events[index+1..].iter().filter_map(|event| {
+                    if event.type_ != "user/message" { return None; }
+                    let source = event.data.get("source")?;
+                    match source.get("kind")?.as_str()? {
+                        "user" => Some(serde_json::json!({"kind":"user"})),
+                        "goal" => Some(serde_json::json!({"kind":"goal","goalId":source.get("goalId"),"revision":source.get("revision"),"round":source.get("round")})),
+                        _ => None,
+                    }
+                }).collect()),
+                _ => {}
             }
-            "turn/start" => return Ok(events[index + 1..].to_vec()),
-            _ => {}
         }
-    }
-    reject("goal tools require an open model turn", DRIVER_REQUIRED)
+        reject("goal tools require an open model turn", DRIVER_REQUIRED)
+    })
 }
 
 /// Resolve the exact live calling agent and its current driver boundary.
@@ -85,19 +92,9 @@ pub(crate) fn goal_tool_execution(
         );
     }
     Ok(GoalToolExecution {
-        events: open_turn(&agent)?,
+        sources: open_turn(&agent)?,
         agent,
     })
-}
-
-fn is_direct_human_source(event: &SessionEvent) -> bool {
-    event.type_ == "user/message"
-        && event
-            .data
-            .get("source")
-            .and_then(|source| source.get("kind"))
-            .and_then(serde_json::Value::as_str)
-            == Some("user")
 }
 
 /// Whether host-attested human input appears in the current root-agent turn.
@@ -112,7 +109,11 @@ fn has_direct_human_input(ctx: &Context, execution: &GoalToolExecution) -> bool 
         .roots()
         .iter()
         .any(|root| Arc::ptr_eq(root, &execution.agent));
-    is_root && execution.events.iter().any(is_direct_human_source)
+    is_root
+        && execution
+            .sources
+            .iter()
+            .any(|source| source["kind"].as_str() == Some("user"))
 }
 
 /// Whether this turn carries the current goal's exact admitted round source.
@@ -120,21 +121,11 @@ fn is_matching_goal_round(execution: &GoalToolExecution, goal: &GoalView) -> boo
     if goal.rounds_started == 0 {
         return false;
     }
-    execution.events.iter().any(|event| {
-        if event.type_ != "user/message" {
-            return false;
-        }
-        let Some(source) = event
-            .data
-            .get("source")
-            .and_then(serde_json::Value::as_object)
-        else {
-            return false;
-        };
-        source.get("kind").and_then(serde_json::Value::as_str) == Some("goal")
-            && source.get("goalId").and_then(serde_json::Value::as_str) == Some(goal.id.as_str())
-            && source.get("revision").and_then(serde_json::Value::as_u64) == Some(goal.revision)
-            && source.get("round").and_then(serde_json::Value::as_u64) == Some(goal.rounds_started)
+    execution.sources.iter().any(|source| {
+        source["kind"].as_str() == Some("goal")
+            && source["goalId"].as_str() == Some(goal.id.as_str())
+            && source["revision"].as_u64() == Some(goal.revision)
+            && source["round"].as_u64() == Some(goal.rounds_started)
     })
 }
 
@@ -169,16 +160,11 @@ pub(crate) fn completion_authority(
                 AUTHORITY_REQUIRED,
             )
         })?;
-    let goal = goals.get(&execution.agent).map_err(domain_error)?;
+    let goal = goals
+        .validated_authority_view(&execution.agent)
+        .map_err(domain_error)?;
     if let Some(goal) = goal {
-        let folded = fold_goal(&execution.agent.session().events()).ok();
-        let replay_matches = folded.as_ref().is_some_and(|folded| {
-            folded.rounds_started == goal.rounds_started
-                && folded.goal.as_ref().is_some_and(|snapshot| {
-                    snapshot.id == goal.id && snapshot.revision == goal.revision
-                })
-        });
-        if replay_matches && is_matching_goal_round(execution, &goal) {
+        if is_matching_goal_round(execution, &goal) {
             return Ok(GoalToolAuthority::GoalRound(goal));
         }
     }

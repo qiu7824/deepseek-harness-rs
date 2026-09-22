@@ -227,7 +227,7 @@ impl Service {
         ToolDefinition {
             name: "read".into(),
             description: "Read a text file with line numbers. UTF-8 by default; explicitly select gb18030/gbk or UTF-16 for legacy logs. PDF, Office and images require document/image tools.".into(),
-            parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"},"encoding":{"type":"string","enum":["utf-8","gb18030","gbk","utf-16le","utf-16be"]}},"required":["file_path"]}),
+            parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"One-based line offset; zero is normalized to the first line."},"limit":{"type":"integer","minimum":1},"encoding":{"type":"string","enum":["utf-8","gb18030","gbk","utf-16le","utf-16be"]}},"required":["file_path"]}),
             output: output_object(
                 |args, value| {
                     let offset = value["offset"].as_u64().unwrap_or(1);
@@ -294,7 +294,17 @@ impl Service {
                             }),
                         }
                     };
-                    let offset = integer("offset", 1)?;
+                    // Model callers occasionally use the zero based convention.
+                    // The public read result is one based, so normalize zero to
+                    // the first line instead of turning an otherwise safe read
+                    // into a contract error.
+                    let offset = match args.get("offset") {
+                        None => 1,
+                        Some(value) => value
+                            .as_u64()
+                            .map(|value| value.max(1))
+                            .ok_or_else(|| ToolBodyError::plain("offset must be an integer"))?,
+                    };
                     let limit = integer("limit", READ_LIMIT)?;
                     if limit > READ_LIMIT {
                         return Err(ToolBodyError::plain(format!(

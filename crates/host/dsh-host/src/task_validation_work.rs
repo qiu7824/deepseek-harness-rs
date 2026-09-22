@@ -9,11 +9,29 @@ use std::{
 };
 
 type ActiveWork = BTreeMap<(String, String), Vec<Weak<AtomicBool>>>;
+#[derive(Default)]
+struct State {
+    active: parking_lot::Mutex<ActiveWork>,
+    commit: parking_lot::ReentrantMutex<()>,
+}
 #[derive(Clone, Default)]
-pub(super) struct Work(Arc<parking_lot::Mutex<ActiveWork>>);
+pub(super) struct Work(Arc<State>);
 pub(super) struct Guard {
+    work: Work,
     cancelled: Arc<AtomicBool>,
     pub signal: AbortPredicate,
+}
+pub(super) struct CommitGuard<'a>(parking_lot::ReentrantMutexGuard<'a, ()>);
+impl Guard {
+    /// Held only through a synchronous final state check and append. Cancellation
+    /// cannot acknowledge before that append once this boundary has been entered.
+    pub fn commit(&self) -> Result<CommitGuard<'_>, String> {
+        let guard = self.work.0.commit.lock();
+        if (self.signal)() {
+            return Err("Task validation cancelled".into());
+        }
+        Ok(CommitGuard(guard))
+    }
 }
 fn prune(active: &mut ActiveWork) {
     active.retain(|_, work| {
@@ -25,7 +43,8 @@ impl Work {
     pub fn begin(&self, owner: &str, task: &str, upstream: AbortPredicate) -> Guard {
         let key = (owner.to_owned(), task.to_owned());
         let cancelled = Arc::new(AtomicBool::new(false));
-        let mut active = self.0.lock();
+        let _commit = self.0.commit.lock();
+        let mut active = self.0.active.lock();
         prune(&mut active);
         let requests = active.entry(key).or_default();
         for previous in requests.iter().filter_map(Weak::upgrade) {
@@ -34,12 +53,14 @@ impl Work {
         requests.push(Arc::downgrade(&cancelled));
         let flag = cancelled.clone();
         Guard {
+            work: self.clone(),
             cancelled,
             signal: Arc::new(move || flag.load(Ordering::Acquire) || upstream()),
         }
     }
     pub fn cancel(&self, owner: &str, task: &str) {
-        let mut active = self.0.lock();
+        let _commit = self.0.commit.lock();
+        let mut active = self.0.active.lock();
         prune(&mut active);
         if let Some(requests) = active.get(&(owner.to_owned(), task.to_owned())) {
             for flag in requests.iter().filter_map(Weak::upgrade) {
@@ -50,7 +71,8 @@ impl Work {
     /// A cancelled request remains active until all blocking workers release
     /// their signal. Hold admission during the short synchronous contract commit.
     pub fn with_idle<T>(&self, owner: &str, operation: impl FnOnce() -> T) -> Option<T> {
-        let mut active = self.0.lock();
+        let _commit = self.0.commit.lock();
+        let mut active = self.0.active.lock();
         prune(&mut active);
         if active
             .keys()
@@ -63,6 +85,7 @@ impl Work {
 }
 impl Drop for Guard {
     fn drop(&mut self) {
+        let _commit = self.work.0.commit.lock();
         self.cancelled.store(true, Ordering::Release);
     }
 }
@@ -86,6 +109,74 @@ pub(super) async fn until_cancelled<T>(
 mod tests {
     use super::*;
     #[test]
+    fn stop_between_verification_and_commit_keeps_the_same_cancelled_guard() {
+        use std::sync::{Barrier, mpsc};
+        let work = Work::default();
+        let verifying = work.clone();
+        let release = Arc::new(Barrier::new(2));
+        let worker_release = release.clone();
+        let (hashed_tx, hashed_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let guard = verifying.begin("owner", "task", Arc::new(|| false));
+            let identity = dsh_task_runtime::digest(b"verified input");
+            hashed_tx.send(identity).unwrap();
+            worker_release.wait();
+            guard
+        });
+        assert!(!hashed_rx.recv().unwrap().is_empty());
+        work.cancel("owner", "task");
+        release.wait();
+        let same_guard = worker.join().unwrap();
+        assert!((same_guard.signal)());
+        assert!(
+            same_guard.commit().is_err(),
+            "handoff to a completion permit must not reset StopValidation"
+        );
+    }
+    #[test]
+    fn cancel_ack_cannot_overtake_an_admitted_final_commit() {
+        use std::sync::{Barrier, mpsc};
+        let work = Work::default();
+        let guard = work.begin("owner", "task", Arc::new(|| false));
+        let commit = guard.commit().unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let concurrent = started.clone();
+        let cancelling = work.clone();
+        let appended = Arc::new(AtomicBool::new(false));
+        let observed = appended.clone();
+        let (ack_tx, ack_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            concurrent.wait();
+            cancelling.cancel("owner", "task");
+            ack_tx.send(observed.load(Ordering::Acquire)).unwrap();
+        });
+        started.wait();
+        assert!(matches!(
+            ack_rx.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        appended.store(true, Ordering::Release);
+        drop(commit);
+        assert!(
+            ack_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        );
+        worker.join().unwrap();
+        assert!((guard.signal)());
+    }
+    #[test]
+    fn synchronous_post_append_notifications_can_cancel_without_deadlock() {
+        let work = Work::default();
+        let guard = work.begin("owner", "task", Arc::new(|| false));
+        let commit = guard.commit().unwrap();
+        // The durable append has happened before its synchronous notifications.
+        work.cancel("owner", "task");
+        assert!((guard.signal)());
+        drop(commit);
+        assert!(guard.commit().is_err());
+    }
+    #[test]
     fn replaced_and_dropped_requests_do_not_cancel_their_successor_or_another_owner() {
         let work = Work::default();
         let old = work.begin("a", "t", Arc::new(|| false));
@@ -103,7 +194,7 @@ mod tests {
         drop(next);
         drop(signal);
         assert_eq!(work.with_idle("a", || 42), Some(42));
-        assert!(work.0.lock().is_empty());
+        assert!(work.0.active.lock().is_empty());
     }
     #[test]
     fn editing_waits_for_cancelled_and_superseded_workers_to_settle() {

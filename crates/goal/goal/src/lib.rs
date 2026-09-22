@@ -5,8 +5,12 @@ pub mod domain;
 pub mod fold;
 pub mod index;
 pub mod invariant;
+pub mod requirements;
 pub mod runtime;
 pub mod types;
+
+#[cfg(test)]
+mod requirements_tests;
 
 pub use domain::{
     FoldedGoal, GoalChangeMeta, GoalChanged, GoalChangedPayload, GoalClearChangeMeta, GoalError,
@@ -17,10 +21,17 @@ pub use fold::{
     fold_goal, goal_change_ref,
 };
 pub use index::{
-    Config, DEFAULT_MAX_GOAL_ROUNDS, GoalService, ResolvedConfig, apply_goal_projection,
+    Config, DEFAULT_MAX_GOAL_ROUNDS, GoalRequirementsLease, GoalService, ResolvedConfig,
+    apply_goal_projection,
 };
 pub use runtime::GOAL_CHANGE_VERSION;
 pub use types::{
     CreateGoalRequest, CreateGoalResult, EditGoalRequest, GoalActivation, GoalBlockReason, GoalId,
     GoalIdTag, GoalPhase, GoalProjection, GoalRef, GoalSnapshot, GoalView, goal_id,
+};
+
+pub use requirements::{
+    GOAL_COMPLETION_GUARD_SERVICE, GoalCompletionCommitGuard, GoalCompletionError,
+    GoalCompletionGuard, GoalCompletionPermit, GoalRequirementsIdentity,
+    apply_goal_requirements_projection,
 };

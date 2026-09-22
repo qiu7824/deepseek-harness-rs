@@ -40,6 +40,13 @@ use crate::zstd::{
 const DEFAULT_PACK_CHUNKS: bool = true;
 const DEFAULT_COMPRESSION: JsonlCompression = JsonlCompression::Zstd;
 
+#[path = "goal_stream.rs"]
+mod goal_stream;
+
+#[cfg(test)]
+#[path = "goal_stream_tests.rs"]
+mod goal_stream_tests;
+
 const MAX_AUTHORITY_HEADER_BYTES: u64 = 256 * 1024;
 // The repository's default streaming writer advertises a 2 MiB window
 // (descriptor 0x58), even when the header itself is only a few hundred bytes.
@@ -1701,6 +1708,55 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         })?;
         if !chunk.is_empty() {
             visitor(&chunk)?;
+        }
+        Ok(())
+    }
+
+    async fn visit_goal_events_bounded(
+        &self,
+        id: &SessionId,
+        visitor: NonpackedEventVisitor,
+    ) -> Result<(), String> {
+        self.ensure_root_encoding().await?;
+        let path = self
+            .find_log(id)
+            .await?
+            .ok_or_else(|| format!("session \"{}\" not found", id.as_str()))?;
+        let before = file_revision(
+            &tokio::fs::metadata(&path)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+        let reading = path.clone();
+        let compression = self.compression;
+        let first =
+            tokio::task::spawn_blocking(move || read_authority_header(&reading, compression))
+                .await
+                .map_err(|error| error.to_string())??
+                .ok_or("empty goal session header")?;
+        let raw_header: serde_json::Value =
+            serde_json::from_str(&first).map_err(|error| error.to_string())?;
+        if raw_header["version"].as_u64() != Some(dsh_session::SESSION_FORMAT_VERSION) {
+            return Err("bounded goal scan requires the current session format; explicit restoration must migrate legacy data first".into());
+        }
+        let header = parse_header_meta(&first).ok_or("invalid goal session header")?;
+        self.assert_stored_identity(&path, &header, Some(id))
+            .await?;
+        drop(first);
+        drop(raw_header);
+        let reading = path.clone();
+        tokio::task::spawn_blocking(move || {
+            goal_stream::visit_path(&reading, compression, visitor)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        let after = file_revision(
+            &tokio::fs::metadata(&path)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+        if before != after {
+            return Err("session artifact changed during bounded goal read".into());
         }
         Ok(())
     }

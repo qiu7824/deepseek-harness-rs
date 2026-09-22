@@ -10,7 +10,7 @@ use std::{
 const MAX_CONTRACT: usize = 2 * 1024 * 1024;
 const MAX_STEPS: usize = 512;
 // Record format remains v1; older Hosts must not overwrite revision metadata.
-const DATABASE_VERSION: u32 = 2;
+const DATABASE_VERSION: u32 = 3;
 mod revise;
 pub struct TaskRuntime {
     db: Mutex<Connection>,
@@ -69,6 +69,18 @@ fn validate(spec: &ContractSpec) -> Result<()> {
         return Err("Task specification exceeds 128 KiB".into());
     }
     Ok(())
+}
+
+fn validate_goal_binding(spec: &ContractSpec, binding: Option<&GoalBinding>) -> Result<()> {
+    match (&spec.goal_id, binding) {
+        (None, None) => Ok(()),
+        (Some(id), Some(binding))
+            if !id.is_empty() && id == &binding.goal_id && binding.objective_revision > 0 =>
+        {
+            Ok(())
+        }
+        _ => Err("A linked contract requires the Host's current goal requirements binding".into()),
+    }
 }
 
 fn load(db: &Connection, owner: &str, id: &str) -> Result<TaskContract> {
@@ -159,6 +171,15 @@ impl TaskRuntime {
             .map_err(|e| e.to_string())?;
         id.map(|id| load(&db, owner, &id)).transpose()
     }
+    /// Completion of a goal consults its latest associated contract, including
+    /// cancelled/stale records, rather than treating an unrelated task as proof.
+    pub fn latest_for_goal(&self, owner: &str, goal_id: &str) -> Result<Option<TaskContract>> {
+        let db = self.db.lock();
+        let id: Option<String> = db.query_row(
+            "SELECT task_id FROM tasks WHERE owner=?1 AND json_extract(body,'$.spec.goalId')=?2 ORDER BY rowid DESC LIMIT 1",
+            params![owner,goal_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+        id.map(|id| load(&db, owner, &id)).transpose()
+    }
     pub fn list(&self, owner: &str) -> Result<Vec<TaskContract>> {
         let db = self.db.lock();
         let mut stmt = db
@@ -172,14 +193,24 @@ impl TaskRuntime {
         ids.iter().map(|id| load(&db, owner, id)).collect()
     }
     pub fn create(&self, owner: &str, id: &str, spec: ContractSpec) -> Result<TaskContract> {
+        self.create_bound(owner, id, spec, None)
+    }
+    pub fn create_bound(
+        &self,
+        owner: &str,
+        id: &str,
+        spec: ContractSpec,
+        goal_binding: Option<GoalBinding>,
+    ) -> Result<TaskContract> {
         if !valid_id(owner) || !valid_id(id) {
             return Err("Invalid task/owner identity".into());
         }
         validate(&spec)?;
+        validate_goal_binding(&spec, goal_binding.as_ref())?;
         let mut db = self.db.lock();
         let tx = db.transaction().map_err(|e| e.to_string())?;
         if let Ok(existing) = load(&tx, owner, id) {
-            if existing.spec == spec {
+            if existing.spec == spec && existing.goal_binding == goal_binding {
                 return Ok(existing);
             }
             return Err("Task already exists with different immutable requirements".into());
@@ -195,6 +226,7 @@ impl TaskRuntime {
             revision: 1,
             requirements_revision: 1,
             based_on: None,
+            goal_binding,
             spec,
             state: TaskState::Planned,
             steps: vec![],

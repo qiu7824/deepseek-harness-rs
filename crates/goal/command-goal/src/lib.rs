@@ -168,7 +168,7 @@ fn execute_goal_command(
             };
             let creating = current.phase == GoalPhase::Complete;
             let goal = if creating {
-                goals.create(
+                goals.create_for_user(
                     &invocation.agent,
                     CreateGoalRequest {
                         objective,
@@ -176,7 +176,7 @@ fn execute_goal_command(
                     },
                 )?
             } else {
-                goals.edit(
+                goals.edit_for_user(
                     &invocation.agent,
                     &goal_ref(&current),
                     &EditGoalRequest {
@@ -205,7 +205,7 @@ fn execute_goal_command(
                     ),
                 });
             }
-            let goal = goals.create(
+            let goal = goals.create_for_user(
                 &invocation.agent,
                 CreateGoalRequest {
                     objective,
@@ -242,6 +242,7 @@ pub fn apply(ctx: &Context) -> Result<cordis::Disposer, String> {
                 Box::pin(async move {
                     match execute_goal_command(&invocation, &goals) {
                         Ok(result) => Ok(result),
+                        Err(error) if error.code == GoalErrorCode::AgentBusy => Ok(CommandResult::Error { text: error.to_string() }),
                         Err(error) if error.code == GoalErrorCode::CommitFailed => {
                             Err(error.to_string())
                         }

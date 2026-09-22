@@ -436,6 +436,7 @@ pub enum PostToolDecision {
 
 /// Runtime context handed to a tool implementation after the registry has
 /// accepted a [`ToolExecution`].
+#[derive(Clone)]
 pub struct ToolRunContext {
     /// The live execution view (identity, arguments, signal).
     pub execution: Arc<ToolExecution>,

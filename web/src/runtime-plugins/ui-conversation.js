@@ -4179,7 +4179,7 @@ window.__ModuleLoader__.load({
             const decoratedInput = deco.token !== null || deco.chips.length > 0 || deco.textRefs.length > 0 || deco.hint !== null;
             const tipPreference = useComposerTips(value => value);
             const [tipIndex, setTipIndex] = react.useState(0), [tipFocused, setTipFocused] = react.useState(false);
-            const tipKeys = ["placeholder.tipNumbered", "placeholder.tipNewline", "placeholder.tipImage", "placeholder.tipReference", "placeholder.tipCommands", "placeholder.tipTeam"];
+            const tipKeys = ["placeholder.tipNumbered", "placeholder.tipNewline", "placeholder.tipImage", "placeholder.tipReference", "placeholder.tipCommands", "placeholder.tipTeam", "placeholder.tipVoice"];
             const focusTip = () => { setTipFocused(true); setTipIndex(previous => (previous + 1 + Math.floor(Math.random() * (tipKeys.length - 1))) % tipKeys.length); };
             const placeholderText = placeholder ?? (parentOffline ? t("placeholder.parentOffline") : disabled ? t("placeholder.unavailable") : canSteerQueue ? t("placeholder.steerQueue") : planActive ? t("placeholder.plan") : t("placeholder.default"));
             const showTip = tipFocused && tipPreference.mode !== "off" && !disabled && !workspaceTrigger && !parentOffline && !running;
@@ -4285,10 +4285,10 @@ window.__ModuleLoader__.load({
 								className: InputBar_module_css_default.accessory,
 								children: accessory
 							}),
-                            attachments.filter(item => item.kind === "file").map(item => react.createElement("div", { key: item.id, "data-file-draft": true, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", minWidth: 0 } },
-                                react.createElement("span", { title: item.file.name, style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, item.file.name),
-                                react.createElement("span", { style: { flex: "none", fontSize: 12 } }, imageSizeText(item.file.size)),
-                                react.createElement("button", { type: "button", disabled: locked || machineBusy, "aria-label": t("file.remove", { name: item.file.name }), onClick: () => removeImage?.(item.id) }, "×"))),
+                            attachments.filter(item => item.kind === "file").map(item => react.createElement("div", { key: item.id, "data-file-draft": true, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", minWidth: 0, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)" } },
+                                react.createElement("span", { title: item.file.name, style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1, color: "var(--dsw-alias-label-primary)" } }, item.file.name),
+                                react.createElement("span", { style: { flex: "none", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" } }, imageSizeText(item.file.size)),
+                                react.createElement("button", { type: "button", disabled: locked || machineBusy, "aria-label": t("file.remove", { name: item.file.name }), title: t("file.remove", { name: item.file.name }), onClick: () => removeImage?.(item.id), style: { flex: "none", width: 28, height: 28, display: "grid", placeItems: "center", border: 0, borderRadius: 999, background: "transparent", color: "var(--dsw-alias-label-tertiary)", cursor: "pointer", fontSize: 18, lineHeight: 1 } }, "×"))),
 							railItems.length > 0 && (0, react_jsx_runtime.jsx)("div", {
 								className: InputBar_module_css_default.attachments,
 								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.AttachmentRail, {
@@ -4392,9 +4392,9 @@ window.__ModuleLoader__.load({
 									]
 								}), (0, react_jsx_runtime.jsxs)("div", {
 									className: InputBar_module_css_default.trailing,
-									children: [
-										rightItems,
-										renderSlot("conversation.input.model", { locked: modelSeatLocked }),
+										children: [
+											renderSlot("conversation.input.model", { locked: modelSeatLocked }),
+											rightItems,
 
 										(0, react_jsx_runtime.jsx)(ContextMeter, {
 											useProjection,
@@ -6652,7 +6652,8 @@ window.__ModuleLoader__.load({
             "placeholder.tipNumbered": "Ctrl+Enter 可继续当前编号列表。",
             "placeholder.tipReference": "输入 @ 可引用其他对话。",
             "placeholder.tipCommands": "输入 / 可查看可用命令。",
-            "placeholder.tipTeam": "可在设置中开启团队协作，并在会话中查看成员与共享任务。",
+			"placeholder.tipTeam": "可在设置中开启团队协作，并在会话中查看成员与共享任务。",
+			"placeholder.tipVoice": "按住语音按钮说话，松开后结束；识别文字会实时写入输入框。",
 
             "placeholder.tipNewline": "Shift+Enter 换行，Enter 发送",
             "placeholder.tipImage": "粘贴或拖入图片，再输入你想修改的内容",
@@ -6695,6 +6696,9 @@ window.__ModuleLoader__.load({
 			"image.preview": "原图预览",
 			"image.closePreview": "关闭原图预览",
 			"image.serviceUnavailable": "图片读取服务不可用",
+			"image.result": "工具返回的图片",
+			"image.open": "放大查看图片",
+			"image.close": "关闭图片预览",
 			"image.unsupportedType": "仅支持 PNG、JPG、WebP、GIF 格式的图片",
 			"image.tooMany": "一条消息最多添加 {count} 张图片",
 			"image.fileTooLarge": "单张图片不能超过 {size}",
@@ -6758,10 +6762,23 @@ window.__ModuleLoader__.load({
 			"todo.edit": "修改任务",
 			"todo.remove": "停止并移除任务",
 			"todo.save": "保存",
-			"todo.cancelEdit": "取消修改",
+			"todo.cancelEdit": "关闭并保留草稿",
+			"todo.draftSaved": "草稿已保存在本机。",
+			"todo.storageError": "本地存储不可用，草稿仅留在当前窗口；恢复存储后再保存。",
+			"todo.receiptError": "任务已保存，本地草稿清理未完成。",
+			"todo.draftRestored": "已恢复未保存的草稿。",
+			"todo.original": "原任务",
+			"todo.selectCurrent": "选择当前要修改的任务",
+			"todo.selectPlaceholder": "请选择任务",
+			"todo.rebase": "保留草稿并采用所选任务的当前版本",
+			"todo.noCurrent": "当前清单已清空，草稿仍保留，可在任务恢复后继续。",
+			"todo.readOnlyDraft": "当前任务为只读，编辑草稿仍保留。",
+			"todo.editKeys": "Ctrl/⌘ + Enter 保存；Esc 关闭并保留草稿。",
+			"todo.drafts": "可恢复的草稿",
+			"todo.restore": "恢复此草稿",
 			"todo.stopTurn": "停止当前运行",
 			"todo.updateFailed": "未能保存任务，请重试。",
-			"todo.changed": "任务清单已更新，请重新选择需要编辑的任务。",
+			"todo.changed": "任务清单已变化；草稿已保留，请核对并明确选择当前任务。",
 			"todo.stopFailed": "停止运行失败，请重试。",
 			"todo.completed": "{done}/{total} 已完成",
 			"chat.loadingHistory": "载入历史…",
@@ -6969,7 +6986,8 @@ window.__ModuleLoader__.load({
             "placeholder.tipNumbered": "Ctrl+Enter continues the current numbered list.",
             "placeholder.tipReference": "Type @ to reference another conversation.",
             "placeholder.tipCommands": "Type / to browse available commands.",
-            "placeholder.tipTeam": "Enable team collaboration in Settings, then view members and shared tasks in the conversation.",
+			"placeholder.tipTeam": "Enable team collaboration in Settings, then view members and shared tasks in the conversation.",
+			"placeholder.tipVoice": "Hold the voice button while speaking; release to finish. Text appears live in the input.",
 
             "placeholder.tipNewline": "Shift+Enter for a new line; Enter to send",
             "placeholder.tipImage": "Paste or drop an image, then describe your changes",
@@ -7012,6 +7030,9 @@ window.__ModuleLoader__.load({
 			"image.preview": "Original image preview",
 			"image.closePreview": "Close original image preview",
 			"image.serviceUnavailable": "Image loading service unavailable",
+			"image.result": "Tool result image",
+			"image.open": "Open image preview",
+			"image.close": "Close image preview",
 			"image.unsupportedType": "Only PNG, JPG, WebP, and GIF images are supported",
 			"image.tooMany": "A message can include up to {count} images",
 			"image.fileTooLarge": "Each image must be smaller than {size}",
@@ -7075,10 +7096,23 @@ window.__ModuleLoader__.load({
 			"todo.edit": "Edit task",
 			"todo.remove": "Stop and remove task",
 			"todo.save": "Save",
-			"todo.cancelEdit": "Cancel edit",
+			"todo.cancelEdit": "Close and keep draft",
+			"todo.draftSaved": "Draft saved on this device.",
+			"todo.storageError": "Local storage is unavailable. Keep this window open and restore storage before saving.",
+			"todo.receiptError": "Task saved; local draft cleanup is incomplete.",
+			"todo.draftRestored": "Unsaved draft restored.",
+			"todo.original": "Original task",
+			"todo.selectCurrent": "Select the current task to edit",
+			"todo.selectPlaceholder": "Select a task",
+			"todo.rebase": "Keep draft and adopt the selected current task",
+			"todo.noCurrent": "The current list is empty. Your draft is retained for when tasks are available.",
+			"todo.readOnlyDraft": "This task is read-only. Your draft is retained.",
+			"todo.editKeys": "Ctrl/⌘ + Enter saves; Esc closes and keeps the draft.",
+			"todo.drafts": "Recoverable drafts",
+			"todo.restore": "Restore this draft",
 			"todo.stopTurn": "Stop current run",
 			"todo.updateFailed": "Could not save the task. Please retry.",
-			"todo.changed": "The task list was updated. Select the task again to edit it.",
+			"todo.changed": "The task list changed. Your draft is retained; review and explicitly select the current task.",
 			"todo.stopFailed": "Failed to stop the current run. Try again.",
 			"todo.completed": "{done}/{total} completed",
 			"chat.loadingHistory": "Loading history…",
@@ -7198,7 +7232,7 @@ window.__ModuleLoader__.load({
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "@deepseek-ai/dsh-client-ui-conversation";
 			tag.dataset.pluginCss = tagId$9;
-			tag.textContent = css$9;
+			tag.textContent = css$9 + ".dsh-todo-form{display:grid;gap:8px;min-width:0;max-height:min(50dvh,420px);overflow:auto;font-size:13px;color:var(--dsw-alias-label-primary)}.dsh-todo-form label{display:grid;gap:5px;min-width:0}.dsh-todo-form textarea{width:100%;height:auto;min-height:80px;max-height:200px;resize:vertical;line-height:1.6;white-space:pre-wrap}.dsh-todo-form p,.dsh-todo-error,.dsh-todo-notice{margin:0;overflow-wrap:anywhere;white-space:pre-wrap;font-size:12px}.dsh-todo-form select{box-sizing:border-box;width:100%;max-width:100%;font:inherit;background:var(--dsw-alias-bg-base);color:inherit;border:1px solid var(--dsw-alias-border-l2);padding:6px;border-radius:6px}.dsh-todo-form button,.dsh-todo-drafts button{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:5px 8px;cursor:pointer;white-space:normal}.dsh-todo-form button:disabled,.dsh-todo-drafts button:disabled{opacity:.45;cursor:default}.dsh-todo-form-actions{display:flex;gap:8px;flex-wrap:wrap}.dsh-todo-conflict{display:grid;gap:8px}.dsh-todo-error{color:var(--dsw-alias-state-error-primary)}.dsh-todo-notice,.dsh-todo-form small{color:var(--dsw-alias-label-secondary)}.dsh-todo-drafts{max-height:160px;overflow:auto;font-size:12px;color:var(--dsw-alias-label-secondary)}.dsh-todo-draft-row{display:flex;gap:8px;align-items:center;margin:5px 0}.dsh-todo-draft-row span{flex:1;min-width:0;overflow-wrap:anywhere}";
 			document.head.appendChild(tag);
 		}
 		var TodoPanel_module_css_default = {
@@ -7316,138 +7350,90 @@ window.__ModuleLoader__.load({
 				...pending > 0 ? [t("todo.progress.pending", { pending })] : []
 			].join(" · ");
 		}
-		function TodoPanel({ todos, useSession, updateTodos, cancelTurn, notify, t }) {
-			const [collapsed, setCollapsed] = (0, react.useState)(true);
-			const [editing, setEditing] = (0, react.useState)(null);
-			const [busy, setBusy] = (0, react.useState)(null);
-			const [error, setError] = (0, react.useState)(null);
-			const submitting = (0, react.useRef)(false);
-			const running = useSession((state) => state.running);
-			const mutable = useSession((state) => state.subagent === null);
-			(0, react.useEffect)(() => {
-				if (editing !== null && (!mutable || todos[editing.index]?.content !== editing.original)) {
-					setEditing(null);
-					if (!submitting.current) setError(t("todo.changed"));
-				}
-			}, [editing, mutable, todos]);
-			if (todos.length === 0) return null;
-			const applyAction = async (index, action) => {
+		const todoDrafts = _deepseek_ai_dsh_client_runtime_client.createRevisionDraftStore("todos");
+		const copyTodos = items => items.map(item => ({ content: item.content, status: item.status }));
+		const sameTodos = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => item.content === b[index].content && item.status === b[index].status);
+		function TodoPanel({ sessionId = "", todos, useSession, updateTodos, cancelTurn, notify, t }) {
+			const h = react.createElement, scope = react.useRef({ key: sessionId }), writer = react.useRef(null), alive = react.useRef(true), submitting = react.useRef(null), stopping = react.useRef(null);
+			if (scope.current.key !== sessionId) scope.current = { key: sessionId };
+			if (!writer.current) writer.current = globalThis.crypto.randomUUID();
+			const [collapsed, setCollapsed] = react.useState(true), [editing, setEditing] = react.useState(null), [busy, setBusy] = react.useState(false), [stopBusy, setStopBusy] = react.useState(false), [error, setError] = react.useState(null), [notice, setNotice] = react.useState(""), [records, setRecords] = react.useState(() => todoDrafts.list(sessionId)), [target, setTarget] = react.useState("");
+			const latest = react.useRef(editing); latest.current = editing;
+			const running = useSession(state => state.running), mutable = useSession(state => state.subagent === null);
+			react.useEffect(() => {
+				alive.current = true; submitting.current = null; stopping.current = null;
+				setEditing(null); setBusy(false); setStopBusy(false); setError(null); setNotice(""); setTarget(""); setRecords(todoDrafts.list(sessionId));
+				const refresh = () => setRecords(todoDrafts.list(sessionId));
+				globalThis.window?.addEventListener("storage", refresh);
+				return () => { alive.current = false; globalThis.window?.removeEventListener("storage", refresh); };
+			}, [sessionId]);
+			const current = token => alive.current && scope.current === token;
+			const persist = value => {
+				const result = todoDrafts.write(sessionId, writer.current, value);
+				setRecords(todoDrafts.list(sessionId)); setNotice(t(result.persisted ? "todo.draftSaved" : "todo.storageError"));
+				return result.persisted;
+			};
+			const change = value => { latest.current = value; setEditing(value); persist(value); setError(null); };
+			const archive = () => { if (latest.current) todoDrafts.write(sessionId, globalThis.crypto.randomUUID(), latest.current); };
+			const beginEdit = index => {
+				if (!mutable || submitting.current) return;
+				archive();
+				const stored = todoDrafts.list(sessionId), restored = stored.find(row => row.value.data.index === index && sameTodos(row.value.data.base, todos));
+				const value = restored?.value.data ?? { base: copyTodos(todos), index, value: todos[index].content };
+				latest.current = value; setEditing(value); setCollapsed(false); setTarget(""); setError(null); setRecords(stored); setNotice(restored ? t("todo.draftRestored") : "");
+			};
+			const conflict = editing !== null && !sameTodos(editing.base, todos);
+			// A selected position is meaningful only for the exact list reviewed by the user.
+			const listKey = JSON.stringify(todos);
+			react.useEffect(() => setTarget(""), [listKey]);
+			const applyAction = async (expected, action, submitted) => {
 				if (submitting.current || !mutable) return;
-				submitting.current = true;
-				setError(null);
-				setBusy(index);
+				const token = scope.current; submitting.current = token; setBusy(true); setError(null);
 				try {
-					await updateTodos(todos, action);
-					setEditing(null);
-				} catch (error) {
-					setError(`${t("todo.updateFailed")} ${error instanceof Error ? error.message : String(error)}`);
+					await updateTodos(expected, action);
+					if (!current(token)) return;
+					if (submitted) {
+						const durable = todoDrafts.complete(sessionId, submitted, (a, b) => a.index === b.index && sameTodos(a.base, b.base) && a.value?.trim() === b.value);
+						setEditing(null); latest.current = null; setRecords(todoDrafts.list(sessionId)); setNotice(durable ? "" : t("todo.receiptError"));
+					}
+				} catch (reason) {
+					if (current(token)) setError(`${t("todo.updateFailed")} ${reason instanceof Error ? reason.message : String(reason)}`);
 				} finally {
-					submitting.current = false;
-					setBusy(null);
+					if (current(token) && submitting.current === token) { submitting.current = null; setBusy(false); }
 				}
 			};
 			const saveEdit = () => {
-				if (editing === null || editing.value.trim() === "") return;
-				applyAction(editing.index, { kind: "edit", index: editing.index, content: editing.value.trim() });
+				const draft = latest.current;
+				if (!mutable || !draft || !draft.value.trim() || !sameTodos(draft.base, todos) || submitting.current || draft.value.trim() === draft.base[draft.index]?.content) return;
+				const submitted = { ...draft, value: draft.value.trim() };
+				if (persist(submitted)) applyAction(submitted.base, { kind: "edit", index: submitted.index, content: submitted.value }, submitted);
 			};
-			return (0, react_jsx_runtime.jsx)("section", {
-				className: TodoPanel_module_css_default.root,
-				"data-testid": "todo-panel",
-				"aria-label": t("todo.title"),
-				"aria-busy": busy !== null,
-				children: (0, react_jsx_runtime.jsxs)("div", {
-					className: TodoPanel_module_css_default.body,
-					children: [(0, react_jsx_runtime.jsxs)("button", {
-						type: "button",
-						className: TodoPanel_module_css_default.header,
-                        title: t("todo.title"),
-						"aria-expanded": !collapsed,
-						onClick: () => {
-							setCollapsed((v) => !v);
-						},
-						children: [
-							(0, react_jsx_runtime.jsx)("span", {
-								className: TodoPanel_module_css_default.lead,
-								title: t("todo.title"),
-								"aria-hidden": true,
-								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChecklistOutline14, {})
-							}),
-							(0, react_jsx_runtime.jsx)("span", {
-								className: TodoPanel_module_css_default.title,
-								children: t("todo.title")
-							}),
-							(0, react_jsx_runtime.jsx)("span", {
-								className: TodoPanel_module_css_default.progress,
-								children: progressLabel(todos, t)
-							}),
-							(0, react_jsx_runtime.jsx)("span", {
-								className: TodoPanel_module_css_default.chevron,
-								"aria-hidden": true,
-								children: collapsed ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronUpOutline14, {}) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
-							})
-						]
-					}), !collapsed && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("ul", {
-						className: TodoPanel_module_css_default.list,
-						children: todos.map((item, index) => (0, react_jsx_runtime.jsxs)("li", {
-							className: TodoPanel_module_css_default.item,
-							"data-status": item.status,
-							children: [(0, react_jsx_runtime.jsx)("span", {
-								className: TodoPanel_module_css_default.glyph, title: t("todo.state." + item.status),
-                                children: (0, react_jsx_runtime.jsx)(StatusGlyph, { status: item.status })
-							}), editing?.index === index ? (0, react_jsx_runtime.jsx)("input", {
-								autoFocus: true,
-								className: "dsh-todo-editor",
-								"aria-label": t("todo.edit"),
-								value: editing.value,
-								disabled: busy !== null,
-								onChange: (event) => setEditing({ ...editing, value: event.currentTarget.value }),
-								onKeyDown: (event) => {
-									if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditing(null); }
-									if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); saveEdit(); }
-								}
-							}) : (0, react_jsx_runtime.jsx)("span", {
-								className: TodoPanel_module_css_default.content,
-								children: item.content
-							}), mutable && (0, react_jsx_runtime.jsx)("span", {
-								className: "dsh-todo-actions",
-								children: editing?.index === index ? (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-									label: t("todo.save"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
-										type: "button", className: "dsh-todo-action", "aria-label": t("todo.save"), disabled: busy !== null || editing.value.trim() === "", onClick: saveEdit, children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutline16, { size: 14 })
-									})
-								}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-									label: t("todo.cancelEdit"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
-										type: "button", className: "dsh-todo-action", "aria-label": t("todo.cancelEdit"), disabled: busy !== null, onClick: () => setEditing(null), children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCloseOutline16, { size: 14 })
-									})
-								})] }) : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-									label: t("todo.edit"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
-										type: "button", className: "dsh-todo-action", "aria-label": t("todo.edit"), disabled: busy !== null, onClick: () => setEditing({ index, original: item.content, value: item.content }), children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconEditOutline16, { size: 14 })
-									})
-								}), item.status !== "completed" && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-									label: t("todo.remove"), side: "bottom", delayMs: 500, children: (0, react_jsx_runtime.jsx)("button", {
-										type: "button", className: "dsh-todo-action dsh-todo-danger", "aria-label": t("todo.remove"), disabled: busy !== null, onClick: () => applyAction(index, { kind: "remove", index }), children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconTrashOutline16, { size: 14 })
-									})
-								})] })
-							})]
-						}, `${index}:${item.content}`))
-					}), error !== null && (0, react_jsx_runtime.jsx)("div", { role: "alert", style: { color: "var(--dsw-alias-state-error-primary)", fontSize: 12, lineHeight: "18px" }, children: error }), running && (0, react_jsx_runtime.jsx)("button", {
-						type: "button",
-						className: "dsh-todo-stop",
-						disabled: busy !== null || !mutable,
-						onClick: async () => {
-							if (submitting.current || !mutable) return;
-							submitting.current = true;
-							setBusy("turn");
-							try { await cancelTurn(); } catch { notify("error", t("todo.stopFailed")); } finally { submitting.current = false; setBusy(null); }
-						},
-						children: t("todo.stopTurn")
-					})] })]
-				})
-			});
+			const stopTurn = async () => {
+				if (!mutable || stopping.current) return;
+				const token = scope.current; stopping.current = token; setStopBusy(true);
+				try { await cancelTurn(); } catch { if (current(token)) notify("error", t("todo.stopFailed")); }
+				finally { if (current(token) && stopping.current === token) { stopping.current = null; setStopBusy(false); } }
+			};
+			if (todos.length === 0 && editing === null && records.length === 0 && !error && !notice) return null;
+			const actionButton = (label, Icon, action, disabled = busy || !mutable) => h(_deepseek_ai_dsh_client_ui_primitives.Tooltip, { label: t(label), side: "bottom", delayMs: 500 }, h("button", { type: "button", className: "dsh-todo-action", "aria-label": t(label), disabled, onClick: action }, h(Icon, { size: 14 })));
+			return h("section", { className: TodoPanel_module_css_default.root, "data-testid": "todo-panel", "aria-label": t("todo.title"), "aria-busy": busy }, h("div", { className: TodoPanel_module_css_default.body },
+				h("button", { type: "button", className: TodoPanel_module_css_default.header, title: t("todo.title"), "aria-expanded": !collapsed, onClick: () => setCollapsed(value => !value) },
+					h("span", { className: TodoPanel_module_css_default.lead, "aria-hidden": true }, h(_deepseek_ai_dsh_client_ui_primitives.IconChecklistOutline14)), h("span", { className: TodoPanel_module_css_default.title }, t("todo.title")), h("span", { className: TodoPanel_module_css_default.progress }, progressLabel(todos, t)), h("span", { className: TodoPanel_module_css_default.chevron, "aria-hidden": true }, h(collapsed ? _deepseek_ai_dsh_client_ui_primitives.IconChevronUpOutline14 : _deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14))),
+				!collapsed && h(react.Fragment, null,
+					h("ul", { className: TodoPanel_module_css_default.list }, ...todos.map((item, index) => h("li", { key: `${index}:${item.content}`, className: TodoPanel_module_css_default.item, "data-status": item.status }, h("span", { className: TodoPanel_module_css_default.glyph, title: t("todo.state." + item.status) }, h(StatusGlyph, { status: item.status })), h("span", { className: TodoPanel_module_css_default.content }, item.content), mutable && h("span", { className: "dsh-todo-actions" }, actionButton("todo.edit", _deepseek_ai_dsh_client_ui_primitives.IconEditOutline16, () => beginEdit(index)), item.status !== "completed" && actionButton("todo.remove", _deepseek_ai_dsh_client_ui_primitives.IconTrashOutline16, () => applyAction(copyTodos(todos), { kind: "remove", index })))))),
+					editing && h("div", { className: "dsh-todo-form" },
+						h("label", null, t("todo.edit"), h("textarea", { className: "dsh-todo-editor", "aria-label": t("todo.edit"), autoFocus: true, rows: 3, value: editing.value, disabled: busy || !mutable, onChange: event => change({ ...latest.current, value: event.target.value }), onKeyDown: event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditing(null); } if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); saveEdit(); } } })),
+						conflict && h("div", { className: "dsh-todo-conflict", role: "status" }, h("p", null, t("todo.changed")), h("p", null, t("todo.original") + ": " + (editing.base?.[editing.index]?.content ?? "")),
+							todos.length > 0 ? h(react.Fragment, null, h("label", null, t("todo.selectCurrent"), h("select", { "aria-label": t("todo.selectCurrent"), value: target, disabled: busy || !mutable, onChange: event => setTarget(event.target.value) }, h("option", { value: "" }, t("todo.selectPlaceholder")), ...todos.map((item, index) => h("option", { key: index, value: String(index) }, `${index + 1}. ${item.content}`)))), h("button", { type: "button", disabled: busy || !mutable || target === "", onClick: () => { const index = Number(target); if (target === "" || !todos[index]) return; archive(); change({ base: copyTodos(todos), index, value: latest.current.value }); setTarget(""); } }, t("todo.rebase"))) : h("p", null, t("todo.noCurrent"))),
+						!mutable && h("p", { role: "status" }, t("todo.readOnlyDraft")), h("small", null, t("todo.editKeys")), h("div", { className: "dsh-todo-form-actions" }, h("button", { type: "button", disabled: busy || !mutable || conflict || !editing.value.trim() || editing.value.trim() === editing.base[editing.index]?.content, onClick: saveEdit }, t("todo.save")), h("button", { type: "button", onClick: () => setEditing(null) }, t("todo.cancelEdit")))),
+					records.length > 0 && h("details", { className: "dsh-todo-drafts" }, h("summary", null, t("todo.drafts")), ...records.map(row => h("div", { className: "dsh-todo-draft-row", key: row.key }, h("span", null, row.value.data.value?.slice(0, 100)), h("button", { type: "button", disabled: busy || !mutable, onClick: () => { archive(); change(row.value.data); setTarget(""); } }, t("todo.restore"))))),
+					error && h("p", { role: "alert", className: "dsh-todo-error" }, error), notice && h("p", { role: "status", className: "dsh-todo-notice" }, notice), running && h("button", { type: "button", className: "dsh-todo-stop", disabled: stopBusy || !mutable, onClick: stopTurn }, t("todo.stopTurn")))));
 		}
 		/** Dock adapter: reads the host-computed 'todos' projection (whole list; absent or null renders nothing). */
-		function TodoDock({ useProjection, useSession, updateTodos, cancelTurn, notify, t }) {
+		function TodoDock({ sessionId, useProjection, useSession, updateTodos, cancelTurn, notify, t }) {
 			return (0, react_jsx_runtime.jsx)(TodoPanel, {
 				todos: useProjection("todos") ?? [],
+				sessionId,
 				useSession,
 				updateTodos,
 				cancelTurn,
@@ -7478,6 +7464,7 @@ window.__ModuleLoader__.load({
 						const conversation = actx.get("conversation");
 						if (conversation === void 0) throw new Error("todo dock: conversation service unavailable");
 						return {
+							sessionId,
 							updateTodos: async (expected, action) => {
 								const rpcId = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 								const response = await fetch("/api/session.updateTodos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "client-request", rpcId, method: "session.updateTodos", payload: { sessionId, expected, action } }) });

@@ -1,18 +1,27 @@
 use super::*;
 
 type RevisionResult<T> = std::result::Result<T, RevisionError>;
-fn fingerprint(spec: &ContractSpec, expected: u64, mode: RevisionMode) -> RevisionResult<String> {
+fn fingerprint(
+    spec: &ContractSpec,
+    expected: u64,
+    mode: RevisionMode,
+    expected_binding: Option<&GoalBinding>,
+) -> RevisionResult<String> {
     let mut contract = serde_json::to_value(spec).map_err(|e| e.to_string())?;
     // Environment is a server observation, not part of the user's retry payload.
     contract
         .as_object_mut()
         .expect("ContractSpec object")
         .remove("environmentFingerprint");
+    let mut request =
+        serde_json::json!({"reviseByUser":contract,"expectedRevision":expected,"mode":mode});
+    // Preserve old unlinked retry fingerprints across the schema upgrade.
+    if let Some(binding) = expected_binding {
+        request["expectedGoalBinding"] =
+            serde_json::to_value(binding).map_err(|e| e.to_string())?;
+    }
     Ok(digest(
-        &serde_json::to_vec(
-            &serde_json::json!({"reviseByUser":contract,"expectedRevision":expected,"mode":mode}),
-        )
-        .map_err(|e| e.to_string())?,
+        &serde_json::to_vec(&request).map_err(|e| e.to_string())?,
     ))
 }
 fn replay(
@@ -51,6 +60,18 @@ impl TaskRuntime {
         spec: &ContractSpec,
         mode: RevisionMode,
     ) -> RevisionResult<Option<TaskContract>> {
+        self.replay_bound_revision(owner, id, key, expected, spec, mode, None)
+    }
+    pub fn replay_bound_revision(
+        &self,
+        owner: &str,
+        id: &str,
+        key: &str,
+        expected: u64,
+        spec: &ContractSpec,
+        mode: RevisionMode,
+        expected_binding: Option<&GoalBinding>,
+    ) -> RevisionResult<Option<TaskContract>> {
         if !valid_id(key) {
             return Err(RevisionError::InvalidContract(
                 "Invalid idempotency key".into(),
@@ -61,7 +82,7 @@ impl TaskRuntime {
             owner,
             id,
             key,
-            &fingerprint(spec, expected, mode)?,
+            &fingerprint(spec, expected, mode, expected_binding)?,
         )?;
         if recorded.is_none() {
             validate(spec).map_err(RevisionError::InvalidContract)?;
@@ -80,18 +101,36 @@ impl TaskRuntime {
         spec: ContractSpec,
         mode: RevisionMode,
     ) -> RevisionResult<TaskContract> {
+        self.revise_bound_by_user(owner, id, key, expected, spec, mode, None, None)
+    }
+    pub fn revise_bound_by_user(
+        &self,
+        owner: &str,
+        id: &str,
+        key: &str,
+        expected: u64,
+        spec: ContractSpec,
+        mode: RevisionMode,
+        goal_binding: Option<GoalBinding>,
+        expected_binding: Option<&GoalBinding>,
+    ) -> RevisionResult<TaskContract> {
         if !valid_id(key) {
             return Err(RevisionError::InvalidContract(
                 "Invalid idempotency key".into(),
             ));
         }
-        let fingerprint = fingerprint(&spec, expected, mode)?;
+        let fingerprint = fingerprint(&spec, expected, mode, expected_binding)?;
         let mut db = self.db.lock();
         let tx = db.transaction().map_err(|e| e.to_string())?;
         if let Some(task) = replay(&tx, owner, id, key, &fingerprint)? {
             return Ok(task);
         }
         validate(&spec).map_err(RevisionError::InvalidContract)?;
+        validate_goal_binding(&spec, goal_binding.as_ref())
+            .map_err(|_| RevisionError::GoalRequirementsChanged)?;
+        if goal_binding.as_ref() != expected_binding {
+            return Err(RevisionError::GoalRequirementsChanged);
+        }
         let count: u64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM mutations WHERE owner=?1 AND task_id=?2",
@@ -125,11 +164,14 @@ impl TaskRuntime {
         if mode == RevisionMode::Successor && !terminal {
             return Err(RevisionError::InvalidMode);
         }
+        if mode == RevisionMode::InPlace && task.spec.goal_id.is_some() && spec.goal_id.is_none() {
+            return Err(RevisionError::GoalDetachRequiresSuccessor);
+        }
         if mode == RevisionMode::InPlace && task.state == TaskState::Completed {
             return Err(RevisionError::SuccessorRequired);
         }
         let prior = serde_json::to_string(&task).map_err(|e| e.to_string())?;
-        let changed = task.spec != spec;
+        let changed = task.spec != spec || task.goal_binding != goal_binding;
         if mode == RevisionMode::Successor {
             let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE owner=?1 AND state NOT IN ('Completed','Cancelled'))",params![owner],|row|row.get(0)).map_err(|e|e.to_string())?;
             if active {
@@ -170,6 +212,7 @@ impl TaskRuntime {
         }
         if changed || mode == RevisionMode::Successor {
             task.spec = spec;
+            task.goal_binding = goal_binding;
             task.acceptance_results.clear();
             task.acceptance_refresh = None;
             task.validation_identity = None;

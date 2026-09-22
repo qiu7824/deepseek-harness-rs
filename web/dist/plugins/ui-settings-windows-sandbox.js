@@ -27,6 +27,9 @@ window.__ModuleLoader__.load({
         error&&h("p",{role:"alert"},error),notice&&h("p",{role:"status"},notice),!state&&!error&&h("p",{role:"status"},"正在读取沙箱配置…")
       );
     }
-    return {inject:["slots"],apply(ctx){ctx.slots.inject("settings.section",()=>ctx.slots.register({name:"settings.section",id:"windows-sandbox",order:28,label:()=>"Windows 沙箱"},WindowsSandboxSection));},WindowsSandboxSection};
+    // Sandbox selection is a Host policy, shared with Codex-style execution;
+    // it is deliberately not exposed as a second per-application settings page.
+    // Keep the section component export for compatibility with older bundles.
+    return {inject:["slots"],apply(){},WindowsSandboxSection};
   }
 });

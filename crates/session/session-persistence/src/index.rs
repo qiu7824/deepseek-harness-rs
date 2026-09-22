@@ -339,6 +339,18 @@ pub trait SessionPersistenceApi: Send + Sync {
         Ok(())
     }
 
+    /// Visit only goal changes and minimal goal-round user-message sources.
+    /// This capability must skip unrelated payloads while streaming. A backend
+    /// without such a reader refuses explicitly; it must not call read_from.
+    /// Consumers may use accumulated state only after the scan returns Ok.
+    async fn visit_goal_events_bounded(
+        &self,
+        _id: &SessionId,
+        _visitor: NonpackedEventVisitor,
+    ) -> Result<(), String> {
+        Err("bounded goal event scanning is unavailable for this persistence backend".into())
+    }
+
     /// Read only human-authored user messages for lightweight navigation
     /// projections. Backends should override this to skip packed assistant runs.
     async fn read_user_message_events(

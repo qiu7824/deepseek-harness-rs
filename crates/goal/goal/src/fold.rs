@@ -19,6 +19,8 @@ pub struct GoalFoldState {
     pub updated_at: Option<u64>,
     pub last_ref: Option<GoalRef>,
     pub seen_goal_ids: HashSet<String>,
+    /// Revision at the latest actual objective change; replay-derived only.
+    pub objective_revision: Option<u64>,
 }
 
 /// Build an empty replay accumulator (TS `emptyGoalFoldState`).
@@ -342,6 +344,7 @@ pub fn apply_goal_change(state: &mut GoalFoldState, change: &GoalChangeMeta) -> 
                 );
             }
             state.goal = None;
+            state.objective_revision = None;
             state.rounds_started = 0;
             state.created_at = None;
             state.updated_at = None;
@@ -374,6 +377,11 @@ pub fn apply_goal_change(state: &mut GoalFoldState, change: &GoalChangeMeta) -> 
                     format!("goal {} requires a current goal", change.operation.as_str())
                 })?;
                 validate_snapshot_transition(state, change, current)?;
+            }
+            if state.goal.as_ref().is_none_or(|current| {
+                current.id != change.goal.id || current.objective != change.goal.objective
+            }) {
+                state.objective_revision = Some(change.goal.revision);
             }
             state.goal = Some(change.goal.clone());
             state.rounds_started = change.rounds_started;

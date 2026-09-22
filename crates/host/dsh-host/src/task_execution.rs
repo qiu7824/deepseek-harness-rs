@@ -22,6 +22,8 @@ pub(crate) struct TaskExecution {
 }
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 
+#[path = "task_goals.rs"]
+mod goals;
 #[path = "task_input_snapshot.rs"]
 mod input_snapshot;
 #[path = "task_requirements.rs"]
@@ -105,6 +107,7 @@ struct UserRevision {
     key: String,
     mode: RevisionMode,
     spec: ContractSpec,
+    expected_goal_binding: Option<GoalBinding>,
 }
 impl UserRevision {
     fn parse(args: &Value) -> std::result::Result<Self, RevisionError> {
@@ -120,11 +123,20 @@ impl UserRevision {
             serde_json::from_value(args["mode"].clone()).map_err(|_| RevisionError::InvalidMode)?;
         let spec = serde_json::from_value(args["contract"].clone())
             .map_err(|error| invalid(&format!("Invalid contract: {error}")))?;
+        let expected_goal_binding = args
+            .get("expectedGoalBinding")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| invalid(&format!("Invalid expectedGoalBinding: {error}")))
+            })
+            .transpose()?;
         Ok(Self {
             expected,
             key,
             mode,
             spec,
+            expected_goal_binding,
         })
     }
 }
@@ -199,7 +211,15 @@ fn outcome_flags(name: &str, value: Option<&Value>, is_error: bool) -> (bool, bo
 
 fn model_parameters() -> Value {
     let mut schema = json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","get","validate","complete","recover"]},"taskId":{"type":"string","minLength":1,"description":"Required for get, validate, complete and recover. Optional for create: omitted IDs are generated deterministically and returned; reuse the returned taskId."},"idempotencyKey":{"type":"string","minLength":1,"description":"Optional operation key; the runtime supplies one when omitted. Reuse an explicit key only for an identical retry."},"contract":{"type":"object","properties":{"objective":{"type":"string"},"goalId":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"expectedOutputs":{"type":"array","items":{"type":"string"}},"acceptanceChecks":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"checker":{"type":"object","description":"kind=text(path,required,forbidden), json(path,assertions keyed by JSON pointer), image(path,min_width,min_height,channels), office_package(path,format docx/xlsx/pptx), tool_result(step_id exact ID or tool:NAME,assertions), manual(reason)"}},"required":["id","description","checker"]}},"validationSubject":{"type":"object","properties":{"kind":{"type":"string"},"identity":{"type":"string"},"expectedOutcome":{"type":"string"}},"required":["kind","identity","expectedOutcome"]}},"required":["objective","acceptanceChecks"]}},"required":["action"],"additionalProperties":false});
-    schema["properties"]["contract"]["properties"]["acceptanceChecks"]["items"]["properties"]["checker"] = json!({"oneOf":[
+    // A few gateways incorrectly stringify nested arguments. Accept that
+    // transport shape so the Host can decode and validate it with a precise
+    // error, while keeping the canonical contract schema object-only.
+    let contract_properties = schema["properties"]["contract"]["properties"].clone();
+    schema["properties"]["contract"] = json!({"oneOf":[
+        {"type":"object","properties":contract_properties,"required":["objective","acceptanceChecks"]},
+        {"type":"string","minLength":2,"description":"JSON-encoded contract object accepted for gateway compatibility"}
+    ]});
+    schema["properties"]["contract"]["oneOf"][0]["properties"]["acceptanceChecks"]["items"]["properties"]["checker"] = json!({"oneOf":[
         {"type":"object","properties":{"kind":{"type":"string","const":"text"},"path":{"type":"string"},"required":{"type":"array","items":{"type":"string"}},"forbidden":{"type":"array","items":{"type":"string"}}},"required":["kind","path","required"],"additionalProperties":false},
         {"type":"object","properties":{"kind":{"type":"string","const":"json"},"path":{"type":"string"},"assertions":{"type":"object","description":"JSON Pointer keys, for example /scripts/test. Keys must start with / (or be empty to match the whole result)."}},"required":["kind","path","assertions"],"additionalProperties":false},
         {"type":"object","properties":{"kind":{"type":"string","const":"tool_result"},"step_id":{"type":"string","description":"When creating a contract use tool: followed by the tool name, e.g. tool:execute_native or tool:pwsh. Do not invent future step labels."},"assertions":{"type":"object","description":"JSON Pointer keys into the recorded result, e.g. {\"/exitCode\":0}. Plain exitCode is not a JSON Pointer."}},"required":["kind","step_id","assertions"],"additionalProperties":false},
@@ -260,9 +280,7 @@ impl TaskExecution {
             .cwd
             .as_deref()
             .ok_or("Missing workspace")?;
-        if execution.name == "present"
-            || execution.name == "update_goal" && execution.arguments["action"] == "complete"
-        {
+        if execution.name == "present" {
             if let Some(task) = self.runtime.latest(owner)? {
                 let signal = execution.signal.lock().clone();
                 self.verified_evidence(owner, &task.task_id, task.revision, cwd, signal)
@@ -273,6 +291,11 @@ impl TaskExecution {
         let Some(task) = self.runtime.active(owner)? else {
             return Ok(());
         };
+        if !exempt(&execution.name)
+            && effect(&execution.name, &execution.arguments) != EffectKind::ReadOnly
+        {
+            self.assert_goal_applicable(&task).await?;
+        }
         if !exempt(&execution.name)
             && effect(&execution.name, &execution.arguments) != EffectKind::ReadOnly
             && self.environment(owner, cwd)? != task.spec.environment_fingerprint
@@ -360,24 +383,61 @@ impl TaskExecution {
         cwd: &str,
         signal: dsh_tools::AbortPredicate,
     ) -> Result<TaskContract> {
-        let task = self.runtime.get(owner, task_id)?;
-        if task.revision != revision || task.state != TaskState::Completed {
-            return Err("Acceptance evidence must reference an exact completed revision".into());
-        }
-        if !task.completion_blockers().is_empty() {
-            return Err("Acceptance evidence is incomplete".into());
-        }
-        if self.environment(owner, cwd)? != task.spec.environment_fingerprint {
-            return Err("Acceptance evidence belongs to a different execution environment".into());
-        }
+        self.verified_evidence_guarded(owner, task_id, revision, cwd, signal)
+            .await
+            .map(|(task, _)| task)
+            .map_err(|error| error.to_string())
+    }
+    /// Return the original guard, not a new registration after the final await.
+    async fn verified_evidence_guarded(
+        &self,
+        owner: &str,
+        task_id: &str,
+        revision: u64,
+        cwd: &str,
+        signal: dsh_tools::AbortPredicate,
+    ) -> std::result::Result<(TaskContract, validation_work::Guard), TaskActionError> {
         let validation = self.validation_work.begin(owner, task_id, signal);
-        let (_, current) = self
-            .inputs(&task, cwd, validation.signal.clone(), false)
-            .await?;
-        if current != task.output_identities {
-            return Err("Acceptance inputs changed since the verified task".into());
+        let outcome: Result<TaskContract> = async {
+            if (validation.signal)() {
+                return Err("Task validation cancelled".into());
+            }
+            let task = self.runtime.get(owner, task_id)?;
+            if task.revision != revision || task.state != TaskState::Completed {
+                return Err(
+                    "Acceptance evidence must reference an exact completed revision".into(),
+                );
+            }
+            if !task.completion_blockers().is_empty() {
+                return Err("Acceptance evidence is incomplete".into());
+            }
+            self.assert_goal_applicable(&task).await?;
+            if (validation.signal)() {
+                return Err("Task validation cancelled".into());
+            }
+            if self.environment(owner, cwd)? != task.spec.environment_fingerprint {
+                return Err(
+                    "Acceptance evidence belongs to a different execution environment".into(),
+                );
+            }
+            let (_, current) = self
+                .inputs(&task, cwd, validation.signal.clone(), false)
+                .await?;
+            if (validation.signal)() {
+                return Err("Task validation cancelled".into());
+            }
+            if current != task.output_identities {
+                return Err("Acceptance inputs changed since the verified task".into());
+            }
+            self.assert_goal_applicable(&task).await?;
+            Ok(task)
         }
-        Ok(task)
+        .await;
+        // Inspect the same authoritative signal before Guard::drop can set it.
+        if (validation.signal)() {
+            return Err(TaskActionError::Cancelled);
+        }
+        Ok((outcome?, validation))
     }
     async fn input(
         &self,
@@ -522,6 +582,7 @@ impl TaskExecution {
         if self.environment(owner, cwd)? != task.spec.environment_fingerprint {
             return Err("Task environment changed; previous evidence is invalid".into());
         }
+        self.assert_goal_applicable(&task).await?;
         let (inputs, identities) = self.inputs(&task, cwd, signal.clone(), true).await?;
         if refresh_revision.is_some() && task.output_identities != identities {
             return Err(
@@ -585,6 +646,7 @@ impl TaskExecution {
         if signal() {
             return Err("Task validation cancelled".into());
         }
+        let _goal_claim = self.claim_task_goal(&task)?;
         if refresh_revision.is_some() {
             self.runtime.refresh_evidence_by_user(
                 owner,
@@ -627,7 +689,12 @@ impl TaskExecution {
         }
         let action = text(args, "action")?;
         if action == "list" {
-            return Ok(json!({"tasks":self.runtime.list(owner)?,"capabilities":capabilities()}));
+            return Ok(self
+                .decorate_response(
+                    json!({"tasks":self.runtime.list(owner)?,"capabilities":capabilities()}),
+                    owner,
+                )
+                .await);
         }
         let generated_id = format!(
             "task-{}",
@@ -646,7 +713,7 @@ impl TaskExecution {
             let environment_changed =
                 self.environment(owner, cwd)? != task.spec.environment_fingerprint;
             return Ok(
-                json!({"environmentChanged":environment_changed,"requiredUserAction":if environment_changed {Some("任务验收 → 切换到当前环境 → 确认；停止重复尝试其他写入工具")} else {None},"recovery":task.recovery(),"blockers":task.completion_blockers(),"task":task,"capabilities":capabilities()}),
+                self.decorate_response(json!({"environmentChanged":environment_changed,"requiredUserAction":if environment_changed {Some("任务验收 → 切换到当前环境 → 确认；停止重复尝试其他写入工具")} else {None},"recovery":task.recovery(),"blockers":task.completion_blockers(),"task":task,"capabilities":capabilities()}),owner).await,
             );
         }
         if action == "refresh_history" && user_control {
@@ -665,16 +732,48 @@ impl TaskExecution {
         let signal = _validation
             .as_ref()
             .map_or(signal, |guard| guard.signal.clone());
-        let outcome: Result<TaskContract> = async {
+        if matches!(
+            action,
+            "validate" | "refresh_evidence" | "complete" | "confirm"
+        ) {
+            let current = self.runtime.get(owner, id)?;
+            if self.assert_goal_applicable(&current).await.is_err() {
+                if signal() {
+                    return Err(TaskActionError::Cancelled);
+                }
+                return Err(RevisionError::GoalRequirementsChanged.into());
+            }
+        }
+        let outcome: std::result::Result<TaskContract, TaskActionError> = async {
             Ok(match action {
                 "create" => {
-                    let mut spec: ContractSpec = serde_json::from_value(args["contract"].clone())
+                    let raw_contract = match &args["contract"] {
+                        Value::String(text) => serde_json::from_str::<Value>(text)
+                            .map_err(|_| "contract must be a JSON object, not arbitrary text".to_string())?,
+                        value => value.clone(),
+                    };
+                    if !raw_contract.is_object() {
+                        return Err("contract must be an object containing objective and acceptanceChecks".into());
+                    }
+                    let mut spec: ContractSpec = serde_json::from_value(raw_contract)
                         .map_err(|e| e.to_string())?;
                     if !user_control {
                         validate_model_contract(&spec)?;
                     }
                     spec.environment_fingerprint = self.environment(owner, cwd)?;
-                    self.runtime.create(owner, id, spec)?
+                    let (binding, _claim) =
+                        self.capture_created_binding(owner, &mut spec, user_control)?;
+                    // A model may retry a create after losing the response and
+                    // omit the generated task id. Reuse the live contract when
+                    // its immutable requirements and Goal binding are identical;
+                    // a genuinely different contract still requires an explicit
+                    // finish/cancel or successor transition.
+                    if let Some(active) = self.runtime.active(owner)? {
+                        if active.spec == spec && active.goal_binding == binding {
+                            return Ok(active);
+                        }
+                    }
+                    self.runtime.create_bound(owner, id, spec, binding)?
                 }
                 "validate" => {
                     self.validate(owner, id, key, cwd, signal.clone(), None)
@@ -708,6 +807,7 @@ impl TaskExecution {
                     if signal() {
                         return Err("Task validation cancelled".into());
                     }
+                    let _goal_claim = self.claim_task_goal(&current)?;
                     self.runtime
                         .complete(owner, id, key, current.revision, &identities)?
                 }
@@ -725,14 +825,18 @@ impl TaskExecution {
                         &self.environment(owner, cwd)?,
                     )?
                 }
-                "confirm" if user_control => self.runtime.confirm_manual_by_user(
-                    owner,
-                    id,
-                    key,
-                    args["revision"].as_u64().ok_or("Missing revision")?,
-                    text(args, "checkId")?,
-                    text(args, "inputIdentity")?,
-                )?,
+                "confirm" if user_control => {
+                    let task = self.runtime.get(owner, id)?;
+                    let _goal_claim = self.claim_task_goal(&task)?;
+                    self.runtime.confirm_manual_by_user(
+                        owner,
+                        id,
+                        key,
+                        args["revision"].as_u64().ok_or("Missing revision")?,
+                        text(args, "checkId")?,
+                        text(args, "inputIdentity")?,
+                    )?
+                }
                 "resume" if user_control => self.runtime.resume_by_user(
                     owner,
                     id,
@@ -767,7 +871,8 @@ impl TaskExecution {
                     if observed.status != AcceptanceStatus::Passed {
                         return Err(observed
                             .failure_reason
-                            .unwrap_or("Effect not verified".into()));
+                            .unwrap_or("Effect not verified".into())
+                            .into());
                     }
                     self.runtime.reconcile(
                         owner,
@@ -786,7 +891,7 @@ impl TaskExecution {
             return Err(TaskActionError::Cancelled);
         }
         let task = outcome?;
-        Ok(task_response(task))
+        Ok(self.decorate_response(task_response(task), owner).await)
     }
 }
 
@@ -807,6 +912,7 @@ pub(crate) async fn install(
         resources,
         validation_work: Default::default(),
     });
+    goals::install(&service)?;
     let for_preflight = service.clone();
     ctx.on(
         "tools/pre-execute",
@@ -958,8 +1064,9 @@ pub(crate) async fn install(
                     let cwd = session.header().cwd.as_deref()?;
                     service.environment(owner,cwd).ok().map(|current|current!=task.spec.environment_fingerprint)
                 });
-                let summary=prompt_task_state(&task);
-                format!("Durable task acceptance state (read task_execution.get when requirementsRevision changes before continuing; never replay unknown effects): {}{}",summary.to_string().chars().take(6000).collect::<String>(),if changed==Some(true) {"\nTASK_ENVIRONMENT_CHANGED: Stop issuing write or execution tools. Ask the user to use 任务验收 → 切换到当前环境 and confirm, or cancel the old task when its objective is no longer relevant. Do not retry with other tools, reinterpret running as migrated, or claim an environment probe changed permissions. Migration preserves requirements and effect history and invalidates old acceptance."} else {""})
+                let mut summary=prompt_task_state(&task);
+                if let Some(service)=environment_service.upgrade() {goals::add_prompt_binding(&mut summary,&task,&service.context);}
+                format!("Durable task acceptance state (read task_execution.get when requirementsRevision or currentGoalRequirements changes before continuing; stale/missing goal bindings require explicit user revision; never replay unknown effects): {}{}",summary.to_string().chars().take(6000).collect::<String>(),if changed==Some(true) {"\nTASK_ENVIRONMENT_CHANGED: Stop issuing write or execution tools. Ask the user to use 任务验收 → 切换到当前环境 and confirm, or cancel the old task when its objective is no longer relevant. Do not retry with other tools, reinterpret running as migrated, or claim an environment probe changed permissions. Migration preserves requirements and effect history and invalidates old acceptance."} else {""})
             }
             Ok(None)=>String::new(),
             Err(error)=>format!("Durable task state unavailable: {error}; do not infer completion from chat history."),
@@ -1006,19 +1113,19 @@ pub(crate) fn register_route(
                         let owner = text(&args, "sessionId")?;
                         // Reading durable contracts must not resurrect an idle
                         // Agent just to populate a recovery panel.
-                        if args["action"]=="list" {return Ok::<_,TaskActionError>(json!({"tasks":service.runtime.list(owner)?,"capabilities":capabilities()}));}
+                        if args["action"]=="list" {return Ok::<_,TaskActionError>(service.decorate_response(json!({"tasks":service.runtime.list(owner)?,"capabilities":capabilities()}),owner).await);}
                         if args["action"]=="refresh_history" {return Ok(json!({"history":service.runtime.evidence_refresh_history(owner,text(&args,"taskId")?)?}));}
                         if args["action"]=="requirements_history" {return Ok(json!({"history":service.runtime.requirements_history(owner,text(&args,"taskId")?)?,"capabilities":capabilities()}));}
                         if args["action"]=="requirements_snapshot" {return Ok(json!({"snapshot":service.runtime.requirements_snapshot(owner,text(&args,"taskId")?,text(&args,"idempotencyKey")?)?,"capabilities":capabilities()}));}
                         if matches!(args["action"].as_str(),Some("get"|"recover")){
                             let task=service.runtime.get(owner,text(&args,"taskId")?)?;
-                            return Ok(task_response(task));
+                            return Ok(service.decorate_response(task_response(task),owner).await);
                         }
                         let requested_action = args["action"].as_str().unwrap_or("");
                         let revision = if requested_action == "revise" {
                             let revision = UserRevision::parse(&args)?;
-                            if let Some(task) = service.runtime.replay_revision(owner,text(&args,"taskId")?,&revision.key,revision.expected,&revision.spec,revision.mode)? {
-                                return Ok(task_response(task));
+                            if let Some(task) = service.runtime.replay_bound_revision(owner,text(&args,"taskId")?,&revision.key,revision.expected,&revision.spec,revision.mode,revision.expected_goal_binding.as_ref())? {
+                                return Ok(service.decorate_response(task_response(task),owner).await);
                             }
                             Some(revision)
                         } else { None };
@@ -1046,7 +1153,8 @@ pub(crate) fn register_route(
                             .as_deref()
                             .ok_or("Session workspace unavailable")?;
                         if let Some(revision) = revision {
-                            return service.revise_with_control(&lease.agent,cwd,text(&args,"taskId")?,revision);
+                            let value=service.revise_with_control(&lease.agent,cwd,text(&args,"taskId")?,revision)?;
+                            return Ok(service.decorate_response(value,owner).await);
                         }
                         let value = service
                             .action_with_work(

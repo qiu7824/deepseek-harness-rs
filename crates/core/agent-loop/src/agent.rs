@@ -1835,8 +1835,34 @@ impl Agent for ReactLoopAgent {
         }
     }
 
+    fn try_generation_control(
+        &self,
+        expected: u64,
+    ) -> Result<Box<dyn dsh_agent::AgentControlGuard + '_>, dsh_agent::AgentControlBusy> {
+        use dsh_agent::AgentControlBusy;
+        let boundary = self
+            .control_boundary
+            .try_lock()
+            .ok_or(AgentControlBusy::Contended)?;
+        if boundary.mutation_depth.get() != 0 || boundary.generation.get() != expected {
+            return Err(AgentControlBusy::Contended);
+        }
+        if !self.published.load(Ordering::Acquire) {
+            return Err(AgentControlBusy::Unavailable);
+        }
+        Ok(Box::new(AgentMutationGuard::from_locked(boundary)))
+    }
+
     fn cancellation_generation(&self) -> Option<u64> {
         Some(self.control_boundary.lock().generation.get())
+    }
+
+    fn running_cancellation_generation(&self) -> Option<u64> {
+        let boundary = self.control_boundary.lock();
+        match &*self.phase.lock() {
+            Phase::Running { abort, .. } if !abort.aborted() => Some(boundary.generation.get()),
+            _ => None,
+        }
     }
 
     fn send_from_generation(

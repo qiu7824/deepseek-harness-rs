@@ -109,6 +109,7 @@ pub struct GoalChanged {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalErrorCode {
     AgentNotLive,
+    AgentBusy,
     NotFound,
     AlreadyExists,
     StaleRevision,
@@ -118,12 +119,15 @@ pub enum GoalErrorCode {
     InvalidEdit,
     InvalidTransition,
     CommitFailed,
+    CompletionBlocked,
+    Cancelled,
 }
 
 impl GoalErrorCode {
     pub fn as_str(&self) -> &'static str {
         match self {
             GoalErrorCode::AgentNotLive => "GOAL_AGENT_NOT_LIVE",
+            GoalErrorCode::AgentBusy => "GOAL_AGENT_BUSY",
             GoalErrorCode::NotFound => "GOAL_NOT_FOUND",
             GoalErrorCode::AlreadyExists => "GOAL_ALREADY_EXISTS",
             GoalErrorCode::StaleRevision => "GOAL_STALE_REVISION",
@@ -133,6 +137,8 @@ impl GoalErrorCode {
             GoalErrorCode::InvalidEdit => "GOAL_INVALID_EDIT",
             GoalErrorCode::InvalidTransition => "GOAL_INVALID_TRANSITION",
             GoalErrorCode::CommitFailed => "GOAL_COMMIT_FAILED",
+            GoalErrorCode::CompletionBlocked => "GOAL_COMPLETION_BLOCKED",
+            GoalErrorCode::Cancelled => "GOAL_CANCELLED",
         }
     }
 }

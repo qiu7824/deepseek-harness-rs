@@ -186,6 +186,14 @@ pub struct TaskRevisionOrigin {
     pub revision: u64,
 }
 
+/// Host-captured goal requirements, separate from model-supplied contract fields.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalBinding {
+    pub goal_id: String,
+    pub objective_revision: u64,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RevisionMode {
@@ -203,6 +211,8 @@ pub enum RevisionError {
     SuccessorRequired,
     InvalidMode,
     ActiveContract,
+    GoalRequirementsChanged,
+    GoalDetachRequiresSuccessor,
     Storage(String),
 }
 impl RevisionError {
@@ -216,6 +226,8 @@ impl RevisionError {
             Self::SuccessorRequired => "TASK_SUCCESSOR_REQUIRED",
             Self::InvalidMode => "TASK_INVALID_REVISION_MODE",
             Self::ActiveContract => "TASK_ACTIVE_CONTRACT",
+            Self::GoalRequirementsChanged => "TASK_GOAL_REQUIREMENTS_CHANGED",
+            Self::GoalDetachRequiresSuccessor => "TASK_GOAL_DETACH_REQUIRES_SUCCESSOR",
             Self::Storage(_) => "TASK_EXECUTION_FAILED",
         }
     }
@@ -241,6 +253,12 @@ impl std::fmt::Display for RevisionError {
             Self::InvalidMode => "A successor requires a completed or cancelled source task",
             Self::ActiveContract => {
                 "Finish or cancel the current contract before creating a successor"
+            }
+            Self::GoalRequirementsChanged => {
+                "Review the current goal requirements and explicitly bind this contract before reusing acceptance"
+            }
+            Self::GoalDetachRequiresSuccessor => {
+                "Keep the original goal association in history; cancel the task if needed and explicitly create an independent successor"
             }
         })
     }
@@ -285,6 +303,8 @@ pub struct TaskContract {
     pub requirements_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub based_on: Option<TaskRevisionOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_binding: Option<GoalBinding>,
     pub spec: ContractSpec,
     pub state: TaskState,
     pub steps: Vec<Step>,
@@ -318,6 +338,22 @@ pub struct RecoveryItem {
 }
 
 impl TaskContract {
+    pub fn goal_binding_blockers(&self, current: Option<&GoalBinding>) -> Vec<String> {
+        let Some(goal_id) = &self.spec.goal_id else {
+            return Vec::new();
+        };
+        if self
+            .goal_binding
+            .as_ref()
+            .is_none_or(|binding| &binding.goal_id != goal_id || binding.objective_revision == 0)
+        {
+            return vec!["Linked task has no trusted goal requirements binding; explicitly revise or create a successor before reuse".into()];
+        }
+        if self.goal_binding.as_ref() != current {
+            return vec!["Goal requirements changed or the linked goal is no longer current; old acceptance does not satisfy the current goal".into()];
+        }
+        Vec::new()
+    }
     pub fn current_acceptance_results(&self) -> &[AcceptanceResult] {
         self.acceptance_refresh
             .as_ref()
@@ -349,6 +385,9 @@ impl TaskContract {
     }
     pub fn completion_blockers(&self) -> Vec<String> {
         let mut failures = Vec::new();
+        if self.spec.goal_id.is_some() && self.goal_binding.is_none() {
+            failures.push("Linked task has no trusted goal requirements binding".into());
+        }
         if self.state == TaskState::Cancelled {
             failures.push(
                 "Task was cancelled; only an explicit user continuation may resume it.".into(),

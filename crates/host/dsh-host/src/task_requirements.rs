@@ -72,16 +72,23 @@ impl TaskExecution {
             }
         }
         revision.spec.environment_fingerprint = self.environment(owner, cwd)?;
+        let (goal_binding, _goal_claim) =
+            self.capture_goal_binding(owner, revision.spec.goal_id.as_deref())?;
+        if goal_binding.as_ref() != revision.expected_goal_binding.as_ref() {
+            return Err(RevisionError::GoalRequirementsChanged.into());
+        }
         let task = self
             .validation_work
             .with_idle(owner, || {
-                self.runtime.revise_by_user(
+                self.runtime.revise_bound_by_user(
                     owner,
                     id,
                     &revision.key,
                     revision.expected,
                     revision.spec,
                     revision.mode,
+                    goal_binding,
+                    revision.expected_goal_binding.as_ref(),
                 )
             })
             .ok_or(RevisionError::Busy)??;

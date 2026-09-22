@@ -858,6 +858,7 @@ window.__ModuleLoader__.load({
         function ToolImage({ attachment, loadImage, t }) {
             const [image, setImage] = (0, react.useState)(null);
             const [failed, setFailed] = (0, react.useState)(false);
+            const [open, setOpen] = (0, react.useState)(false);
             (0, react.useEffect)(() => {
                 let active = true, resource, request;
                 setImage(null); setFailed(false);
@@ -873,7 +874,11 @@ window.__ModuleLoader__.load({
                 return () => { active = false; request?.release?.(); resource?.release(); };
             }, [attachment, loadImage]);
             if (image === null) return failed ? (0, react_jsx_runtime.jsx)("span", { role: "status", children: t("image.serviceUnavailable") }) : null;
-            return (0, react_jsx_runtime.jsx)("a", { href: image, target: "_blank", rel: "noopener noreferrer", children: (0, react_jsx_runtime.jsx)("img", { src: image, alt: attachment.name ?? t("image.result"), loading: "lazy", style: { maxWidth: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 8 } }) });
+            const alt = attachment.name ?? t("image.result");
+            return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+                (0, react_jsx_runtime.jsx)("button", { type: "button", "aria-label": t("image.open"), title: t("image.open"), onClick: () => setOpen(true), style: { display: "block", maxWidth: "100%", padding: 0, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, background: "transparent", cursor: "zoom-in" }, children: (0, react_jsx_runtime.jsx)("img", { src: image, alt, loading: "lazy", style: { display: "block", maxWidth: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 8 } }) }),
+                open && (0, react_jsx_runtime.jsx)("div", { role: "dialog", "aria-modal": "true", "aria-label": alt, onClick: () => setOpen(false), onKeyDown: event => { if (event.key === "Escape") setOpen(false); }, tabIndex: -1, ref: node => node?.focus(), style: { position: "fixed", zIndex: 200, inset: 0, display: "grid", placeItems: "center", padding: 24, background: "rgba(0,0,0,.72)", cursor: "zoom-out" }, children: (0, react_jsx_runtime.jsxs)("div", { onClick: event => event.stopPropagation(), style: { position: "relative", maxWidth: "min(96vw,1400px)", maxHeight: "94vh", padding: 12, borderRadius: 12, background: "var(--dsw-alias-bg-base)", boxShadow: "var(--dsw-shadow-lv3)" }, children: [(0, react_jsx_runtime.jsx)("button", { type: "button", "aria-label": t("image.close"), onClick: () => setOpen(false), style: { position: "absolute", top: 4, right: 4, zIndex: 1, width: 30, height: 30, border: 0, borderRadius: 999, background: "var(--dsw-alias-interactive-bg-hover)", color: "inherit", fontSize: 22, cursor: "pointer" }, children: "×" }), (0, react_jsx_runtime.jsx)("img", { src: image, alt, style: { display: "block", maxWidth: "calc(96vw - 48px)", maxHeight: "88vh", objectFit: "contain" } })] }) })
+            ] });
         }
         function ToolImages({ model, loadImage, t }) {
             return (0, react_jsx_runtime.jsxs)("div", { "data-tool-images": true, children: [
@@ -937,6 +942,17 @@ window.__ModuleLoader__.load({
 		}
 		/** One atomic call dispatched through the Tool-owned keyed slot. */
 		const ToolCall = (0, react.memo)(function ToolCall({ renderSlot, callId, toolName, block, openFile, loadImage, selected, cwd, inspectCall, t, children }) {
+			const announced = react.useRef(false);
+			react.useEffect(() => {
+				// Opening the shared workbench is a presentation side effect of a new
+				// computer-use run. The event is handled by the optional sidebar plugin;
+				// dispatching it here keeps the model/tool path independent of that UI.
+				if (toolName === "computer_use" && !("kind" in block) && !announced.current) {
+					announced.current = true;
+					const EventCtor = globalThis.CustomEvent ?? globalThis.window?.CustomEvent;
+					if (EventCtor) globalThis.dispatchEvent?.(new EventCtor("dsh:computer-use-start", { detail: { callId } }));
+				}
+			}, [toolName, callId, block]);
 			const owner = (0, react.useMemo)(() => ({
 				callId,
 				toolName,

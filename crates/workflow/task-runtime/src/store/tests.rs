@@ -1,8 +1,10 @@
 use super::*;
-#[path = "tests/revise.rs"]
-mod revise;
+#[path = "tests/goal_binding.rs"]
+mod goal_binding;
 #[path = "tests/migration.rs"]
 mod migration;
+#[path = "tests/revise.rs"]
+mod revise;
 
 #[test]
 fn failed_readonly_search_does_not_poison_fresh_content_acceptance() {
@@ -118,7 +120,7 @@ impl Drop for Fixture {
 fn spec() -> ContractSpec {
     ContractSpec {
         objective: "Deliver a correct answer".into(),
-        goal_id: Some("goal1".into()),
+        goal_id: None,
         constraints: vec![],
         expected_outputs: vec!["answer.json".into()],
         acceptance_checks: vec![AcceptanceCheck {

@@ -308,7 +308,7 @@ fn invalid_update(message: &str) -> ToolBodyError {
     policy_error(message, INVALID_UPDATE)
 }
 
-fn execute_update(
+async fn execute_update(
     ctx: &Context,
     config: ResolvedConfig,
     args: &Value,
@@ -398,7 +398,7 @@ fn execute_update(
                 ));
             }
             let goal = if action == "complete" {
-                service.complete(&execution.agent, &ref_)
+                service.complete(&execution.agent, &ref_).await
             } else {
                 service.block(
                     &execution.agent,
@@ -632,8 +632,10 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
             timeout_ms: None,
             is_concurrency_safe: None,
             execute: Arc::new(move |args, exec| {
-                let result = execute_update(&update_ctx, resolved, args, exec);
-                Box::pin(async move { result })
+                let ctx = update_ctx.clone();
+                let args = args.clone();
+                let exec = exec.clone();
+                Box::pin(async move { execute_update(&ctx, resolved, &args, &exec).await })
             }),
             finalize_content: None,
             present_call: Some(Arc::new(present_update)),
