@@ -75,7 +75,6 @@ pub fn run(request: Request) -> Result<i32> {
         );
         return Ok(0);
     }
-    let mut failures = Vec::new();
     ensure!(
         indices.clone().all(
             |index| codex_windows_sandbox::sandbox_setup_is_complete(&pool::home(
@@ -86,24 +85,20 @@ pub fn run(request: Request) -> Result<i32> {
         ),
         "SETUP_REQUIRED: initialize this workspace before native execution"
     );
-    for index in indices {
-        match pool::acquire(&request.home, &request.workspace, index) {
-            Ok(Some(_lease)) => {
-                let mut slot = request.clone();
-                slot.home = pool::home(&request.home, &request.workspace, index);
-                let home = slot.home.clone();
-                let result = run_slot(slot);
-                pool::settle(&home);
-                return result;
-            }
-            Ok(None) => {}
-            Err(error) => failures.push(error.to_string()),
-        }
+    let started = std::time::Instant::now();
+    let wait = Duration::from_millis(request.timeout_ms.unwrap_or(5_000).min(5_000));
+    let (index, _lease) = pool::acquire_available(&request.home, &request.workspace, indices, wait)?;
+    let mut slot = request.clone();
+    if let Some(timeout) = request.timeout_ms {
+        let elapsed = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        ensure!(elapsed < timeout, "NATIVE_SLOT_BUSY: command timeout expired while waiting for an isolated slot; command not dispatched");
+        slot.timeout_ms = Some(timeout - elapsed);
     }
-    anyhow::bail!(
-        "NATIVE_SLOT_BUSY: all isolated account slots are occupied or quarantined: {}",
-        failures.join("; ")
-    )
+    slot.home = pool::home(&request.home, &request.workspace, index);
+    let home = slot.home.clone();
+    let result = run_slot(slot);
+    pool::settle(&home);
+    result
 }
 
 

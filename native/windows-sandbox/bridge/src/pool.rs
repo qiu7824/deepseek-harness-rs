@@ -202,7 +202,8 @@ fn acquire_directory(slot: &Path) -> Result<Option<File>> {
         .open(slot.join("execution.lock"))?;
     match file.try_lock_exclusive() {
         Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+            || e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => return Ok(None),
         Err(e) => return Err(e.into()),
     }
     if runner_alive(&slot)? {
@@ -223,6 +224,37 @@ fn acquire_directory_retry(slot: &Path) -> Result<Option<File>> {
         }
     }
     Ok(None)
+}
+
+/// Wait for any authorized slot, rather than waiting behind one occupied slot
+/// while another becomes available. The caller still owns command timeout and
+/// cancellation; no command is dispatched before this lease is acquired.
+pub fn acquire_available(
+    root: &Path,
+    workspace: &Path,
+    indices: std::ops::Range<usize>,
+    wait: std::time::Duration,
+) -> Result<(usize, File)> {
+    let started = std::time::Instant::now();
+    loop {
+        let mut occupied = 0;
+        let mut failures = Vec::new();
+        for index in indices.clone() {
+            match acquire(root, workspace, index) {
+                Ok(Some(lease)) => return Ok((index, lease)),
+                Ok(None) => occupied += 1,
+                Err(error) => failures.push(format!("slot {index}: {error:#}")),
+            }
+        }
+        if occupied == 0 {
+            anyhow::bail!("NATIVE_SLOT_QUARANTINED: no reusable isolated slot; {}", failures.join("; "));
+        }
+        let remaining = wait.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            anyhow::bail!("NATIVE_SLOT_BUSY: {occupied} isolated slots are occupied after {} ms; command not dispatched{}", wait.as_millis(), if failures.is_empty() { String::new() } else { format!("; {}", failures.join("; ")) });
+        }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(50)));
+    }
 }
 
 pub fn acquire_other_projects(root: &Path, workspace: &Path) -> Result<Vec<File>> {
@@ -261,5 +293,63 @@ pub fn settle(slot: &Path) {
             Err(_) => return,
             Ok(true) => std::thread::sleep(std::time::Duration::from_millis(10)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("dsh-native-slot-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            std::fs::create_dir(&root).unwrap();
+            Self(root.canonicalize().unwrap())
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let parent = std::env::temp_dir().canonicalize().unwrap();
+            assert!(self.0.starts_with(parent) && self.0.file_name().unwrap().to_string_lossy().starts_with("dsh-native-slot-test-"));
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    #[test]
+    fn lock_contention_is_busy_then_reusable_without_deleting_the_lock() {
+        let f = Fixture::new();
+        let lease = acquire_directory(&f.0).unwrap().unwrap();
+        assert!(acquire_directory(&f.0).expect("a held Windows range lock is occupancy, not an initialization error").is_none());
+        drop(lease);
+        assert!(f.0.join("execution.lock").is_file());
+        assert!(acquire_directory(&f.0).unwrap().is_some());
+    }
+    #[test]
+    fn setup_waits_for_real_lease_release_and_keeps_quarantine_closed() {
+        let f = Fixture::new();
+        let lease = acquire_directory(&f.0).unwrap().unwrap();
+        let holder = std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(80)); drop(lease); });
+        let acquired = acquire_directory_retry(&f.0).unwrap().unwrap();
+        holder.join().unwrap(); drop(acquired);
+        std::fs::write(f.0.join("active-runner.json"), br#"{"phase":"starting"}"#).unwrap();
+        assert!(acquire_directory(&f.0).unwrap_err().to_string().contains("NATIVE_SLOT_QUARANTINED"));
+        assert!(f.0.join("active-runner.json").exists());
+    }
+    #[test]
+    fn command_pool_waits_for_any_slot_and_does_not_steal_occupied_leases() {
+        let f = Fixture::new();
+        let workspace = f.0.join("workspace"); std::fs::create_dir(&workspace).unwrap();
+        let mut leases: Vec<_> = (READ_SLOTS..SIZE).map(|index| acquire(&f.0, &workspace, index).unwrap().unwrap()).collect();
+        let error = acquire_available(&f.0, &workspace, READ_SLOTS..SIZE, std::time::Duration::ZERO).unwrap_err().to_string();
+        assert!(error.contains("NATIVE_SLOT_BUSY") && error.contains("command not dispatched"));
+        let last = leases.pop().unwrap();
+        let holder = std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(80)); drop(last); });
+        let (index, lease) = acquire_available(&f.0, &workspace, READ_SLOTS..SIZE, std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(index, SIZE - 1); holder.join().unwrap();
+        assert!(acquire(&f.0, &workspace, READ_SLOTS).unwrap().is_none());
+        drop(lease); drop(leases);
+        for index in READ_SLOTS..SIZE {
+            std::fs::write(home(&f.0, &workspace, index).join("active-runner.json"), br#"{"phase":"starting"}"#).unwrap();
+        }
+        assert!(acquire_available(&f.0, &workspace, READ_SLOTS..SIZE, std::time::Duration::ZERO).unwrap_err().to_string().starts_with("NATIVE_SLOT_QUARANTINED"));
     }
 }
