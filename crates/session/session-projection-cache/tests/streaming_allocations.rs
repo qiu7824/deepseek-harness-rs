@@ -1,5 +1,5 @@
 use cordis::{Context, arc, downcast};
-use dsh_session::{SessionEvent, SessionHeader, session_id};
+use dsh_session::{SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, session_id};
 use dsh_session_persistence_jsonl::{
     JsonlCompression, JsonlConfig, JsonlSessionPersistence, compress_zstd_frame, event_lines,
     log_path, to_header_line,
@@ -70,9 +70,10 @@ async fn large_cold_projection_matches_its_count_without_whole_history_retention
     let sessions = root.join("sessions");
     let storage_root = root.join("storages");
     let id = session_id("large-cold");
-    let meta: SessionHeader =
-        serde_json::from_value(json!({"id":id,"version":3,"createdAt":0,"isSeeded":false}))
-            .unwrap();
+    let meta: SessionHeader = serde_json::from_value(
+        json!({"id":id,"version":SESSION_FORMAT_VERSION,"createdAt":0,"isSeeded":false}),
+    )
+    .unwrap();
     let path = log_path(
         &sessions.to_string_lossy(),
         None,
@@ -88,8 +89,20 @@ async fn large_cold_projection_matches_its_count_without_whole_history_retention
     file.write_all(&compress_zstd_frame(header.as_bytes()).unwrap())
         .unwrap();
     for start in (0..EVENTS).step_by(256) {
-        let rows:Vec<SessionEvent>=(start..(start+256).min(EVENTS)).map(|seq|serde_json::from_value(json!({"seq":seq,"time":seq,"type":"assistant/chunk","data":{"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"small delta"}}})).unwrap()).collect();
-        let body = event_lines(&rows, true) + "\n";
+        let rows: Vec<SessionEvent> = (start..(start + 256).min(EVENTS)).map(|seq| {
+            let mut event = match seq {
+                0 => json!({"type":"turn/start","data":{"turn":1}}),
+                1 => json!({"type":"step/start","data":{"turn":1,"step":1}}),
+                2 => json!({"type":"system/message","surfaceOp":"append","data":{"turn":1,"step":1,"message":{"id":"system","role":"system","source":{"kind":"system-prompt"},"content":[]}}}),
+                n if n == EVENTS - 2 => json!({"type":"step/end","data":{"turn":1,"step":1}}),
+                n if n == EVENTS - 1 => json!({"type":"turn/end","data":{"turn":1,"reason":{"kind":"completed"}}}),
+                _ => json!({"type":"assistant/chunk","data":{"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"small delta"}}}),
+            };
+            event["seq"] = json!(seq);
+            event["time"] = json!(seq);
+            serde_json::from_value(event).unwrap()
+        }).collect();
+        let body = event_lines(&rows, false) + "\n";
         file.write_all(&compress_zstd_frame(body.as_bytes()).unwrap())
             .unwrap();
     }
