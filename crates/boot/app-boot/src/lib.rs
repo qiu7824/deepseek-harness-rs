@@ -21,8 +21,8 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub mod shipped_registry;
 pub mod plugin_profile;
+pub mod shipped_registry;
 
 /// Directory under the Harness home holding every profile.
 pub const PROFILES_DIR: &str = "profiles";
@@ -558,7 +558,10 @@ pub fn load_profile_with_anchors(
 ) -> Result<Profile, String> {
     let dir = resolve_profile_dir(name, home)?;
     if !dir.join("package.json").is_file() && !dir.join(".dsh-plugin-transaction.json").is_file() {
-        return Err(format!("cannot read profile manifest {}",dir.join("package.json").display()));
+        return Err(format!(
+            "cannot read profile manifest {}",
+            dir.join("package.json").display()
+        ));
     }
     let _profile_ownership = plugin_profile::Profile::open(&dir)?;
     let loaded = plugin_profile::read_runtime(&dir);
@@ -566,12 +569,14 @@ pub fn load_profile_with_anchors(
     if let Some(issue) = loaded.issue {
         eprintln!("{bin_name}: {issue}");
         if value.pointer("/dsh/profile/bundles").is_none() {
-            let template = profile_templates().get(name).ok_or_else(|| format!("{bin_name}: no validated recovery snapshot for profile {name:?}"))?;
+            let template = profile_templates().get(name).ok_or_else(|| {
+                format!("{bin_name}: no validated recovery snapshot for profile {name:?}")
+            })?;
             value["dsh"] = serde_json::json!({"profile":{"bundles":template}});
         }
     }
     let manifest: ProfileManifest = serde_json::from_value(value)
-        .map_err(|error| format!("invalid profile {}: {error}",dir.display()))?;
+        .map_err(|error| format!("invalid profile {}: {error}", dir.display()))?;
     let bundles = manifest
         .dsh
         .as_ref()

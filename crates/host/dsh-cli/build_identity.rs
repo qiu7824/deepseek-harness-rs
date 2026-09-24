@@ -2,8 +2,16 @@
 use std::{path::Path, process::Command};
 
 fn git(manifest: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git").arg("-C").arg(manifest).args(args).output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(manifest)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 pub fn emit(manifest: &Path) {
@@ -28,10 +36,24 @@ pub fn emit_named(manifest: &Path, prefix: &str) {
         .is_none_or(|status| !status.is_empty());
     println!("cargo:rustc-env={prefix}_REVISION={revision}");
     println!("cargo:rustc-env={prefix}_DIRTY={dirty}");
-    let mut refs = vec!["HEAD".to_owned(), "index".to_owned(), "packed-refs".to_owned()];
-    if let Some(reference) = git(manifest, &["symbolic-ref", "-q", "HEAD"]) { refs.push(reference); }
+    let mut refs = vec![
+        "HEAD".to_owned(),
+        "index".to_owned(),
+        "packed-refs".to_owned(),
+    ];
+    if let Some(reference) = git(manifest, &["symbolic-ref", "-q", "HEAD"]) {
+        refs.push(reference);
+    }
     for reference in refs {
-        if let Some(path) = git(manifest, &["rev-parse", "--path-format=absolute", "--git-path", &reference]) {
+        if let Some(path) = git(
+            manifest,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                &reference,
+            ],
+        ) {
             println!("cargo:rerun-if-changed={path}");
         }
     }

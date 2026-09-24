@@ -278,10 +278,16 @@ fn decode_history(bytes: &[u8], compressed: bool) -> Result<DecodedHistory, Stri
         "origin":raw.get("origin"),"delegationDepth":raw.get("delegationDepth"),"agentPreset":raw.get("agentPreset")
     })).map_err(|_| "invalid session header fields")?;
     let mut native = if version == 4 {
-        let decoder = dsh_session::format_v4::V4Decoder::new(raw.clone(), dsh_session::format_v4::V4Recovery::Strict)?;
-        header = serde_json::from_value(decoder.header().clone()).map_err(|error| error.to_string())?;
+        let decoder = dsh_session::format_v4::V4Decoder::new(
+            raw.clone(),
+            dsh_session::format_v4::V4Recovery::Strict,
+        )?;
+        header =
+            serde_json::from_value(decoder.header().clone()).map_err(|error| error.to_string())?;
         Some(decoder)
-    } else { None };
+    } else {
+        None
+    };
     let mut events: Vec<SessionEvent> = Vec::new();
     let mut ids = HashMap::new();
     let mut retries = HashMap::new();
@@ -290,8 +296,12 @@ fn decode_history(bytes: &[u8], compressed: bool) -> Result<DecodedHistory, Stri
         let mut row: Value =
             serde_json::from_str(line).map_err(|_| "invalid history record JSON")?;
         if let Some(decoder) = native.as_mut() {
-            if events.len() >= MAX_EVENTS { return Err("history exceeds the event import limit".into()); }
-            let row = decoder.decode_row(row)?.ok_or("strict V4 decoder dropped a row")?;
+            if events.len() >= MAX_EVENTS {
+                return Err("history exceeds the event import limit".into());
+            }
+            let row = decoder
+                .decode_row(row)?
+                .ok_or("strict V4 decoder dropped a row")?;
             events.push(serde_json::from_value(row).map_err(|error| error.to_string())?);
             continue;
         }
@@ -360,8 +370,7 @@ fn decode_history(bytes: &[u8], compressed: bool) -> Result<DecodedHistory, Stri
             .ok_or("seeded history has no inherited end-seed marker")?,
         None => 0,
     };
-    if (!header.is_seeded && !markers.is_empty()) || cut > events.len() as u64
-    {
+    if (!header.is_seeded && !markers.is_empty()) || cut > events.len() as u64 {
         return Err("invalid inherited history boundary".into());
     }
     if version < 3 && header.agent_preset.as_deref() == Some("code") {
@@ -377,17 +386,44 @@ fn decode_history(bytes: &[u8], compressed: bool) -> Result<DecodedHistory, Stri
         header = report.header;
         events = report.events;
     }
-    if let Some(decoder) = native { cut = decoder.finish()?.inherited_event_count; }
-    Ok(DecodedHistory { header, inherited:SessionLogOffset::new(cut)?, events })
+    if let Some(decoder) = native {
+        cut = decoder.finish()?.inherited_event_count;
+    }
+    Ok(DecodedHistory {
+        header,
+        inherited: SessionLogOffset::new(cut)?,
+        events,
+    })
 }
 
-fn encode_history(history: DecodedHistory, children: Vec<Value>) -> Result<(SessionHeader, Vec<u8>, HashMap<String, dsh_attachment::ImageAttachmentRef>, HashMap<String,dsh_attachment::FileAttachmentRef>), String> {
-    let DecodedHistory { mut header, mut inherited, mut events } = history;
+fn encode_history(
+    history: DecodedHistory,
+    children: Vec<Value>,
+) -> Result<
+    (
+        SessionHeader,
+        Vec<u8>,
+        HashMap<String, dsh_attachment::ImageAttachmentRef>,
+        HashMap<String, dsh_attachment::FileAttachmentRef>,
+    ),
+    String,
+> {
+    let DecodedHistory {
+        mut header,
+        mut inherited,
+        mut events,
+    } = history;
     if header.version == 3 {
-        (header, inherited, events) = dsh_session::format_v4::upgrade_v3_events(header, inherited, events, children)?;
+        (header, inherited, events) =
+            dsh_session::format_v4::upgrade_v3_events(header, inherited, events, children)?;
     } else {
-        let mut validation = dsh_session::format_v4::V4Validator::new(serde_json::to_value(&header).map_err(|error| error.to_string())?, inherited.get())?;
-        for event in &events { validation.push(&serde_json::to_value(event).map_err(|error| error.to_string())?)?; }
+        let mut validation = dsh_session::format_v4::V4Validator::new(
+            serde_json::to_value(&header).map_err(|error| error.to_string())?,
+            inherited.get(),
+        )?;
+        for event in &events {
+            validation.push(&serde_json::to_value(event).map_err(|error| error.to_string())?)?;
+        }
         validation.finish()?;
     }
     Session::from_restore(header.id.clone(), events.clone(), &header, inherited)?;
@@ -412,11 +448,14 @@ fn encode_history(history: DecodedHistory, children: Vec<Value>) -> Result<(Sess
     )?;
     let mut records = Vec::new();
     let mut media = HashMap::new();
-    let mut files=HashMap::new();
+    let mut files = HashMap::new();
     for event in events {
-        dsh_host_apiproxy::session_export::collect_event_file_refs(&event,&mut files)?;
+        dsh_host_apiproxy::session_export::collect_event_file_refs(&event, &mut files)?;
         dsh_host_apiproxy::session_export::collect_event_image_refs(&event, &mut media);
-        let row = dsh_session::format_v4::encode_v4_event(serde_json::to_value(event).map_err(|error| error.to_string())?, &Default::default())?;
+        let row = dsh_session::format_v4::encode_v4_event(
+            serde_json::to_value(event).map_err(|error| error.to_string())?,
+            &Default::default(),
+        )?;
         serde_json::to_writer(&mut records, &row).map_err(|e| e.to_string())?;
         records.push(b'\n');
     }
@@ -427,8 +466,19 @@ fn encode_history(history: DecodedHistory, children: Vec<Value>) -> Result<(Sess
 }
 
 #[cfg(test)]
-fn convert(bytes: &[u8], compressed: bool) -> Result<(SessionHeader, Vec<u8>, HashMap<String, dsh_attachment::ImageAttachmentRef>), String> {
-    encode_history(decode_history(bytes, compressed)?, vec![]).map(|(header,bytes,images,_)|(header,bytes,images))
+fn convert(
+    bytes: &[u8],
+    compressed: bool,
+) -> Result<
+    (
+        SessionHeader,
+        Vec<u8>,
+        HashMap<String, dsh_attachment::ImageAttachmentRef>,
+    ),
+    String,
+> {
+    encode_history(decode_history(bytes, compressed)?, vec![])
+        .map(|(header, bytes, images, _)| (header, bytes, images))
 }
 
 fn collect(path: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Result<(), String> {
@@ -466,7 +516,7 @@ pub(crate) fn import(source: &Path, target_home: &Path) -> Result<usize, String>
             return Err("history ZIP exceeds 4096 entries".into());
         }
         let mut total = 0usize;
-        let mut names=HashSet::new();
+        let mut names = HashSet::new();
         for index in 0..archive.len() {
             let mut entry = archive
                 .by_index(index)
@@ -475,7 +525,9 @@ pub(crate) fn import(source: &Path, target_home: &Path) -> Result<usize, String>
                 continue;
             }
             let name = entry.name().to_owned();
-            if !names.insert(name.clone()){return Err("history ZIP contains duplicate entry names".into());}
+            if !names.insert(name.clone()) {
+                return Err("history ZIP contains duplicate entry names".into());
+            }
             if name.ends_with(".jsonl")
                 || name.ends_with(".jsonl.zstd")
                 || name.starts_with("media/")
@@ -520,7 +572,7 @@ pub(crate) fn import(source: &Path, target_home: &Path) -> Result<usize, String>
     let mut total = 0usize;
     let mut identities = HashSet::new();
     let mut references = HashMap::new();
-    let mut file_references=HashMap::new();
+    let mut file_references = HashMap::new();
     let mut existing = Vec::new();
     if root.exists() {
         collect(&root, &mut existing, 0)?;
@@ -529,11 +581,16 @@ pub(crate) fn import(source: &Path, target_home: &Path) -> Result<usize, String>
     let mut children: HashMap<String, Vec<Value>> = HashMap::new();
     for (compressed, original) in inputs {
         total += original.len();
-        if total > MAX_BATCH { return Err("history import batch exceeds 256 MiB".into()); }
+        if total > MAX_BATCH {
+            return Err("history import batch exceeds 256 MiB".into());
+        }
         let history = decode_history(&original, compressed)?;
         if history.header.origin.as_deref() == Some("subagent") {
             if let Some(parent) = &history.header.parent_session {
-                let mut descriptors = history.events.iter().filter(|event| event.seq.get() >= history.inherited.get() && event.type_ == "subagent/descriptor");
+                let mut descriptors = history.events.iter().filter(|event| {
+                    event.seq.get() >= history.inherited.get()
+                        && event.type_ == "subagent/descriptor"
+                });
                 let descriptor = descriptors.next().map(|event| event.data.clone());
                 let count = usize::from(descriptor.is_some()) + descriptors.count();
                 children.entry(parent.to_string()).or_default().push(json!({"childId":history.header.id,"childCreatedAt":history.header.created_at,"descriptorCount":count,"descriptor":descriptor}));
@@ -543,10 +600,16 @@ pub(crate) fn import(source: &Path, target_home: &Path) -> Result<usize, String>
     }
     // Validate the complete import and its direct-child facts before publication.
     for (history, original) in decoded {
-        let facts = children.remove(history.header.id.as_str()).unwrap_or_default();
+        let facts = children
+            .remove(history.header.id.as_str())
+            .unwrap_or_default();
         let (header, bytes, images, files) = encode_history(history, facts)?;
-        for (path,reference) in files {
-            if let Some(old)=file_references.insert(path,reference.clone()) {if old!=reference{return Err("conflicting file attachment metadata".into());}}
+        for (path, reference) in files {
+            if let Some(old) = file_references.insert(path, reference.clone()) {
+                if old != reference {
+                    return Err("conflicting file attachment metadata".into());
+                }
+            }
         }
         references.extend(images);
         if !identities.insert(header.id.to_string()) {
@@ -591,33 +654,76 @@ pub(crate) fn import(source: &Path, target_home: &Path) -> Result<usize, String>
         prepared.push((target, bytes, original));
     }
     // Verify every verbatim file before publishing any session artifact.
-    let mut pending_files=Vec::new();
-    let file_runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|e.to_string())?;
-    let file_ctx=cordis::Context::root();
-    let target_store=dsh_attachment_local::LocalAttachmentStore::install(&file_ctx,dsh_attachment_local::Config {dsh_home:Some(target_home.to_string_lossy().into_owned()),..Default::default()});
-    let source_home=if source.is_dir() {source}else{source.parent().ok_or("attachment source has no parent")?};
-    let source_ctx=cordis::Context::root();
-    let source_store=dsh_attachment_local::LocalAttachmentStore::install(&source_ctx,dsh_attachment_local::Config {dsh_home:Some(source_home.to_string_lossy().into_owned()),..Default::default()});
+    let mut pending_files = Vec::new();
+    let file_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let file_ctx = cordis::Context::root();
+    let target_store = dsh_attachment_local::LocalAttachmentStore::install(
+        &file_ctx,
+        dsh_attachment_local::Config {
+            dsh_home: Some(target_home.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    );
+    let source_home = if source.is_dir() {
+        source
+    } else {
+        source.parent().ok_or("attachment source has no parent")?
+    };
+    let source_ctx = cordis::Context::root();
+    let source_store = dsh_attachment_local::LocalAttachmentStore::install(
+        &source_ctx,
+        dsh_attachment_local::Config {
+            dsh_home: Some(source_home.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    );
     use dsh_attachment::AttachmentStore;
-    for (entry,reference) in file_references {
-        if target_store.file_host_path(&reference).is_none(){return Err("invalid file attachment reference".into());}
-        let bytes=if let Some(bytes)=media_files.remove(&entry){bytes}else{
+    for (entry, reference) in file_references {
+        if target_store.file_host_path(&reference).is_none() {
+            return Err("invalid file attachment reference".into());
+        }
+        let bytes = if let Some(bytes) = media_files.remove(&entry) {
+            bytes
+        } else {
             file_runtime.block_on(async {
                 use tokio::io::AsyncReadExt;
-                let stored=match source_store.open_file(&reference,None).await {
-                    Ok(stored)=>stored,
-                    Err(_)=>target_store.open_file(&reference,None).await.map_err(|e|format!("missing file attachment {}: {e}",reference.attachment_id))?,
+                let stored = match source_store.open_file(&reference, None).await {
+                    Ok(stored) => stored,
+                    Err(_) => target_store
+                        .open_file(&reference, None)
+                        .await
+                        .map_err(|e| {
+                            format!("missing file attachment {}: {e}", reference.attachment_id)
+                        })?,
                 };
-                let mut bytes=Vec::new();stored.reader.take(MAX_LOG as u64+1).read_to_end(&mut bytes).await.map_err(|e|e.to_string())?;
-                Ok::<_,String>(bytes)
+                let mut bytes = Vec::new();
+                stored
+                    .reader
+                    .take(MAX_LOG as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>(bytes)
             })?
         };
         use sha2::Digest;
-        if bytes.len()>MAX_LOG || bytes.len() as u64!=reference.bytes || format!("sha256:{:x}",sha2::Sha256::digest(&bytes))!=reference.attachment_id.as_str() {
-            return Err("file attachment content or metadata mismatch; sessions were not published".into());
+        if bytes.len() > MAX_LOG
+            || bytes.len() as u64 != reference.bytes
+            || format!("sha256:{:x}", sha2::Sha256::digest(&bytes))
+                != reference.attachment_id.as_str()
+        {
+            return Err(
+                "file attachment content or metadata mismatch; sessions were not published".into(),
+            );
         }
-        total+=bytes.len();if total>MAX_BATCH{return Err("history with attachments exceeds 256 MiB".into());}
-        pending_files.push((reference,bytes));
+        total += bytes.len();
+        if total > MAX_BATCH {
+            return Err("history with attachments exceeds 256 MiB".into());
+        }
+        pending_files.push((reference, bytes));
     }
     if !references.is_empty() {
         let image_root = target_home.join("attachments/v1");
@@ -712,9 +818,17 @@ pub(crate) fn import(source: &Path, target_home: &Path) -> Result<usize, String>
             }
         }
     }
-    for (reference,bytes) in pending_files {
-        let saved=file_runtime.block_on(target_store.save_file_stream(Box::pin(std::io::Cursor::new(bytes)),reference.name.clone(),None)).map_err(|e|e.to_string())?;
-        if saved!=reference {return Err("file attachment publication mismatch; sessions were not published".into());}
+    for (reference, bytes) in pending_files {
+        let saved = file_runtime
+            .block_on(target_store.save_file_stream(
+                Box::pin(std::io::Cursor::new(bytes)),
+                reference.name.clone(),
+                None,
+            ))
+            .map_err(|e| e.to_string())?;
+        if saved != reference {
+            return Err("file attachment publication mismatch; sessions were not published".into());
+        }
     }
     let count = prepared.len();
     for (target, bytes, original) in prepared {
@@ -885,12 +999,29 @@ mod tests {
     #[test]
     fn pre_step_surface_is_refused_without_fabricating_or_reordering_history() {
         let original = log(0);
-        let mut rows: Vec<Value> = std::str::from_utf8(&original).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        let user = rows.remove(3); rows.insert(1, user);
-        for (seq, row) in rows.iter_mut().skip(1).enumerate() { row["seq"] = json!(seq); }
-        let source = (rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").into_bytes();
+        let mut rows: Vec<Value> = std::str::from_utf8(&original)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let user = rows.remove(3);
+        rows.insert(1, user);
+        for (seq, row) in rows.iter_mut().skip(1).enumerate() {
+            row["seq"] = json!(seq);
+        }
+        let source = (rows
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n")
+            .into_bytes();
         let retained = source.clone();
-        assert!(convert(&source, false).unwrap_err().contains("protected first surface head"));
+        assert!(
+            convert(&source, false)
+                .unwrap_err()
+                .contains("protected first surface head")
+        );
         assert_eq!(source, retained);
     }
 
@@ -919,54 +1050,157 @@ mod tests {
     fn native_file_export_import_roundtrip_and_corruption_preflight() {
         use dsh_attachment::AttachmentStore;
         use futures::TryStreamExt;
-        let root=std::env::temp_dir().join(format!("file-history-roundtrip-{}",uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("file-history-roundtrip-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let original=b"PK\x03\x04document bytes with \0 binary data".to_vec();
-        let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        let ctx=cordis::Context::root();
-        let source_home=root.join("source-home");
-        let store=dsh_attachment_local::LocalAttachmentStore::install(&ctx,dsh_attachment_local::Config {dsh_home:Some(source_home.to_string_lossy().into_owned()),..Default::default()});
-        let reference=runtime.block_on(store.save_file_stream(Box::pin(std::io::Cursor::new(original.clone())),"中文 附件.docx".into(),None)).unwrap();
-        let mut rows:Vec<Value>=String::from_utf8(log(3)).unwrap().lines().map(|s|serde_json::from_str(s).unwrap()).collect();
-        rows.iter_mut().find(|r|r["type"]=="user/message").unwrap()["data"]["content"].as_array_mut().unwrap().push(json!({"type":"file","attachment":reference}));
-        let source_text=rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")+"\n";
-        let (header,encoded,_,files)=encode_history(decode_history(source_text.as_bytes(),false).unwrap(),vec![]).unwrap();
-        assert_eq!(files.len(),1);
-        let content=String::from_utf8(bounded(zstd::stream::read::Decoder::new(encoded.as_slice()).unwrap(),MAX_LOG).unwrap()).unwrap();
-        let archive_bytes=runtime.block_on(async {
+        let original = b"PK\x03\x04document bytes with \0 binary data".to_vec();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let ctx = cordis::Context::root();
+        let source_home = root.join("source-home");
+        let store = dsh_attachment_local::LocalAttachmentStore::install(
+            &ctx,
+            dsh_attachment_local::Config {
+                dsh_home: Some(source_home.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        );
+        let reference = runtime
+            .block_on(store.save_file_stream(
+                Box::pin(std::io::Cursor::new(original.clone())),
+                "中文 附件.docx".into(),
+                None,
+            ))
+            .unwrap();
+        let mut rows: Vec<Value> = String::from_utf8(log(3))
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        rows.iter_mut()
+            .find(|r| r["type"] == "user/message")
+            .unwrap()["data"]["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"file","attachment":reference}));
+        let source_text = rows
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let (header, encoded, _, files) = encode_history(
+            decode_history(source_text.as_bytes(), false).unwrap(),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(files.len(), 1);
+        let content = String::from_utf8(
+            bounded(
+                zstd::stream::read::Decoder::new(encoded.as_slice()).unwrap(),
+                MAX_LOG,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let archive_bytes = runtime.block_on(async {
             use dsh_host_apiproxy::session_export::*;
-            let deps=SessionLogExportDeps {session_query:None,session_persistence:None,attachments:Some(store.clone()),sessions:None};
-            let artifact=dsh_session_persistence::SessionRawArtifact {meta:header.clone(),inherited_event_count:SessionLogOffset::new(0).unwrap(),filename:"session.jsonl".into(),content};
-            let signal=dsh_host_apiproxy::fetch::handler::AbortSignal::default();
-            let (sender,receiver)=tokio::sync::mpsc::channel(1);
-            let stream=stream_session_log_zip(receiver,6,signal.clone());
-            let producer=async {let result=produce_session_log_zip_entries(&deps,artifact,&header.id,false,&signal,&sender).await;drop(sender);result};
-            let (produced,bytes)=tokio::join!(producer,stream.try_concat());produced.unwrap();bytes.unwrap()
+            let deps = SessionLogExportDeps {
+                session_query: None,
+                session_persistence: None,
+                attachments: Some(store.clone()),
+                sessions: None,
+            };
+            let artifact = dsh_session_persistence::SessionRawArtifact {
+                meta: header.clone(),
+                inherited_event_count: SessionLogOffset::new(0).unwrap(),
+                filename: "session.jsonl".into(),
+                content,
+            };
+            let signal = dsh_host_apiproxy::fetch::handler::AbortSignal::default();
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            let stream = stream_session_log_zip(receiver, 6, signal.clone());
+            let producer = async {
+                let result = produce_session_log_zip_entries(
+                    &deps, artifact, &header.id, false, &signal, &sender,
+                )
+                .await;
+                drop(sender);
+                result
+            };
+            let (produced, bytes) = tokio::join!(producer, stream.try_concat());
+            produced.unwrap();
+            bytes.unwrap()
         });
-        let source=root.join("export.zip");std::fs::write(&source,&archive_bytes).unwrap();
-        let home=root.join("restored");assert_eq!(import(&source,&home).unwrap(),1);assert_eq!(import(&source,&home).unwrap(),1);
-        let restored=dsh_attachment_local::LocalAttachmentStore::install(&cordis::Context::root(),dsh_attachment_local::Config {dsh_home:Some(home.to_string_lossy().into_owned()),..Default::default()});
-        assert_eq!(std::fs::read(restored.file_host_path(&reference).unwrap()).unwrap(),original);
+        let source = root.join("export.zip");
+        std::fs::write(&source, &archive_bytes).unwrap();
+        let home = root.join("restored");
+        assert_eq!(import(&source, &home).unwrap(), 1);
+        assert_eq!(import(&source, &home).unwrap(), 1);
+        let restored = dsh_attachment_local::LocalAttachmentStore::install(
+            &cordis::Context::root(),
+            dsh_attachment_local::Config {
+                dsh_home: Some(home.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            std::fs::read(restored.file_host_path(&reference).unwrap()).unwrap(),
+            original
+        );
         // Rewrite only the attachment payload; no session may be published.
-        let mut archive=zip::ZipArchive::new(std::io::Cursor::new(archive_bytes)).unwrap();
-        let mut corrupt=zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(archive_bytes)).unwrap();
+        let mut corrupt = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for i in 0..archive.len() {
-            let mut entry=archive.by_index(i).unwrap();let name=entry.name().to_owned();
-            corrupt.start_file(&name,zip::write::SimpleFileOptions::default()).unwrap();
-            if name.starts_with("files/"){corrupt.write_all(b"corrupt").unwrap();}else{std::io::copy(&mut entry,&mut corrupt).unwrap();}
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().to_owned();
+            corrupt
+                .start_file(&name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            if name.starts_with("files/") {
+                corrupt.write_all(b"corrupt").unwrap();
+            } else {
+                std::io::copy(&mut entry, &mut corrupt).unwrap();
+            }
         }
-        let corrupt_path=root.join("corrupt.zip");std::fs::write(&corrupt_path,corrupt.finish().unwrap().into_inner()).unwrap();
-        let rejected=root.join("rejected");assert!(import(&corrupt_path,&rejected).unwrap_err().contains("mismatch"));assert!(!rejected.join("sessions").exists());
-        assert_eq!(std::fs::read(store.file_host_path(&reference).unwrap()).unwrap(),original);
-        assert!(root.canonicalize().unwrap().starts_with(std::env::temp_dir().canonicalize().unwrap()));std::fs::remove_dir_all(root).unwrap();
+        let corrupt_path = root.join("corrupt.zip");
+        std::fs::write(&corrupt_path, corrupt.finish().unwrap().into_inner()).unwrap();
+        let rejected = root.join("rejected");
+        assert!(
+            import(&corrupt_path, &rejected)
+                .unwrap_err()
+                .contains("mismatch")
+        );
+        assert!(!rejected.join("sessions").exists());
+        assert_eq!(
+            std::fs::read(store.file_host_path(&reference).unwrap()).unwrap(),
+            original
+        );
+        assert!(
+            root.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn export_zip_restores_content_addressed_images_without_extracting_paths() {
-        dsh_attachment_local::codec::configure_worker(dsh_attachment_local::codec::CodecWorkerCommand {
-            program:std::env::current_exe().unwrap(),
-            arguments:vec!["--exact".into(), "history_import::tests::image_codec_worker_entry".into(), "--ignored".into(), "--nocapture".into()],
-        }).unwrap();
+        dsh_attachment_local::codec::configure_worker(
+            dsh_attachment_local::codec::CodecWorkerCommand {
+                program: std::env::current_exe().unwrap(),
+                arguments: vec![
+                    "--exact".into(),
+                    "history_import::tests::image_codec_worker_entry".into(),
+                    "--ignored".into(),
+                    "--nocapture".into(),
+                ],
+            },
+        )
+        .unwrap();
         use sha2::Digest;
         let root =
             std::env::temp_dir().join(format!("dsh-import-zip-test-{}", uuid::Uuid::new_v4()));

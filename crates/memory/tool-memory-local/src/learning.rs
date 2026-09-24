@@ -319,12 +319,16 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
             false,
         ),
         "SANDBOX_BUSY" => (
-            "sandbox-slot-busy", "sandbox-runtime",
-            "隔离槽位暂被占用，当前命令未启动；等待已有执行释放槽位，勿重复初始化或关闭沙箱。", false,
+            "sandbox-slot-busy",
+            "sandbox-runtime",
+            "隔离槽位暂被占用，当前命令未启动；等待已有执行释放槽位，勿重复初始化或关闭沙箱。",
+            false,
         ),
         "SANDBOX_QUARANTINED" => (
-            "sandbox-slot-quarantined", "sandbox-runtime",
-            "没有可复用的隔离槽位，当前命令未启动；检查原执行、隔离记录与清理状态，不能直接复用隔离中的账户。", false,
+            "sandbox-slot-quarantined",
+            "sandbox-runtime",
+            "没有可复用的隔离槽位，当前命令未启动；检查原执行、隔离记录与清理状态，不能直接复用隔离中的账户。",
+            false,
         ),
         "SANDBOX_SETUP_FAILED"
         | "SANDBOX_SETUP_REQUIRED"
@@ -1082,15 +1086,33 @@ impl LearningStore {
 
     /// Retain source material while an observation still needs verification.
     /// A damaged ledger cannot authorize evidence reclamation.
-    pub fn pending_evidence(&self)->Result<(std::collections::BTreeSet<String>,std::collections::BTreeSet<String>),String> {
-        if let Some(error)=self.read_only_error.as_ref(){return Err(error.clone());}
-        let document=self.document.read().unwrap();let mut owners=std::collections::BTreeSet::new();let mut workspaces=std::collections::BTreeSet::new();
-        for entry in &document.entries {
-            if entry.status=="verified" && reusable_rule(entry){continue;}
-            if let Some(owner)=&entry.last_session_id{owners.insert(owner.clone());}
-            if !entry.workspace_key.is_empty(){workspaces.insert(entry.workspace_key.clone());}
+    pub fn pending_evidence(
+        &self,
+    ) -> Result<
+        (
+            std::collections::BTreeSet<String>,
+            std::collections::BTreeSet<String>,
+        ),
+        String,
+    > {
+        if let Some(error) = self.read_only_error.as_ref() {
+            return Err(error.clone());
         }
-        Ok((owners,workspaces))
+        let document = self.document.read().unwrap();
+        let mut owners = std::collections::BTreeSet::new();
+        let mut workspaces = std::collections::BTreeSet::new();
+        for entry in &document.entries {
+            if entry.status == "verified" && reusable_rule(entry) {
+                continue;
+            }
+            if let Some(owner) = &entry.last_session_id {
+                owners.insert(owner.clone());
+            }
+            if !entry.workspace_key.is_empty() {
+                workspaces.insert(entry.workspace_key.clone());
+            }
+        }
+        Ok((owners, workspaces))
     }
 
     pub fn list(&self, payload: &Value) -> Value {

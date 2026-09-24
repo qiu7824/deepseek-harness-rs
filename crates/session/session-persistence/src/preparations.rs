@@ -360,7 +360,12 @@ impl<S: PreparedSource, C: Clone + Send + Sync + 'static> SessionPreparations<S,
 
     /// Release all cache entries and reverse reservations at backend teardown.
     pub fn clear(&self) {
-        let entries: Vec<_> = self.entries.lock().drain(..).map(|(_, entry)| entry).collect();
+        let entries: Vec<_> = self
+            .entries
+            .lock()
+            .drain(..)
+            .map(|(_, entry)| entry)
+            .collect();
         for entry in entries {
             entry.state.lock().reservation = None;
             entry.notify.notify_waiters();

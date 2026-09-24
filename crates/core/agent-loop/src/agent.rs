@@ -205,7 +205,9 @@ enum PreparedStep {
 struct TurnDeadline(Option<tokio::task::JoinHandle<()>>);
 impl Drop for TurnDeadline {
     fn drop(&mut self) {
-        if let Some(task) = self.0.take() { task.abort(); }
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
     }
 }
 
@@ -787,7 +789,12 @@ impl ReactLoopAgent {
                     let owns_turn = matches!(&*agent.phase.lock(), Phase::Running { abort, .. }
                         if Arc::ptr_eq(abort, &expected_signal) && !abort.aborted());
                     if owns_turn {
-                        agent.cancel(AgentCancelCause::Hook { reason: "subagent timeoutSeconds exceeded".into() }, None);
+                        agent.cancel(
+                            AgentCancelCause::Hook {
+                                reason: "subagent timeoutSeconds exceeded".into(),
+                            },
+                            None,
+                        );
                     }
                 }
             })
@@ -796,7 +803,10 @@ impl ReactLoopAgent {
         let mut continuation = crate::response_continuation::ResponseContinuation::default();
         let mut target = InboxTarget::NextTurn;
         let step_outcome: Result<(), LoopCancelled> = async {
-            let _run_permit = if let Some(gate) = self.ctx.get_typed::<Arc<dsh_agent::AgentRunAdmission>>("agentRunAdmission", false) {
+            let _run_permit = if let Some(gate) = self
+                .ctx
+                .get_typed::<Arc<dsh_agent::AgentRunAdmission>>("agentRunAdmission", false)
+            {
                 match (gate.admit)(self) {
                     Ok(permit) => Some(permit),
                     Err(reason) => {
@@ -805,7 +815,9 @@ impl ReactLoopAgent {
                         unreachable!()
                     }
                 }
-            } else { None };
+            } else {
+                None
+            };
             loop {
                 throw_if_aborted(&signal)?;
                 let step = match &*self.phase.lock() {
@@ -813,7 +825,12 @@ impl ReactLoopAgent {
                     _ => unreachable!(),
                 };
                 if self.options.max_steps.is_some_and(|limit| step > limit) {
-                    self.cancel(AgentCancelCause::Hook { reason: "subagent maxTurns exceeded".into() }, None);
+                    self.cancel(
+                        AgentCancelCause::Hook {
+                            reason: "subagent maxTurns exceeded".into(),
+                        },
+                        None,
+                    );
                     throw_if_aborted(&signal)?;
                 }
                 let decision = tokio::select! {

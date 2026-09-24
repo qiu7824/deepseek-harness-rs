@@ -379,7 +379,9 @@ fn mount_tool(
                     signal: signal.clone(),
                     agent_options,
                     output_schema: None,
-                    max_depth: config.max_depth.and_then(|fallback|dsh_subagent::child_agent::effective_max_depth(parent.ctx(),Some(fallback))),
+                    max_depth: config.max_depth.and_then(|fallback| {
+                        dsh_subagent::child_agent::effective_max_depth(parent.ctx(), Some(fallback))
+                    }),
                     tool_filter: config.tool_filter.clone(),
                     persona: config.persona.clone(),
                 };

@@ -1077,7 +1077,7 @@ impl Engine {
             return Ok(snapshot);
         }
         let (w, h, rect) = self.observed.ok_or("请先观察桌面画面，再发送输入")?;
-        input::validate_observed_viewport(args,w,h)?;
+        input::validate_observed_viewport(args, w, h)?;
         if bounds(self.target, self.monitor)? != rect {
             self.observed = None;
             return Err("桌面布局已变化，请重新截图".into());

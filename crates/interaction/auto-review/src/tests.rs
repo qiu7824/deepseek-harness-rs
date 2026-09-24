@@ -568,14 +568,22 @@ async fn completed_code_transport_fences_unawaited_review_and_settles_before_tur
     f.close().await;
 }
 
-fn validate_native(session:&dsh_session::Session) {
+fn validate_native(session: &dsh_session::Session) {
     use dsh_session::format_v4::*;
-    let mut header=serde_json::to_value(session.header()).unwrap();header["version"]=json!(4);
-    let mut decoder=V4Decoder::new(encode_v4_header(header.clone(),0).unwrap(),V4Recovery::Strict).unwrap();
-    let mut validator=V4Validator::new(header,0).unwrap();
+    let mut header = serde_json::to_value(session.header()).unwrap();
+    header["version"] = json!(4);
+    let mut decoder = V4Decoder::new(
+        encode_v4_header(header.clone(), 0).unwrap(),
+        V4Recovery::Strict,
+    )
+    .unwrap();
+    let mut validator = V4Validator::new(header, 0).unwrap();
     for event in session.events().iter() {
-        let wire=encode_v4_event(serde_json::to_value(event).unwrap(),&Default::default()).unwrap();
-        let row=decoder.decode_row(wire).unwrap().unwrap();validator.push(&row).unwrap();
+        let wire =
+            encode_v4_event(serde_json::to_value(event).unwrap(), &Default::default()).unwrap();
+        let row = decoder.decode_row(wire).unwrap().unwrap();
+        validator.push(&row).unwrap();
     }
-    decoder.finish().unwrap();validator.finish().unwrap();
+    decoder.finish().unwrap();
+    validator.finish().unwrap();
 }

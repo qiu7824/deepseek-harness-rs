@@ -157,7 +157,9 @@ fn convert_record(
     writer: &mut ArtifactWriter,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), String> {
-    if line.iter().all(u8::is_ascii_whitespace) { return Ok(()); }
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Ok(());
+    }
     let value: Value =
         serde_json::from_slice(line).map_err(|e| format!("invalid V3 source record: {e}"))?;
     let mut emit = |row| {
@@ -207,7 +209,14 @@ pub fn migrate_recovered_v3_to_v4(
     events: &[dsh_session::SessionEvent],
     cancelled: &impl Fn() -> bool,
 ) -> Result<V4MigrationResult, String> {
-    migrate_v3_impl(lease, expected_id, children, compression, Some(events), cancelled)
+    migrate_v3_impl(
+        lease,
+        expected_id,
+        children,
+        compression,
+        Some(events),
+        cancelled,
+    )
 }
 
 fn migrate_v3_impl(
@@ -247,59 +256,69 @@ fn migrate_v3_impl(
     let mut fragment = Vec::new();
     if let Some(events) = recovered {
         let (header, cut) = decode_v3_header(selected.physical_header.clone(), V3Dialect::Rust)?;
-        let mut target = header.clone(); target["version"] = Value::from(4);
+        let mut target = header.clone();
+        target["version"] = Value::from(4);
         writer.record(&encode_v4_header(target, 0)?, true, cancelled)?;
         let mut stage = V3ToV4Transform::new(header, children.take(), cut, V3Dialect::Rust)?;
         for event in events {
             check_cancel(cancelled)?;
-            for row in stage.push(serde_json::to_value(event).map_err(|error| error.to_string())?)? {
-                writer.record(&encode_v4_event(row, &V4Vocabulary::default())?, false, cancelled)?;
+            for row in
+                stage.push(serde_json::to_value(event).map_err(|error| error.to_string())?)?
+            {
+                writer.record(
+                    &encode_v4_event(row, &V4Vocabulary::default())?,
+                    false,
+                    cancelled,
+                )?;
             }
         }
         transform = Some(stage);
-    } else { visit_artifact(source.file(), selected.compression, cancelled, |part| {
-        match part {
-            ArtifactPart::Header(line) => {
-                let physical: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
-                if physical != selected.physical_header {
-                    return Err("Session header changed after generation selection".into());
-                }
-                let (header, cut) = decode_v3_header(physical, V3Dialect::Rust)?;
-                let mut target = header.clone();
-                target["version"] = Value::from(4);
-                writer.record(&encode_v4_header(target, 0)?, true, cancelled)?;
-                transform = Some(V3ToV4Transform::new(
-                    header,
-                    children.take(),
-                    cut,
-                    V3Dialect::Rust,
-                )?);
-            }
-            ArtifactPart::Body(bytes) => {
-                let transform = transform.as_mut().ok_or("missing V3 header")?;
-                let mut start = 0;
-                for (end, byte) in bytes.iter().enumerate() {
-                    if *byte != b'\n' {
-                        continue;
+    } else {
+        visit_artifact(source.file(), selected.compression, cancelled, |part| {
+            match part {
+                ArtifactPart::Header(line) => {
+                    let physical: Value =
+                        serde_json::from_slice(line).map_err(|e| e.to_string())?;
+                    if physical != selected.physical_header {
+                        return Err("Session header changed after generation selection".into());
                     }
-                    check_cancel(cancelled)?;
-                    if fragment.is_empty() {
-                        convert_record(&bytes[start..end], transform, &mut writer, cancelled)?;
-                    } else {
-                        fragment.extend_from_slice(&bytes[start..end]);
-                        convert_record(&fragment, transform, &mut writer, cancelled)?;
-                        fragment.clear();
-                        if fragment.capacity() > 64 * 1024 {
-                            fragment = Vec::new();
+                    let (header, cut) = decode_v3_header(physical, V3Dialect::Rust)?;
+                    let mut target = header.clone();
+                    target["version"] = Value::from(4);
+                    writer.record(&encode_v4_header(target, 0)?, true, cancelled)?;
+                    transform = Some(V3ToV4Transform::new(
+                        header,
+                        children.take(),
+                        cut,
+                        V3Dialect::Rust,
+                    )?);
+                }
+                ArtifactPart::Body(bytes) => {
+                    let transform = transform.as_mut().ok_or("missing V3 header")?;
+                    let mut start = 0;
+                    for (end, byte) in bytes.iter().enumerate() {
+                        if *byte != b'\n' {
+                            continue;
                         }
+                        check_cancel(cancelled)?;
+                        if fragment.is_empty() {
+                            convert_record(&bytes[start..end], transform, &mut writer, cancelled)?;
+                        } else {
+                            fragment.extend_from_slice(&bytes[start..end]);
+                            convert_record(&fragment, transform, &mut writer, cancelled)?;
+                            fragment.clear();
+                            if fragment.capacity() > 64 * 1024 {
+                                fragment = Vec::new();
+                            }
+                        }
+                        start = end + 1;
                     }
-                    start = end + 1;
+                    fragment.extend_from_slice(&bytes[start..]);
                 }
-                fragment.extend_from_slice(&bytes[start..]);
             }
-        }
-        Ok(())
-    })?; }
+            Ok(())
+        })?;
+    }
     if !fragment.is_empty() {
         return Err(
             "V3 migration source has an incomplete final JSONL record; original retained".into(),

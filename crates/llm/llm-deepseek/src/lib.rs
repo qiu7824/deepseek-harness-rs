@@ -1177,11 +1177,57 @@ async fn resolve_image_urls(
     let mut urls = std::collections::HashMap::new();
     let mut image_meta = std::collections::HashMap::new();
     let mut prepared = Vec::new();
-    let native_calls=options.messages.iter().filter(|m|m.role==dsh_llm::Role::Assistant).flat_map(|m|m.content.iter()).filter_map(|part|match part{dsh_llm::ContentBlock::ToolCall{id,name,..} if name==dsh_llm::computer_protocol::TOOL_NAME=>Some(id.as_str()),_=>None}).collect::<std::collections::HashSet<_>>();
-    let native_images=options.messages.iter().flat_map(|message| {
-        if let Some((id,content,_))=message.as_tool_result() {if native_calls.contains(id.as_str()){return content.iter().filter_map(|part|match part{dsh_llm::ContentBlock::Image{attachment,offloaded} if *offloaded!=Some(true)=>Some(attachment.attachment_id.as_str()),_=>None}).collect::<Vec<_>>();}}
-        message.content.iter().filter_map(|part|part.as_tool_result()).filter(|(id,_,_)|native_calls.contains(id.as_str())).flat_map(|(_,content,_)|content.iter().filter_map(|part|match part{dsh_llm::ContentBlock::Image{attachment,offloaded} if *offloaded!=Some(true)=>Some(attachment.attachment_id.as_str()),_=>None})).collect::<Vec<_>>()
-    }).collect::<std::collections::HashSet<_>>();
+    let native_calls = options
+        .messages
+        .iter()
+        .filter(|m| m.role == dsh_llm::Role::Assistant)
+        .flat_map(|m| m.content.iter())
+        .filter_map(|part| match part {
+            dsh_llm::ContentBlock::ToolCall { id, name, .. }
+                if name == dsh_llm::computer_protocol::TOOL_NAME =>
+            {
+                Some(id.as_str())
+            }
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let native_images = options
+        .messages
+        .iter()
+        .flat_map(|message| {
+            if let Some((id, content, _)) = message.as_tool_result() {
+                if native_calls.contains(id.as_str()) {
+                    return content
+                        .iter()
+                        .filter_map(|part| match part {
+                            dsh_llm::ContentBlock::Image {
+                                attachment,
+                                offloaded,
+                            } if *offloaded != Some(true) => {
+                                Some(attachment.attachment_id.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                }
+            }
+            message
+                .content
+                .iter()
+                .filter_map(|part| part.as_tool_result())
+                .filter(|(id, _, _)| native_calls.contains(id.as_str()))
+                .flat_map(|(_, content, _)| {
+                    content.iter().filter_map(|part| match part {
+                        dsh_llm::ContentBlock::Image {
+                            attachment,
+                            offloaded,
+                        } if *offloaded != Some(true) => Some(attachment.attachment_id.as_str()),
+                        _ => None,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<std::collections::HashSet<_>>();
     if !request_image_attachments(options).is_empty() {
         if let Some(telemetry) = &options.telemetry {
             telemetry.phase("attachment_prepare", None);
@@ -1203,12 +1249,53 @@ async fn resolve_image_urls(
         let version = if native_images.contains(attachment.attachment_id.as_str()) {
             // Native computer coordinates refer to screenshot pixels. A generic
             // 640k-pixel resize would change their meaning before the next call.
-            if reference.bytes>16*1024*1024 {return Err(failure("Native computer screenshot exceeds 16 MiB", "ATTACHMENT_TOO_LARGE"));}
-            let raw=store.open_image(&reference,options.signal.as_ref()).await.map_err(|error|failure(format!("Native screenshot read failed: {error}"),&error.code))?;
-            if raw.reference.bytes!=reference.bytes||raw.reference.width!=reference.width||raw.reference.height!=reference.height||raw.reference.media_type!=reference.media_type{return Err(failure("Native screenshot metadata changed", "ATTACHMENT_CORRUPT"));}
-            let original=dsh_attachment::RequestImagePolicy{max_pixels:raw.reference.width.saturating_mul(raw.reference.height),max_bytes:raw.reference.bytes,preferred_media_type:raw.reference.media_type};
-            dsh_attachment::RequestImageStream{attachment_id:raw.reference.attachment_id.clone(),variant_id:dsh_attachment::request_image_variant_id(&raw.reference,&original),media_type:raw.reference.media_type,bytes:raw.reference.bytes,width:raw.reference.width,height:raw.reference.height,reader:raw.reader}
-        } else {store.open_image_request(&reference, &policy, options.signal.as_ref()).await.map_err(|error|failure(format!("DeepSeek image read failed: {error}"), &error.code))?};
+            if reference.bytes > 16 * 1024 * 1024 {
+                return Err(failure(
+                    "Native computer screenshot exceeds 16 MiB",
+                    "ATTACHMENT_TOO_LARGE",
+                ));
+            }
+            let raw = store
+                .open_image(&reference, options.signal.as_ref())
+                .await
+                .map_err(|error| {
+                    failure(
+                        format!("Native screenshot read failed: {error}"),
+                        &error.code,
+                    )
+                })?;
+            if raw.reference.bytes != reference.bytes
+                || raw.reference.width != reference.width
+                || raw.reference.height != reference.height
+                || raw.reference.media_type != reference.media_type
+            {
+                return Err(failure(
+                    "Native screenshot metadata changed",
+                    "ATTACHMENT_CORRUPT",
+                ));
+            }
+            let original = dsh_attachment::RequestImagePolicy {
+                max_pixels: raw.reference.width.saturating_mul(raw.reference.height),
+                max_bytes: raw.reference.bytes,
+                preferred_media_type: raw.reference.media_type,
+            };
+            dsh_attachment::RequestImageStream {
+                attachment_id: raw.reference.attachment_id.clone(),
+                variant_id: dsh_attachment::request_image_variant_id(&raw.reference, &original),
+                media_type: raw.reference.media_type,
+                bytes: raw.reference.bytes,
+                width: raw.reference.width,
+                height: raw.reference.height,
+                reader: raw.reader,
+            }
+        } else {
+            store
+                .open_image_request(&reference, &policy, options.signal.as_ref())
+                .await
+                .map_err(|error| {
+                    failure(format!("DeepSeek image read failed: {error}"), &error.code)
+                })?
+        };
         image_meta.insert(
             attachment.attachment_id.clone(),
             serialize::PreparedImageMeta {
@@ -1238,7 +1325,7 @@ async fn resolve_image_urls(
         let mut encoder =
             base64::write::EncoderWriter::new(&mut url, &base64::engine::general_purpose::STANDARD);
         let mut buffer = vec![0u8; 48 * 1024];
-        let mut streamed=0u64;
+        let mut streamed = 0u64;
         loop {
             if options.signal.as_ref().is_some_and(|signal| signal()) {
                 return Err(failure("Image preparation cancelled", "CANCELLED"));
@@ -1251,13 +1338,23 @@ async fn resolve_image_urls(
             if count == 0 {
                 break;
             }
-            streamed=streamed.saturating_add(count as u64);
-            if streamed>version.bytes{return Err(failure("Image stream exceeded its declared size", "ATTACHMENT_CORRUPT"));}
+            streamed = streamed.saturating_add(count as u64);
+            if streamed > version.bytes {
+                return Err(failure(
+                    "Image stream exceeded its declared size",
+                    "ATTACHMENT_CORRUPT",
+                ));
+            }
             encoder
                 .write_all(&buffer[..count])
                 .map_err(|e| failure(e.to_string(), "ATTACHMENT_READ_FAILED"))?;
         }
-        if streamed!=version.bytes{return Err(failure("Image stream ended before its declared size", "ATTACHMENT_CORRUPT"));}
+        if streamed != version.bytes {
+            return Err(failure(
+                "Image stream ended before its declared size",
+                "ATTACHMENT_CORRUPT",
+            ));
+        }
         encoder
             .finish()
             .map_err(|e| failure(e.to_string(), "ATTACHMENT_READ_FAILED"))?;
@@ -1663,7 +1760,11 @@ async fn request_chunks(
             dsh_llm::RequestImageRepresentation::Base64,
         );
         require_durable_image_offload(&options, &exact_options)?;
-        let serializer = if connection.api == "openai-responses" { serialize::serialize_responses_request } else { serialize::serialize_request_with_prepared_images };
+        let serializer = if connection.api == "openai-responses" {
+            serialize::serialize_responses_request
+        } else {
+            serialize::serialize_request_with_prepared_images
+        };
         let chat_body = serializer(
             &exact_options,
             &connection.defaults,
@@ -2105,7 +2206,10 @@ async fn request_responses_chunks(
     }
     let mut parser = sse::SseParser::new();
     let mut translator = responses::ResponsesTranslator::default();
-    if body["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["type"]=="computer")) {
+    if body["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "computer"))
+    {
         translator.enable_native_computer();
     }
     let outcome: Result<(), LlmFailure> = async {

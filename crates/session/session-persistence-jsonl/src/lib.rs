@@ -5,9 +5,9 @@
 pub mod format;
 pub mod generations;
 pub mod index;
-mod packed_stream;
-mod native_writer;
 mod native_reader;
+mod native_writer;
+mod packed_stream;
 pub mod v4_artifact;
 pub mod zstd;
 

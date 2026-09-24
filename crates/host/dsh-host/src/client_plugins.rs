@@ -19,7 +19,15 @@ fn remove_retired_bundled(profile: &Path) -> Result<(), String> {
     let profile = Profile::open(profile)?;
     let mut documents = profile.documents()?;
     for name in RETIRED_BUNDLED_PLUGINS {
-        if documents.manifest.get("dependencies").and_then(|value|value.get(name)).and_then(Value::as_str)!=Some("bundled") {continue;}
+        if documents
+            .manifest
+            .get("dependencies")
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            != Some("bundled")
+        {
+            continue;
+        }
         let mut changed = documents
             .manifest
             .get_mut("dependencies")
@@ -127,7 +135,15 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
         let Some(name) = manifest["name"].as_str() else {
             continue;
         };
-        if documents.manifest.get("dependencies").and_then(|value|value.get(name)).and_then(Value::as_str).is_some_and(|source|source!="bundled") {continue;}
+        if documents
+            .manifest
+            .get("dependencies")
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .is_some_and(|source| source != "bundled")
+        {
+            continue;
+        }
         let destination = dsh_app_boot::plugin_profile::package_path(profile.root(), name)?;
         let refresh = !bundled_tree_matches(&entry.path(), &destination);
         let mut next = documents.clone();
@@ -514,8 +530,14 @@ pub fn compose(
         .ok_or_else(|| "web plugin manifest entries are absent".to_string())?;
     let mut disposers = Vec::new();
     for plugin in plugins {
-        if entries.iter().any(|entry|entry.get("id").and_then(Value::as_str)==Some(plugin.id.as_str())) {
-            eprintln!("dsh: optional client plugin {:?} conflicts with a core module and was not loaded",plugin.id);
+        if entries
+            .iter()
+            .any(|entry| entry.get("id").and_then(Value::as_str) == Some(plugin.id.as_str()))
+        {
+            eprintln!(
+                "dsh: optional client plugin {:?} conflicts with a core module and was not loaded",
+                plugin.id
+            );
             continue;
         }
         if plugin.id == "dsh-skin-center" && !skins_allowed {
@@ -582,13 +604,28 @@ mod tests {
 
     #[test]
     fn explicit_user_package_is_not_removed_as_a_retired_bundled_plugin() {
-        let root=std::env::temp_dir().join(format!("keep-user-plugin-{}",uuid::Uuid::new_v4()));
-        let package=root.join("node_modules/dsh-task-manager");std::fs::create_dir_all(&package).unwrap();
-        std::fs::write(root.join("package.json"),json!({"dependencies":{"dsh-task-manager":"github:owner/repo#commit"}}).to_string()).unwrap();
-        std::fs::write(root.join("plugins.json"),json!([{"id":"dsh-task-manager","name":"dsh-task-manager","disabled":true}]).to_string()).unwrap();
-        std::fs::write(package.join("client.js"),b"owned custom package").unwrap();
-        remove_retired_bundled(&root).unwrap();assert!(package.join("client.js").is_file());
-        assert!(std::fs::read_to_string(root.join("package.json")).unwrap().contains("github:owner/repo"));
+        let root = std::env::temp_dir().join(format!("keep-user-plugin-{}", uuid::Uuid::new_v4()));
+        let package = root.join("node_modules/dsh-task-manager");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            json!({"dependencies":{"dsh-task-manager":"github:owner/repo#commit"}}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("plugins.json"),
+            json!([{"id":"dsh-task-manager","name":"dsh-task-manager","disabled":true}])
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(package.join("client.js"), b"owned custom package").unwrap();
+        remove_retired_bundled(&root).unwrap();
+        assert!(package.join("client.js").is_file());
+        assert!(
+            std::fs::read_to_string(root.join("package.json"))
+                .unwrap()
+                .contains("github:owner/repo")
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

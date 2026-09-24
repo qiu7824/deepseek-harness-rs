@@ -239,13 +239,22 @@ pub fn log_path(
     id: &SessionId,
     compression: JsonlCompression,
 ) -> PathBuf {
-    session_dir(root, cwd, id).join(format!("session.v{SESSION_FORMAT_VERSION}{}", log_suffix(compression)))
+    session_dir(root, cwd, id).join(format!(
+        "session.v{SESSION_FORMAT_VERSION}{}",
+        log_suffix(compression)
+    ))
 }
 
 pub fn compression_of(path: &Path) -> JsonlCompression {
-    if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".jsonl.zstd")) {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl.zstd"))
+    {
         JsonlCompression::Zstd
-    } else { JsonlCompression::None }
+    } else {
+        JsonlCompression::None
+    }
 }
 
 /// Serialize an event batch as JSONL lines (no trailing newline)
@@ -343,8 +352,13 @@ impl SessionLogScanner {
     pub fn new(header_record: &[u8]) -> Result<Self, String> {
         let storage = parse_header_record(header_record)?;
         let native = if storage.meta.version == 4 {
-            Some(dsh_session::format_v4::V4Decoder::new(serde_json::from_slice(header_record).map_err(|e| e.to_string())?, dsh_session::format_v4::V4Recovery::RecoverableTail)?)
-        } else { None };
+            Some(dsh_session::format_v4::V4Decoder::new(
+                serde_json::from_slice(header_record).map_err(|e| e.to_string())?,
+                dsh_session::format_v4::V4Recovery::RecoverableTail,
+            )?)
+        } else {
+            None
+        };
         let legacy_v0 =
             serde_json::from_slice::<serde_json::Value>(&header_record[..header_record.len() - 1])
                 .ok()
@@ -415,7 +429,8 @@ impl SessionLogScanner {
         let mut events = self.events;
         let mut source_offsets = (0..=events.len()).collect::<Vec<_>>();
         if let Some(native) = self.native {
-            self.inherited_event_count = SessionLogOffset::new(native.finish()?.inherited_event_count)?;
+            self.inherited_event_count =
+                SessionLogOffset::new(native.finish()?.inherited_event_count)?;
         }
         if self.legacy_v0 {
             let mut legacy = self.meta.clone();
@@ -451,7 +466,10 @@ impl SessionLogScanner {
         self.event_line += 1;
         if let Some(native) = self.native.as_mut() {
             if let Some(row) = native.decode_json_line(line)? {
-                self.events.push(serde_json::from_value(row).map_err(|e| format!("invalid native V4 event: {e}"))?);
+                self.events.push(
+                    serde_json::from_value(row)
+                        .map_err(|e| format!("invalid native V4 event: {e}"))?,
+                );
                 self.committed_bytes = end_byte;
             }
             return Ok(());
@@ -541,7 +559,9 @@ pub fn parse_header_meta(first_line: &str) -> Option<SessionHeader> {
 /// Parse the logical header together with the exact inherited cut.
 pub fn parse_header_storage(first_line: &str) -> Option<SessionStorageMetadata> {
     let parsed: serde_json::Value = serde_json::from_str(first_line).ok()?;
-    if parsed["version"].as_f64() == Some(4.0) { return native_header_storage(parsed).ok(); }
+    if parsed["version"].as_f64() == Some(4.0) {
+        return native_header_storage(parsed).ok();
+    }
     if !is_header_line(&parsed) {
         return None;
     }
@@ -552,7 +572,8 @@ pub fn parse_header_storage(first_line: &str) -> Option<SessionStorageMetadata> 
 fn native_header_storage(value: serde_json::Value) -> Result<SessionStorageMetadata, String> {
     let logical = dsh_session::format_v4::decode_v4_header(value)?;
     Ok(SessionStorageMetadata {
-        meta: serde_json::from_value(logical).map_err(|error| format!("invalid V4 header: {error}"))?,
+        meta: serde_json::from_value(logical)
+            .map_err(|error| format!("invalid V4 header: {error}"))?,
         // V4 stores this cut in the accepted inherited end-seed marker.
         inherited_event_count: SessionLogOffset::ZERO,
     })

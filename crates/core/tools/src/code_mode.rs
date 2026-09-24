@@ -18,49 +18,115 @@ struct NestedDispatchLog {
     start_seq: Option<u64>,
 }
 impl NestedDispatchLog {
-    fn begin(agent:Option<&Arc<dyn dsh_agent::Agent>>,start:JsonValue,signal:&crate::AbortPredicate)->Result<Self,String> {
-        let session=agent.map(|agent|agent.session().clone());
-        let start_seq=if let Some(session)=&session {Some(session.append_if("tool/ptc-dispatch-start",start.clone(),None,|_|!signal())?.ok_or("Nested tool execution cancelled before dispatch")?.seq.get())}else{None};
-        Ok(Self {session,start,settled:false,start_seq})
+    fn begin(
+        agent: Option<&Arc<dyn dsh_agent::Agent>>,
+        start: JsonValue,
+        signal: &crate::AbortPredicate,
+    ) -> Result<Self, String> {
+        let session = agent.map(|agent| agent.session().clone());
+        let start_seq = if let Some(session) = &session {
+            Some(
+                session
+                    .append_if("tool/ptc-dispatch-start", start.clone(), None, |_| {
+                        !signal()
+                    })?
+                    .ok_or("Nested tool execution cancelled before dispatch")?
+                    .seq
+                    .get(),
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            session,
+            start,
+            settled: false,
+            start_seq,
+        })
     }
-    fn finish(&mut self,result:&crate::ToolExecutionResult)->Result<(),String> {
-        let mut value=self.start.clone();value["isError"]=json!(result.is_error);value["content"]=json!(result.content);
-        if let Some(meta)=&result.meta {value["meta"]=meta.clone();}
-        if let Some(info)=result.error.as_ref().and_then(|error|error.info.as_ref()) {value["error"]=json!({"name":info.name,"code":info.code});}
-        if let (Some(session),Some(seq))=(&self.session,self.start_seq) {session.append_if("tool/ptc-dispatch",value,None,|events|pending_dispatch(events,seq))?;}
-        self.settled=true;Ok(())
+    fn finish(&mut self, result: &crate::ToolExecutionResult) -> Result<(), String> {
+        let mut value = self.start.clone();
+        value["isError"] = json!(result.is_error);
+        value["content"] = json!(result.content);
+        if let Some(meta) = &result.meta {
+            value["meta"] = meta.clone();
+        }
+        if let Some(info) = result.error.as_ref().and_then(|error| error.info.as_ref()) {
+            value["error"] = json!({"name":info.name,"code":info.code});
+        }
+        if let (Some(session), Some(seq)) = (&self.session, self.start_seq) {
+            session.append_if("tool/ptc-dispatch", value, None, |events| {
+                pending_dispatch(events, seq)
+            })?;
+        }
+        self.settled = true;
+        Ok(())
     }
 }
 impl Drop for NestedDispatchLog {
     fn drop(&mut self) {
-        if self.settled {return;}
-        if let Some(session)=&self.session {
-            let mut value=self.start.clone();value["isError"]=json!(true);
-            value["content"]=json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
-            value["error"]=json!({"name":"ToolAbortedError","code":"ABORTED"});
-            if let Some(seq)=self.start_seq {let _=session.append_if("tool/ptc-dispatch",value,None,|events|pending_dispatch(events,seq));}
+        if self.settled {
+            return;
+        }
+        if let Some(session) = &self.session {
+            let mut value = self.start.clone();
+            value["isError"] = json!(true);
+            value["content"] = json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
+            value["error"] = json!({"name":"ToolAbortedError","code":"ABORTED"});
+            if let Some(seq) = self.start_seq {
+                let _ = session.append_if("tool/ptc-dispatch", value, None, |events| {
+                    pending_dispatch(events, seq)
+                });
+            }
         }
     }
 }
 
-fn pending_dispatch(events:&[dsh_session::SessionEvent],seq:u64)->bool {
-    let Some(start)=events.get(seq as usize).filter(|e|e.type_=="tool/ptc-dispatch-start") else {return false;};
-    !events.iter().skip(seq as usize+1).any(|event|
-        matches!(event.type_.as_str(),"step/end"|"turn/end")
-        || event.type_=="tool/ptc-dispatch" && event.data["subCallId"]==start.data["subCallId"] && event.data["rootCallId"]==start.data["rootCallId"])
+fn pending_dispatch(events: &[dsh_session::SessionEvent], seq: u64) -> bool {
+    let Some(start) = events
+        .get(seq as usize)
+        .filter(|e| e.type_ == "tool/ptc-dispatch-start")
+    else {
+        return false;
+    };
+    !events.iter().skip(seq as usize + 1).any(|event| {
+        matches!(event.type_.as_str(), "step/end" | "turn/end")
+            || event.type_ == "tool/ptc-dispatch"
+                && event.data["subCallId"] == start.data["subCallId"]
+                && event.data["rootCallId"] == start.data["rootCallId"]
+    })
 }
-struct CodeLifetime {closed:Arc<AtomicBool>,session:Option<dsh_session::Session>,root:dsh_llm::CallId,from:u64}
+struct CodeLifetime {
+    closed: Arc<AtomicBool>,
+    session: Option<dsh_session::Session>,
+    root: dsh_llm::CallId,
+    from: u64,
+}
 impl Drop for CodeLifetime {
     fn drop(&mut self) {
-        self.closed.store(true,Ordering::SeqCst);
-        let Some(session)=&self.session else {return;};
-        let pending=session.with_events(|events|events.iter().skip(self.from as usize)
-            .filter(|e|e.type_=="tool/ptc-dispatch-start" && e.data["rootCallId"]==self.root.as_str() && pending_dispatch(events,e.seq.get()))
-            .map(|e|(e.seq.get(),e.data.clone())).collect::<Vec<_>>());
-        for (seq,mut value) in pending {
-            value["isError"]=json!(true);value["content"]=json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
-            value["error"]=json!({"name":"ToolAbortedError","code":"ABORTED"});
-            let _=session.append_if("tool/ptc-dispatch",value,None,|events|pending_dispatch(events,seq));
+        self.closed.store(true, Ordering::SeqCst);
+        let Some(session) = &self.session else {
+            return;
+        };
+        let pending = session.with_events(|events| {
+            events
+                .iter()
+                .skip(self.from as usize)
+                .filter(|e| {
+                    e.type_ == "tool/ptc-dispatch-start"
+                        && e.data["rootCallId"] == self.root.as_str()
+                        && pending_dispatch(events, e.seq.get())
+                })
+                .map(|e| (e.seq.get(), e.data.clone()))
+                .collect::<Vec<_>>()
+        });
+        for (seq, mut value) in pending {
+            value["isError"] = json!(true);
+            value["content"] = json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
+            value["error"] = json!({"name":"ToolAbortedError","code":"ABORTED"});
+            let _ = session.append_if("tool/ptc-dispatch", value, None, |events| {
+                pending_dispatch(events, seq)
+            });
         }
     }
 }
@@ -145,11 +211,17 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                     .upgrade()
                     .ok_or_else(|| ToolBodyError::plain("tool runtime is unavailable"))?;
                 let code_runtime = owner.code_runtime().map_err(ToolBodyError::plain)?;
-                let closed=Arc::new(AtomicBool::new(false));
-                let session=agent.as_ref().map(|agent|agent.session().clone());
-                let _lifetime=CodeLifetime {closed:closed.clone(),from:session.as_ref().map(|s|s.seq().get()).unwrap_or(0),session,root:root_call_id.clone()};
-                let original_signal=signal;
-                let signal:crate::AbortPredicate=Arc::new(move ||closed.load(Ordering::SeqCst) || original_signal());
+                let closed = Arc::new(AtomicBool::new(false));
+                let session = agent.as_ref().map(|agent| agent.session().clone());
+                let _lifetime = CodeLifetime {
+                    closed: closed.clone(),
+                    from: session.as_ref().map(|s| s.seq().get()).unwrap_or(0),
+                    session,
+                    root: root_call_id.clone(),
+                };
+                let original_signal = signal;
+                let signal: crate::AbortPredicate =
+                    Arc::new(move || closed.load(Ordering::SeqCst) || original_signal());
                 let sequence = Arc::new(AtomicU64::new(0));
                 let mut functions = owner
                     .schemas(agent.as_ref().map(|agent| agent.scope_key()))

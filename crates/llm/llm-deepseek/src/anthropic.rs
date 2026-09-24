@@ -25,11 +25,20 @@ pub(crate) fn attach_replay(chat: &mut Value, options: &GenerateOptions, base_ur
     let Some(wire) = chat.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    let results: BTreeMap<_, _> = options.messages.iter().filter_map(|message| {
-        message.as_tool_result().map(|(id, _, error)| (id.as_str(), error.unwrap_or(false)))
-    }).collect();
+    let results: BTreeMap<_, _> = options
+        .messages
+        .iter()
+        .filter_map(|message| {
+            message
+                .as_tool_result()
+                .map(|(id, _, error)| (id.as_str(), error.unwrap_or(false)))
+        })
+        .collect();
     for message in wire.iter_mut().filter(|message| message["role"] == "tool") {
-        if let Some(error) = message["tool_call_id"].as_str().and_then(|id| results.get(id)) {
+        if let Some(error) = message["tool_call_id"]
+            .as_str()
+            .and_then(|id| results.get(id))
+        {
             message["is_error"] = json!(error);
         }
     }

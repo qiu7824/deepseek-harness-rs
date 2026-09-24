@@ -153,12 +153,16 @@ async fn real_manual_and_automatic_compaction_preserve_v3_prefix_across_repeated
     turn(&harness, "Continue after repeated compaction.").await;
     assert_prefix(session, &prefix);
     let mut native = dsh_session::format_v4::V4Validator::new(
-        serde_json::to_value(session.header()).unwrap(), session.inherited_event_count().get(),
-    ).unwrap();
+        serde_json::to_value(session.header()).unwrap(),
+        session.inherited_event_count().get(),
+    )
+    .unwrap();
     for event in session.events().iter() {
         let row = serde_json::to_value(event).unwrap();
         dsh_session::format_v4::encode_v4_event(row.clone(), &Default::default()).unwrap();
-        native.push(&row).unwrap_or_else(|error| panic!("native event {} {}: {error}", event.seq, event.type_));
+        native
+            .push(&row)
+            .unwrap_or_else(|error| panic!("native event {} {}: {error}", event.seq, event.type_));
     }
     native.finish().unwrap();
     let calls = calls.lock();

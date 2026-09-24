@@ -23,8 +23,8 @@ mod client_plugins;
 mod code_intelligence;
 mod code_mode_dependency;
 mod codex_account;
-mod computer_use_http;
 mod computer_permissions;
+mod computer_use_http;
 mod computer_use_stream;
 #[cfg(test)]
 mod context_stats_test;
@@ -51,6 +51,7 @@ mod project_tasks;
 mod provider_auth;
 mod provider_auth_catalog;
 mod provider_compatibility;
+mod remote_execution_http;
 pub mod runtime_paths;
 mod sidebar_settings;
 mod skill_validation;
@@ -60,13 +61,13 @@ mod tool_present;
 mod turn_changes;
 #[cfg(test)]
 mod ultra_control_tests;
+mod user_terminal;
 mod uu_cli;
 mod uu_devices;
 mod uu_terminal;
 mod video_http;
 mod video_reader;
 mod web_preview;
-mod user_terminal;
 mod web_search_settings;
 #[cfg(windows)]
 mod windows_peer_identity;
@@ -74,7 +75,6 @@ mod windows_sandbox_http;
 mod workspace_copy;
 mod workspace_resources;
 mod workspace_ssh;
-mod remote_execution_http;
 
 #[cfg(windows)]
 static ALLOCATOR_COLLECT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -2311,8 +2311,22 @@ fn compose_host_in_fiber(
             dsh_settings::settings_namespace("computer-use")
                 .map_err(|error| format!("settings namespace: {error}"))?,
             dsh_schemastery::Schema::object(indexmap::IndexMap::from([
-                ("nativeProtocol".to_string(),dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false))),
-                ("nativeTarget".to_string(),dsh_schemastery::Schema::union(vec![dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("local".into())),dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("browser".into()))]).default(dsh_schemastery::Data::String("local".into()))),
+                (
+                    "nativeProtocol".to_string(),
+                    dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
+                ),
+                (
+                    "nativeTarget".to_string(),
+                    dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "local".into(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "browser".into(),
+                        )),
+                    ])
+                    .default(dsh_schemastery::Data::String("local".into())),
+                ),
                 (
                     "enabled".to_string(),
                     dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
@@ -2649,7 +2663,10 @@ fn compose_host_in_fiber(
                 ),
                 (
                     "maxActiveSubagents".to_string(),
-                    dsh_schemastery::Schema::number().min(1.0).max(9_007_199_254_740_991.0).step(1.0)
+                    dsh_schemastery::Schema::number()
+                        .min(1.0)
+                        .max(9_007_199_254_740_991.0)
+                        .step(1.0)
                         .default(dsh_schemastery::Data::Number(8.0)),
                 ),
                 (
@@ -3388,10 +3405,18 @@ fn compose_host_in_fiber(
         },
     )
     .map_err(|error| format!("fs-local: {error}"))?;
-    let remote_execution=dsh_remote_execution::RemoteRuntime::install(ctx,data_root.join("remote-execution"),subprocess.clone());
-    dsh_remote_execution::install_routes(ctx,remote_execution.clone())?;
-    remote_execution_http::install_tools(ctx,&tools,remote_execution.clone())?;
-    let routed_fs=ctx.get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs",false).ok_or("routed filesystem unavailable")?.as_ref().clone();
+    let remote_execution = dsh_remote_execution::RemoteRuntime::install(
+        ctx,
+        data_root.join("remote-execution"),
+        subprocess.clone(),
+    );
+    dsh_remote_execution::install_routes(ctx, remote_execution.clone())?;
+    remote_execution_http::install_tools(ctx, &tools, remote_execution.clone())?;
+    let routed_fs = ctx
+        .get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs", false)
+        .ok_or("routed filesystem unavailable")?
+        .as_ref()
+        .clone();
     let _skills = dsh_skill::SkillRegistry::install(ctx, Default::default())
         .map_err(|error| format!("skills: {error}"))?;
     let _skill_badge = dsh_skill_badge::apply(ctx);
@@ -3484,7 +3509,8 @@ fn compose_host_in_fiber(
         )
         .map_err(|error| format!("voice: {error}"))?;
     }
-    let computer_permissions=computer_permissions::ComputerPermissions::install(ctx,data_root.clone())?;
+    let computer_permissions =
+        computer_permissions::ComputerPermissions::install(ctx, data_root.clone())?;
     let mut computer_use_runtime = None;
     if let dsh_schemastery::Data::Object(object) = (computer_use_scope.get)()
         && matches!(
@@ -3668,10 +3694,21 @@ fn compose_host_in_fiber(
         );
     }
     if computer_use_runtime.is_some() {
-        if let dsh_schemastery::Data::Object(object)=(computer_use_scope.get)() {
-            if matches!(object.get("nativeProtocol"),Some(dsh_schemastery::Data::Bool(true))) {
-                let target=match object.get("nativeTarget"){Some(dsh_schemastery::Data::String(value))=>value.as_str(),_=>"local"};
-                if let Err(error)=dsh_tool_computer_use_command::install_native_protocol(ctx,target) {dsh_tool_computer_use_command::native_protocol_failure(ctx,&error);eprintln!("native computer protocol unavailable: {error}");}
+        if let dsh_schemastery::Data::Object(object) = (computer_use_scope.get)() {
+            if matches!(
+                object.get("nativeProtocol"),
+                Some(dsh_schemastery::Data::Bool(true))
+            ) {
+                let target = match object.get("nativeTarget") {
+                    Some(dsh_schemastery::Data::String(value)) => value.as_str(),
+                    _ => "local",
+                };
+                if let Err(error) =
+                    dsh_tool_computer_use_command::install_native_protocol(ctx, target)
+                {
+                    dsh_tool_computer_use_command::native_protocol_failure(ctx, &error);
+                    eprintln!("native computer protocol unavailable: {error}");
+                }
             }
         }
         let packaged = std::env::current_exe()
@@ -3763,20 +3800,24 @@ fn compose_host_in_fiber(
             )
         };
         let defaults = Arc::new(read(&subagent_scope));
-        let read_capacity=|scope:&dsh_settings::SettingsScope| -> Result<u64,String> {
-            let value=(scope.get)().to_json().ok_or("invalid subagent settings")?;
-            dsh_subagent::resident_quota::parse_capacity(value.get("maxActiveSubagents")).map_err(|error|error.to_string())
+        let read_capacity = |scope: &dsh_settings::SettingsScope| -> Result<u64, String> {
+            let value = (scope.get)().to_json().ok_or("invalid subagent settings")?;
+            dsh_subagent::resident_quota::parse_capacity(value.get("maxActiveSubagents"))
+                .map_err(|error| error.to_string())
         };
-        let read_parallel=|scope:&dsh_settings::SettingsScope| -> Result<u64,String> {
-            let value=(scope.get)().to_json().ok_or("invalid subagent settings")?;
-            dsh_subagent::resident_quota::parse_capacity(value.get("maxParallel")).map_err(|error|error.to_string())
+        let read_parallel = |scope: &dsh_settings::SettingsScope| -> Result<u64, String> {
+            let value = (scope.get)().to_json().ok_or("invalid subagent settings")?;
+            dsh_subagent::resident_quota::parse_capacity(value.get("maxParallel"))
+                .map_err(|error| error.to_string())
         };
         _subagents.set_max_parallel(read_parallel(&subagent_scope)?)?;
-        _subagents.set_max_active_subagents(read_capacity(&subagent_scope)?).map_err(|error|error.to_string())?;
+        _subagents
+            .set_max_active_subagents(read_capacity(&subagent_scope)?)
+            .map_err(|error| error.to_string())?;
         ctx.register_service(defaults.clone());
         let bridge_scope = subagent_scope.clone();
         let bridge_defaults = defaults.clone();
-        let bridge_subagents=_subagents.clone();
+        let bridge_subagents = _subagents.clone();
         let listener: Arc<cordis::Listener> =
             Arc::new(move |_ctx: &Context, args: Vec<cordis::ArcValue>| {
                 let is_subagent = args
@@ -3785,8 +3826,18 @@ fn compose_host_in_fiber(
                     .is_some_and(|ns| ns.as_str() == "subagent");
                 if is_subagent {
                     bridge_defaults.update(read(&bridge_scope));
-                    if let Err(error)=read_parallel(&bridge_scope).and_then(|value|bridge_subagents.set_max_parallel(value)) {eprintln!("subagent parallel limit update rejected: {error}");}
-                    if let Err(error)=read_capacity(&bridge_scope).and_then(|value|bridge_subagents.set_max_active_subagents(value).map_err(|error|error.to_string())) {eprintln!("subagent capacity update rejected: {error}");}
+                    if let Err(error) = read_parallel(&bridge_scope)
+                        .and_then(|value| bridge_subagents.set_max_parallel(value))
+                    {
+                        eprintln!("subagent parallel limit update rejected: {error}");
+                    }
+                    if let Err(error) = read_capacity(&bridge_scope).and_then(|value| {
+                        bridge_subagents
+                            .set_max_active_subagents(value)
+                            .map_err(|error| error.to_string())
+                    }) {
+                        eprintln!("subagent capacity update rejected: {error}");
+                    }
                 }
                 async move { None }.boxed()
             });
@@ -4092,13 +4143,23 @@ fn compose_host_in_fiber(
     );
     if let Some(profile) = profile {
         let profile_dir = data_root.join("profiles").join(profile);
-        if let Err(error)=client_plugins::materialize_bundled(&profile_dir) {eprintln!("dsh: optional plugin profile retained without refresh: {error}");}
+        if let Err(error) = client_plugins::materialize_bundled(&profile_dir) {
+            eprintln!("dsh: optional plugin profile retained without refresh: {error}");
+        }
         for plugin in client_plugins::discover(&profile_dir)? {
-            if plugin.id!="dsh-auto-review" {loader.core.register(&plugin.id, Arc::new(NoopPlugin));}
+            if plugin.id != "dsh-auto-review" {
+                loader.core.register(&plugin.id, Arc::new(NoopPlugin));
+            }
         }
     }
-    loader.core.register("dsh-auto-review",Arc::new(dsh_experimental_auto_review::AutoReviewPlugin));
-    loader.core.register("@deepseek-ai/dsh-experimental-auto-review",Arc::new(dsh_experimental_auto_review::AutoReviewPlugin));
+    loader.core.register(
+        "dsh-auto-review",
+        Arc::new(dsh_experimental_auto_review::AutoReviewPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-experimental-auto-review",
+        Arc::new(dsh_experimental_auto_review::AutoReviewPlugin),
+    );
     ctx.register_service(loader);
     if let Some(profile) = profile {
         let plugin_config = data_root
@@ -4106,19 +4167,30 @@ fn compose_host_in_fiber(
             .join(profile)
             .join("plugins.json");
         if plugin_config.is_file() {
-            let loaded=dsh_app_boot::plugin_profile::read_runtime(plugin_config.parent().expect("profile directory"));
-            if let Some(issue)=&loaded.issue {eprintln!("dsh: {issue}");}
-            let entries=loaded.documents.entries;
+            let loaded = dsh_app_boot::plugin_profile::read_runtime(
+                plugin_config.parent().expect("profile directory"),
+            );
+            if let Some(issue) = &loaded.issue {
+                eprintln!("dsh: {issue}");
+            }
+            let entries = loaded.documents.entries;
             let loader = ctx
                 .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
                 .map(|slot| slot.as_ref().clone())
                 .ok_or_else(|| "loader service missing after install".to_string())?;
             for entry in &entries {
-                if let Err(error)=futures::executor::block_on(dsh_app_boot::mount_entries(&loader,std::slice::from_ref(entry))) {
-                    eprintln!("dsh: optional plugin failed; other plugins remain available: {error}");
+                if let Err(error) = futures::executor::block_on(dsh_app_boot::mount_entries(
+                    &loader,
+                    std::slice::from_ref(entry),
+                )) {
+                    eprintln!(
+                        "dsh: optional plugin failed; other plugins remain available: {error}"
+                    );
                 }
             }
-            if let Err(error)=futures::executor::block_on(loader.tree.await_ready()) {eprintln!("dsh: optional plugin activation failed: {error}");}
+            if let Err(error) = futures::executor::block_on(loader.tree.await_ready()) {
+                eprintln!("dsh: optional plugin activation failed: {error}");
+            }
         }
     }
     let mut onboarding_properties = indexmap::IndexMap::new();
@@ -4497,7 +4569,7 @@ fn compose_host_in_fiber(
         api_proxy.clone(),
         allow_remote_host,
     );
-    let remote_execution_route=remote_execution_http::register(&web_server,remote_execution);
+    let remote_execution_route = remote_execution_http::register(&web_server, remote_execution);
     let environment_route = execution_profiles.register(&web_server, allow_remote_host);
     let task_execution_route = task_execution::register_route(
         &web_server,
@@ -4544,7 +4616,7 @@ fn compose_host_in_fiber(
         api_proxy.clone(),
         allow_remote_host,
     );
-    let computer_permissions_route=computer_permissions.register(&web_server,allow_remote_host);
+    let computer_permissions_route = computer_permissions.register(&web_server, allow_remote_host);
     let computer_use_route = computer_use_http::register(
         &web_server,
         agents.clone(),

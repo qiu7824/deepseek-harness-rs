@@ -131,14 +131,18 @@ pub fn apply_compaction_event(
         }
         "user/message" => {
             let source = event.data.get("source");
-            let is_checkpoint = source.and_then(|source| source.get("kind")).and_then(|kind| kind.as_str()) == Some("compact-checkpoint") || source
+            let is_checkpoint = source
                 .and_then(|source| source.get("kind"))
                 .and_then(|kind| kind.as_str())
-                == Some("plugin")
-                && source
-                    .and_then(|source| source.get("plugin"))
-                    .and_then(|plugin| plugin.as_str())
-                    == Some("compact");
+                == Some("compact-checkpoint")
+                || source
+                    .and_then(|source| source.get("kind"))
+                    .and_then(|kind| kind.as_str())
+                    == Some("plugin")
+                    && source
+                        .and_then(|source| source.get("plugin"))
+                        .and_then(|plugin| plugin.as_str())
+                        == Some("compact");
             if is_checkpoint {
                 let Some(open) = &trace.compaction else {
                     return Err(

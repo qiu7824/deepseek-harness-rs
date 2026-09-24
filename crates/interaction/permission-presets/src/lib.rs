@@ -54,7 +54,14 @@ pub const CUSTOM_PRESET: &str = "custom";
 pub const AUTO_PRESET: &str = "auto";
 type AutoAdmission = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 fn auto_spec() -> PresetSpec {
-    PresetSpec {sandbox:SandboxMode::DangerFullAccess,approval:ApprovalPolicy::Never,name:Some("Auto review · EXP".into()),description:Some("逐调用模型审查；获准动作以完全访问执行。实验功能可能误判，并消耗额外 token。".into())}
+    PresetSpec {
+        sandbox: SandboxMode::DangerFullAccess,
+        approval: ApprovalPolicy::Never,
+        name: Some("Auto review · EXP".into()),
+        description: Some(
+            "逐调用模型审查；获准动作以完全访问执行。实验功能可能误判，并消耗额外 token。".into(),
+        ),
+    }
 }
 
 /// Settings namespace carrying the default for future sessions.
@@ -230,7 +237,7 @@ pub fn apply_knob_json(
 ) -> Option<serde_json::Value> {
     let mut object = state.as_object()?.clone();
     match event.type_.as_str() {
-        "permission/options" => {},
+        "permission/options" => {}
         "permission/preset" => {
             let preset = event.data.get("preset")?.as_str()?;
             object.insert("preset".to_string(), serde_json::json!(preset));
@@ -378,7 +385,9 @@ impl PermissionPresetService {
     /// constructor).
     pub fn install(ctx: &Context, config: Config) -> Result<Arc<Self>, String> {
         let presets = config.presets.unwrap_or_else(Config::shipped_presets);
-        if presets.contains_key(AUTO_PRESET) {return Err("permission: auto requires a complete runtime review integration and cannot be configured as a static/default preset".into());}
+        if presets.contains_key(AUTO_PRESET) {
+            return Err("permission: auto requires a complete runtime review integration and cannot be configured as a static/default preset".into());
+        }
         if presets.contains_key(CUSTOM_PRESET) {
             return Err(format!(
                 "permission: \"{CUSTOM_PRESET}\" is reserved for the derived not-a-preset state and cannot name a table entry"
@@ -678,49 +687,87 @@ impl PermissionPresetService {
 
     /// Publish Auto only after its gate exists. The caller closes admission,
     /// migrates live sessions and drains reviews before disposing this entry.
-    pub fn register_auto(self:&Arc<Self>,admission:AutoAdmission)->Result<cordis::Disposer,String> {
+    pub fn register_auto(
+        self: &Arc<Self>,
+        admission: AutoAdmission,
+    ) -> Result<cordis::Disposer, String> {
         admission()?;
-        let mut current=self.auto_admission.lock();
-        if current.is_some(){return Err("permission: Auto review integration is already installed".into());}
-        if !self.auto_guard_installed.load(std::sync::atomic::Ordering::Acquire) {
-            let tools=self.ctx.get_typed::<Arc<dsh_tools::ToolRuntime>>("tools",false).ok_or("permission: Auto requires the tools service")?;
-            let weak=Arc::downgrade(self);
-            tools.guard(&self.ctx,Arc::new(move |execution| {
-                let auto=execution.permission_preset.as_deref()==Some(AUTO_PRESET)
-                    || execution.agent.as_ref().is_some_and(|agent|agent.session().with_events(|events|effective_permission_preset(events).as_deref()==Some(AUTO_PRESET)));
-                if !auto{return None;}
-                weak.upgrade().ok_or("permission owner unavailable".to_string()).and_then(|service|service.admit_auto()).err()
-            }))?;
-            self.auto_guard_installed.store(true,std::sync::atomic::Ordering::Release);
+        let mut current = self.auto_admission.lock();
+        if current.is_some() {
+            return Err("permission: Auto review integration is already installed".into());
         }
-        *current=Some(admission.clone());drop(current);
+        if !self
+            .auto_guard_installed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let tools = self
+                .ctx
+                .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+                .ok_or("permission: Auto requires the tools service")?;
+            let weak = Arc::downgrade(self);
+            tools.guard(
+                &self.ctx,
+                Arc::new(move |execution| {
+                    let auto = execution.permission_preset.as_deref() == Some(AUTO_PRESET)
+                        || execution.agent.as_ref().is_some_and(|agent| {
+                            agent.session().with_events(|events| {
+                                effective_permission_preset(events).as_deref() == Some(AUTO_PRESET)
+                            })
+                        });
+                    if !auto {
+                        return None;
+                    }
+                    weak.upgrade()
+                        .ok_or("permission owner unavailable".to_string())
+                        .and_then(|service| service.admit_auto())
+                        .err()
+                }),
+            )?;
+            self.auto_guard_installed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        *current = Some(admission.clone());
+        drop(current);
         self.publish_options();
-        let weak=Arc::downgrade(self);
+        let weak = Arc::downgrade(self);
         Ok(cordis::events::make_disposer(move || {
-            if let Some(service)=weak.upgrade(){
-                let mut current=service.auto_admission.lock();
-                if current.as_ref().is_some_and(|active|Arc::ptr_eq(active,&admission)){*current=None;drop(current);service.publish_options();}
+            if let Some(service) = weak.upgrade() {
+                let mut current = service.auto_admission.lock();
+                if current
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, &admission))
+                {
+                    *current = None;
+                    drop(current);
+                    service.publish_options();
+                }
             }
             Box::pin(async {})
         }))
     }
     fn publish_options(&self) {
-        if let Some(store)=self.ctx.get_typed::<Arc<SessionStore>>("sessions",false) {
+        if let Some(store) = self.ctx.get_typed::<Arc<SessionStore>>("sessions", false) {
             for session in store.list() {
-                if let Err(error)=session.append("permission/options",serde_json::json!({}),None){eprintln!("permission option notification failed: {error}");}
+                if let Err(error) =
+                    session.append("permission/options", serde_json::json!({}), None)
+                {
+                    eprintln!("permission option notification failed: {error}");
+                }
             }
         }
     }
-    fn admit_auto(&self)->Result<(),String> {
+    fn admit_auto(&self) -> Result<(), String> {
         let admission=self.auto_admission.lock().clone().ok_or("permission: Auto review integration is unavailable; enable its plugin before opening this session")?;
         admission()
     }
 
     /// The advertised preset names, in the preset table's declaration order.
     pub fn names(&self) -> Vec<&str> {
-        let mut names:Vec<&str>=self.presets.keys().map(|name|name.as_str()).collect();
-        let admission=self.auto_admission.lock().clone();
-        if admission.is_some_and(|admit|admit().is_ok()){names.push(AUTO_PRESET);}
+        let mut names: Vec<&str> = self.presets.keys().map(|name| name.as_str()).collect();
+        let admission = self.auto_admission.lock().clone();
+        if admission.is_some_and(|admit| admit().is_ok()) {
+            names.push(AUTO_PRESET);
+        }
         names
     }
 
@@ -746,7 +793,9 @@ impl PermissionPresetService {
             .approval
             .unwrap_or(self.approval.config().policy.unwrap_or(ApprovalPolicy::Ask));
         let matches = |spec: &PresetSpec| spec.sandbox == sandbox && spec.approval == approval;
-        if state.preset.as_deref()==Some(AUTO_PRESET) && matches(&auto_spec()){return AUTO_PRESET.into();}
+        if state.preset.as_deref() == Some(AUTO_PRESET) && matches(&auto_spec()) {
+            return AUTO_PRESET.into();
+        }
         if let Some(preset) = &state.preset {
             if let Some(spec) = self.presets.get(preset) {
                 if matches(spec) {
@@ -771,7 +820,10 @@ impl PermissionPresetService {
             .iter()
             .map(|name| self.option_of(name))
             .collect();
-        if current_value == AUTO_PRESET && !options.iter().any(|option|option.value==AUTO_PRESET) {options.push(self.option_of(AUTO_PRESET));}
+        if current_value == AUTO_PRESET && !options.iter().any(|option| option.value == AUTO_PRESET)
+        {
+            options.push(self.option_of(AUTO_PRESET));
+        }
         if current_value == CUSTOM_PRESET {
             options.push(self.option_of(CUSTOM_PRESET));
         }
@@ -783,7 +835,10 @@ impl PermissionPresetService {
 
     /// Resolve a preset's knob bundle (TS `resolve`).
     pub fn resolve(&self, name: &str) -> Result<PresetSpec, String> {
-        if name==AUTO_PRESET {self.admit_auto()?;return Ok(auto_spec());}
+        if name == AUTO_PRESET {
+            self.admit_auto()?;
+            return Ok(auto_spec());
+        }
         self.presets.get(name).cloned().ok_or_else(|| {
             format!(
                 "permission: unknown preset \"{name}\" (known: {})",
@@ -795,7 +850,14 @@ impl PermissionPresetService {
     /// Build the client option for a table entry or [`CUSTOM_PRESET`] (TS
     /// `optionOf`; unknown names panic through `resolve`).
     pub fn option_of(&self, name: &str) -> PresetOption {
-        if name==AUTO_PRESET {let spec=auto_spec();return PresetOption {value:name.into(),name:spec.name.unwrap(),description:spec.description};}
+        if name == AUTO_PRESET {
+            let spec = auto_spec();
+            return PresetOption {
+                value: name.into(),
+                name: spec.name.unwrap(),
+                description: spec.description,
+            };
+        }
         if name == CUSTOM_PRESET {
             return PresetOption {
                 value: CUSTOM_PRESET.to_string(),
@@ -858,7 +920,9 @@ impl PermissionPresetService {
     pub fn pin_initial_permission(&self, session: &Session) -> Result<(), String> {
         let events = session.events();
         let selected = effective_permission_preset(&events);
-        if selected.as_deref()==Some(AUTO_PRESET){self.admit_auto()?;}
+        if selected.as_deref() == Some(AUTO_PRESET) {
+            self.admit_auto()?;
+        }
         let sandbox = effective_sandbox_mode(&events);
         let approval = effective_approval_policy(&events);
         let seeded = events.iter().any(|event| event.type_ == "session/end-seed");

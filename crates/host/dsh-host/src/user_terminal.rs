@@ -215,10 +215,7 @@ impl UserTerminals {
                     });
                     let published = {
                         let mut state = own.state.lock();
-                        if state.disposing
-                            || abort()
-                            || sender.is_closed()
-                        {
+                        if state.disposing || abort() || sender.is_closed() {
                             false
                         } else {
                             state.entries.insert(id.clone(), entry.clone());
@@ -256,7 +253,9 @@ impl UserTerminals {
                             Err(error) => {
                                 // Keep a failed cleanup visible and addressable for retry.
                                 own.state.lock().entries.insert(id.clone(), entry);
-                                eprintln!("dsh: cancelled user terminal {id} cleanup failed: {error}");
+                                eprintln!(
+                                    "dsh: cancelled user terminal {id} cleanup failed: {error}"
+                                );
                             }
                         }
                     }

@@ -727,24 +727,50 @@ pub struct StoredEventNormalizer {
     message_ids: HashMap<u64, String>,
 }
 impl StoredEventNormalizer {
-    pub fn new(id: SessionId) -> Self { Self { id, message_ids: HashMap::new() } }
-    pub fn normalize<'a>(&mut self, event: &'a SessionEvent) -> Result<std::borrow::Cow<'a, SessionEvent>, String> {
+    pub fn new(id: SessionId) -> Self {
+        Self {
+            id,
+            message_ids: HashMap::new(),
+        }
+    }
+    pub fn normalize<'a>(
+        &mut self,
+        event: &'a SessionEvent,
+    ) -> Result<std::borrow::Cow<'a, SessionEvent>, String> {
         use std::borrow::Cow;
         assert_supported_events(std::slice::from_ref(event), &self.id)?;
         let value = match event.type_.as_str() {
-            "turn/start" if event.data.get("trigger").is_some() => Cow::Owned(migrate_legacy_turn_start_event(event, &self.id)?),
+            "turn/start" if event.data.get("trigger").is_some() => {
+                Cow::Owned(migrate_legacy_turn_start_event(event, &self.id)?)
+            }
             "turn/end" => Cow::Owned(migrate_legacy_turn_end_event(event, &self.id)?),
             "steering/message" => {
                 let steering = migrate_legacy_steering_event(event, &self.id)?;
-                Cow::Owned(migrate_legacy_message_event(&steering, &self.id, &self.message_ids))
+                Cow::Owned(migrate_legacy_message_event(
+                    &steering,
+                    &self.id,
+                    &self.message_ids,
+                ))
             }
-            _ if needs_legacy_prefix(event) => Cow::Owned(migrate_legacy_message_event(event, &self.id, &self.message_ids)),
+            _ if needs_legacy_prefix(event) => Cow::Owned(migrate_legacy_message_event(
+                event,
+                &self.id,
+                &self.message_ids,
+            )),
             _ => Cow::Borrowed(event),
         };
-        if !dsh_session::is_known_session_event_type(&value.type_) && value.ignorable != Some(true) {
-            return Err(format!("session {} contains unknown required event {} at seq {}", self.id.as_str(), value.type_, value.seq));
+        if !dsh_session::is_known_session_event_type(&value.type_) && value.ignorable != Some(true)
+        {
+            return Err(format!(
+                "session {} contains unknown required event {} at seq {}",
+                self.id.as_str(),
+                value.type_,
+                value.seq
+            ));
         }
-        if let Some(id) = event_message_id(&value) { self.message_ids.insert(value.seq.get(), id); }
+        if let Some(id) = event_message_id(&value) {
+            self.message_ids.insert(value.seq.get(), id);
+        }
         Ok(value)
     }
 }
@@ -897,19 +923,31 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         self: &Arc<Self>,
         session: Session,
     ) -> Result<dsh_session::SessionPreparation, String> {
-        self.create(session.header().clone(), Some(session.inherited_event_count())).await?;
-        let state = self.states.lock().get(session.id().as_str()).cloned()
+        self.create(
+            session.header().clone(),
+            Some(session.inherited_event_count()),
+        )
+        .await?;
+        let state = self
+            .states
+            .lock()
+            .get(session.id().as_str())
+            .cloned()
             .ok_or("new Session lost its persistence admission")?;
         let coordinator = self.clone();
-        Ok(dsh_session::SessionPreparation::create(session, dsh_session::SessionPreparationOptions {
-            release: Some(Box::new(move || coordinator.release_unattached(&state))),
-        }))
+        Ok(dsh_session::SessionPreparation::create(
+            session,
+            dsh_session::SessionPreparationOptions {
+                release: Some(Box::new(move || coordinator.release_unattached(&state))),
+            },
+        ))
     }
 
     fn release_unattached(&self, expected: &SessionState) {
         let mut states = self.states.lock();
-        if states.get(expected.meta.id.as_str()).is_some_and(|state|
-            state.owner.is_none() && Arc::ptr_eq(&state.admission, &expected.admission)) {
+        if states.get(expected.meta.id.as_str()).is_some_and(|state| {
+            state.owner.is_none() && Arc::ptr_eq(&state.admission, &expected.admission)
+        }) {
             states.remove(expected.meta.id.as_str());
         }
     }
@@ -1779,8 +1817,16 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         if let Err(error) = self.flush(session).await {
             // A rejected admission has no durable owner or accepted writes to
             // preserve. Do not retain its failed initialization forever.
-            let owns_state = self.states.lock().get(session.id().as_str())
-                .is_some_and(|state| state.owner.as_ref().is_some_and(|owner| owner.ptr_eq(session)));
+            let owns_state = self
+                .states
+                .lock()
+                .get(session.id().as_str())
+                .is_some_and(|state| {
+                    state
+                        .owner
+                        .as_ref()
+                        .is_some_and(|owner| owner.ptr_eq(session))
+                });
             if !owns_state {
                 self.live.lock().remove(&session_ptr(session));
             }
@@ -2026,7 +2072,8 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         let writer = self.backend.acquire_writer(session.header()).await?;
         let stored = self.backend.load_stored(&id).await?;
         if let Some(stored) = stored {
-            self.adopt_live_prefix(session, seed, stored, writer).await?;
+            self.adopt_live_prefix(session, seed, stored, writer)
+                .await?;
             return Ok(());
         }
 

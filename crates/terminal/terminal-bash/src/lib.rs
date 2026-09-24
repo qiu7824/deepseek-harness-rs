@@ -578,7 +578,12 @@ impl LocalPtySession {
                     break;
                 }
                 if matches!(self.status(), TerminalSessionStatus::Exited { .. }) {
-                    if startup.is_ready().map_err(|message| TerminalBackendSpawnError::coded(message, TerminalErrorCode::SandboxSetupFailed))? {
+                    if startup.is_ready().map_err(|message| {
+                        TerminalBackendSpawnError::coded(
+                            message,
+                            TerminalErrorCode::SandboxSetupFailed,
+                        )
+                    })? {
                         break;
                     }
                     let detail = startup_tail(&self.output.lock().snapshot().0);
@@ -588,10 +593,7 @@ impl LocalPtySession {
                         _ => TerminalErrorCode::SandboxSetupFailed,
                     };
                     return Err(TerminalBackendSpawnError::coded(
-                        format!(
-                            "Sandbox runner exited before command readiness: {}",
-                            detail
-                        ),
+                        format!("Sandbox runner exited before command readiness: {}", detail),
                         code,
                     ));
                 }

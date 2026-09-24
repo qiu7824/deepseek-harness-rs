@@ -263,9 +263,12 @@ impl V3ToV4Transform {
         if known {
             // Rust stored the inherited cut in its physical header and left
             // end-seed payloads empty, including later restore markers.
-            if self.dialect == V3Dialect::Rust && kind == "session/end-seed"
-                && self.header["isSeeded"] == true && self.expected_cut == Some(source_seq)
-                && row["data"].as_object().is_some_and(|data| data.is_empty()) {
+            if self.dialect == V3Dialect::Rust
+                && kind == "session/end-seed"
+                && self.header["isSeeded"] == true
+                && self.expected_cut == Some(source_seq)
+                && row["data"].as_object().is_some_and(|data| data.is_empty())
+            {
                 row["data"]["inherited"] = json!(true);
             }
             match kind.as_str() {

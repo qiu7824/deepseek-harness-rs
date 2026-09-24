@@ -30,10 +30,11 @@ pub use registry::AgentRegistry;
 pub use runtime_types::{
     Agent, AgentControlBusy, AgentControlGuard, AgentErrorPayload, AgentFactory, AgentHandle,
     AgentInboxClaimedPayload, AgentInboxMessagePayload, AgentLifecyclePayload, AgentOptions,
-    AgentRunAdmission, AgentPreStepPayload, AgentRequestConfig, AgentRequestErrorPayload, AgentRequestPayload,
-    AgentSessionStartPayload, AgentSetup, AgentSetupCommit, AgentStatus, AgentStatusPayload,
-    AgentTurnStoppingPayload, CancelOptions, CancellationSignal, CreateAgentOptions,
-    PreStepDecision, RequestErrorAction, ResumeAgentOptions, SessionStartSource,
+    AgentPreStepPayload, AgentRequestConfig, AgentRequestErrorPayload, AgentRequestPayload,
+    AgentRunAdmission, AgentSessionStartPayload, AgentSetup, AgentSetupCommit, AgentStatus,
+    AgentStatusPayload, AgentTurnStoppingPayload, CancelOptions, CancellationSignal,
+    CreateAgentOptions, PreStepDecision, RequestErrorAction, ResumeAgentOptions,
+    SessionStartSource,
 };
 pub use types::{InboxSplice, InboxSpliceOutcome, InboxTarget, inbox_splice_of};
 

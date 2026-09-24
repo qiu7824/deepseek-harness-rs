@@ -372,24 +372,72 @@ async fn cold_restore_refuses_a_native_semantic_corruption_without_modifying_its
 #[tokio::test]
 async fn interrupted_native_tool_calls_recover_flat_error_results_once() {
     for started in [false, true] {
-        let root = std::env::temp_dir().join(format!("native-v4-interrupted-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("native-v4-interrupted-{}", uuid::Uuid::new_v4()));
         let meta = header("interrupted");
-        let ctx = Context::root(); SessionStore::install(&ctx);
-        let backend = JsonlSessionPersistence::install(&ctx, JsonlConfig { root:root.to_string_lossy().into_owned(), ..Default::default() }).unwrap();
+        let ctx = Context::root();
+        SessionStore::install(&ctx);
+        let backend = JsonlSessionPersistence::install(
+            &ctx,
+            JsonlConfig {
+                root: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         backend.create(meta.clone(), None).await.unwrap();
-        backend.append(&meta.id, &events(false)[..if started {7} else {6}]).await.unwrap();
-        close(&ctx).await; drop(backend);
-        let ctx = Context::root(); SessionStore::install(&ctx);
-        let backend = JsonlSessionPersistence::install(&ctx, JsonlConfig { root:root.to_string_lossy().into_owned(), ..Default::default() }).unwrap();
+        backend
+            .append(&meta.id, &events(false)[..if started { 7 } else { 6 }])
+            .await
+            .unwrap();
+        close(&ctx).await;
+        drop(backend);
+        let ctx = Context::root();
+        SessionStore::install(&ctx);
+        let backend = JsonlSessionPersistence::install(
+            &ctx,
+            JsonlConfig {
+                root: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let restored = backend.load(&meta.id).await.unwrap();
-        let results: Vec<_> = restored.events.iter().filter(|event| event.type_ == "tool/result").collect();
+        let results: Vec<_> = restored
+            .events
+            .iter()
+            .filter(|event| event.type_ == "tool/result")
+            .collect();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].data["message"]["role"], "tool");
         assert_eq!(results[0].data["message"]["isError"], true);
-        assert_eq!(results[0].data["error"]["code"], if started {"TOOL_OUTCOME_UNKNOWN"} else {"TOOL_NOT_STARTED"});
-        assert_eq!(backend.load(&meta.id).await.unwrap().events, restored.events);
-        let path = log_path(&root.to_string_lossy(), None, &meta.id, JsonlCompression::Zstd);
-        dsh_session_persistence_jsonl::v4_artifact::validate_v4_artifact(&path, JsonlCompression::Zstd, meta.id.as_str(), &|| false).unwrap();
-        close(&ctx).await; drop(backend); std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            results[0].data["error"]["code"],
+            if started {
+                "TOOL_OUTCOME_UNKNOWN"
+            } else {
+                "TOOL_NOT_STARTED"
+            }
+        );
+        assert_eq!(
+            backend.load(&meta.id).await.unwrap().events,
+            restored.events
+        );
+        let path = log_path(
+            &root.to_string_lossy(),
+            None,
+            &meta.id,
+            JsonlCompression::Zstd,
+        );
+        dsh_session_persistence_jsonl::v4_artifact::validate_v4_artifact(
+            &path,
+            JsonlCompression::Zstd,
+            meta.id.as_str(),
+            &|| false,
+        )
+        .unwrap();
+        close(&ctx).await;
+        drop(backend);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

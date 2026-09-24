@@ -179,26 +179,97 @@ async fn composed_host_mounts_permissions_even_when_storage_is_broken() {
     remove(&root);
 }
 use std::sync::atomic::AtomicUsize;
-struct ControlledAdapter {entered:Arc<tokio::sync::Notify>,effects:Arc<AtomicUsize>}
+struct ControlledAdapter {
+    entered: Arc<tokio::sync::Notify>,
+    effects: Arc<AtomicUsize>,
+}
 #[async_trait::async_trait]
 impl dsh_tool_computer_use_command::ComputerUseAdapter for ControlledAdapter {
-    fn adapter_id(&self)->&'static str{"permission-fixture"}
-    async fn permission_identity(&self,_:&dsh_tool_computer_use_command::AdapterRequest,_:AbortPredicate)->Result<ComputerTargetIdentity,AdapterError>{Ok(target("v1"))}
-    async fn execute(&self,request:dsh_tool_computer_use_command::AdapterRequest,signal:AbortPredicate)->Result<dsh_tool_computer_use_command::AdapterOutput,AdapterError>{
-        assert_eq!(request.origin,dsh_tool_computer_use_command::ControlOrigin::Agent);assert_eq!(request.permission_target,Some(target("v1")));self.entered.notify_one();
-        for _ in 0..100 {if signal(){return Err(AdapterError::cancelled());}tokio::time::sleep(std::time::Duration::from_millis(5)).await;}
-        self.effects.fetch_add(1,Ordering::SeqCst);Err(error("FIXTURE_EFFECT","unexpected uncancelled fixture"))
+    fn adapter_id(&self) -> &'static str {
+        "permission-fixture"
+    }
+    async fn permission_identity(
+        &self,
+        _: &dsh_tool_computer_use_command::AdapterRequest,
+        _: AbortPredicate,
+    ) -> Result<ComputerTargetIdentity, AdapterError> {
+        Ok(target("v1"))
+    }
+    async fn execute(
+        &self,
+        request: dsh_tool_computer_use_command::AdapterRequest,
+        signal: AbortPredicate,
+    ) -> Result<dsh_tool_computer_use_command::AdapterOutput, AdapterError> {
+        assert_eq!(
+            request.origin,
+            dsh_tool_computer_use_command::ControlOrigin::Agent
+        );
+        assert_eq!(request.permission_target, Some(target("v1")));
+        self.entered.notify_one();
+        for _ in 0..100 {
+            if signal() {
+                return Err(AdapterError::cancelled());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Err(error("FIXTURE_EFFECT", "unexpected uncancelled fixture"))
     }
 }
-#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn composed_adapter_refuses_forged_authority_and_cancels_revoked_pending_action() {
-    let root=root();let ctx=Context::root();dsh_system_prompt::SystemPrompt::install(&ctx,Default::default()).unwrap();dsh_tools::ToolRuntime::install(&ctx,Default::default()).unwrap();
-    let service=ComputerPermissions::install(&ctx,root.clone()).unwrap();let entered=Arc::new(tokio::sync::Notify::new());let effects=Arc::new(AtomicUsize::new(0));
-    let runtime=dsh_tool_computer_use_command::install_adapter(&ctx,5000,Arc::new(ControlledAdapter {entered:entered.clone(),effects:effects.clone()})).unwrap();
-    let args=json!({"action":"capture","sessionId":"fixture","origin":"human","ownerId":"other-owner","permissionTarget":target("forged")});
-    assert!(runtime.execute("owner",&args,Arc::new(||false)).await.is_err());assert_eq!(effects.load(Ordering::SeqCst),0);let granted=grant(&service,"session","owner");let grant_id=granted["grants"][0]["id"].clone();
-    let request_runtime=runtime.clone();let pending=tokio::spawn(async move {request_runtime.execute("owner",&args,Arc::new(||false)).await});
-    tokio::time::timeout(std::time::Duration::from_secs(2),entered.notified()).await.unwrap();let snapshot=service.snapshot();service.mutate(&json!({"action":"revoke","grantId":grant_id,"expectedRevision":snapshot["revision"]})).unwrap();
-    assert!(tokio::time::timeout(std::time::Duration::from_secs(2),pending).await.unwrap().unwrap().is_err());assert_eq!(effects.load(Ordering::SeqCst),0);
-    runtime.shutdown().await.unwrap();dispose(&ctx).await;drop(runtime);drop(service);remove(&root);
+    let root = root();
+    let ctx = Context::root();
+    dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+    dsh_tools::ToolRuntime::install(&ctx, Default::default()).unwrap();
+    let service = ComputerPermissions::install(&ctx, root.clone()).unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let effects = Arc::new(AtomicUsize::new(0));
+    let runtime = dsh_tool_computer_use_command::install_adapter(
+        &ctx,
+        5000,
+        Arc::new(ControlledAdapter {
+            entered: entered.clone(),
+            effects: effects.clone(),
+        }),
+    )
+    .unwrap();
+    let args = json!({"action":"capture","sessionId":"fixture","origin":"human","ownerId":"other-owner","permissionTarget":target("forged")});
+    assert!(
+        runtime
+            .execute("owner", &args, Arc::new(|| false))
+            .await
+            .is_err()
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    let granted = grant(&service, "session", "owner");
+    let grant_id = granted["grants"][0]["id"].clone();
+    let request_runtime = runtime.clone();
+    let pending = tokio::spawn(async move {
+        request_runtime
+            .execute("owner", &args, Arc::new(|| false))
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    let snapshot = service.snapshot();
+    service
+        .mutate(
+            &json!({"action":"revoke","grantId":grant_id,"expectedRevision":snapshot["revision"]}),
+        )
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    runtime.shutdown().await.unwrap();
+    dispose(&ctx).await;
+    drop(runtime);
+    drop(service);
+    remove(&root);
 }

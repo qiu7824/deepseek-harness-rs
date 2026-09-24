@@ -190,13 +190,28 @@ fn recovery_preserves_external_edits_and_keeps_evidence() {
 
 #[test]
 fn stale_document_update_does_not_overwrite_an_external_edit() {
-    let root=root();let profile=Profile::open(&root).unwrap();profile.replace(documents("demo","old"),None).unwrap();
-    let mut stale=profile.documents().unwrap();stale.entries[0]["disabled"]=json!(true);
-    let mut external=profile.documents().unwrap().manifest;external["manualEdit"]=json!(true);
-    let raw=serde_json::to_string(&external).unwrap();std::fs::write(root.join("package.json"),&raw).unwrap();
-    assert!(profile.replace(stale,None).unwrap_err().contains("外部修改"));
-    assert_eq!(std::fs::read_to_string(root.join("package.json")).unwrap(),raw);assert!(!root.join(JOURNAL).exists());
-    drop(profile);cleanup(root);
+    let root = root();
+    let profile = Profile::open(&root).unwrap();
+    profile.replace(documents("demo", "old"), None).unwrap();
+    let mut stale = profile.documents().unwrap();
+    stale.entries[0]["disabled"] = json!(true);
+    let mut external = profile.documents().unwrap().manifest;
+    external["manualEdit"] = json!(true);
+    let raw = serde_json::to_string(&external).unwrap();
+    std::fs::write(root.join("package.json"), &raw).unwrap();
+    assert!(
+        profile
+            .replace(stale, None)
+            .unwrap_err()
+            .contains("外部修改")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("package.json")).unwrap(),
+        raw
+    );
+    assert!(!root.join(JOURNAL).exists());
+    drop(profile);
+    cleanup(root);
 }
 
 #[test]

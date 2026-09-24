@@ -58,9 +58,13 @@ where
     S: FnMut() -> SF,
     SF: std::future::Future<Output = Result<(), String>>,
 {
-    if probe().await? { return Ok(()); }
+    if probe().await? {
+        return Ok(());
+    }
     let _initialization = INITIALIZATION.lock().await;
-    if probe().await? { return Ok(()); }
+    if probe().await? {
+        return Ok(());
+    }
     setup().await?;
     if !probe().await? {
         return Err("[SANDBOX_SETUP_FAILED] initialization did not publish a ready workspace; requested command not dispatched".into());
@@ -70,7 +74,13 @@ where
 
 fn readiness(output: &std::process::Output) -> Result<bool, String> {
     if !output.status.success() {
-        return Err(format!("[SANDBOX_STATUS_FAILED] native readiness check failed: {}; requested command not dispatched", String::from_utf8_lossy(&output.stderr).chars().take(4000).collect::<String>()));
+        return Err(format!(
+            "[SANDBOX_STATUS_FAILED] native readiness check failed: {}; requested command not dispatched",
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(4000)
+                .collect::<String>()
+        ));
     }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("[SANDBOX_STATUS_FAILED] invalid readiness response: {e}"))?;
@@ -130,9 +140,13 @@ pub async fn windows_backend_manage(
             }
             config.validate_scope(&workspace.to_string_lossy())?;
             let _initialization = INITIALIZATION.lock().await;
-            config.initialize(&workspace.to_string_lossy(), false).await?;
+            config
+                .initialize(&workspace.to_string_lossy(), false)
+                .await?;
             if !config.probe(&workspace.to_string_lossy(), false).await? {
-                return Err("[SANDBOX_SETUP_FAILED] setup completed without a ready workspace".into());
+                return Err(
+                    "[SANDBOX_SETUP_FAILED] setup completed without a ready workspace".into(),
+                );
             }
         }
         Some("configure") => {}
@@ -335,7 +349,11 @@ impl NativeBackend {
             return Err("[SANDBOX_SETUP_FAILED] workspace must be an existing absolute directory; requested command not dispatched".into());
         }
         self.validate_scope(workspace)?;
-        prepare_with(|| self.probe(workspace, read_only), || self.initialize(workspace, read_only)).await
+        prepare_with(
+            || self.probe(workspace, read_only),
+            || self.initialize(workspace, read_only),
+        )
+        .await
     }
 
     async fn probe(&self, workspace: &str, read_only: bool) -> Result<bool, String> {
@@ -347,12 +365,24 @@ impl NativeBackend {
         self.validate_scope(workspace)?;
         let output = self.helper("--setup", workspace, read_only, 900).await?;
         if !output.status.success() {
-            return Err(format!("[SANDBOX_SETUP_FAILED] automatic workspace initialization failed: {}; requested command not dispatched", String::from_utf8_lossy(&output.stderr).chars().take(4000).collect::<String>()));
+            return Err(format!(
+                "[SANDBOX_SETUP_FAILED] automatic workspace initialization failed: {}; requested command not dispatched",
+                String::from_utf8_lossy(&output.stderr)
+                    .chars()
+                    .take(4000)
+                    .collect::<String>()
+            ));
         }
         Ok(())
     }
 
-    async fn helper(&self, action: &str, workspace: &str, read_only: bool, timeout_seconds: u64) -> Result<std::process::Output, String> {
+    async fn helper(
+        &self,
+        action: &str,
+        workspace: &str,
+        read_only: bool,
+        timeout_seconds: u64,
+    ) -> Result<std::process::Output, String> {
         let mut command = tokio::process::Command::new(&self.runner);
         command
             .args([
@@ -439,10 +469,26 @@ mod tests {
     #[test]
     fn malformed_or_failed_status_never_becomes_an_initialization_request() {
         use std::os::windows::process::ExitStatusExt;
-        let output = |status, stdout: &[u8]| std::process::Output { status: std::process::ExitStatus::from_raw(status), stdout: stdout.to_vec(), stderr: b"owner check failed".to_vec() };
-        assert_eq!(readiness(&output(0, br#"{"protocolVersion":1,"initialized":false}"#)).unwrap(), false);
-        assert_eq!(readiness(&output(0, br#"{"protocolVersion":1,"initialized":true}"#)).unwrap(), true);
-        assert!(readiness(&output(125, br#"{"protocolVersion":1,"initialized":false}"#)).is_err());
+        let output = |status, stdout: &[u8]| std::process::Output {
+            status: std::process::ExitStatus::from_raw(status),
+            stdout: stdout.to_vec(),
+            stderr: b"owner check failed".to_vec(),
+        };
+        assert_eq!(
+            readiness(&output(0, br#"{"protocolVersion":1,"initialized":false}"#)).unwrap(),
+            false
+        );
+        assert_eq!(
+            readiness(&output(0, br#"{"protocolVersion":1,"initialized":true}"#)).unwrap(),
+            true
+        );
+        assert!(
+            readiness(&output(
+                125,
+                br#"{"protocolVersion":1,"initialized":false}"#
+            ))
+            .is_err()
+        );
         assert!(readiness(&output(0, br#"{"protocolVersion":2,"initialized":false}"#)).is_err());
         assert!(readiness(&output(0, br#"{"protocolVersion":1}"#)).is_err());
     }
@@ -450,45 +496,123 @@ mod tests {
     #[tokio::test]
     async fn concurrent_first_use_initializes_once_and_ready_workspaces_skip_setup() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        let ready=std::sync::Arc::new(AtomicBool::new(false)); let count=std::sync::Arc::new(AtomicUsize::new(0));
-        let run=|| {
-            let ready_probe=ready.clone();let ready_setup=ready.clone();let count=count.clone();
-            prepare_with(move||{let ready=ready_probe.clone();async move{Ok(ready.load(Ordering::Acquire))}},move||{
-                let ready=ready_setup.clone();let count=count.clone();async move{
-                    count.fetch_add(1,Ordering::Relaxed);tokio::time::sleep(std::time::Duration::from_millis(10)).await;ready.store(true,Ordering::Release);Ok(())
-                }
-            })
+        let ready = std::sync::Arc::new(AtomicBool::new(false));
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let run = || {
+            let ready_probe = ready.clone();
+            let ready_setup = ready.clone();
+            let count = count.clone();
+            prepare_with(
+                move || {
+                    let ready = ready_probe.clone();
+                    async move { Ok(ready.load(Ordering::Acquire)) }
+                },
+                move || {
+                    let ready = ready_setup.clone();
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::Relaxed);
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        ready.store(true, Ordering::Release);
+                        Ok(())
+                    }
+                },
+            )
         };
-        let(a,b)=tokio::join!(run(),run());a.unwrap();b.unwrap();run().await.unwrap();
-        assert_eq!(count.load(Ordering::Relaxed),1);
+        let (a, b) = tokio::join!(run(), run());
+        a.unwrap();
+        b.unwrap();
+        run().await.unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
     async fn setup_failure_and_cancellation_do_not_leave_the_preparation_gate_locked() {
-        let failed=prepare_with(||async{Ok(false)},||async{Err("setup refused".into())}).await.unwrap_err();
-        assert_eq!(failed,"setup refused");
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(20),prepare_with(||async{Ok(false)},||std::future::pending::<Result<(),String>>())).await.is_err());
-        assert!(prepare_with(||async{Ok(false)},||async{Ok(())}).await.unwrap_err().contains("did not publish"));
-        prepare_with(||async{Ok(true)},||async{panic!("ready workspace must not run setup")}).await.unwrap();
+        let failed = prepare_with(
+            || async { Ok(false) },
+            || async { Err("setup refused".into()) },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failed, "setup refused");
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                prepare_with(
+                    || async { Ok(false) },
+                    || std::future::pending::<Result<(), String>>()
+                )
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            prepare_with(|| async { Ok(false) }, || async { Ok(()) })
+                .await
+                .unwrap_err()
+                .contains("did not publish")
+        );
+        prepare_with(
+            || async { Ok(true) },
+            || async { panic!("ready workspace must not run setup") },
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     #[ignore = "requires an explicit owned live workspace and installed helper selection"]
     async fn explicit_live_workspace_automatically_prepares_before_isolated_execution() {
-        let home=PathBuf::from(std::env::var_os("DSH_NATIVE_LIVE_HOME").expect("explicit live home"));
-        let workspace=std::env::var("DSH_NATIVE_LIVE_WORKSPACE").expect("explicit live workspace");
-        let config=NativeBackend::load_from_home(&home).unwrap().unwrap();
-        assert_eq!(config.implementation,"elevated");config.verify().unwrap();config.validate_scope(&workspace).unwrap();
-        let before=config.probe(&workspace,false).await.unwrap();
-        config.prepare(&workspace,false).await.unwrap();
-        assert!(config.probe(&workspace,false).await.unwrap());
-        let program=PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/whoami.exe").to_string_lossy().into_owned();
-        let confined=config.confine(&[program.clone()],&SandboxPolicy { mode:dsh_sandbox::ConfinedSandboxMode::WorkspaceWrite,workspace_root:workspace.clone(),read_only_roots:vec![],session_id:None },&[]);
-        let output=tokio::process::Command::new(&confined.argv[0]).args(&confined.argv[1..]).creation_flags(0x08000000).kill_on_drop(true).output().await.unwrap();
-        assert!(output.status.success(),"isolated probe failed: {}",String::from_utf8_lossy(&output.stderr));
-        let host=tokio::process::Command::new(program).creation_flags(0x08000000).output().await.unwrap();
-        assert_ne!(output.stdout,host.stdout,"workspace command must use an independent principal");
-        println!("{}",serde_json::json!({"initializedBefore":before,"initializedAfter":true,"independentPrincipal":true,"workspace":workspace,"commandExit":output.status.code(),"implementation":config.implementation,"network":config.network}));
+        let home =
+            PathBuf::from(std::env::var_os("DSH_NATIVE_LIVE_HOME").expect("explicit live home"));
+        let workspace =
+            std::env::var("DSH_NATIVE_LIVE_WORKSPACE").expect("explicit live workspace");
+        let config = NativeBackend::load_from_home(&home).unwrap().unwrap();
+        assert_eq!(config.implementation, "elevated");
+        config.verify().unwrap();
+        config.validate_scope(&workspace).unwrap();
+        let before = config.probe(&workspace, false).await.unwrap();
+        config.prepare(&workspace, false).await.unwrap();
+        assert!(config.probe(&workspace, false).await.unwrap());
+        let program = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/whoami.exe")
+            .to_string_lossy()
+            .into_owned();
+        let confined = config.confine(
+            &[program.clone()],
+            &SandboxPolicy {
+                mode: dsh_sandbox::ConfinedSandboxMode::WorkspaceWrite,
+                workspace_root: workspace.clone(),
+                read_only_roots: vec![],
+                session_id: None,
+            },
+            &[],
+        );
+        let output = tokio::process::Command::new(&confined.argv[0])
+            .args(&confined.argv[1..])
+            .creation_flags(0x08000000)
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let host = tokio::process::Command::new(program)
+            .creation_flags(0x08000000)
+            .output()
+            .await
+            .unwrap();
+        assert_ne!(
+            output.stdout, host.stdout,
+            "workspace command must use an independent principal"
+        );
+        println!(
+            "{}",
+            serde_json::json!({"initializedBefore":before,"initializedAfter":true,"independentPrincipal":true,"workspace":workspace,"commandExit":output.status.code(),"implementation":config.implementation,"network":config.network})
+        );
     }
     use dsh_sandbox::{SandboxExecutionPolicy, SandboxMode, SandboxProvider};
 

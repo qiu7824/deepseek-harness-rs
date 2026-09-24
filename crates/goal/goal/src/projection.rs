@@ -32,11 +32,20 @@ pub fn goal_projection_definition() -> ProjectionDefinition {
                 return Err("goal projection has unexpected fields".into());
             }
             let mut change = object.clone();
-            let goal = change.get_mut("goal").and_then(Value::as_object_mut)
+            let goal = change
+                .get_mut("goal")
+                .and_then(Value::as_object_mut)
                 .ok_or("goal projection has no goal")?;
-            let requirements_revision = goal.remove("objectiveRevision").and_then(|value| value.as_u64())
-                .filter(|revision| *revision > 0).ok_or("goal requirements revision is missing")?;
-            if goal.get("revision").and_then(Value::as_u64).is_none_or(|revision| requirements_revision > revision) {
+            let requirements_revision = goal
+                .remove("objectiveRevision")
+                .and_then(|value| value.as_u64())
+                .filter(|revision| *revision > 0)
+                .ok_or("goal requirements revision is missing")?;
+            if goal
+                .get("revision")
+                .and_then(Value::as_u64)
+                .is_none_or(|revision| requirements_revision > revision)
+            {
                 return Err("goal requirements revision exceeds the goal revision".into());
             }
             change.insert("kind".into(), json!("goal/change"));

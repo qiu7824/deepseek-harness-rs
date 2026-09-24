@@ -123,7 +123,9 @@ pub struct AgentRunAdmission {
     pub admit: Arc<dyn Fn(&dyn Agent) -> Result<Box<dyn Send>, String> + Send + Sync>,
 }
 impl cordis::Service for AgentRunAdmission {
-    fn service_name(&self) -> &'static str { "agentRunAdmission" }
+    fn service_name(&self) -> &'static str {
+        "agentRunAdmission"
+    }
 }
 
 /// Options for [`Agent::cancel`].

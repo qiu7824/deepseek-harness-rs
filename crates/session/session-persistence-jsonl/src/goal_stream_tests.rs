@@ -245,10 +245,16 @@ fn bounded_goal_zstd_reader_rejects_frames_above_the_writer_window() {
     let plaintext = decompress_zstd_frame(&original[header.start..header.end]).unwrap();
     let mut bytes = crate::zstd::legacy_streaming_fixture(&plaintext, MAX_AUTHORITY_WINDOW_LOG + 1);
     bytes.extend_from_slice(&original[header.end..]);
-    assert_eq!(zstd::stream::decode_all(bytes.as_slice()).unwrap(), zstd::stream::decode_all(original.as_slice()).unwrap());
+    assert_eq!(
+        zstd::stream::decode_all(bytes.as_slice()).unwrap(),
+        zstd::stream::decode_all(original.as_slice()).unwrap()
+    );
     std::fs::write(&path, bytes).unwrap();
     let (_, visit) = visitor();
     let error = goal_stream::visit_path(&path, JsonlCompression::Zstd, visit).unwrap_err();
-    assert!(error.contains("memory") || error.contains("window"), "must reject the valid frame for its oversized window: {error}");
+    assert!(
+        error.contains("memory") || error.contains("window"),
+        "must reject the valid frame for its oversized window: {error}"
+    );
     cleanup(&root);
 }

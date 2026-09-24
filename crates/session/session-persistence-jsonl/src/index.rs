@@ -15,7 +15,10 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::{Weak, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Weak,
+    atomic::{AtomicBool, Ordering},
+};
 
 use cordis::{Context, Service};
 use dsh_session::{
@@ -44,11 +47,11 @@ const DEFAULT_COMPRESSION: JsonlCompression = JsonlCompression::Zstd;
 #[path = "goal_stream.rs"]
 mod goal_stream;
 
-#[path = "ownership.rs"]
-mod ownership;
 #[path = "generation_lifecycle.rs"]
 mod generation_lifecycle;
-use ownership::{WriterOwnership, WRITER_DIRECTORY};
+#[path = "ownership.rs"]
+mod ownership;
+use ownership::{WRITER_DIRECTORY, WriterOwnership};
 
 #[path = "projection_stream.rs"]
 mod projection_stream;
@@ -493,11 +496,26 @@ pub struct JsonlSessionPersistence {
 }
 
 impl JsonlSessionPersistence {
-    fn artifact_location(&self, meta: &SessionHeader) -> Option<dsh_session_persistence::SessionLocation> {
+    fn artifact_location(
+        &self,
+        meta: &SessionHeader,
+    ) -> Option<dsh_session_persistence::SessionLocation> {
         let directory = session_dir(&self.root.to_string_lossy(), meta.cwd.as_deref(), &meta.id);
         let selected = crate::generations::select_generation(&directory, meta.id.as_str()).ok()?;
-        let path = selected.map(|generation| generation.path).unwrap_or_else(|| log_path(&self.root.to_string_lossy(), meta.cwd.as_deref(), &meta.id, self.compression));
-        Some(dsh_session_persistence::SessionLocation { kind:"jsonl".into(), path:path.to_string_lossy().into_owned() })
+        let path = selected
+            .map(|generation| generation.path)
+            .unwrap_or_else(|| {
+                log_path(
+                    &self.root.to_string_lossy(),
+                    meta.cwd.as_deref(),
+                    &meta.id,
+                    self.compression,
+                )
+            });
+        Some(dsh_session_persistence::SessionLocation {
+            kind: "jsonl".into(),
+            path: path.to_string_lossy().into_owned(),
+        })
     }
     /// Create the backend, register the service, and build the coordinator.
     pub fn install(ctx: &Context, config: JsonlConfig) -> Result<Arc<Self>, String> {
@@ -557,7 +575,8 @@ impl JsonlSessionPersistence {
         for project in self.list_project_dirs().await? {
             for dir in self.list_session_dirs(&project).await? {
                 tokio::task::spawn_blocking(move || crate::generations::discover_generation(&dir))
-                    .await.map_err(|error| error.to_string())??;
+                    .await
+                    .map_err(|error| error.to_string())??;
             }
         }
         Ok(())
@@ -637,8 +656,14 @@ impl JsonlSessionPersistence {
                     format!("corrupt session log: header id cannot name a storage path ({error})")
                 })?);
             let expected = id.to_string();
-            if let Some(selected) = tokio::task::spawn_blocking(move || crate::generations::select_generation(&dir, &expected))
-                .await.map_err(|error| error.to_string())?? { matches.push(selected.path); }
+            if let Some(selected) = tokio::task::spawn_blocking(move || {
+                crate::generations::select_generation(&dir, &expected)
+            })
+            .await
+            .map_err(|error| error.to_string())??
+            {
+                matches.push(selected.path);
+            }
         }
         if matches.len() > 1 {
             return Err(format!(
@@ -723,8 +748,14 @@ impl JsonlSessionPersistence {
                 prefix.inherited_event_count.get(),
             )?;
             for event in &prefix.events {
-                validator.push(&serde_json::to_value(event).map_err(|error| error.to_string())?)
-                    .map_err(|error| format!("invalid V4 lifecycle at {} {}: {error}", event.seq, event.type_))?;
+                validator
+                    .push(&serde_json::to_value(event).map_err(|error| error.to_string())?)
+                    .map_err(|error| {
+                        format!(
+                            "invalid V4 lifecycle at {} {}: {error}",
+                            event.seq, event.type_
+                        )
+                    })?;
             }
             validator.finish()?;
         }
@@ -989,7 +1020,8 @@ impl JsonlSessionPersistence {
                 meta.id.as_str()
             ));
         }
-        let expected_path = session_dir(&self.root.to_string_lossy(), meta.cwd.as_deref(), &meta.id);
+        let expected_path =
+            session_dir(&self.root.to_string_lossy(), meta.cwd.as_deref(), &meta.id);
         let directory = path.parent().ok_or("Session artifact has no directory")?;
         let same = directory == expected_path
             || match (
@@ -1128,16 +1160,31 @@ impl JsonlSessionPersistence {
         self.encode_materialization_as(meta, inherited_event_count, events, self.compression)
     }
 
-    fn encode_materialization_as(&self, meta: &SessionHeader, inherited_event_count: SessionLogOffset, events: &[SessionEvent], compression: JsonlCompression) -> Result<Vec<u8>, String> {
+    fn encode_materialization_as(
+        &self,
+        meta: &SessionHeader,
+        inherited_event_count: SessionLogOffset,
+        events: &[SessionEvent],
+        compression: JsonlCompression,
+    ) -> Result<Vec<u8>, String> {
         if meta.version == 4 {
-            return crate::native_writer::materialization(meta, inherited_event_count, events, compression);
+            return crate::native_writer::materialization(
+                meta,
+                inherited_event_count,
+                events,
+                compression,
+            );
         }
         let header = format!(
             "{}\n",
             serde_json::to_string(&to_header_line(meta, Some(inherited_event_count))?)
                 .map_err(|e| format!("header is not JSON-serializable: {e}"))?
         );
-        let body = if events.is_empty() { String::new() } else { format!("{}\n", event_lines(events, self.pack_chunks)) };
+        let body = if events.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", event_lines(events, self.pack_chunks))
+        };
         if compression == JsonlCompression::None {
             return Ok(format!("{header}{body}").into_bytes());
         }
@@ -1157,9 +1204,17 @@ impl JsonlSessionPersistence {
             return Ok(());
         }
         let _writer = self.writer_lease(meta).await?;
-        let path = self.find_log(&meta.id).await?.ok_or("Session append target is missing")?;
-        self.assert_stored_identity(&path, meta, Some(&meta.id)).await?;
-        let content = if meta.version == 4 { crate::native_writer::event_batch(events, crate::format::compression_of(&path))? } else { self.encode_event_batch(events)? };
+        let path = self
+            .find_log(&meta.id)
+            .await?
+            .ok_or("Session append target is missing")?;
+        self.assert_stored_identity(&path, meta, Some(&meta.id))
+            .await?;
+        let content = if meta.version == 4 {
+            crate::native_writer::event_batch(events, crate::format::compression_of(&path))?
+        } else {
+            self.encode_event_batch(events)?
+        };
         let before = tokio::fs::metadata(&path)
             .await
             .map_err(|e| e.to_string())?
@@ -1214,8 +1269,12 @@ impl JsonlSessionPersistence {
 
     async fn repair(&self, meta: &SessionHeader, offset: u64) -> Result<(), String> {
         let _writer = self.writer_lease(meta).await?;
-        let path = self.find_log(&meta.id).await?.ok_or("Session repair target is missing")?;
-        self.assert_stored_identity(&path, meta, Some(&meta.id)).await?;
+        let path = self
+            .find_log(&meta.id)
+            .await?
+            .ok_or("Session repair target is missing")?;
+        self.assert_stored_identity(&path, meta, Some(&meta.id))
+            .await?;
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
@@ -1254,7 +1313,10 @@ impl JsonlSessionPersistence {
         path: &Path,
     ) -> Result<dsh_session_persistence::SessionListMetadata, String> {
         if crate::native_reader::is_native(path)? {
-            return crate::native_reader::run(path, id, |path, id| Ok(crate::native_reader::visit(path, id, &|| false, |_| Ok(()))?.list_metadata())).await;
+            return crate::native_reader::run(path, id, |path, id| {
+                Ok(crate::native_reader::visit(path, id, &|| false, |_| Ok(()))?.list_metadata())
+            })
+            .await;
         }
         if crate::format::compression_of(&path) != JsonlCompression::Zstd {
             let whole = self.read_from(id, 0).await?;
@@ -1368,9 +1430,17 @@ impl JsonlSessionPersistence {
         let mut ids = std::collections::HashSet::new();
         for project in self.list_project_dirs().await? {
             for dir in self.list_session_dirs(&project).await? {
-                let Some(selected) = tokio::task::spawn_blocking(move || crate::generations::discover_generation(&dir)).await.map_err(|error| error.to_string())?? else { continue };
+                let Some(selected) = tokio::task::spawn_blocking(move || {
+                    crate::generations::discover_generation(&dir)
+                })
+                .await
+                .map_err(|error| error.to_string())??
+                else {
+                    continue;
+                };
                 let path = selected.path;
-                let meta = parse_header_meta(&selected.physical_header.to_string()).ok_or("invalid selected Session header")?;
+                let meta = parse_header_meta(&selected.physical_header.to_string())
+                    .ok_or("invalid selected Session header")?;
                 self.assert_stored_identity(&path, &meta, None).await?;
                 if !ids.insert(meta.id.clone()) {
                     return Err(format!(
@@ -1397,7 +1467,9 @@ impl Service for JsonlSessionPersistence {
 
 #[async_trait::async_trait]
 impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence {
-    fn supports_projection_streaming(&self) -> bool { true }
+    fn supports_projection_streaming(&self) -> bool {
+        true
+    }
 
     async fn try_visit_projection_events(
         &self,
@@ -1495,7 +1567,10 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         self.coordinator().prepare(id).await
     }
 
-    async fn prepare_new(&self, session: dsh_session::Session) -> Result<SessionPreparation, String> {
+    async fn prepare_new(
+        &self,
+        session: dsh_session::Session,
+    ) -> Result<SessionPreparation, String> {
         self.coordinator().prepare_new(session).await
     }
 
@@ -1537,15 +1612,21 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let path = self.upgrade_to_current(&path, id).await?;
         if crate::native_reader::is_native(&path)? {
             return crate::native_reader::run(&path, id, move |path, id| {
-                let mut events = Vec::with_capacity(max_events.min(4096)); let mut next_seq = None;
+                let mut events = Vec::with_capacity(max_events.min(4096));
+                let mut next_seq = None;
                 crate::native_reader::visit(path, id, &|| false, |event| {
                     if event.seq.get() >= from_seq && next_seq.is_none() {
-                        if events.len() == max_events { next_seq = Some(event.seq.get()); } else { events.push(event); }
+                        if events.len() == max_events {
+                            next_seq = Some(event.seq.get());
+                        } else {
+                            events.push(event);
+                        }
                     }
                     Ok(())
                 })?;
                 Ok(dsh_session_persistence::SessionEventChunk { events, next_seq })
-            }).await;
+            })
+            .await;
         }
         if crate::format::compression_of(&path) != JsonlCompression::Zstd {
             let mut whole = self.read_from(id, from_seq).await?;
@@ -1585,15 +1666,33 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let path = self.upgrade_to_current(&path, id).await?;
         if crate::native_reader::is_native(&path)? {
             return crate::native_reader::run(&path, id, move |path, id| {
-                let mut events = Vec::new(); let mut messages = 0; let mut has_more = false;
+                let mut events = Vec::new();
+                let mut messages = 0;
+                let mut has_more = false;
                 let summary = crate::native_reader::visit(path, id, &|| false, |event| {
-                    if event.seq.get() < request.after_seq { return Ok(()); }
-                    if events.len() >= request.max_events || messages >= request.max_messages.max(1) { has_more = true; return Ok(()); }
-                    messages += u64::from(matches!(event.type_.as_str(), "user/message" | "assistant/message") && event.surface_op.as_ref().is_none_or(|op| op.is_append()));
-                    events.push(event); Ok(())
+                    if event.seq.get() < request.after_seq {
+                        return Ok(());
+                    }
+                    if events.len() >= request.max_events || messages >= request.max_messages.max(1)
+                    {
+                        has_more = true;
+                        return Ok(());
+                    }
+                    messages += u64::from(
+                        matches!(event.type_.as_str(), "user/message" | "assistant/message")
+                            && event.surface_op.as_ref().is_none_or(|op| op.is_append()),
+                    );
+                    events.push(event);
+                    Ok(())
                 })?;
-                Ok(SessionReadWindowResult { meta:summary.meta, events, has_more, oversized_event_count:None })
-            }).await;
+                Ok(SessionReadWindowResult {
+                    meta: summary.meta,
+                    events,
+                    has_more,
+                    oversized_event_count: None,
+                })
+            })
+            .await;
         }
         if crate::format::compression_of(&path) != JsonlCompression::Zstd {
             let chunk = self
@@ -1673,10 +1772,19 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             return crate::native_reader::run(&path, id, move |path, id| {
                 let mut chunk = Vec::with_capacity(max_events.min(4096));
                 crate::native_reader::visit(path, id, &|| false, |event| {
-                    chunk.push(event); if chunk.len() == max_events { visitor(&chunk)?; chunk.clear(); } Ok(())
+                    chunk.push(event);
+                    if chunk.len() == max_events {
+                        visitor(&chunk)?;
+                        chunk.clear();
+                    }
+                    Ok(())
                 })?;
-                if !chunk.is_empty() { visitor(&chunk)?; } Ok(())
-            }).await;
+                if !chunk.is_empty() {
+                    visitor(&chunk)?;
+                }
+                Ok(())
+            })
+            .await;
         }
         if crate::format::compression_of(&path) != JsonlCompression::Zstd {
             let whole = self.read_from(id, 0).await?;
@@ -1763,26 +1871,31 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             return crate::native_reader::run(&path, id, move |path, id| {
                 let mut active = true;
                 crate::native_reader::visit(path, id, &|| false, |event| {
-                    if active && event.type_ != "assistant/chunk" { active = visitor(std::slice::from_ref(&event))?; }
+                    if active && event.type_ != "assistant/chunk" {
+                        active = visitor(std::slice::from_ref(&event))?;
+                    }
                     Ok(())
-                })?; Ok(())
-            }).await;
+                })?;
+                Ok(())
+            })
+            .await;
         }
-        let (header_line, format_name) = if crate::format::compression_of(&path) == JsonlCompression::Zstd {
-            (
-                self.read_first_zstd_line(&path)
-                    .await?
-                    .ok_or_else(|| "empty or header-less Zstandard session log".to_string())?,
-                "Zstandard",
-            )
-        } else {
-            (
-                self.read_first_line(&path)
-                    .await?
-                    .ok_or_else(|| "empty or header-less JSONL session log".to_string())?,
-                "JSONL",
-            )
-        };
+        let (header_line, format_name) =
+            if crate::format::compression_of(&path) == JsonlCompression::Zstd {
+                (
+                    self.read_first_zstd_line(&path)
+                        .await?
+                        .ok_or_else(|| "empty or header-less Zstandard session log".to_string())?,
+                    "Zstandard",
+                )
+            } else {
+                (
+                    self.read_first_line(&path)
+                        .await?
+                        .ok_or_else(|| "empty or header-less JSONL session log".to_string())?,
+                    "JSONL",
+                )
+            };
         let meta = parse_header_meta(&header_line)
             .ok_or_else(|| format!("invalid {format_name} session header"))?;
         self.assert_stored_identity(&path, &meta, Some(id)).await?;
@@ -1805,9 +1918,20 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         if crate::native_reader::is_native(&path)? {
             return crate::native_reader::run(&path, id, |path, id| {
                 let mut events = Vec::new();
-                let summary = crate::native_reader::visit(path, id, &|| false, |event| { if event.type_ == "user/message" { events.push(event); } Ok(()) })?;
-                Ok(dsh_session_persistence::SessionUserMessageEvents { meta:summary.meta, inherited_event_count:summary.inherited, last_seq:summary.event_count as i64 - 1, events })
-            }).await;
+                let summary = crate::native_reader::visit(path, id, &|| false, |event| {
+                    if event.type_ == "user/message" {
+                        events.push(event);
+                    }
+                    Ok(())
+                })?;
+                Ok(dsh_session_persistence::SessionUserMessageEvents {
+                    meta: summary.meta,
+                    inherited_event_count: summary.inherited,
+                    last_seq: summary.event_count as i64 - 1,
+                    events,
+                })
+            })
+            .await;
         }
         let from_whole = |whole: dsh_session_persistence::SessionReadFromResult| {
             let last_seq = whole
@@ -1917,7 +2041,10 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         };
         let path = self.upgrade_to_current(&path, id).await?;
         if crate::native_reader::is_native(&path)? {
-            return crate::native_reader::run(&path, id, move |path, id| crate::native_reader::window(path, id, request, &|| false)).await;
+            return crate::native_reader::run(&path, id, move |path, id| {
+                crate::native_reader::window(path, id, request, &|| false)
+            })
+            .await;
         }
         if crate::format::compression_of(&path) == JsonlCompression::Zstd
             && let Some(window) = self.read_zstd_window(&path, id, request).await?
@@ -2033,24 +2160,34 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let path = self.upgrade_v0(&path, id).await?;
         if crate::native_reader::is_native(&path)? {
             return crate::native_reader::run(&path, id, |path, id| {
-                let mut explicit = false; let mut selection = serde_json::Value::Null;
+                let mut explicit = false;
+                let mut selection = serde_json::Value::Null;
                 crate::native_reader::visit(path, id, &|| false, |event| {
-                    if event.type_ == "model/selection" && event.data["provider"].is_string() && event.data["model"].is_string() {
-                        explicit = true; selection = event.data;
+                    if event.type_ == "model/selection"
+                        && event.data["provider"].is_string()
+                        && event.data["model"].is_string()
+                    {
+                        explicit = true;
+                        selection = event.data;
                     } else if event.type_ == "request/header" && !explicit {
                         let config = &event.data["header"]["config"];
                         if config["provider"].is_string() && config["model"].is_string() {
                             let mut value = serde_json::Map::new();
                             for key in ["provider", "model", "reasoningEffort"] {
-                                if let Some(field) = config.get(key) { value.insert(key.into(), field.clone()); }
+                                if let Some(field) = config.get(key) {
+                                    value.insert(key.into(), field.clone());
+                                }
                             }
                             selection = serde_json::Value::Object(value);
                         }
                     }
                     Ok(())
                 })?;
-                Ok(Some(serde_json::json!({"explicit":explicit,"selection":selection})))
-            }).await;
+                Ok(Some(
+                    serde_json::json!({"explicit":explicit,"selection":selection}),
+                ))
+            })
+            .await;
         }
         if crate::format::compression_of(&path) != JsonlCompression::Zstd {
             return Ok(None);
@@ -2148,7 +2285,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             };
             let header = parse_header_meta(&first)
                 .ok_or_else(|| "invalid session authority header".to_string())?;
-            if ![0,3,4].contains(&header.version) {
+            if ![0, 3, 4].contains(&header.version) {
                 return Err("unsupported session authority header version".into());
             }
             self.assert_stored_identity(&path, &header, Some(id))
@@ -2198,7 +2335,10 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
         "session-persistence-jsonl"
     }
 
-    async fn acquire_writer(&self, meta: &SessionHeader) -> Result<dsh_session_persistence::SessionWriterLease, String> {
+    async fn acquire_writer(
+        &self,
+        meta: &SessionHeader,
+    ) -> Result<dsh_session_persistence::SessionWriterLease, String> {
         Ok(self.writer_lease(meta).await?)
     }
 
@@ -2253,23 +2393,37 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
         })?;
         let reading = path.clone();
         let compression = crate::format::compression_of(&path);
-        let first = tokio::task::spawn_blocking(move || read_authority_header(&reading, compression))
-            .await.map_err(|e| e.to_string())??.ok_or("Session deletion source disappeared")?;
-        let meta = parse_header_storage(&first).ok_or("invalid Session deletion header")?.meta;
+        let first =
+            tokio::task::spawn_blocking(move || read_authority_header(&reading, compression))
+                .await
+                .map_err(|e| e.to_string())??
+                .ok_or("Session deletion source disappeared")?;
+        let meta = parse_header_storage(&first)
+            .ok_or("invalid Session deletion header")?
+            .meta;
         self.assert_stored_identity(&path, &meta, Some(id)).await?;
         let _writer = self.writer_lease(&meta).await?;
         // Keep the permanent lock inode: removing it would let an old waiter
         // and a newly created same-id Session acquire different ownership files.
-        let mut entries = tokio::fs::read_dir(directory).await.map_err(|e| e.to_string())?;
+        let mut entries = tokio::fs::read_dir(directory)
+            .await
+            .map_err(|e| e.to_string())?;
         while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
-            if entry.file_name() == ".session-writer.lock" { continue; }
+            if entry.file_name() == ".session-writer.lock" {
+                continue;
+            }
             let kind = entry.file_type().await.map_err(|e| e.to_string())?;
             let removed = if kind.is_dir() {
                 tokio::fs::remove_dir_all(entry.path()).await
             } else {
                 tokio::fs::remove_file(entry.path()).await
             };
-            removed.map_err(|e| format!("failed to delete owned Session artifact {}: {e}", entry.path().display()))?;
+            removed.map_err(|e| {
+                format!(
+                    "failed to delete owned Session artifact {}: {e}",
+                    entry.path().display()
+                )
+            })?;
         }
         Ok(true)
     }
@@ -2426,7 +2580,8 @@ mod history_window_tests {
             let bytes = backend
                 .encode_materialization(&header, SessionLogOffset::new(2).unwrap(), &events)
                 .unwrap();
-            let file = session_dir(&root.to_string_lossy(), None, &id).join(format!("session{}", log_suffix(compression)));
+            let file = session_dir(&root.to_string_lossy(), None, &id)
+                .join(format!("session{}", log_suffix(compression)));
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, &bytes).unwrap();
             let successor = backend.upgrade_v0(&file, &id).await.unwrap();
@@ -2461,7 +2616,9 @@ mod history_window_tests {
                     .filter_map(Result::ok)
                     .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
             );
-            for dispose in ctx.fiber.disposables.clear() { dispose().await; }
+            for dispose in ctx.fiber.disposables.clear() {
+                dispose().await;
+            }
             drop(backend);
             drop(ctx);
             std::fs::remove_dir_all(root).unwrap();
@@ -2474,8 +2631,12 @@ mod history_window_tests {
             seq: SessionSeq::new(seq).unwrap(),
             time: seq as i64,
             data: match type_ {
-                "user/message" => serde_json::json!({"id":format!("message-{seq}"),"role":"user","source":{"kind":"user"},"content":[]}),
-                "assistant/message" => serde_json::json!({"turn":1,"step":1,"message":{"id":format!("message-{seq}"),"role":"assistant","source":{"kind":"model","provider":"mock","model":"test"},"content":[]}}),
+                "user/message" => {
+                    serde_json::json!({"id":format!("message-{seq}"),"role":"user","source":{"kind":"user"},"content":[]})
+                }
+                "assistant/message" => {
+                    serde_json::json!({"turn":1,"step":1,"message":{"id":format!("message-{seq}"),"role":"assistant","source":{"kind":"model","provider":"mock","model":"test"},"content":[]}})
+                }
                 _ => serde_json::json!({}),
             },
             ignorable: None,
@@ -2544,7 +2705,9 @@ mod history_window_tests {
             assert!(cache.len() <= 64);
             assert!(cache.iter().map(|entry| entry.bytes).sum::<usize>() <= 256 * 1024);
         }
-        for dispose in ctx.fiber.disposables.clear() { dispose().await; }
+        for dispose in ctx.fiber.disposables.clear() {
+            dispose().await;
+        }
         drop(backend);
         drop(ctx);
         std::fs::remove_dir_all(root).unwrap();
@@ -2620,8 +2783,17 @@ mod history_window_tests {
         )
         .await
         .expect_err("required future events must be refused before writing");
-        assert_eq!(SessionPersistenceApi::read_from(backend.as_ref(), &id, 0).await.unwrap().events.len(), kinds.len());
-        for dispose in ctx.fiber.disposables.clear() { dispose().await; }
+        assert_eq!(
+            SessionPersistenceApi::read_from(backend.as_ref(), &id, 0)
+                .await
+                .unwrap()
+                .events
+                .len(),
+            kinds.len()
+        );
+        for dispose in ctx.fiber.disposables.clear() {
+            dispose().await;
+        }
         drop(backend);
         drop(ctx);
         std::fs::remove_dir_all(root).unwrap();

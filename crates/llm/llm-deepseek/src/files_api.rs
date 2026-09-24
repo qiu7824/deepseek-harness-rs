@@ -319,12 +319,23 @@ impl DeepSeekFilesClient {
         expires_after_seconds: u64,
     ) -> Result<DeepSeekFileObject, DeepSeekFilesError> {
         let bytes = data.len() as u64;
-        self.upload_stream(Box::pin(std::io::Cursor::new(data)), bytes, media_type, filename, expires_after_seconds).await
+        self.upload_stream(
+            Box::pin(std::io::Cursor::new(data)),
+            bytes,
+            media_type,
+            filename,
+            expires_after_seconds,
+        )
+        .await
     }
 
     pub async fn upload_stream(
-        &self, reader: dsh_attachment::AttachmentReader, bytes: u64,
-        media_type: &str, filename: &str, expires_after_seconds: u64,
+        &self,
+        reader: dsh_attachment::AttachmentReader,
+        bytes: u64,
+        media_type: &str,
+        filename: &str,
+        expires_after_seconds: u64,
     ) -> Result<DeepSeekFileObject, DeepSeekFilesError> {
         if bytes > MAX_FILE_UPLOAD_BYTES as u64
             || !(MIN_FILE_EXPIRY_SECONDS..=MAX_FILE_EXPIRY_SECONDS).contains(&expires_after_seconds)
@@ -350,15 +361,18 @@ impl DeepSeekFilesClient {
                 yield bytes::Bytes::copy_from_slice(&buffer[..count]);
             }
         };
-        let stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>> = Box::pin(stream);
-        let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), bytes)
-            .file_name(filename.to_string())
-            .mime_str(media_type)
-            .map_err(|error| DeepSeekFilesError {
-                code: FilesErrorCode::FilesApi,
-                status: None,
-                message: error.to_string(),
-            })?;
+        let stream: std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>,
+        > = Box::pin(stream);
+        let part =
+            reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), bytes)
+                .file_name(filename.to_string())
+                .mime_str(media_type)
+                .map_err(|error| DeepSeekFilesError {
+                    code: FilesErrorCode::FilesApi,
+                    status: None,
+                    message: error.to_string(),
+                })?;
         let form = reqwest::multipart::Form::new()
             .text("expires_after[anchor]", "created_at")
             .text("expires_after[seconds]", expires_after_seconds.to_string())

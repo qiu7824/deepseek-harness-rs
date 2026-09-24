@@ -26,8 +26,8 @@ pub fn stream_session_log_zip(
     let writer_done = done.clone();
     let writer_path = path.clone();
     let writer_signal = signal.clone();
-    let runtime=tokio::runtime::Handle::current();
-    let writer_task=tokio::task::spawn_blocking(move || {
+    let runtime = tokio::runtime::Handle::current();
+    let writer_task = tokio::task::spawn_blocking(move || {
         let result: Result<(), String> = (|| {
             let file = std::fs::File::create(&writer_path).map_err(|error| error.to_string())?;
             let mut writer = zip::ZipWriter::new(file);
@@ -58,19 +58,38 @@ pub fn stream_session_log_zip(
                             .write_all(content.as_bytes())
                             .map_err(|error| error.to_string())?;
                     }
-                    SessionLogZipEntry::Stream {path,bytes,mut reader} => {
+                    SessionLogZipEntry::Stream {
+                        path,
+                        bytes,
+                        mut reader,
+                    } => {
                         use tokio::io::AsyncReadExt;
-                        writer.start_file(path,options).map_err(|e|e.to_string())?;
-                        let mut buffer=vec![0u8;CHUNK_BYTES];let mut count=0u64;
+                        writer
+                            .start_file(path, options)
+                            .map_err(|e| e.to_string())?;
+                        let mut buffer = vec![0u8; CHUNK_BYTES];
+                        let mut count = 0u64;
                         loop {
-                            if writer_signal.aborted(){return Err("session log export was cancelled".into());}
-                            let n=runtime.block_on(reader.read(&mut buffer)).map_err(|e|e.to_string())?;
-                            if n==0 {break;}
-                            count=count.checked_add(n as u64).ok_or("attachment length overflow")?;
-                            if count>bytes {return Err("file attachment exceeded declared length".into());}
-                            writer.write_all(&buffer[..n]).map_err(|e|e.to_string())?;
+                            if writer_signal.aborted() {
+                                return Err("session log export was cancelled".into());
+                            }
+                            let n = runtime
+                                .block_on(reader.read(&mut buffer))
+                                .map_err(|e| e.to_string())?;
+                            if n == 0 {
+                                break;
+                            }
+                            count = count
+                                .checked_add(n as u64)
+                                .ok_or("attachment length overflow")?;
+                            if count > bytes {
+                                return Err("file attachment exceeded declared length".into());
+                            }
+                            writer.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
                         }
-                        if count!=bytes {return Err("file attachment ended before declared length".into());}
+                        if count != bytes {
+                            return Err("file attachment ended before declared length".into());
+                        }
                     }
                     SessionLogZipEntry::Data { path, data } => {
                         writer
@@ -143,8 +162,10 @@ pub fn stream_session_log_zip(
                 break;
             }
         }
-        if !done.load(Ordering::Acquire) { signal.abort(); }
-        let _=writer_task.await;
+        if !done.load(Ordering::Acquire) {
+            signal.abort();
+        }
+        let _ = writer_task.await;
         let _ = tokio::fs::remove_file(path).await;
     });
 

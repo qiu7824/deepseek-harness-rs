@@ -389,9 +389,13 @@ impl AgentLoop {
         // Factory availability is synchronous with install, just like the
         // service itself. Deferring this write to an effect task lets an
         // immediately-created parent dispatch a child before the factory exists.
-        let factory_disposer=ctx.get_typed::<Arc<dsh_agent::AgentRegistry>>("agents",false)
-            .map(|agents|agents.set_factory(factory));
-        let _=ctx.effect("agentLoop.setFactory()",Box::pin(async move {factory_disposer}));
+        let factory_disposer = ctx
+            .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
+            .map(|agents| agents.set_factory(factory));
+        let _ = ctx.effect(
+            "agentLoop.setFactory()",
+            Box::pin(async move { factory_disposer }),
+        );
         let ownership = Arc::clone(&service.ownership);
         let _ = ctx.effect(
             "agentLoop.transactions()",
@@ -489,9 +493,19 @@ impl AgentLoop {
                         }),
                     )?;
                     let preparation = service.prepare_new_session(session).await?;
-                    service.setup_and_publish(&service.ctx, &configured_id, preparation, &options, None, SessionStartSource::Startup)
-                        .await.map(|_| ())
-                }.await;
+                    service
+                        .setup_and_publish(
+                            &service.ctx,
+                            &configured_id,
+                            preparation,
+                            &options,
+                            None,
+                            SessionStartSource::Startup,
+                        )
+                        .await
+                        .map(|_| ())
+                }
+                .await;
                 if let Err(error) = result {
                     service.report_configured_startup_failure(
                         &config_id,
@@ -540,12 +554,19 @@ impl AgentLoop {
     }
 
     async fn prepare_new_session(&self, session: Session) -> Result<SessionPreparation, String> {
-        let persistence = self.ctx.get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
-            "sessionPersistence", false,
-        ).map(|slot| slot.as_ref().clone());
+        let persistence = self
+            .ctx
+            .get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+                "sessionPersistence",
+                false,
+            )
+            .map(|slot| slot.as_ref().clone());
         match persistence {
             Some(persistence) => persistence.prepare_new(session).await,
-            None => Ok(SessionPreparation::create(session, SessionPreparationOptions::default())),
+            None => Ok(SessionPreparation::create(
+                session,
+                SessionPreparationOptions::default(),
+            )),
         }
     }
 

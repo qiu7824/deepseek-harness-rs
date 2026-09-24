@@ -47,7 +47,9 @@ struct ForkInProcessProvider {
 
 #[async_trait::async_trait]
 impl SubagentProvider for ForkInProcessProvider {
-    fn uses_agent_run_admission(&self) -> bool { true }
+    fn uses_agent_run_admission(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         &self.name
     }

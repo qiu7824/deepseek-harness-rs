@@ -57,7 +57,10 @@ mod compatibility_tests {
         let mut description: HostDescribeResult = serde_json::from_value(legacy).unwrap();
         assert!(!description.supports_idle_todo_edits);
         description.supports_idle_todo_edits = true;
-        assert_eq!(serde_json::to_value(description).unwrap()["supportsIdleTodoEdits"], true);
+        assert_eq!(
+            serde_json::to_value(description).unwrap()["supportsIdleTodoEdits"],
+            true
+        );
     }
 }
 

@@ -229,18 +229,28 @@ impl JsonlSessionPersistence {
             .ok_or("Session projection source not found")?;
         let path = self.upgrade_v0(&path, id).await?;
         if crate::native_reader::is_native(&path)? {
-            let reading = path.clone(); let expected = id.clone();
+            let reading = path.clone();
+            let expected = id.clone();
             return tokio::task::spawn_blocking(move || {
                 let check = || cancelled.load(Ordering::Acquire);
-                let preflight = match crate::native_reader::visit(&reading, expected.as_str(), &check, |_| Ok(())) {
-                    Ok(summary) => summary,
-                    Err(error) if check() => return Err(error),
-                    Err(_) => return Ok(false),
-                };
-                if preflight.recovered_tail { return Ok(false); }
-                crate::native_reader::visit(&reading, expected.as_str(), &check, |event| visitor(&event))?;
+                let preflight =
+                    match crate::native_reader::visit(&reading, expected.as_str(), &check, |_| {
+                        Ok(())
+                    }) {
+                        Ok(summary) => summary,
+                        Err(error) if check() => return Err(error),
+                        Err(_) => return Ok(false),
+                    };
+                if preflight.recovered_tail {
+                    return Ok(false);
+                }
+                crate::native_reader::visit(&reading, expected.as_str(), &check, |event| {
+                    visitor(&event)
+                })?;
                 Ok(true)
-            }).await.map_err(|error| error.to_string())?;
+            })
+            .await
+            .map_err(|error| error.to_string())?;
         }
         let id = id.clone();
         let compression = crate::format::compression_of(&path);

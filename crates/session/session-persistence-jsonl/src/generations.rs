@@ -17,7 +17,7 @@ use std::{
 mod source;
 pub(crate) use source::StableGenerationSource;
 mod migration;
-pub use migration::{V4MigrationResult, migrate_v3_to_v4, migrate_recovered_v3_to_v4};
+pub use migration::{V4MigrationResult, migrate_recovered_v3_to_v4, migrate_v3_to_v4};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionGeneration {
@@ -177,13 +177,23 @@ pub fn discover_generation(directory: &Path) -> Result<Option<SessionGeneration>
     };
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
-        let Some((_, compression)) = filename(&name)? else { continue };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some((_, compression)) = filename(&name)? else {
+            continue;
+        };
         regular(&entry.path())?;
-        let line = read_authority_header(&entry.path(), compression)?.ok_or("missing Session authority header")?;
+        let line = read_authority_header(&entry.path(), compression)?
+            .ok_or("missing Session authority header")?;
         let header: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
-        let id = header["id"].as_str().filter(|id| !id.is_empty()).ok_or("Session authority header has no identity")?;
-        if directory.file_name().and_then(|name| name.to_str()) != Some(crate::format::encode_segment(id)?.as_str()) {
+        let id = header["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("Session authority header has no identity")?;
+        if directory.file_name().and_then(|name| name.to_str())
+            != Some(crate::format::encode_segment(id)?.as_str())
+        {
             return Err("Session header identity does not match its directory".into());
         }
         return select_generation(directory, id);

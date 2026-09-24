@@ -180,8 +180,7 @@ impl ToolResultPruner {
                     .ok_or("tool/result missing message")?,
             )
             .map_err(|error| error.to_string())?;
-            let Some((tool_call_id, content, is_error)) = message.as_tool_result()
-            else {
+            let Some((tool_call_id, content, is_error)) = message.as_tool_result() else {
                 continue;
             };
             let Some(pruned_content) = self.prune_content(content) else {

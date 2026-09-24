@@ -180,16 +180,34 @@ async fn edge_controls_isolated_pages_and_returns_real_screenshots() {
     .await;
     assert_eq!(clicked.value["state"]["title"], "clicked");
     let stale=adapter.execute(AdapterRequest::from_arguments(&json!({"action":"click","sessionId":"first","x":60,"y":45,"keys":["CTRL"],"observedViewport":{"width":10,"height":10}})).unwrap().with_owner_id("owner-a"),active_signal()).await.unwrap_err();
-    assert_eq!(stale.code,"COMPUTER_USE_FRAME_STALE");
-    let unchanged=request(&adapter,json!({"action":"status","sessionId":"first"})).await;
-    assert_eq!(unchanged.value["state"]["title"],"clicked");
-    let modified=request(&adapter,json!({"action":"click","sessionId":"first","x":60,"y":45,"keys":["CTRL"]})).await;
-    assert_eq!(modified.value["state"]["title"],"ctrl-clicked");
+    assert_eq!(stale.code, "COMPUTER_USE_FRAME_STALE");
+    let unchanged = request(&adapter, json!({"action":"status","sessionId":"first"})).await;
+    assert_eq!(unchanged.value["state"]["title"], "clicked");
+    let modified = request(
+        &adapter,
+        json!({"action":"click","sessionId":"first","x":60,"y":45,"keys":["CTRL"]}),
+    )
+    .await;
+    assert_eq!(modified.value["state"]["title"], "ctrl-clicked");
     let dragged=request(&adapter,json!({"action":"drag","sessionId":"first","path":[{"x":420,"y":220},{"x":650,"y":240},{"x":450,"y":430}],"keys":["SHIFT"]})).await;
-    let trace:Value=serde_json::from_str(dragged.value["state"]["title"].as_str().unwrap().strip_prefix("drag:").unwrap()).unwrap();
-    assert_eq!(trace,json!([[420,220,true],[650,240,true],[450,430,true]]));
-    let moved=request(&adapter,json!({"action":"move","sessionId":"first","x":500,"y":350})).await;
-    assert_eq!(moved.value["state"]["title"],"move:500,350");
+    let trace: Value = serde_json::from_str(
+        dragged.value["state"]["title"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("drag:")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        trace,
+        json!([[420, 220, true], [650, 240, true], [450, 430, true]])
+    );
+    let moved = request(
+        &adapter,
+        json!({"action":"move","sessionId":"first","x":500,"y":350}),
+    )
+    .await;
+    assert_eq!(moved.value["state"]["title"], "move:500,350");
 
     let typed = request(
         &adapter,

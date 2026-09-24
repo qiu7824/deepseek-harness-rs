@@ -11,7 +11,8 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod allocation_diagnostics;
 #[cfg(all(windows, feature = "allocation-diagnostics"))]
 #[global_allocator]
-static GLOBAL_ALLOCATOR: allocation_diagnostics::MeasuredAllocator = allocation_diagnostics::MeasuredAllocator;
+static GLOBAL_ALLOCATOR: allocation_diagnostics::MeasuredAllocator =
+    allocation_diagnostics::MeasuredAllocator;
 
 #[cfg(windows)]
 mod allocator_idle;
@@ -113,14 +114,11 @@ fn main() {
             std::process::exit(1);
         });
     #[cfg(windows)]
-    runtime.block_on(allocator_idle::run(
-        async_main(),
-        || {
-            dsh_host::collect_allocator_on_park();
-            #[cfg(feature = "allocation-diagnostics")]
-            allocation_diagnostics::sample();
-        },
-    ));
+    runtime.block_on(allocator_idle::run(async_main(), || {
+        dsh_host::collect_allocator_on_park();
+        #[cfg(feature = "allocation-diagnostics")]
+        allocation_diagnostics::sample();
+    }));
     #[cfg(not(windows))]
     runtime.block_on(async_main());
 }
@@ -198,8 +196,13 @@ async fn async_main() {
                 {
                     Ok(handle) => handle,
                     Err(error) => {
-                        if invocation.profile == "headless" && dsh_host_cli::headless::json_requested(&runtime_args) {
-                            let _=dsh_host_cli::headless::write_event(&serde_json::json!({"type":"error","message":error}),false);
+                        if invocation.profile == "headless"
+                            && dsh_host_cli::headless::json_requested(&runtime_args)
+                        {
+                            let _ = dsh_host_cli::headless::write_event(
+                                &serde_json::json!({"type":"error","message":error}),
+                                false,
+                            );
                         }
                         eprintln!("{error}");
                         std::process::exit(1);

@@ -417,11 +417,15 @@ impl<'de> Deserialize<'de> for SurfaceOp {
                                 .or_else(|| Some(value.to_string()));
                         }
                         "start" | "startSeq" => {
-                            if start.is_some() { return Err(A::Error::custom("duplicate replacement start")); }
+                            if start.is_some() {
+                                return Err(A::Error::custom("duplicate replacement start"));
+                            }
                             start = value.as_u64();
                         }
                         "end" | "endSeq" => {
-                            if end.is_some() { return Err(A::Error::custom("duplicate replacement end")); }
+                            if end.is_some() {
+                                return Err(A::Error::custom("duplicate replacement end"));
+                            }
                             end = value.as_u64();
                         }
                         _ => {}
@@ -659,7 +663,12 @@ pub fn validate_session_header(id: &SessionId, input: &JsonValue) -> Result<Sess
         origin: record
             .get("origin")
             .and_then(|value| value.as_str().map(str::to_string)),
-        delegation_depth: Some(record.get("delegationDepth").and_then(|value| value.as_u64()).unwrap_or(0)),
+        delegation_depth: Some(
+            record
+                .get("delegationDepth")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+        ),
         agent_preset: record
             .get("agentPreset")
             .and_then(|value| value.as_str().map(str::to_string)),

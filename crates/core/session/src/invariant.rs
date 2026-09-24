@@ -253,7 +253,11 @@ fn validate_event(
                 let synthetic_not_started = event
                     .data
                     .get("message")
-                    .and_then(|value| value.get("isError").or_else(|| value.get("content")?.as_array()?.first()?.get("isError")))
+                    .and_then(|value| {
+                        value
+                            .get("isError")
+                            .or_else(|| value.get("content")?.as_array()?.first()?.get("isError"))
+                    })
                     .and_then(|value| value.as_bool())
                     == Some(true)
                     && event

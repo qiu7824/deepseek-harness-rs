@@ -39,7 +39,14 @@ impl ShellExecutor for RecordingExecutor {
                 return Err("[SANDBOX_SETUP_FAILED] trusted setup error".into());
             }
             if argv[0] == "busy" || argv[0] == "quarantined" {
-                return Err(format!("[{}] command not dispatched", if argv[0] == "busy" { "SANDBOX_BUSY" } else { "SANDBOX_QUARANTINED" }));
+                return Err(format!(
+                    "[{}] command not dispatched",
+                    if argv[0] == "busy" {
+                        "SANDBOX_BUSY"
+                    } else {
+                        "SANDBOX_QUARANTINED"
+                    }
+                ));
             }
             let exit = if argv[0] == "fail" { 7 } else { 0 };
             let stderr = if argv[0] == "example" {
@@ -183,17 +190,27 @@ async fn slot_admission_keeps_precise_no_dispatch_evidence_but_preserves_prior_e
         for program in ["busy", "quarantined"] {
             let (_ctx, tools, calls) = setup();
             let mut steps = Vec::new();
-            if prior { steps.push(json!({"program":"write-output","argv":[]})); }
+            if prior {
+                steps.push(json!({"program":"write-output","argv":[]}));
+            }
             steps.push(json!({"program":program,"argv":[]}));
             steps.push(json!({"program":"dependent-write","argv":[]}));
-            let result = execute(&tools, "execute_steps", json!({"description":"slot admission","steps":steps})).await;
+            let result = execute(
+                &tools,
+                "execute_steps",
+                json!({"description":"slot admission","steps":steps}),
+            )
+            .await;
             assert!(result.is_error);
             assert_eq!(calls.lock().unwrap().len(), if prior { 2 } else { 1 });
             let receipt = &result.meta.as_ref().unwrap()["executionReceipt"];
             assert_eq!(receipt["commandStarted"], prior);
             assert_eq!(receipt["effects"], if prior { "possible" } else { "none" });
             assert_eq!(receipt["undispatchedSteps"], 2);
-            assert_eq!(receipt["steps"].as_array().unwrap().len(), if prior { 1 } else { 0 });
+            assert_eq!(
+                receipt["steps"].as_array().unwrap().len(),
+                if prior { 1 } else { 0 }
+            );
         }
     }
 }

@@ -402,23 +402,36 @@ impl Session {
         let mut owned_header = header.cloned();
         let mut seed = seed;
         let mut supplied_inherited_event_count = supplied_inherited_event_count;
-        if let Some(meta) = owned_header.as_mut().filter(|meta| matches!(meta.version, 0 | 3)) {
+        if let Some(meta) = owned_header
+            .as_mut()
+            .filter(|meta| matches!(meta.version, 0 | 3))
+        {
             let mut events = seed.take().unwrap_or_default();
             let mut inherited = supplied_inherited_event_count.unwrap_or(SessionLogOffset::ZERO);
             if meta.version == LEGACY_SESSION_FORMAT_VERSION {
                 let report = crate::migrate_v0_to_v3(meta.clone(), &events)?;
-                inherited = SessionLogOffset::new(*report.source_cuts.get(inherited.get() as usize)
-                    .ok_or("inherited cut exceeds historical seed")? as u64)?;
+                inherited = SessionLogOffset::new(
+                    *report
+                        .source_cuts
+                        .get(inherited.get() as usize)
+                        .ok_or("inherited cut exceeds historical seed")? as u64,
+                )?;
                 *meta = report.header;
                 events = report.events;
             }
             if !_restore && meta.is_seeded && inherited.get() == events.len() as u64 {
                 events.push(SessionEvent {
-                    type_:"session/end-seed".into(), seq:SessionSeq::new(events.len() as u64)?, time:now_ms(),
-                    data:serde_json::json!({"inherited":true}), ignorable:None, surface_op:None, source_event_seqs:None,
+                    type_: "session/end-seed".into(),
+                    seq: SessionSeq::new(events.len() as u64)?,
+                    time: now_ms(),
+                    data: serde_json::json!({"inherited":true}),
+                    ignorable: None,
+                    surface_op: None,
+                    source_event_seqs: None,
                 });
             }
-            let (current, cut, current_events) = crate::format_v4::upgrade_v3_events(meta.clone(), inherited, events, vec![])?;
+            let (current, cut, current_events) =
+                crate::format_v4::upgrade_v3_events(meta.clone(), inherited, events, vec![])?;
             *meta = current;
             supplied_inherited_event_count = Some(cut);
             seed = had_seed.then_some(current_events);
@@ -478,16 +491,22 @@ impl Session {
         }
         // Appended here so the marker is already in `events` when a backend
         // captures the creation seed; re-marking is skipped.
-        let inherited_marker = header.is_seeded && inherited_event_count.get() == state.log.len() as u64;
+        let inherited_marker =
+            header.is_seeded && inherited_event_count.get() == state.log.len() as u64;
         if had_seed
-            && (inherited_marker || state.log.last().map(|event| event.type_.as_str()) != Some("session/end-seed"))
+            && (inherited_marker
+                || state.log.last().map(|event| event.type_.as_str()) != Some("session/end-seed"))
         {
             let event = SessionEvent {
                 type_: "session/end-seed".to_string(),
                 seq: SessionSeq::new(state.log.len() as u64)
                     .expect("a Rust Vec length fits the public Session wire"),
                 time: now_ms(),
-                data: if inherited_marker { serde_json::json!({"inherited":true}) } else { end_seed_data() },
+                data: if inherited_marker {
+                    serde_json::json!({"inherited":true})
+                } else {
+                    end_seed_data()
+                },
                 ignorable: None,
                 surface_op: None,
                 source_event_seqs: None,
@@ -663,10 +682,13 @@ impl Session {
 
     /// Read one coherent surface and event prefix. The callback must not
     /// re-enter this session; no events are cloned by this boundary.
-    pub fn with_surface_events<R>(&self,read:impl FnOnce(&[SessionEvent],&[u64])->R)->Result<R,String> {
-        let state=&mut *self.inner.state.lock();
-        let nodes=state.surface.nodes(&state.log)?;
-        Ok(read(&state.log,&nodes))
+    pub fn with_surface_events<R>(
+        &self,
+        read: impl FnOnce(&[SessionEvent], &[u64]) -> R,
+    ) -> Result<R, String> {
+        let state = &mut *self.inner.state.lock();
+        let nodes = state.surface.nodes(&state.log)?;
+        Ok(read(&state.log, &nodes))
     }
 
     /// Append one typed event to the log and notify observers via the

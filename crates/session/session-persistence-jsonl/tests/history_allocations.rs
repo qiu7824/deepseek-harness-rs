@@ -98,7 +98,9 @@ async fn small_history_page_allocations_do_not_scale_with_scan_ceiling() {
         assert_eq!(window.unwrap().events, events);
         measured.push(bytes);
     }
-    for dispose in ctx.fiber.disposables.clear() { dispose().await; }
+    for dispose in ctx.fiber.disposables.clear() {
+        dispose().await;
+    }
     tokio::fs::remove_dir_all(&root).await.unwrap();
     println!(
         "history allocation bytes: small_ceiling={}, large_ceiling={}",

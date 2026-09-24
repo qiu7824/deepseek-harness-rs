@@ -417,7 +417,11 @@ pub enum PreToolDecision {
     /// Cancel before dispatch without presenting a reviewer failure as approval.
     Cancel,
     /// Structured UI-only denial metadata; model content keeps only `reason`.
-    DenyWithInfo { reason:String, info:ToolErrorInfo, meta:Option<JsonValue> },
+    DenyWithInfo {
+        reason: String,
+        info: ToolErrorInfo,
+        meta: Option<JsonValue>,
+    },
     Deny {
         reason: String,
     },
@@ -1039,14 +1043,25 @@ impl ToolRuntime {
     /// Execute through pre-policy, guards, around-dispatch, post-policy,
     /// definition-owned content finalization, and final notification.
     pub async fn execute(self: &Arc<Self>, input: ToolExecutionInput) -> Arc<ToolExecutionResult> {
-        self.execute_with_schema(input,None).await
+        self.execute_with_schema(input, None).await
     }
     /// Execute one PTC binding against the schema frozen when the binding was made.
-    pub async fn execute_bound(self:&Arc<Self>,input:ToolExecutionInput,schema:ToolSchema)->Arc<ToolExecutionResult> {
-        self.execute_with_schema(input,Some(schema)).await
+    pub async fn execute_bound(
+        self: &Arc<Self>,
+        input: ToolExecutionInput,
+        schema: ToolSchema,
+    ) -> Arc<ToolExecutionResult> {
+        self.execute_with_schema(input, Some(schema)).await
     }
-    async fn execute_with_schema(self:&Arc<Self>,input:ToolExecutionInput,schema:Option<ToolSchema>)->Arc<ToolExecutionResult> {
-        match self.prepare_with_schema(input,std::future::pending(),schema).await {
+    async fn execute_with_schema(
+        self: &Arc<Self>,
+        input: ToolExecutionInput,
+        schema: Option<ToolSchema>,
+    ) -> Arc<ToolExecutionResult> {
+        match self
+            .prepare_with_schema(input, std::future::pending(), schema)
+            .await
+        {
             Preparation::Dispatch { run_ctx } => {
                 match self.dispatch_scheduled(Arc::clone(&run_ctx)).await {
                     DispatchOutcome::PostResult(result) => {
@@ -1064,7 +1079,11 @@ impl ToolRuntime {
 
     // ---- execution pipeline ----
 
-    fn create_execution(&self, input: ToolExecutionInput,binding_schema:Option<ToolSchema>) -> CreatedExecution {
+    fn create_execution(
+        &self,
+        input: ToolExecutionInput,
+        binding_schema: Option<ToolSchema>,
+    ) -> CreatedExecution {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let call_id = input.call_id.clone();
         let root_call_id = input.root_call_id.unwrap_or_else(|| input.call_id.clone());
@@ -1084,11 +1103,22 @@ impl ToolRuntime {
         } else {
             captured_finalizer.clone()
         };
-        let actual_schema=visible.as_ref().map(|tool|self.schema_of(tool));
-        let stale_binding=binding_schema.as_ref().is_some_and(|schema|Some(schema)!=actual_schema.as_ref());
+        let actual_schema = visible.as_ref().map(|tool| self.schema_of(tool));
+        let stale_binding = binding_schema
+            .as_ref()
+            .is_some_and(|schema| Some(schema) != actual_schema.as_ref());
         let execution = Arc::new(ToolExecution {
-            schema:binding_schema.or(actual_schema),
-            permission_preset:agent.as_ref().and_then(|agent|agent.session().with_events(|events|events.iter().rev().find(|e|e.type_=="permission/preset").and_then(|e|e.data["preset"].as_str()).map(str::to_owned))),
+            schema: binding_schema.or(actual_schema),
+            permission_preset: agent.as_ref().and_then(|agent| {
+                agent.session().with_events(|events| {
+                    events
+                        .iter()
+                        .rev()
+                        .find(|e| e.type_ == "permission/preset")
+                        .and_then(|e| e.data["preset"].as_str())
+                        .map(str::to_owned)
+                })
+            }),
             token,
             call_id,
             root_call_id,
@@ -1113,8 +1143,17 @@ impl ToolRuntime {
             state,
         });
         if stale_binding {
-            let result=tool_error_result("Tool binding changed before dispatch; its body was not executed",Some(&ToolErrorInfo {name:"ToolBindingChanged".into(),code:"TOOL_BINDING_CHANGED".into()}));
-            return CreatedExecution::Final {run_ctx,result:Arc::new(self.mark_canonical(token,result))};
+            let result = tool_error_result(
+                "Tool binding changed before dispatch; its body was not executed",
+                Some(&ToolErrorInfo {
+                    name: "ToolBindingChanged".into(),
+                    code: "TOOL_BINDING_CHANGED".into(),
+                }),
+            );
+            return CreatedExecution::Final {
+                run_ctx,
+                result: Arc::new(self.mark_canonical(token, result)),
+            };
         }
         if collapsed {
             // The collapse denies the call before the policy pipeline; a
@@ -1175,12 +1214,15 @@ impl ToolRuntime {
         input: ToolExecutionInput,
         cancelled: impl std::future::Future<Output = ()>,
     ) -> Preparation {
-        self.prepare_with_schema(input,cancelled,None).await
+        self.prepare_with_schema(input, cancelled, None).await
     }
     async fn prepare_with_schema(
-        self:&Arc<Self>,input:ToolExecutionInput,cancelled:impl std::future::Future<Output=()>,schema:Option<ToolSchema>,
-    )->Preparation {
-        let created = self.create_execution(input,schema);
+        self: &Arc<Self>,
+        input: ToolExecutionInput,
+        cancelled: impl std::future::Future<Output = ()>,
+        schema: Option<ToolSchema>,
+    ) -> Preparation {
+        let created = self.create_execution(input, schema);
         let run_ctx = match created {
             CreatedExecution::Final { run_ctx, result } => {
                 return Preparation::FinalResult { run_ctx, result };
@@ -1211,12 +1253,22 @@ impl ToolRuntime {
                 .await;
             let gate = downcast_arc::<PreToolDecision>(&gate)
                 .unwrap_or_else(|| panic!("tools/pre-execute listener returned no decision"));
-            if matches!(&*gate,PreToolDecision::Cancel) {
-                return Preparation::PostResult {run_ctx:run_ctx.clone(),result:Arc::new(self.mark_canonical(run_ctx.token,tool_aborted_before_dispatch_result(None)))};
+            if matches!(&*gate, PreToolDecision::Cancel) {
+                return Preparation::PostResult {
+                    run_ctx: run_ctx.clone(),
+                    result: Arc::new(
+                        self.mark_canonical(
+                            run_ctx.token,
+                            tool_aborted_before_dispatch_result(None),
+                        ),
+                    ),
+                };
             }
-            let (gate_info,gate_meta)=match &*gate {
-                PreToolDecision::DenyWithInfo {info,meta,..}=>(Some(info.clone()),meta.clone()),
-                _=>(None,None),
+            let (gate_info, gate_meta) = match &*gate {
+                PreToolDecision::DenyWithInfo { info, meta, .. } => {
+                    (Some(info.clone()), meta.clone())
+                }
+                _ => (None, None),
             };
             let (decision, approval_error) = match &*gate {
                 PreToolDecision::Ask {
@@ -1239,12 +1291,14 @@ impl ToolRuntime {
                 }
                 PreToolDecision::Allow => (PreToolDecision::Allow, None),
                 PreToolDecision::Cancel => unreachable!(),
-                PreToolDecision::Deny { reason } | PreToolDecision::DenyWithInfo {reason,..} => (
-                    PreToolDecision::Deny {
-                        reason: reason.clone(),
-                    },
-                    None,
-                ),
+                PreToolDecision::Deny { reason } | PreToolDecision::DenyWithInfo { reason, .. } => {
+                    (
+                        PreToolDecision::Deny {
+                            reason: reason.clone(),
+                        },
+                        None,
+                    )
+                }
             };
             let approval_cancelled = approval_error
                 .as_ref()
@@ -1260,7 +1314,7 @@ impl ToolRuntime {
                 PreToolDecision::Allow => self.guard_reason(&run_ctx.execution),
                 PreToolDecision::Deny { reason } => Some(reason.clone()),
                 PreToolDecision::Ask { .. } => None,
-                PreToolDecision::Cancel | PreToolDecision::DenyWithInfo {..} => unreachable!(),
+                PreToolDecision::Cancel | PreToolDecision::DenyWithInfo { .. } => unreachable!(),
             };
             if let Some(reason) = denial_reason {
                 let result = ToolExecutionResult {
@@ -1270,12 +1324,14 @@ impl ToolRuntime {
                     is_error: true,
                     error: Some(ToolFailure {
                         message: reason,
-                        info: gate_info.or_else(||approval_error.and_then(|error| error.info)).or_else(|| {
-                            Some(ToolErrorInfo {
-                                name: "ToolPreflightError".to_string(),
-                                code: "TOOL_PREFLIGHT_DENIED".to_string(),
-                            })
-                        }),
+                        info: gate_info
+                            .or_else(|| approval_error.and_then(|error| error.info))
+                            .or_else(|| {
+                                Some(ToolErrorInfo {
+                                    name: "ToolPreflightError".to_string(),
+                                    code: "TOOL_PREFLIGHT_DENIED".to_string(),
+                                })
+                            }),
                     }),
                     value: None,
                     meta: gate_meta,

@@ -85,11 +85,17 @@ struct GeneratedUpload {
     max_read: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl tokio::io::AsyncRead for GeneratedUpload {
-    fn poll_read(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>, output: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        output: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
         let count = output.remaining().min(self.remaining as usize);
-        self.max_read.fetch_max(count, std::sync::atomic::Ordering::SeqCst);
+        self.max_read
+            .fetch_max(count, std::sync::atomic::Ordering::SeqCst);
         output.initialize_unfilled_to(count)[..count].fill(0x5a);
-        output.advance(count); self.remaining -= count as u64;
+        output.advance(count);
+        self.remaining -= count as u64;
         std::task::Poll::Ready(Ok(()))
     }
 }
@@ -103,27 +109,71 @@ async fn files_upload_stream_accepts_the_full_128_mib_boundary_with_bounded_read
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut header = Vec::new();
         let (length, mut received) = loop {
-            let mut buffer = [0; 8192]; let n = socket.read(&mut buffer).await.unwrap(); assert!(n > 0);
+            let mut buffer = [0; 8192];
+            let n = socket.read(&mut buffer).await.unwrap();
+            assert!(n > 0);
             header.extend_from_slice(&buffer[..n]);
             if let Some(at) = header.windows(4).position(|w| w == b"\r\n\r\n") {
                 let text = String::from_utf8_lossy(&header[..at]);
-                let length: usize = text.lines().find_map(|line| line.split_once(':').filter(|(key, _)| key.eq_ignore_ascii_case("content-length")).map(|(_, n)| n.trim().parse().unwrap())).unwrap();
-                break (length, header.len()-at-4);
+                let length: usize = text
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':')
+                            .filter(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, n)| n.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                break (length, header.len() - at - 4);
             }
             assert!(header.len() < 32 * 1024);
         };
         assert!(length as u64 > SIZE && (length as u64) < SIZE + 4096);
-        while received < length { let mut buffer = [0; 64 * 1024]; let n = socket.read(&mut buffer).await.unwrap(); assert!(n > 0); received += n; }
+        while received < length {
+            let mut buffer = [0; 64 * 1024];
+            let n = socket.read(&mut buffer).await.unwrap();
+            assert!(n > 0);
+            received += n;
+        }
         reply(&mut socket, "application/json", &format!("{{\"id\":\"file-stream\",\"type\":\"file\",\"filename\":\"image.png\",\"mime_type\":\"image/png\",\"size_bytes\":{SIZE},\"created_at\":\"2026-09-22T00:00:00Z\",\"downloadable\":true}}" )).await;
     });
     let max_read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let client = DeepSeekFilesClient::messages(&format!("http://{address}/anthropic"), "fixture-key", Duration::from_secs(30));
-    let uploaded = client.upload_stream(Box::pin(GeneratedUpload { remaining: SIZE, max_read: max_read.clone() }), SIZE, "image/png", "image.png", 604800).await.unwrap();
+    let client = DeepSeekFilesClient::messages(
+        &format!("http://{address}/anthropic"),
+        "fixture-key",
+        Duration::from_secs(30),
+    );
+    let uploaded = client
+        .upload_stream(
+            Box::pin(GeneratedUpload {
+                remaining: SIZE,
+                max_read: max_read.clone(),
+            }),
+            SIZE,
+            "image/png",
+            "image.png",
+            604800,
+        )
+        .await
+        .unwrap();
     server.await.unwrap();
     assert_eq!(uploaded.bytes, SIZE);
     assert!(max_read.load(std::sync::atomic::Ordering::SeqCst) <= 64 * 1024);
     let untouched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    assert!(client.upload_stream(Box::pin(GeneratedUpload { remaining: SIZE+1, max_read: untouched.clone() }), SIZE+1, "image/png", "image.png", 604800).await.is_err());
+    assert!(
+        client
+            .upload_stream(
+                Box::pin(GeneratedUpload {
+                    remaining: SIZE + 1,
+                    max_read: untouched.clone()
+                }),
+                SIZE + 1,
+                "image/png",
+                "image.png",
+                604800
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(untouched.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 

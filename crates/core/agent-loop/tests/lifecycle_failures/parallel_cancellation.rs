@@ -160,10 +160,7 @@ async fn cancellation_preserves_a_settled_parallel_result_waiting_for_model_orde
         results[1].data.get("error").is_none(),
         "settled quick result was overwritten by cancellation: {results:#?}"
     );
-    assert_eq!(
-        results[1].data["message"]["content"][0]["text"],
-        "quick"
-    );
+    assert_eq!(results[1].data["message"]["content"][0]["text"], "quick");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -17,5 +17,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../../packaging/windows/deepseek-black.ico");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_identity.rs");
-    build_identity::emit(std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()));
+    build_identity::emit(std::path::Path::new(
+        &env::var("CARGO_MANIFEST_DIR").unwrap(),
+    ));
 }

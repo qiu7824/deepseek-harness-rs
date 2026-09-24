@@ -143,8 +143,11 @@ pub fn validate_reading(history: &[SessionEvent], event: &SessionEvent) -> Resul
     let legacy = source["kind"] == "plugin";
     let exact_section = source["form"] == "snapshot"
         && source["sections"] == serde_json::json!([{"name":SOURCE_NAME,"text":text}])
-        && source.as_object().is_some_and(|fields| fields.keys().all(|key|
-            matches!(key.as_str(), "kind" | "form" | "sections") || legacy && key == "plugin"));
+        && source.as_object().is_some_and(|fields| {
+            fields.keys().all(|key| {
+                matches!(key.as_str(), "kind" | "form" | "sections") || legacy && key == "plugin"
+            })
+        });
     if !exact_section {
         return Err(
             "time-context source must carry only the exact snapshot text, not request authority"

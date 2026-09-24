@@ -5,8 +5,8 @@ pub mod domain;
 pub mod fold;
 pub mod index;
 pub mod invariant;
-pub mod requirements;
 pub mod projection;
+pub mod requirements;
 pub mod runtime;
 pub mod types;
 
@@ -25,8 +25,8 @@ pub use index::{
     Config, DEFAULT_MAX_GOAL_ROUNDS, GoalRequirementsLease, GoalService, ResolvedConfig,
     apply_goal_projection,
 };
-pub use runtime::GOAL_CHANGE_VERSION;
 pub use projection::{goal_projection_definition, register_goal_projection};
+pub use runtime::GOAL_CHANGE_VERSION;
 pub use types::{
     CreateGoalRequest, CreateGoalResult, EditGoalRequest, GoalActivation, GoalBlockReason, GoalId,
     GoalIdTag, GoalPhase, GoalProjection, GoalRef, GoalSnapshot, GoalView, goal_id,

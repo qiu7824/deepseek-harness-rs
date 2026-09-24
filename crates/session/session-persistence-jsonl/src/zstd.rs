@@ -242,12 +242,15 @@ mod source_size_tests {
         for size in [0, 1, 255, 256, 4096, 65536, 2 * 1024 * 1024] {
             let data: Vec<u8> = (0..size).map(|i| ((i * 31) % 251) as u8).collect();
             let frame = compress_zstd_frame(&data).unwrap();
-            assert_eq!(zstd::zstd_safe::get_frame_content_size(&frame).unwrap(), Some(size as u64));
+            assert_eq!(
+                zstd::zstd_safe::get_frame_content_size(&frame).unwrap(),
+                Some(size as u64)
+            );
             assert_eq!(decompress_zstd_frame(&frame).unwrap(), data);
             let scan = scan_zstd_frames(&frame).unwrap();
             assert_eq!(scan.frames.len(), 1);
             assert!(scan.torn_start.is_none());
-            assert_eq!(decompress_zstd_prefix(&frame[..frame.len()-1]), data);
+            assert_eq!(decompress_zstd_prefix(&frame[..frame.len() - 1]), data);
             let mut corrupt = frame;
             *corrupt.last_mut().unwrap() ^= 0x10;
             assert!(decompress_zstd_frame(&corrupt).is_err());
@@ -256,19 +259,31 @@ mod source_size_tests {
 
     #[test]
     fn known_small_frame_uses_a_smaller_native_compression_context() {
-        use zstd::zstd_safe::{CCtx, InBuffer, OutBuffer, CParameter};
+        use zstd::zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer};
         fn native_bytes(known: bool) -> usize {
             let input = vec![b'x'; 16 * 1024];
-            let mut context = CCtx::create(); context.init(0).unwrap();
-            context.set_parameter(CParameter::ChecksumFlag(true)).unwrap();
-            if known { context.set_pledged_src_size(Some(input.len() as u64)).unwrap(); }
+            let mut context = CCtx::create();
+            context.init(0).unwrap();
+            context
+                .set_parameter(CParameter::ChecksumFlag(true))
+                .unwrap();
+            if known {
+                context
+                    .set_pledged_src_size(Some(input.len() as u64))
+                    .unwrap();
+            }
             let mut output = Vec::with_capacity(zstd::zstd_safe::compress_bound(input.len()));
-            let mut output = OutBuffer::around(&mut output); let mut input = InBuffer::around(&input);
+            let mut output = OutBuffer::around(&mut output);
+            let mut input = InBuffer::around(&input);
             context.compress_stream(&mut output, &mut input).unwrap();
             context.sizeof()
         }
-        let unknown = native_bytes(false); let known = native_bytes(true);
+        let unknown = native_bytes(false);
+        let known = native_bytes(true);
         println!("16 KiB frame native context: unknown={unknown} bytes, exact={known} bytes");
-        assert!(known < unknown / 4, "known source length did not bound the native compression window");
+        assert!(
+            known < unknown / 4,
+            "known source length did not bound the native compression window"
+        );
     }
 }

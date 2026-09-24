@@ -109,8 +109,13 @@ fn atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 fn persist(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    let bytes=serde_json::to_vec_pretty(value).map_err(io)?;
-    if bytes.len()>LIMIT {return Err("plugin configuration/recovery record exceeds 4 MiB; no oversized record was published".into());}
+    let bytes = serde_json::to_vec_pretty(value).map_err(io)?;
+    if bytes.len() > LIMIT {
+        return Err(
+            "plugin configuration/recovery record exceeds 4 MiB; no oversized record was published"
+                .into(),
+        );
+    }
     atomic(path, &bytes)
 }
 
@@ -327,10 +332,17 @@ pub struct Profile {
     root: PathBuf,
     _lock: File,
     tag: Option<OperationTag>,
-    expected:parking_lot::Mutex<Option<[Option<String>;2]>>,
+    expected: parking_lot::Mutex<Option<[Option<String>; 2]>>,
 }
-fn stamp(manifest:&Option<String>,entries:&Option<String>)->[Option<String>;2] {
-    [manifest.as_ref().map(|text|format!("{:x}",Sha256::digest(text.as_bytes()))),entries.as_ref().map(|text|format!("{:x}",Sha256::digest(text.as_bytes())))]
+fn stamp(manifest: &Option<String>, entries: &Option<String>) -> [Option<String>; 2] {
+    [
+        manifest
+            .as_ref()
+            .map(|text| format!("{:x}", Sha256::digest(text.as_bytes()))),
+        entries
+            .as_ref()
+            .map(|text| format!("{:x}", Sha256::digest(text.as_bytes()))),
+    ]
 }
 impl Profile {
     pub fn open(profile: &Path) -> Result<Self, String> {
@@ -354,7 +366,7 @@ impl Profile {
             root,
             _lock: lock,
             tag: None,
-            expected:parking_lot::Mutex::new(None),
+            expected: parking_lot::Mutex::new(None),
         };
         own.recover()?;
         own.cleanup_staging()?;
@@ -390,10 +402,10 @@ impl Profile {
         &self.root
     }
     pub fn documents(&self) -> Result<Documents, String> {
-        let manifest=read_optional(&self.root.join("package.json"))?;
-        let entries=read_optional(&self.root.join("plugins.json"))?;
-        let documents=decode(manifest.as_deref(),entries.as_deref())?;
-        *self.expected.lock()=Some(stamp(&manifest,&entries));
+        let manifest = read_optional(&self.root.join("package.json"))?;
+        let entries = read_optional(&self.root.join("plugins.json"))?;
+        let documents = decode(manifest.as_deref(), entries.as_deref())?;
+        *self.expected.lock() = Some(stamp(&manifest, &entries));
         Ok(documents)
     }
     pub fn checkpoint(&self) -> Result<(), String> {
@@ -444,13 +456,24 @@ impl Profile {
         recover_invalid: bool,
     ) -> Result<(), String> {
         validate(&documents)?;
-        if self.root.join(JOURNAL).exists() {return Err("插件操作仍需恢复，不能覆盖现有恢复记录".into());}
+        if self.root.join(JOURNAL).exists() {
+            return Err("插件操作仍需恢复，不能覆盖现有恢复记录".into());
+        }
         let operation = self.operation_dir()?;
         let result = (|| {
             let before_manifest = read_optional(&self.root.join("package.json"))?;
             let before_entries = read_optional(&self.root.join("plugins.json"))?;
-            if !recover_invalid {decode(before_manifest.as_deref(),before_entries.as_deref())?;}
-            if self.expected.lock().as_ref().is_some_and(|expected|expected!=&stamp(&before_manifest,&before_entries)) {return Err("插件配置已被外部修改，原文件未覆盖；请重新读取后操作".into());}
+            if !recover_invalid {
+                decode(before_manifest.as_deref(), before_entries.as_deref())?;
+            }
+            if self
+                .expected
+                .lock()
+                .as_ref()
+                .is_some_and(|expected| expected != &stamp(&before_manifest, &before_entries))
+            {
+                return Err("插件配置已被外部修改，原文件未覆盖；请重新读取后操作".into());
+            }
             let after_manifest = serde_json::to_string_pretty(&documents.manifest).map_err(io)?;
             let after_entries = serde_json::to_string_pretty(&documents.entries).map_err(io)?;
             let (package, old_package, new_package) = match package {
@@ -529,7 +552,10 @@ impl Profile {
             journal.committed = true;
             persist(&self.root.join(JOURNAL), &journal)?;
             self.recover()?;
-            *self.expected.lock()=Some(stamp(&Some(journal.after_manifest),&Some(journal.after_entries)));
+            *self.expected.lock() = Some(stamp(
+                &Some(journal.after_manifest),
+                &Some(journal.after_entries),
+            ));
             Ok(())
         })();
         if result.is_err() && self.root.join(JOURNAL).exists() {
@@ -551,10 +577,13 @@ impl Profile {
         validate(&documents)?;
         let retained = self.root.join(format!(".dsh-plugin-rejected-{}", nonce()));
         std::fs::create_dir(&retained).map_err(io)?;
-        let current_manifest=read_optional(&self.root.join("package.json"))?;
-        let current_entries=read_optional(&self.root.join("plugins.json"))?;
-        *self.expected.lock()=Some(stamp(&current_manifest,&current_entries));
-        for (name,raw) in [("package.json",current_manifest),("plugins.json",current_entries)] {
+        let current_manifest = read_optional(&self.root.join("package.json"))?;
+        let current_entries = read_optional(&self.root.join("plugins.json"))?;
+        *self.expected.lock() = Some(stamp(&current_manifest, &current_entries));
+        for (name, raw) in [
+            ("package.json", current_manifest),
+            ("plugins.json", current_entries),
+        ] {
             if let Some(raw) = raw {
                 atomic(&retained.join(name), raw.as_bytes())?;
             }

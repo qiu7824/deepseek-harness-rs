@@ -78,16 +78,28 @@ async fn streamed_values_match_existing_legacy_normalization() {
             json!({"turn":1,"reason":{"kind":"disposed"}}),
         ),
     ];
-    let path = dsh_session_persistence_jsonl::session_dir(&root.to_string_lossy(), None, &meta.id).join("session.v3.jsonl.zstd");
+    let path = dsh_session_persistence_jsonl::session_dir(&root.to_string_lossy(), None, &meta.id)
+        .join("session.v3.jsonl.zstd");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let mut old = meta.clone(); old.version = 3;
-    let header = format!("{}\n", serde_json::to_string(&dsh_session_persistence_jsonl::to_header_line(&old, None).unwrap()).unwrap());
-    let body = format!("{}\n", dsh_session_persistence_jsonl::event_lines(&events, false));
+    let mut old = meta.clone();
+    old.version = 3;
+    let header = format!(
+        "{}\n",
+        serde_json::to_string(&dsh_session_persistence_jsonl::to_header_line(&old, None).unwrap())
+            .unwrap()
+    );
+    let body = format!(
+        "{}\n",
+        dsh_session_persistence_jsonl::event_lines(&events, false)
+    );
     let mut bytes = dsh_session_persistence_jsonl::compress_zstd_frame(header.as_bytes()).unwrap();
     bytes.extend(dsh_session_persistence_jsonl::compress_zstd_frame(body.as_bytes()).unwrap());
     std::fs::write(path, bytes).unwrap();
     let mut normalizer = dsh_session_persistence::StoredEventNormalizer::new(meta.id.clone());
-    let expected: Vec<_> = events.iter().map(|event| normalizer.normalize(event).unwrap().into_owned()).collect();
+    let expected: Vec<_> = events
+        .iter()
+        .map(|event| normalizer.normalize(event).unwrap().into_owned())
+        .collect();
     let actual = Arc::new(Mutex::new(vec![]));
     let collect = actual.clone();
     assert!(

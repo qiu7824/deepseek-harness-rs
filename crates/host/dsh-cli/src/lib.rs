@@ -4,11 +4,11 @@
 //! flags belongs to the booted tree verbatim).
 
 pub mod acp_stdio;
+pub mod headless;
 mod history_import;
 pub mod native_plugin;
 pub mod profile_boot;
 pub mod run_profile;
-pub mod headless;
 pub mod sdk_stdio;
 
 pub use run_profile::{

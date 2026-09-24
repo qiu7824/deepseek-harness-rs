@@ -61,9 +61,17 @@ pub enum SubagentDescriptorData {
             rename = "agentMaxTokens"
         )]
         agent_max_tokens: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentMaxSteps")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "agentMaxSteps"
+        )]
         agent_max_steps: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentTimeoutSeconds")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "agentTimeoutSeconds"
+        )]
         agent_timeout_seconds: Option<u64>,
         /// Per-child persona that shadows the deployment persona on resume.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,7 +106,9 @@ pub(crate) fn record_child_catalog(
     descriptor: &SubagentDescriptorData,
 ) -> Result<(), String> {
     let header = child.header();
-    if header.origin.as_deref() != Some("subagent") || header.parent_session.as_ref() != Some(parent.id()) {
+    if header.origin.as_deref() != Some("subagent")
+        || header.parent_session.as_ref() != Some(parent.id())
+    {
         return Err("subagent catalog child does not belong to this parent".into());
     }
     let (mode, label) = match descriptor {
@@ -106,10 +116,26 @@ pub(crate) fn record_child_catalog(
         SubagentDescriptorData::Continuable { label, .. } => ("continuable", Some(label.as_str())),
     };
     let mut fact = serde_json::json!({"version":0,"childId":child.id(),"childCreatedAt":header.created_at,"mode":mode});
-    if let Some(label) = label { fact["label"] = serde_json::json!(label); }
-    let existing = parent.with_events(|events| events.iter().rev().find(|event| event.seq.get() >= parent.inherited_event_count().get() && event.type_ == "subagent/catalog" && event.data["childId"] == child.id().as_str()).map(|event| event.data.clone()));
+    if let Some(label) = label {
+        fact["label"] = serde_json::json!(label);
+    }
+    let existing = parent.with_events(|events| {
+        events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.seq.get() >= parent.inherited_event_count().get()
+                    && event.type_ == "subagent/catalog"
+                    && event.data["childId"] == child.id().as_str()
+            })
+            .map(|event| event.data.clone())
+    });
     if let Some(existing) = existing {
-        return if existing == fact { Ok(()) } else { Err("conflicting subagent catalog identity".into()) };
+        return if existing == fact {
+            Ok(())
+        } else {
+            Err("conflicting subagent catalog identity".into())
+        };
     }
     parent.append("subagent/catalog", fact, None)?;
     Ok(())
@@ -255,8 +281,13 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
             })
             .transpose()?;
     let positive = |key: &str| -> Result<Option<u64>, String> {
-        map.get(key).map(|value| value.as_u64().filter(|n| *n > 0)
-            .ok_or_else(|| format!("persisted subagent descriptor {key} must be a positive integer"))).transpose()
+        map.get(key)
+            .map(|value| {
+                value.as_u64().filter(|n| *n > 0).ok_or_else(|| {
+                    format!("persisted subagent descriptor {key} must be a positive integer")
+                })
+            })
+            .transpose()
     };
     let agent_max_steps = positive("agentMaxSteps")?;
     let agent_timeout_seconds = positive("agentTimeoutSeconds")?;
@@ -300,8 +331,8 @@ pub fn snapshot_subagent_descriptor(
             agent_model,
             agent_reasoning_effort,
             agent_max_tokens,
-        agent_max_steps,
-        agent_timeout_seconds,
+            agent_max_steps,
+            agent_timeout_seconds,
             persona,
             tool_filter,
             ..

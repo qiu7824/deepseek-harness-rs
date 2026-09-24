@@ -4,7 +4,7 @@
 mod adapter;
 mod arguments;
 mod native_protocol;
-pub use native_protocol::{install_native_protocol,native_protocol_failure};
+pub use native_protocol::{install_native_protocol, native_protocol_failure};
 mod browser;
 mod command;
 mod control;
@@ -100,7 +100,9 @@ impl cordis::Service for ComputerUseRuntime {
 }
 
 impl ComputerUseRuntime {
-    pub fn native_protocol_status(&self)->Value {native_protocol::status(&self.ctx)}
+    pub fn native_protocol_status(&self) -> Value {
+        native_protocol::status(&self.ctx)
+    }
     pub fn adapter_id(&self) -> &'static str {
         self.adapter.adapter_id()
     }
@@ -201,8 +203,15 @@ impl ComputerUseRuntime {
         arguments: &Value,
         signal: AbortPredicate,
     ) -> Result<AdapterOutput, AdapterError> {
-        self.execute_inner(owner_id, None, arguments, signal, ControlOrigin::Human, None)
-            .await
+        self.execute_inner(
+            owner_id,
+            None,
+            arguments,
+            signal,
+            ControlOrigin::Human,
+            None,
+        )
+        .await
     }
 
     async fn execute_inner(
@@ -217,19 +226,67 @@ impl ComputerUseRuntime {
         let selected_adapter = self.adapter.adapter_id_for(arguments)?;
         let normalized = arguments::normalize(selected_adapter, arguments)?;
         let arguments = normalized.as_ref();
-        let epoch={let mut epochs=self.observation_epochs.lock();if epochs.len()>=128 && !epochs.contains_key(&owner_id) {epochs.retain(|owner,_|self.adapter.has_owner_activity(owner));}if epochs.len()>=128 && !epochs.contains_key(&owner_id){return Err(AdapterError::new("COMPUTER_USE_SESSION_LIMIT","Observation catalog is full"));}epochs.entry(owner_id.clone()).or_insert_with(||Arc::new(AtomicU64::new(0))).clone()};
-        let current=epoch.load(Ordering::SeqCst);
-        if binding.is_some_and(|frame| !Arc::ptr_eq(&frame.epoch,&epoch)||frame.revision!=current) {return Err(AdapterError::new("COMPUTER_USE_FRAME_STALE","Computer state changed after the observed frame"));}
-        let revision=if action_requires_approval(arguments["action"].as_str().unwrap_or_default()) {if binding.is_some(){epoch.compare_exchange(current,current+1,Ordering::SeqCst,Ordering::SeqCst).map_err(|_|AdapterError::new("COMPUTER_USE_FRAME_STALE","Computer state changed before dispatch"))?+1}else{epoch.fetch_add(1,Ordering::SeqCst)+1}}else{current};
-        let source_signal=signal.clone();let active_epoch=epoch.clone();
-        let signal:AbortPredicate=if binding.is_some(){Arc::new(move||source_signal()||active_epoch.load(Ordering::SeqCst)!=revision)}else{signal};
+        let epoch = {
+            let mut epochs = self.observation_epochs.lock();
+            if epochs.len() >= 128 && !epochs.contains_key(&owner_id) {
+                epochs.retain(|owner, _| self.adapter.has_owner_activity(owner));
+            }
+            if epochs.len() >= 128 && !epochs.contains_key(&owner_id) {
+                return Err(AdapterError::new(
+                    "COMPUTER_USE_SESSION_LIMIT",
+                    "Observation catalog is full",
+                ));
+            }
+            epochs
+                .entry(owner_id.clone())
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                .clone()
+        };
+        let current = epoch.load(Ordering::SeqCst);
+        if binding
+            .is_some_and(|frame| !Arc::ptr_eq(&frame.epoch, &epoch) || frame.revision != current)
+        {
+            return Err(AdapterError::new(
+                "COMPUTER_USE_FRAME_STALE",
+                "Computer state changed after the observed frame",
+            ));
+        }
+        let revision = if action_requires_approval(arguments["action"].as_str().unwrap_or_default())
+        {
+            if binding.is_some() {
+                epoch
+                    .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .map_err(|_| {
+                        AdapterError::new(
+                            "COMPUTER_USE_FRAME_STALE",
+                            "Computer state changed before dispatch",
+                        )
+                    })?
+                    + 1
+            } else {
+                epoch.fetch_add(1, Ordering::SeqCst) + 1
+            }
+        } else {
+            current
+        };
+        let source_signal = signal.clone();
+        let active_epoch = epoch.clone();
+        let signal: AbortPredicate = if binding.is_some() {
+            Arc::new(move || source_signal() || active_epoch.load(Ordering::SeqCst) != revision)
+        } else {
+            signal
+        };
         validate_adapter_url(selected_adapter, arguments)?;
         validate_window_target(selected_adapter, arguments)?;
         let was_active = self.adapter.has_owner_activity(&owner_id);
         let mut request = AdapterRequest::from_arguments(arguments)?
             .with_owner_id(owner_id.clone())
             .with_origin(origin);
-        if let Some(frame)=binding {request.permission_target=Some(frame.identity.clone());request.arguments["observedControlGeneration"]=json!(frame.control_generation);request.arguments["observedViewport"]=frame.viewport.clone();}
+        if let Some(frame) = binding {
+            request.permission_target = Some(frame.identity.clone());
+            request.arguments["observedControlGeneration"] = json!(frame.control_generation);
+            request.arguments["observedViewport"] = frame.viewport.clone();
+        }
         request.workspace_root = owner
             .as_ref()
             .and_then(|agent| agent.session().header().cwd.clone())
@@ -272,14 +329,21 @@ impl ComputerUseRuntime {
         object
             .entry("adapter".to_string())
             .or_insert_with(|| Value::String(selected_adapter.to_string()));
-        object.insert("observationRevision".into(),json!(revision));
+        object.insert("observationRevision".into(), json!(revision));
         Ok(output)
     }
 
     pub async fn shutdown(&self) -> Result<(), AdapterError> {
         let result = self.adapter.shutdown().await;
         self.owner_agents.lock().clear();
-        for epoch in self.observation_epochs.lock().drain().map(|(_,epoch)|epoch){epoch.fetch_add(1,Ordering::SeqCst);}
+        for epoch in self
+            .observation_epochs
+            .lock()
+            .drain()
+            .map(|(_, epoch)| epoch)
+        {
+            epoch.fetch_add(1, Ordering::SeqCst);
+        }
         result
     }
 
@@ -287,7 +351,9 @@ impl ComputerUseRuntime {
         let result = self.adapter.close_owner(owner_id).await;
         if !self.adapter.has_owner_activity(owner_id) {
             self.owner_agents.lock().remove(owner_id);
-            if let Some(epoch)=self.observation_epochs.lock().remove(owner_id){epoch.fetch_add(1,Ordering::SeqCst);}
+            if let Some(epoch) = self.observation_epochs.lock().remove(owner_id) {
+                epoch.fetch_add(1, Ordering::SeqCst);
+            }
         }
         result
     }
@@ -320,7 +386,9 @@ impl ComputerUseRuntime {
                 .lock()
                 .remove(&owner_id)
                 .and_then(|owner| owner.upgrade());
-            if let Some(epoch)=self.observation_epochs.lock().remove(&owner_id){epoch.fetch_add(1,Ordering::SeqCst);}
+            if let Some(epoch) = self.observation_epochs.lock().remove(&owner_id) {
+                epoch.fetch_add(1, Ordering::SeqCst);
+            }
             if let Some(owner) = owner {
                 self.ctx
                     .emit("computer-use/owner-idle", vec![cordis::arc(owner)]);

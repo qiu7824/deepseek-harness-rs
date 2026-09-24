@@ -25,8 +25,8 @@ use dsh_subprocess::{
     SubprocessSpawnSpec, SubprocessStdinMode, SubprocessStdio,
 };
 use dsh_terminal::{
-    TerminalReadRequest, TerminalSendRequest, TerminalSignal,
-    TerminalSpawnRequest, terminal_session_id,
+    TerminalReadRequest, TerminalSendRequest, TerminalSignal, TerminalSpawnRequest,
+    terminal_session_id,
 };
 use dsh_workspace::WorkspaceRegistry;
 use http::{Method, Response, StatusCode, header};
@@ -2014,19 +2014,20 @@ impl PreviewService {
                         );
                     }
                 };
-                let future = match self
-                    .user_terminals
-                    .signal(&owner, &terminal_session_id(id), signal)
-                {
-                    Ok(future) => future,
-                    Err(failure) => {
-                        return error(
-                            StatusCode::BAD_REQUEST,
-                            "terminal-signal-failed",
-                            failure.to_string(),
-                        );
-                    }
-                };
+                let future =
+                    match self
+                        .user_terminals
+                        .signal(&owner, &terminal_session_id(id), signal)
+                    {
+                        Ok(future) => future,
+                        Err(failure) => {
+                            return error(
+                                StatusCode::BAD_REQUEST,
+                                "terminal-signal-failed",
+                                failure.to_string(),
+                            );
+                        }
+                    };
                 match future.await {
                     Ok(result) => json_response(
                         StatusCode::OK,
@@ -3273,7 +3274,14 @@ pub fn register(
     allow_remote_host: bool,
 ) -> RouteDisposer {
     let mut service = PreviewService::new(
-        registry, agents, api, user_terminals, jobs, subprocess, sandbox, code_index,
+        registry,
+        agents,
+        api,
+        user_terminals,
+        jobs,
+        subprocess,
+        sandbox,
+        code_index,
     );
     Arc::get_mut(&mut service)
         .expect("new preview service")

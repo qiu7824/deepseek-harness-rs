@@ -175,18 +175,40 @@ async fn compaction_reprices_replaced_history_before_the_next_model_request() {
     let (h, _, dispose) = setup().await;
     let session = h.agent.session();
     for n in 0..4 {
-        session.append("user/message", serde_json::to_value(message(&format!(
-            "Retain task constraint {n}: {}", "history text ".repeat(512)
-        ))).unwrap(), Some(SurfaceIntent { surface_op: SurfaceOp::Append, source_event_seqs: None })).unwrap();
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(message(&format!(
+                    "Retain task constraint {n}: {}",
+                    "history text ".repeat(512)
+                )))
+                .unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
     }
-    session.append("request/context", json!({"contextWindow":100_000}), None).unwrap();
+    session
+        .append("request/context", json!({"contextWindow":100_000}), None)
+        .unwrap();
     session.append("assistant/chunk", json!({"turn":3,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":50_000,"outputTokens":0}}}), None).unwrap();
-    let engine = h.ctx.get_typed::<Arc<dyn CompactionEngine>>("compaction", false).unwrap();
-    let agent = CompactionAgentContext { session: session.clone(), provider: Some("test".into()), model: Some("test".into()) };
+    let engine = h
+        .ctx
+        .get_typed::<Arc<dyn CompactionEngine>>("compaction", false)
+        .unwrap();
+    let agent = CompactionAgentContext {
+        session: session.clone(),
+        provider: Some("test".into()),
+        model: Some("test".into()),
+    };
     let definition = dsh_token_meter::context_pressure_projection_definition();
     let project = |events: &[dsh_session::SessionEvent]| {
         let mut state = (definition.init)(session.header());
-        for event in events { state = (definition.apply)(&state, event); }
+        for event in events {
+            state = (definition.apply)(&state, event);
+        }
         (definition.schema)(&(definition.view)(&state)).unwrap()
     };
     // The second pass includes a prior replacement with a newer sequence than
@@ -196,25 +218,58 @@ async fn compaction_reprices_replaced_history_before_the_next_model_request() {
         let nodes = session.surface().unwrap().nodes;
         let start = usize::from(before[nodes[0] as usize].type_ == "system/message");
         let replaced = &nodes[start..nodes.len() - if pass == 0 { 2 } else { 1 }];
-        let expected: u64 = replaced.iter().filter_map(|seq| dsh_session::derive_event_message(&before[*seq as usize])).map(|message| dsh_token_meter::estimate_message(&message)).sum();
+        let expected: u64 = replaced
+            .iter()
+            .filter_map(|seq| dsh_session::derive_event_message(&before[*seq as usize]))
+            .map(|message| dsh_token_meter::estimate_message(&message))
+            .sum();
         assert!(expected > replaced.len() as u64);
         let before_tokens = project(&before)["projectedTokens"].as_u64().unwrap();
-        let result = engine.compact_region(replaced[0], *replaced.last().unwrap(), &agent, None).await.unwrap();
-        assert_eq!(result.shadowed_token_count, expected, "price messages in tokens, never in message count");
+        let result = engine
+            .compact_region(replaced[0], *replaced.last().unwrap(), &agent, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.shadowed_token_count, expected,
+            "price messages in tokens, never in message count"
+        );
         let after = session.events();
-        let replacement = after.iter().find(|event| event.seq.get() > result.summary_seq && matches!(event.surface_op, Some(SurfaceOp::Replace { .. }))).unwrap();
-        let inserted = dsh_token_meter::estimate_message(&dsh_session::derive_event_message(replacement).unwrap());
+        let replacement = after
+            .iter()
+            .find(|event| {
+                event.seq.get() > result.summary_seq
+                    && matches!(event.surface_op, Some(SurfaceOp::Replace { .. }))
+            })
+            .unwrap();
+        let inserted = dsh_token_meter::estimate_message(
+            &dsh_session::derive_event_message(replacement).unwrap(),
+        );
         let projected = project(&after);
-        assert_eq!(projected["projectedTokens"], Value::from(before_tokens.saturating_sub(expected) + inserted));
-        assert_eq!(projected["pressureTokens"], 50_000, "provider billing sample is not rewritten by compaction");
-        assert_eq!(&after[..before.len()], before.as_slice(), "original evidence remains unchanged");
+        assert_eq!(
+            projected["projectedTokens"],
+            Value::from(before_tokens.saturating_sub(expected) + inserted)
+        );
+        assert_eq!(
+            projected["pressureTokens"], 50_000,
+            "provider billing sample is not rewritten by compaction"
+        );
+        assert_eq!(
+            &after[..before.len()],
+            before.as_slice(),
+            "original evidence remains unchanged"
+        );
         let mut legacy = after.as_ref().clone();
         for event in &mut legacy {
             if event.type_ == "compaction/summary" {
-                event.data["shadowedTokenCount"] = json!(event.data["shadowedSeqs"].as_array().unwrap().len());
+                event.data["shadowedTokenCount"] =
+                    json!(event.data["shadowedSeqs"].as_array().unwrap().len());
             }
         }
-        assert_eq!(project(&legacy), projected, "cold replay repairs occupancy for historical count-as-token summaries without rewriting the log");
+        assert_eq!(
+            project(&legacy),
+            projected,
+            "cold replay repairs occupancy for historical count-as-token summaries without rewriting the log"
+        );
     }
     dispose().await;
 }

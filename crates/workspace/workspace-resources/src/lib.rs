@@ -101,9 +101,9 @@ pub struct Resource {
     #[serde(default)]
     pub process_id: Option<u32>,
     /// Runtime-only retention reason supplied by the owning Host.
-    #[serde(default, skip_serializing_if="Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protection_reason: Option<String>,
-    #[serde(default, skip_serializing_if="Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location_id: Option<String>,
 }
 fn size_unknown() -> bool {
@@ -744,7 +744,10 @@ impl Store {
         lease.try_lock().map_err(|_| "资源仍在使用".to_string())?;
         self.edit_locked(id, |row| {
             if !self.recovery_directory(&id).exists() {
-                if row.state=="retained" && content.join("data").is_dir(){tree_bytes(&content.join("data"))?;return Ok(());}
+                if row.state == "retained" && content.join("data").is_dir() {
+                    tree_bytes(&content.join("data"))?;
+                    return Ok(());
+                }
                 return Err("资源不在恢复队列中".into());
             }
             if content.join("data").exists() {
@@ -768,10 +771,19 @@ impl Store {
         manual: bool,
         owners: &BTreeSet<String>,
     ) -> Result<Vec<String>> {
-        self.collect_protected_ids(policy,at,manual,owners,&BTreeSet::new())
+        self.collect_protected_ids(policy, at, manual, owners, &BTreeSet::new())
     }
-    pub fn collect_protected_ids(&self,policy:&Policy,at:u64,manual:bool,owners:&BTreeSet<String>,protected_ids:&BTreeSet<String>)->Result<Vec<String>> {
-        if !manual && (!policy.enabled || !policy.auto_clean){return Ok(Vec::new());}
+    pub fn collect_protected_ids(
+        &self,
+        policy: &Policy,
+        at: u64,
+        manual: bool,
+        owners: &BTreeSet<String>,
+        protected_ids: &BTreeSet<String>,
+    ) -> Result<Vec<String>> {
+        if !manual && (!policy.enabled || !policy.auto_clean) {
+            return Ok(Vec::new());
+        }
         let rows = self.list()?;
         let busy_projects = rows
             .iter()

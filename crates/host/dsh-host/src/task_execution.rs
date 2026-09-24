@@ -178,7 +178,11 @@ fn effect(name: &str, arguments: &Value) -> EffectKind {
             | "job_output"
             | "job_list"
     ) || name == "agent_team" && matches!(arguments["action"].as_str(), Some("status" | "wait"))
-        || name == "workspace_scratch" && matches!(arguments["action"].as_str(), Some("read" | "list" | "inspect"))
+        || name == "workspace_scratch"
+            && matches!(
+                arguments["action"].as_str(),
+                Some("read" | "list" | "inspect")
+            )
     {
         EffectKind::ReadOnly
     } else {
@@ -212,7 +216,9 @@ fn outcome_flags(name: &str, value: Option<&Value>, is_error: bool) -> (bool, bo
 
 fn model_parameters() -> Value {
     let mut schema = json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","get","validate","complete","recover"]},"taskId":{"type":"string","minLength":1,"description":"Required for get, validate, complete and recover. Optional for create: omitted IDs are generated deterministically and returned; reuse the returned taskId."},"idempotencyKey":{"type":"string","minLength":1,"description":"Optional operation key; the runtime supplies one when omitted. Reuse an explicit key only for an identical retry."},"contract":{"type":"object","properties":{"objective":{"type":"string"},"goalId":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"expectedOutputs":{"type":"array","items":{"type":"string"}},"acceptanceChecks":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"checker":{"type":"object","description":"kind=text(path,required,forbidden), json(path,assertions keyed by JSON pointer), image(path,min_width,min_height,channels), office_package(path,format docx/xlsx/pptx), tool_result(step_id exact ID or tool:NAME,assertions), manual(reason)"}},"required":["id","description","checker"]}},"validationSubject":{"type":"object","properties":{"kind":{"type":"string"},"identity":{"type":"string"},"expectedOutcome":{"type":"string"}},"required":["kind","identity","expectedOutcome"]}},"required":["objective","acceptanceChecks"]}},"required":["action"],"additionalProperties":false});
-    schema["properties"]["contract"]["description"] = json!("Pass a JSON object with objective and acceptanceChecks; do not quote or stringify the contract object.");
+    schema["properties"]["contract"]["description"] = json!(
+        "Pass a JSON object with objective and acceptanceChecks; do not quote or stringify the contract object."
+    );
     schema["properties"]["contract"]["properties"]["acceptanceChecks"]["items"]["properties"]["checker"] = json!({"oneOf":[
         {"type":"object","properties":{"kind":{"type":"string","const":"text"},"path":{"type":"string"},"required":{"type":"array","items":{"type":"string"}},"forbidden":{"type":"array","items":{"type":"string"}}},"required":["kind","path","required"],"additionalProperties":false},
         {"type":"object","properties":{"kind":{"type":"string","const":"json"},"path":{"type":"string"},"assertions":{"type":"object","description":"JSON Pointer keys, for example /scripts/test. Keys must start with / (or be empty to match the whole result)."}},"required":["kind","path","assertions"],"additionalProperties":false},
@@ -1187,10 +1193,31 @@ mod tests {
     fn live_contract_schema_rejects_stringified_objects_before_dispatch() {
         let contract = json!({"objective":"Check result","acceptanceChecks":[{"id":"exists","description":"Expected output","checker":{"kind":"text","path":"result.txt","required":["done"]}}]});
         let schema = model_parameters();
-        assert!(dsh_tools::validate_json_schema_value(&schema, &json!({"action":"create","contract":contract}), "arguments").is_empty());
-        for bad in [json!(contract.to_string()), json!("{broken"), json!([]), json!(null)] {
-            let errors = dsh_tools::validate_json_schema_value(&schema, &json!({"action":"create","contract":bad}), "arguments");
-            assert!(errors.iter().any(|error|error.contains("arguments.contract") && error.contains("object")), "{errors:?}");
+        assert!(
+            dsh_tools::validate_json_schema_value(
+                &schema,
+                &json!({"action":"create","contract":contract}),
+                "arguments"
+            )
+            .is_empty()
+        );
+        for bad in [
+            json!(contract.to_string()),
+            json!("{broken"),
+            json!([]),
+            json!(null),
+        ] {
+            let errors = dsh_tools::validate_json_schema_value(
+                &schema,
+                &json!({"action":"create","contract":bad}),
+                "arguments",
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("arguments.contract") && error.contains("object")),
+                "{errors:?}"
+            );
         }
     }
     #[test]

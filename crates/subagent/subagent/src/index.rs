@@ -75,8 +75,12 @@ impl crate::continuation::ContinuationHost for RuntimeContinuationHost {
 }
 
 impl SubagentRuntime {
-    pub fn set_max_parallel(&self, value:u64)->Result<(),String> {self.parallel_quota.set_limit(value)}
-    pub fn set_max_active_subagents(&self,value:u64)->Result<(),SubagentError> {self.manager().set_max_active_subagents(value)}
+    pub fn set_max_parallel(&self, value: u64) -> Result<(), String> {
+        self.parallel_quota.set_limit(value)
+    }
+    pub fn set_max_active_subagents(&self, value: u64) -> Result<(), SubagentError> {
+        self.manager().set_max_active_subagents(value)
+    }
     /// Register the `subagents` service.
     pub fn install(ctx: &Context) -> Arc<Self> {
         crate::ultra::UltraControl::install(ctx);
@@ -314,13 +318,19 @@ impl SubagentRuntime {
         };
         let parent = request.parent.clone();
         if (request.signal)() {
-            return Err(SubagentError::new("CANCELLED", "subagent request was aborted before startup"));
+            return Err(SubagentError::new(
+                "CANCELLED",
+                "subagent request was aborted before startup",
+            ));
         }
         let parallel_permit = if provider.uses_agent_run_admission() {
             None
         } else {
-            Some(self.parallel_quota.reserve_external(&parent)
-                .map_err(|message| SubagentError::new("PARALLEL_LIMIT_REACHED", message))?)
+            Some(
+                self.parallel_quota
+                    .reserve_external(&parent)
+                    .map_err(|message| SubagentError::new("PARALLEL_LIMIT_REACHED", message))?,
+            )
         };
         let resolved = ResolvedSubagentStartRequest {
             request,
@@ -550,9 +560,15 @@ impl Plugin for SubagentPlugin {
     }
 
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let capacity=crate::resident_quota::parse_capacity(config.downcast_ref::<serde_json::Value>().and_then(|value|value.get("maxActiveSubagents")))
-            .map_err(|error|PluginError::from(anyhow::anyhow!(error.to_string())))?;
-        SubagentRuntime::install(ctx).set_max_active_subagents(capacity).map_err(|error|PluginError::from(anyhow::anyhow!(error.to_string())))?;
+        let capacity = crate::resident_quota::parse_capacity(
+            config
+                .downcast_ref::<serde_json::Value>()
+                .and_then(|value| value.get("maxActiveSubagents")),
+        )
+        .map_err(|error| PluginError::from(anyhow::anyhow!(error.to_string())))?;
+        SubagentRuntime::install(ctx)
+            .set_max_active_subagents(capacity)
+            .map_err(|error| PluginError::from(anyhow::anyhow!(error.to_string())))?;
         Ok(())
     }
 }

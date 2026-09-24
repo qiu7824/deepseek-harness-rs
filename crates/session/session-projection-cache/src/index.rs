@@ -38,7 +38,9 @@ use crate::spec::{CheckpointIdentity, CheckpointRecord, projection_cache_domain_
 
 struct CancelProjectionRead(Arc<AtomicBool>);
 impl Drop for CancelProjectionRead {
-    fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 /// Plugin config (TS `Config`). Both throttle triggers are deployment
@@ -361,29 +363,69 @@ impl SessionProjectionCache {
         cached: &ProjectionCheckpoint,
         floor: i64,
     ) -> Result<Option<(ProjectionSnapshot, ProjectionCheckpoint)>, String> {
-        if !self.persistence.supports_projection_streaming() { return Ok(None); }
-        let before = self.persistence.read_snapshot(id).await?.ok_or("projection source disappeared")?;
-        if before.header != metadata.meta { return Err("projection source identity changed".into()); }
+        if !self.persistence.supports_projection_streaming() {
+            return Ok(None);
+        }
+        let before = self
+            .persistence
+            .read_snapshot(id)
+            .await?
+            .ok_or("projection source disappeared")?;
+        if before.header != metadata.meta {
+            return Err("projection source identity changed".into());
+        }
         let registry = self.registry();
-        let (floor, restore) = match registry.prepare_stream_restore(&metadata.meta, cached, floor, metadata.last_seq) {
-            Ok(restore) => (floor, restore),
-            Err(_) => (0, registry.prepare_stream_restore(&metadata.meta, &ProjectionCheckpoint::new(), 0, metadata.last_seq)?),
-        };
+        let (floor, restore) =
+            match registry.prepare_stream_restore(&metadata.meta, cached, floor, metadata.last_seq)
+            {
+                Ok(restore) => (floor, restore),
+                Err(_) => (
+                    0,
+                    registry.prepare_stream_restore(
+                        &metadata.meta,
+                        &ProjectionCheckpoint::new(),
+                        0,
+                        metadata.last_seq,
+                    )?,
+                ),
+            };
         let restore = Arc::new(Mutex::new(Some(restore)));
         let cancelled = Arc::new(AtomicBool::new(false));
         let _cancel_on_drop = CancelProjectionRead(cancelled.clone());
-        let state = restore.clone(); let cancel = cancelled.clone();
+        let state = restore.clone();
+        let cancel = cancelled.clone();
         let visitor = Arc::new(move |event: &SessionEvent| {
-            if cancel.load(Ordering::Acquire) { return Err("projection replay cancelled".into()); }
-            if event.seq.get() < floor as u64 { return Ok(()); }
-            state.lock().as_mut().ok_or("projection stage already consumed")?.push(event)
+            if cancel.load(Ordering::Acquire) {
+                return Err("projection replay cancelled".into());
+            }
+            if event.seq.get() < floor as u64 {
+                return Ok(());
+            }
+            state
+                .lock()
+                .as_mut()
+                .ok_or("projection stage already consumed")?
+                .push(event)
         });
-        if !self.persistence.try_visit_projection_events(id, cancelled, visitor).await? { return Ok(None); }
-        let after = self.persistence.read_snapshot(id).await?.ok_or("projection source disappeared")?;
+        if !self
+            .persistence
+            .try_visit_projection_events(id, cancelled, visitor)
+            .await?
+        {
+            return Ok(None);
+        }
+        let after = self
+            .persistence
+            .read_snapshot(id)
+            .await?
+            .ok_or("projection source disappeared")?;
         if before.header != after.header || before.revision != after.revision {
             return Err("projection source changed before checkpoint publication".into());
         }
-        let restore = restore.lock().take().ok_or("projection stage already consumed")?;
+        let restore = restore
+            .lock()
+            .take()
+            .ok_or("projection stage already consumed")?;
         if !registry.stream_restore_is_current(&restore) {
             return Err("projection definitions changed during replay".into());
         }
@@ -538,9 +580,16 @@ impl SessionProjectionCache {
             return Ok(snapshot);
         }
         if let Some(metadata) = list_metadata.as_ref()
-            && let Some((snapshot, checkpoint)) = self.restore_streamed(id, metadata, &cached, floor).await?
+            && let Some((snapshot, checkpoint)) =
+                self.restore_streamed(id, metadata, &cached, floor).await?
         {
-            self.put_soft(id, &identity_of(&metadata.meta, metadata.inherited_event_count), &checkpoint, "streamed cold-read write-back").await;
+            self.put_soft(
+                id,
+                &identity_of(&metadata.meta, metadata.inherited_event_count),
+                &checkpoint,
+                "streamed cold-read write-back",
+            )
+            .await;
             return Ok(snapshot);
         }
         let tail = self.persistence.read_from(id, floor as u64).await?;

@@ -34,11 +34,11 @@ use crate::api::rpc::{
 use crate::api::sessions::ModelSelection;
 #[path = "file_attachments.rs"]
 mod file_attachments;
-#[path="plugin_enablement.rs"]
+#[path = "plugin_enablement.rs"]
 mod plugin_enablement;
-pub use plugin_enablement::{PluginOperationControl, PluginClientReady, PluginProgress};
+pub use plugin_enablement::{PluginClientReady, PluginOperationControl, PluginProgress};
 #[cfg(test)]
-#[path="plugin_profile_tests.rs"]
+#[path = "plugin_profile_tests.rs"]
 mod plugin_profile_tests;
 use crate::fetch::handler::{
     AbortSignal, ApiProxyCarrier, Body, DownloadResponse, FrameRequest, SessionLogQuery,
@@ -2096,20 +2096,44 @@ impl ApiProxyService {
     }
 
     async fn plugin_inventory_set_enabled(
-        &self, request:RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>,
-    )->RpcResponse<serde_json::Value> {
-        self.plugin_inventory_set_enabled_with_signal(request,AbortSignal::new()).await
+        &self,
+        request: RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>,
+    ) -> RpcResponse<serde_json::Value> {
+        self.plugin_inventory_set_enabled_with_signal(request, AbortSignal::new())
+            .await
     }
 
     async fn plugin_inventory_set_enabled_with_signal(
-        &self, request:RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>, signal:AbortSignal,
-    )->RpcResponse<serde_json::Value> {
-        let result=if let Some(control)=self.ctx.get_typed::<Arc<PluginOperationControl>>("pluginOperationControl",false) {
-            (control.run)(request.payload.entry_id,request.payload.enabled,signal).await
+        &self,
+        request: RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>,
+        signal: AbortSignal,
+    ) -> RpcResponse<serde_json::Value> {
+        let result = if let Some(control) = self
+            .ctx
+            .get_typed::<Arc<PluginOperationControl>>("pluginOperationControl", false)
+        {
+            (control.run)(request.payload.entry_id, request.payload.enabled, signal).await
         } else {
-            self.apply_plugin_enablement(request.payload.entry_id,request.payload.enabled,signal,None,Arc::new(|_|{}),None).await
+            self.apply_plugin_enablement(
+                request.payload.entry_id,
+                request.payload.enabled,
+                signal,
+                None,
+                Arc::new(|_| {}),
+                None,
+            )
+            .await
         };
-        match result {Ok(value)=>ok(request.rpc_id,value),Err(message)=>err(request.rpc_id,RpcError::Internal(RpcErrorBody {message,details:EmptyDetails {}}))}
+        match result {
+            Ok(value) => ok(request.rpc_id, value),
+            Err(message) => err(
+                request.rpc_id,
+                RpcError::Internal(RpcErrorBody {
+                    message,
+                    details: EmptyDetails {},
+                }),
+            ),
+        }
     }
 
     async fn skill_list(
@@ -6219,11 +6243,19 @@ impl ApiProxyService {
                         return err(request.rpc_id, invalid_prompt("上传文件需要附件存储服务"));
                     };
                     let file = prepared_files.next().expect("validated file order");
-                    match crate::prompt_files::save_reference(file, store.as_ref(), Some(&aborted)).await {
+                    match crate::prompt_files::save_reference(file, store.as_ref(), Some(&aborted))
+                        .await
+                    {
                         Ok(attachment) => content.push(dsh_llm::ContentBlock::File { attachment }),
-                        Err(error) => return err(request.rpc_id, RpcError::AttachmentError(RpcErrorBody {
-                            message:error.message, details:crate::api::rpc::ReasonDetails { reason:error.code },
-                        })),
+                        Err(error) => {
+                            return err(
+                                request.rpc_id,
+                                RpcError::AttachmentError(RpcErrorBody {
+                                    message: error.message,
+                                    details: crate::api::rpc::ReasonDetails { reason: error.code },
+                                }),
+                            );
+                        }
                     }
                 }
                 PromptContentPart::Image {
@@ -8142,8 +8174,11 @@ impl ApiProxyCarrier for ApiProxyService {
                             return err(rpc_id, bad_request("pluginInventory.setEnabled", error));
                         }
                     };
-                self.plugin_inventory_set_enabled_with_signal(RpcRequest { rpc_id, payload }, signal)
-                    .await
+                self.plugin_inventory_set_enabled_with_signal(
+                    RpcRequest { rpc_id, payload },
+                    signal,
+                )
+                .await
             }
             "credentials.describe" => {
                 let payload: crate::api::credentials::CredentialsDescribeRequest =
@@ -8767,11 +8802,15 @@ impl ApiProxyCarrier for ApiProxyService {
                     .await
             }
             "session.fileAttachment" => {
-                let payload: crate::api::sessions::SessionFileAttachmentRequest = match serde_json::from_value(request.payload) {
-                    Ok(payload) => payload,
-                    Err(error) => return err(rpc_id, bad_request("session.fileAttachment", error)),
-                };
-                self.session_file_attachment(RpcRequest { rpc_id, payload }, signal).await
+                let payload: crate::api::sessions::SessionFileAttachmentRequest =
+                    match serde_json::from_value(request.payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return err(rpc_id, bad_request("session.fileAttachment", error));
+                        }
+                    };
+                self.session_file_attachment(RpcRequest { rpc_id, payload }, signal)
+                    .await
             }
             "session.search" => {
                 let payload: crate::api::sessions::SessionSearchRequest =

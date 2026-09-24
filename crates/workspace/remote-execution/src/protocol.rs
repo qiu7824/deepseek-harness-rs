@@ -223,9 +223,30 @@ mod tests {
     use super::*;
     #[test]
     fn ssh_arguments_preserve_host_key_verification_and_refuse_command_injection() {
-        let mut c=Connection {id:uuid::Uuid::new_v4().to_string(),host:"server.example.com".into(),user:"worker".into(),port:22,workspace:"/work".into(),helper:"/opt/bin/dsh-remote-helper".into(),config_file:String::new()};
-        c.validate().unwrap();let argv=c.argv();assert!(argv.iter().any(|s|s=="StrictHostKeyChecking=yes"));assert!(argv.iter().any(|s|s=="ForwardAgent=no"));
-        c.host="-oProxyCommand=bad".into();assert!(c.validate().is_err());c.host="server".into();
-        for helper in ["helper; command","$(command)","helper\ncommand","helper\" command"] {c.helper=helper.into();assert!(c.validate().is_err());}
+        let mut c = Connection {
+            id: uuid::Uuid::new_v4().to_string(),
+            host: "server.example.com".into(),
+            user: "worker".into(),
+            port: 22,
+            workspace: "/work".into(),
+            helper: "/opt/bin/dsh-remote-helper".into(),
+            config_file: String::new(),
+        };
+        c.validate().unwrap();
+        let argv = c.argv();
+        assert!(argv.iter().any(|s| s == "StrictHostKeyChecking=yes"));
+        assert!(argv.iter().any(|s| s == "ForwardAgent=no"));
+        c.host = "-oProxyCommand=bad".into();
+        assert!(c.validate().is_err());
+        c.host = "server".into();
+        for helper in [
+            "helper; command",
+            "$(command)",
+            "helper\ncommand",
+            "helper\" command",
+        ] {
+            c.helper = helper.into();
+            assert!(c.validate().is_err());
+        }
     }
 }

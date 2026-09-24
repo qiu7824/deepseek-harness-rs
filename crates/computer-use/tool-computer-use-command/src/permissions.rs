@@ -189,8 +189,18 @@ impl ComputerUseAdapter for PermissionedAdapter {
             .inner
             .permission_identity(&request, signal.clone())
             .await?;
-        if request.permission_target.as_ref().is_some_and(|expected| expected.host_id!=identity.host_id||expected.device_id!=identity.device_id||expected.application_id!=identity.application_id||expected.application_revision!=identity.application_revision||expected.origin!=identity.origin||expected.target_revision!=identity.target_revision) {
-            return Err(AdapterError::new("COMPUTER_USE_APP_IDENTITY_CHANGED", "Observed application identity changed before dispatch"));
+        if request.permission_target.as_ref().is_some_and(|expected| {
+            expected.host_id != identity.host_id
+                || expected.device_id != identity.device_id
+                || expected.application_id != identity.application_id
+                || expected.application_revision != identity.application_revision
+                || expected.origin != identity.origin
+                || expected.target_revision != identity.target_revision
+        }) {
+            return Err(AdapterError::new(
+                "COMPUTER_USE_APP_IDENTITY_CHANGED",
+                "Observed application identity changed before dispatch",
+            ));
         }
         let lease = self
             .service

@@ -199,7 +199,10 @@ pub const SANDBOX_UNAVAILABLE: &str = "SANDBOX_UNAVAILABLE";
 /// Classify an authenticated native runner exit before command readiness.
 /// Never apply this to application output after readiness.
 pub fn native_startup_failure_code(stderr: &str) -> &'static str {
-    let detail = stderr.trim_start().strip_prefix("[DSH_NATIVE_SANDBOX_FAILED] ").unwrap_or("");
+    let detail = stderr
+        .trim_start()
+        .strip_prefix("[DSH_NATIVE_SANDBOX_FAILED] ")
+        .unwrap_or("");
     if detail.starts_with("NATIVE_SLOT_BUSY:") {
         "SANDBOX_BUSY"
     } else if detail.starts_with("NATIVE_SLOT_QUARANTINED:") {
@@ -214,9 +217,21 @@ mod startup_failure_tests {
     use super::native_startup_failure_code;
     #[test]
     fn slot_admission_has_distinct_authenticated_startup_codes() {
-        assert_eq!(native_startup_failure_code("[DSH_NATIVE_SANDBOX_FAILED] NATIVE_SLOT_BUSY: occupied"), "SANDBOX_BUSY");
-        assert_eq!(native_startup_failure_code("[DSH_NATIVE_SANDBOX_FAILED] NATIVE_SLOT_QUARANTINED: dirty"), "SANDBOX_QUARANTINED");
-        for message in ["NATIVE_SLOT_BUSY: application text", "some output [DSH_NATIVE_SANDBOX_FAILED] NATIVE_SLOT_BUSY: fake", "[DSH_NATIVE_SANDBOX_FAILED] SETUP_REQUIRED: initialize"] {
+        assert_eq!(
+            native_startup_failure_code("[DSH_NATIVE_SANDBOX_FAILED] NATIVE_SLOT_BUSY: occupied"),
+            "SANDBOX_BUSY"
+        );
+        assert_eq!(
+            native_startup_failure_code(
+                "[DSH_NATIVE_SANDBOX_FAILED] NATIVE_SLOT_QUARANTINED: dirty"
+            ),
+            "SANDBOX_QUARANTINED"
+        );
+        for message in [
+            "NATIVE_SLOT_BUSY: application text",
+            "some output [DSH_NATIVE_SANDBOX_FAILED] NATIVE_SLOT_BUSY: fake",
+            "[DSH_NATIVE_SANDBOX_FAILED] SETUP_REQUIRED: initialize",
+        ] {
             assert_eq!(native_startup_failure_code(message), "SANDBOX_SETUP_FAILED");
         }
     }

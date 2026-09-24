@@ -105,7 +105,9 @@ fn is_plugin_message(event: &SessionEvent, plugin: &str) -> bool {
 pub fn preceding_message_time(agent: &dyn Agent) -> Option<i64> {
     for event in agent.session().events().iter().rev() {
         match event.type_.as_str() {
-            "developer/message" | "user/message" | "assistant/message" | "tool/result" => return Some(event.time),
+            "developer/message" | "user/message" | "assistant/message" | "tool/result" => {
+                return Some(event.time);
+            }
             _ => {}
         }
     }

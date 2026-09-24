@@ -263,7 +263,9 @@ fn list(profile: &Path) -> Result<(), String> {
 }
 
 pub fn run(profile: &Path, args: &[String]) -> Result<(), String> {
-    if args.len()==1 && args[0]=="list" {return list(profile);}
+    if args.len() == 1 && args[0] == "list" {
+        return list(profile);
+    }
     let mut profile = Profile::open(profile)?;
     if let Ok(operation_id) = std::env::var("DSH_PLUGIN_OPERATION_ID") {
         profile.set_operation(dsh_app_boot::plugin_profile::OperationTag {
@@ -286,10 +288,23 @@ mod tests {
     use super::*;
     #[test]
     fn plugin_upgrade_preserves_disabled_state_and_user_configuration() {
-        let documents=Documents {manifest:json!({"dependencies":{"demo":"old"},"kept":true}),entries:vec![json!({"id":"web:demo","name":"demo","disabled":true,"config":{"workspacePanel":"keep"}}),json!({"id":"unrelated","name":"unrelated"})]};
-        let next=update_documents(documents,"demo",Some("new")).unwrap();
-        assert_eq!(next.manifest["kept"],true);assert_eq!(next.manifest["dependencies"]["demo"],"new");
-        let plugin=next.entries.iter().find(|entry|entry["id"]=="demo").unwrap();assert_eq!(plugin["disabled"],true);assert_eq!(plugin["config"]["workspacePanel"],"keep");
-        assert!(next.entries.iter().any(|entry|entry["id"]=="unrelated"));
+        let documents = Documents {
+            manifest: json!({"dependencies":{"demo":"old"},"kept":true}),
+            entries: vec![
+                json!({"id":"web:demo","name":"demo","disabled":true,"config":{"workspacePanel":"keep"}}),
+                json!({"id":"unrelated","name":"unrelated"}),
+            ],
+        };
+        let next = update_documents(documents, "demo", Some("new")).unwrap();
+        assert_eq!(next.manifest["kept"], true);
+        assert_eq!(next.manifest["dependencies"]["demo"], "new");
+        let plugin = next
+            .entries
+            .iter()
+            .find(|entry| entry["id"] == "demo")
+            .unwrap();
+        assert_eq!(plugin["disabled"], true);
+        assert_eq!(plugin["config"]["workspacePanel"], "keep");
+        assert!(next.entries.iter().any(|entry| entry["id"] == "unrelated"));
     }
 }

@@ -166,12 +166,18 @@ fn resolve_child_options(
     // send the previous provider's model to the new adapter.
     let configured = defaults.map(|d| d.read().clone()).unwrap_or_default();
     let mut resolved = AgentOptions {
-        provider: current_selection.map(|s| s.provider.clone()).or_else(|| parent_options.provider.clone()),
-        model: current_selection.map(|s| s.model.clone()).or_else(|| parent_options.model.clone()),
+        provider: current_selection
+            .map(|s| s.provider.clone())
+            .or_else(|| parent_options.provider.clone()),
+        model: current_selection
+            .map(|s| s.model.clone())
+            .or_else(|| parent_options.model.clone()),
         max_tokens: configured.max_tokens.or(parent_options.max_tokens),
         max_steps: configured.max_turns,
         timeout_seconds: configured.timeout_seconds,
-        reasoning_effort: configured.reasoning_effort.map(dsh_llm::reasoning_effort_id),
+        reasoning_effort: configured
+            .reasoning_effort
+            .map(dsh_llm::reasoning_effort_id),
         subagent_depth: Some(child_depth),
         ..Default::default()
     };
@@ -186,9 +192,17 @@ fn resolve_child_options(
             options.model = Some(model.clone());
         }
     }
-    route(&mut resolved, configured.provider.as_ref(), configured.model.as_ref());
+    route(
+        &mut resolved,
+        configured.provider.as_ref(),
+        configured.model.as_ref(),
+    );
     if let Some(requested) = requested {
-        route(&mut resolved, requested.provider.as_ref(), requested.model.as_ref());
+        route(
+            &mut resolved,
+            requested.provider.as_ref(),
+            requested.model.as_ref(),
+        );
         resolved.max_tokens = requested.max_tokens.or(resolved.max_tokens);
         resolved.max_steps = requested.max_steps.or(resolved.max_steps);
         resolved.timeout_seconds = requested.timeout_seconds.or(resolved.timeout_seconds);
@@ -255,8 +269,10 @@ pub fn configured_max_depth(ctx: &Context) -> Option<u64> {
 
 /// A configured zero leaves the provider in charge; no host settings service
 /// means the tool's own policy is used.
-pub fn effective_max_depth(ctx:&Context,fallback:Option<u64>)->Option<u64> {
-    ctx_defaults(ctx).map(|defaults|defaults.read().max_depth).unwrap_or(fallback)
+pub fn effective_max_depth(ctx: &Context, fallback: Option<u64>) -> Option<u64> {
+    ctx_defaults(ctx)
+        .map(|defaults| defaults.read().max_depth)
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]
@@ -333,19 +349,26 @@ mod tests {
 
     #[test]
     fn settings_override_parent_and_request_overrides_settings_without_cross_provider_models() {
-        let defaults = SubagentDefaults::from_strings("configured", "small", "low", 512.0, 1.0, 3.0, 20.0);
+        let defaults =
+            SubagentDefaults::from_strings("configured", "small", "low", 512.0, 1.0, 3.0, 20.0);
         let resolved = resolve_child_options(&parent(), None, None, 1, Some(&defaults));
         assert_eq!(resolved.provider.as_deref(), Some("configured"));
         assert_eq!(resolved.model.as_deref(), Some("small"));
         assert_eq!(resolved.max_tokens, Some(512));
         assert_eq!(resolved.max_steps, Some(3));
         assert_eq!(resolved.timeout_seconds, Some(20));
-        let request = AgentOptions {provider:Some("third".into()), ..Default::default()};
+        let request = AgentOptions {
+            provider: Some("third".into()),
+            ..Default::default()
+        };
         let resolved = resolve_child_options(&parent(), None, Some(&request), 1, Some(&defaults));
         assert_eq!(resolved.provider.as_deref(), Some("third"));
         assert_eq!(resolved.model, None);
         let defaults = SubagentDefaults::from_strings("configured", "", "", 0.0, 1.0, 0.0, 0.0);
-        assert_eq!(resolve_child_options(&parent(), None, None, 1, Some(&defaults)).model, None);
+        assert_eq!(
+            resolve_child_options(&parent(), None, None, 1, Some(&defaults)).model,
+            None
+        );
     }
 
     #[test]
@@ -490,7 +513,15 @@ pub fn capture_delegated_policy_overrides(parent: &dyn Agent) -> DelegatedPolicy
     } else {
         None
     };
-    let permission_preset=parent.session().with_events(|events|events.iter().rev().find(|e|e.type_=="permission/preset").and_then(|e|e.data["preset"].as_str()).filter(|preset|*preset=="auto").map(str::to_owned));
+    let permission_preset = parent.session().with_events(|events| {
+        events
+            .iter()
+            .rev()
+            .find(|e| e.type_ == "permission/preset")
+            .and_then(|e| e.data["preset"].as_str())
+            .filter(|preset| *preset == "auto")
+            .map(str::to_owned)
+    });
     DelegatedPolicyOverrides {
         permission_preset,
         sandbox_mode,
@@ -504,8 +535,12 @@ pub fn append_delegated_policy_overrides(
     child_session: &Session,
     overrides: &DelegatedPolicyOverrides,
 ) -> Result<(), String> {
-    if let Some(preset)=&overrides.permission_preset {
-        child_session.append("permission/preset",serde_json::json!({"preset":preset}),None)?;
+    if let Some(preset) = &overrides.permission_preset {
+        child_session.append(
+            "permission/preset",
+            serde_json::json!({"preset":preset}),
+            None,
+        )?;
     }
     if let Some(mode) = &overrides.sandbox_mode {
         child_session.append(

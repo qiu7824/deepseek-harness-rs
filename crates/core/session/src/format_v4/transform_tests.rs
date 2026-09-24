@@ -107,14 +107,36 @@ fn physical_header_framing_is_decoded_before_logical_migration() {
 
 #[test]
 fn rust_physical_inherited_cut_marks_only_its_own_empty_boundary() {
-    let (summary, rows) = migrate(vec![row("feedback/record", json!({})), row("session/end-seed", json!({})), row("session/end-seed", json!({}))], vec![], true, Some(1), V3Dialect::Rust).unwrap();
+    let (summary, rows) = migrate(
+        vec![
+            row("feedback/record", json!({})),
+            row("session/end-seed", json!({})),
+            row("session/end-seed", json!({})),
+        ],
+        vec![],
+        true,
+        Some(1),
+        V3Dialect::Rust,
+    )
+    .unwrap();
     assert_eq!(summary.inherited_event_count, 1);
     assert_eq!(rows[1]["data"], json!({"inherited":true}));
     assert_eq!(rows[2]["data"], json!({}));
     let mut validator = V4Validator::new(summary.header, summary.inherited_event_count).unwrap();
-    for row in rows { validator.push(&row).unwrap(); }
+    for row in rows {
+        validator.push(&row).unwrap();
+    }
     assert_eq!(validator.finish().unwrap().inherited_event_count, 1);
-    assert!(migrate(vec![row("session/end-seed", json!({}))], vec![], true, Some(9), V3Dialect::Rust).is_err());
+    assert!(
+        migrate(
+            vec![row("session/end-seed", json!({}))],
+            vec![],
+            true,
+            Some(9),
+            V3Dialect::Rust
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -440,9 +462,9 @@ fn rust_wire_aliases_are_converted_only_under_explicit_rust_authority() {
 #[test]
 fn native_child_descriptor_generations_preserve_catalog_identity() {
     for version in [4, 5] {
-        let mut source=child("native-child",4);
-        source["descriptor"]["version"]=json!(version);
-        let (_,out)=migrate(vec![],vec![source],false,None,V3Dialect::Released).unwrap();
-        assert_eq!(out[0]["data"]["mode"],"continuable");
+        let mut source = child("native-child", 4);
+        source["descriptor"]["version"] = json!(version);
+        let (_, out) = migrate(vec![], vec![source], false, None, V3Dialect::Released).unwrap();
+        assert_eq!(out[0]["data"]["mode"], "continuable");
     }
 }

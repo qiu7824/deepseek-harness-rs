@@ -162,7 +162,9 @@ fn interrupted_tool_result_message(call_id: &str, seq: u64, started: bool) -> Me
         source: MessageSource::Tool {
             call_id: dsh_llm::call_id(call_id),
         },
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         tool_call_id: Some(dsh_llm::call_id(call_id)),
         is_error: Some(true),
     }
