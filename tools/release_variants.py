@@ -36,6 +36,9 @@ def expected_artifacts(prefix: str, platform: str, variants: object) -> set[str]
     installer = {"windows": "setup.exe", "linux": "deb", "macos": "pkg"}[platform]
     names = {f"{prefix}-{variant}-portable.{portable}" for variant in variants}
     names.update(f"{prefix}-{variant}-{installer}" if platform == "windows" else f"{prefix}-{variant}.{installer}" for variant in variants)
+    names.add(f"{prefix}-flutter-portable.{portable}")
+    if platform == "windows":
+        names.add(f"{prefix}-flutter-setup.exe")
     return names
 
 

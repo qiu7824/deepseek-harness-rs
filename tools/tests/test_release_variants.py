@@ -35,11 +35,13 @@ class ReleaseVariantsTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory); prefix = f"deepseek-harness-rs-v0.1.3-test-{platform}-{arch}"
                 expected = variants.expected_artifacts(prefix, platform, ["core"])
-                self.assertEqual(len(expected), 2)
+                count = 4 if platform == "windows" else 3
+                self.assertEqual(len(expected), count)
+                self.assertTrue(any("-flutter-portable." in name for name in expected))
                 for name in expected: (root / name).write_bytes(b"artifact")
                 checksums = root / "SHA256SUMS.txt"
                 variants.write_checksums(root, prefix, platform, ["core"], checksums)
-                self.assertEqual(len(checksums.read_text().splitlines()), 2)
+                self.assertEqual(len(checksums.read_text().splitlines()), count)
                 retired = root / f"{prefix}-skin-portable.zip"; retired.write_bytes(b"old artifact")
                 with self.assertRaisesRegex(ValueError, "extra="):
                     variants.write_checksums(root, prefix, platform, ["core"], checksums)

@@ -1,5 +1,5 @@
 name: dsh_desktop
-description: "Windows desktop client for DeepSeek Harness."
+description: "Native desktop client for DeepSeek Harness on Windows, Linux and macOS."
 publish_to: 'none'
 version: 0.1.0+1
 

@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       CARGO_BUILD_JOBS: "2"
     strategy:
@@ -45,7 +45,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap ripgrep pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y bubblewrap ripgrep pkg-config libglib2.0-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libgdk-pixbuf-2.0-dev libxkbcommon-dev libwayland-dev clang cmake ninja-build libgtk-3-dev liblzma-dev
           python -B tools/verify_linux_sandbox.py --workdir "$RUNNER_TEMP/dsh-sandbox-preflight" --prepare-ci-profile
       - name: macOS 搜索运行依赖
         if: matrix.platform == 'macos'
@@ -71,6 +71,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then python tools/promote_release.py notes --tag "$GITHUB_REF_NAME"; fi
           python tools/verify_product_surface.py
           python -B -m unittest tools.tests.test_release_build_identity -v
+          python -B -m unittest tools.tests.test_flutter_release -v
           python -B -m unittest tools.tests.test_node_runtime_package -v
           python -B -m unittest tools.tests.test_release_promotion -v
           python -B -m unittest tools.tests.test_e2e_http -v
@@ -270,6 +271,43 @@ jobs:
           for image in animated-png animated-gif animated-webp; do
             python tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --image-kind "$image"
           done
+      - name: 准备固定 Flutter SDK
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          SDK="$RUNNER_TEMP/flutter-sdk"
+          git init "$SDK"
+          git -C "$SDK" remote add origin https://github.com/flutter/flutter.git
+          git -C "$SDK" fetch --depth 1 origin refs/tags/3.47.5:refs/tags/3.47.5
+          test "$(git -C "$SDK" rev-parse '3.47.5^{commit}')" = 6a19cca56475dbfba1478ee68d7bd0c2ef891da1
+          git -C "$SDK" checkout --detach 3.47.5
+          python tools/prepare_flutter_sdk.py --sdk "$SDK" --backup-dir "$RUNNER_TEMP/flutter-sdk-backup"
+          echo "$SDK/bin" >> "$GITHUB_PATH"
+          echo "PUB_CACHE=$RUNNER_TEMP/flutter-pub-cache" >> "$GITHUB_ENV"
+      - name: Flutter 客户端验证与构建
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          flutter config --no-analytics
+          flutter --version
+          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && dart test)
+          cd apps/desktop_flutter
+          flutter pub get --enforce-lockfile
+          flutter analyze
+          flutter test
+          VERSION="${{ steps.release.outputs.version }}"
+          flutter build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
+      - name: 组装并核验 Flutter 完整包
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          VERSION="${{ steps.release.outputs.version }}"
+          case '${{ matrix.platform }}' in
+            windows) CLIENT='apps/desktop_flutter/build/windows/x64/runner/Release' ;;
+            linux) CLIENT='apps/desktop_flutter/build/linux/x64/release/bundle' ;;
+            macos) CLIENT='apps/desktop_flutter/build/macos/Build/Products/Release/DeepSeek Harness.app' ;;
+          esac
+          python tools/package_flutter_release.py --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --version "$VERSION" --client "$CLIENT" --core "dist/${{ steps.release.outputs.prefix }}-core" --output-dir dist --work-dir "$RUNNER_TEMP/flutter-package"
       - name: Windows 中文安装器
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -299,6 +337,11 @@ jobs:
             python tools/verify_windows_installer_behavior.py --compiler "$compiler" --stage "$env:GITHUB_WORKSPACE\dist\deepseek-harness-rs-v$version-windows-x86_64-$variant" --scratch "$env:RUNNER_TEMP\dsh-installer-behavior-$variant"
             if ($LASTEXITCODE -ne 0) { throw "Isolated installer verification failed: $variant" }
           }
+          $desktopStage = "$env:GITHUB_WORKSPACE\dist\${{ steps.release.outputs.prefix }}-flutter"
+          & $compiler "/DMyAppVersion=$version" "/DSourceDir=$desktopStage" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" packaging\windows\deepseek-harness-desktop-core.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter installer compilation failed' }
+          python tools/verify_flutter_installer.py --package "dist\${{ steps.release.outputs.prefix }}-flutter-setup.exe" --stage "$desktopStage"
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter installer payload verification failed' }
       - name: 核验 Windows 安装器内容
         if: matrix.platform == 'windows'
         shell: bash

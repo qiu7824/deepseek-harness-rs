@@ -9,7 +9,9 @@
 #endif
 
 #define MyAppName "DeepSeek Harness Desktop (Preview)"
-#define MyAppVersion "0.1.3-alpha.34 Flutter " + PackageRevision
+#ifndef MyAppVersion
+#define MyAppVersion "0.1.3-alpha.34+local.20260923.3"
+#endif
 #define MyAppId "{{37BA446F-D181-493B-9703-23978B3C194A}"
 
 #if !FileExists(SourceDir + "\dsh_desktop.exe")
@@ -46,7 +48,7 @@ DefaultDirName={localappdata}\Programs\DeepSeek Harness Desktop
 UsePreviousAppDir=yes
 DefaultGroupName={#MyAppName}
 OutputDir={#OutputDir}
-OutputBaseFilename=deepseek-harness-desktop-core-20260923-{#PackageRevision}-setup
+OutputBaseFilename=deepseek-harness-rs-v{#MyAppVersion}-windows-x86_64-flutter-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
