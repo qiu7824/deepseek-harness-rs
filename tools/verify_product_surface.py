@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 root = Path(__file__).resolve().parents[1]
 bundle = (root / "web" / "dist" / "plugins" / "ui-workbench.js").read_text(encoding="utf-8")
@@ -35,7 +36,7 @@ for forbidden in ("SpeechRecognition", "toggleSpeech", "speechRef", "语音输�
 for required in ("目录与运行环境", "storage-paths", "settings.paths.directoryFlow"):
     assert required in bundle, f"required settings surface missing: {required}"
 voice = (root / "release" / "plugins" / "dsh-voice-input" / "lib" / "client.js").read_text(encoding="utf-8")
-assert 'borderRadius: "8px"' in voice and "interactive-bg-hover" in voice, "voice input button style drifted"
+assert re.search(r'borderRadius\s*:\s*(?:"8px"|8)\s*[,}]', voice) and "interactive-bg-hover" in voice, "voice input button style drifted"
 log_bundle = root / "web" / "dist" / "plugins" / "session-log-download.js"
 assert 'aria-label": "下载会话日志"' in log_bundle.read_text(encoding="utf-8"), "session log is not icon-only"
 import hashlib, json
