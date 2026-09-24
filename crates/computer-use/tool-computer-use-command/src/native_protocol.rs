@@ -290,12 +290,7 @@ impl NativeProtocol {
             ));
         }
         let (_,parsed)=parse_call(&json!({"type":"computer_call","call_id":call_id,"actions":args["actions"],"pending_safety_checks":args.get("pendingSafetyChecks").cloned().unwrap_or_else(||json!([]))})).map_err(|e|AdapterError::new("COMPUTER_USE_INVALID_ARGUMENT",e))?;
-        if !parsed["pendingSafetyChecks"].as_array().unwrap().is_empty() {
-            return Err(error(
-                "COMPUTER_USE_HUMAN_REQUIRED",
-                "Provider safety checks require explicit human acknowledgement",
-            ));
-        }
+        let checks = &parsed["pendingSafetyChecks"];
         let actions = parsed["actions"]
             .as_array()
             .unwrap()
@@ -332,6 +327,32 @@ impl NativeProtocol {
         if signal() {
             return Err(AdapterError::cancelled());
         }
+        if !checks.as_array().unwrap().is_empty() {
+            let approval = self
+                .runtime
+                .ctx
+                .get_typed::<Arc<dsh_user_approval::ApprovalService>>("approval", false)
+                .ok_or_else(|| {
+                    error(
+                        "COMPUTER_USE_HUMAN_REQUIRED",
+                        "Human confirmation is unavailable",
+                    )
+                })?;
+            let outcome = approval.request_human(&dsh_user_approval::ApprovalRequest {
+                agent: owner.clone(), tool_name: TOOL_NAME.into(), call_id: Some(call_id.into()),
+                reason: Some(format!("原生计算机操作需要确认\n控制目标：{}\n调用：{}\n提供方安全检查（外部数据）：{}\n待执行动作：{}", self.target, call_id, checks, parsed["actions"])),
+                grant_key: None, rememberable: false, signal: Some(signal.clone()),
+            }).await.map_err(|message| error("COMPUTER_USE_HUMAN_REQUIRED", &message))?;
+            if signal() {
+                return Err(AdapterError::cancelled());
+            }
+            if outcome != dsh_user_approval::ApprovalOutcome::AllowedOnce {
+                return Err(error(
+                    "COMPUTER_USE_HUMAN_REQUIRED",
+                    "Provider safety checks were not confirmed by the user",
+                ));
+            }
+        }
         let mut frame_output = None;
         if actions[0]["action"] == "capture" {
             state.frame = None;
@@ -361,13 +382,35 @@ impl NativeProtocol {
                 frame_output=None;
             }
             if frame_output.is_none(){frame_output=Some(self.capture(owner.clone(),&mut state,signal.clone(),false).await?);}
-            Ok(frame_output.take().unwrap())
+            let mut output = frame_output.take().unwrap();
+            output.value.as_object_mut().unwrap().remove("nativeSafetyReceipt");
+            if !checks.as_array().unwrap().is_empty() {
+                output.value["nativeSafetyReceipt"] = json!({"callId":call_id,"checks":checks});
+            }
+            Ok(output)
         }.await;
         if result.is_err() {
             state.frame = None;
         }
         result
     }
+}
+
+fn render_native_output(value: &Value) -> Result<Vec<dsh_llm::ContentBlock>, String> {
+    let mut observation = value.clone();
+    let receipt = observation
+        .as_object_mut()
+        .and_then(|object| object.remove("nativeSafetyReceipt"));
+    let mut blocks = render_output(&observation)?;
+    if let Some(receipt) = receipt {
+        let call_id = receipt["callId"]
+            .as_str()
+            .ok_or("Missing native receipt call ID")?;
+        let block: dsh_llm::ContentBlock = serde_json::from_value(json!({"type":dsh_llm::computer_protocol::SAFETY_RECEIPT,"callId":call_id,"checks":receipt["checks"]})).map_err(|error| error.to_string())?;
+        dsh_llm::computer_protocol::safety_receipt(std::slice::from_ref(&block), call_id)?;
+        blocks.push(block);
+    }
+    Ok(blocks)
 }
 
 pub fn install_native_protocol(ctx: &Context, target: &str) -> Result<(), String> {
@@ -412,7 +455,7 @@ pub fn install_native_protocol(ctx: &Context, target: &str) -> Result<(), String
     tools.register(ctx,ToolDefinition{
         name:TOOL_NAME.into(),description:"Operate the configured computer with native ordered actions. Begin with a screenshot; coordinates refer to that observed frame. Application authorization, manual control, cancellation and target identity remain enforced.".into(),
         parameters:json!({"type":"object","title":"dsh-native-computer-v1","properties":{"actions":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object"}},"pendingSafetyChecks":{"type":"array","items":{"type":"object"}}},"required":["actions"],"additionalProperties":false}),
-        output:ToolOutputDefinition{schema:json!({}),render:Arc::new(|_,value|render_output(value)),presentation_meta:None},
+        output:ToolOutputDefinition{schema:json!({}),render:Arc::new(|_,value|render_native_output(value)),presentation_meta:None},
         timeout_ms:Some(120_000),is_concurrency_safe:Some(Arc::new(|_|false)),
         execute:Arc::new(move|args,run|{let protocol=protocol.clone();let attachments=attachments.clone();let owner=run.agent.clone();let signal=run.signal.lock().clone();let id=run.call_id.to_string();let args=args.clone();Box::pin(async move {
             let owner=owner.ok_or_else(||tool_body_error(error("COMPUTER_USE_OWNER_REQUIRED","Native computer needs an owning agent")))?;

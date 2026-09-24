@@ -15,6 +15,7 @@ dsh-llm = { path = "../../core/llm" }
 dsh-native-command = { path = "../../util/native-command" }
 dsh-session = { path = "../../core/session" }
 dsh-tools = { path = "../../core/tools" }
+dsh-user-approval = { path = "../../interaction/user-approval" }
 dsh-subprocess = { path = "../../subprocess/subprocess" }
 dsh-atomic-write = { path = "../../util/atomic-write" }
 futures = { workspace = true }

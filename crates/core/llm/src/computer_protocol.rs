@@ -201,6 +201,42 @@ pub fn parse_call(item: &Value) -> Result<(String, Value), String> {
     ))
 }
 
+/// Runtime-owned receipt, never inferred from text or model arguments.
+pub const SAFETY_RECEIPT: &str = "plugin:computer-safety-receipt";
+
+pub fn safety_receipt(
+    content: &[crate::ContentBlock],
+    call_id: &str,
+) -> Result<Option<Value>, String> {
+    let mut receipt = None;
+    for block in content {
+        let crate::ContentBlock::Extension(block) = block else {
+            continue;
+        };
+        if block.type_ != SAFETY_RECEIPT {
+            continue;
+        }
+        if receipt.is_some()
+            || block.fields.len() != 2
+            || block.fields.get("callId").and_then(Value::as_str) != Some(call_id)
+        {
+            return Err("Invalid native computer safety receipt".into());
+        }
+        let checks = block
+            .fields
+            .get("checks")
+            .ok_or("Missing safety receipt checks")?;
+        let (_, parsed) = parse_call(
+            &json!({"type":"computer_call","call_id":call_id,"actions":[{"type":"screenshot"}],"pending_safety_checks":checks}),
+        )?;
+        if parsed["pendingSafetyChecks"].as_array().unwrap().is_empty() {
+            return Err("Empty native computer safety receipt".into());
+        }
+        receipt = Some(checks.clone());
+    }
+    Ok(receipt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

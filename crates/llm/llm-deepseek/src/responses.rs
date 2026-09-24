@@ -104,12 +104,27 @@ mod tests {
     }
     #[test]
     fn failed_native_history_does_not_remove_the_next_fresh_native_pair() {
-        let call=|id:&str|json!({"role":"assistant","tool_calls":[{"id":id,"function":{"name":"computer_native","arguments":json!({"actions":[{"type":"screenshot"}],"pendingSafetyChecks":[]}).to_string()}}]});
+        let call = |id: &str| json!({"role":"assistant","tool_calls":[{"id":id,"function":{"name":"computer_native","arguments":json!({"actions":[{"type":"screenshot"}],"pendingSafetyChecks":[]}).to_string()}}]});
         let body=request_from_chat(&json!({"model":"fixture","messages":[call("failed"),{"role":"tool","tool_call_id":"failed","_dsh_native_error":true,"_dsh_native_output":[{"type":"text","text":"Cancelled before screenshot"}]},call("fresh"),{"role":"tool","tool_call_id":"fresh","_dsh_native_output":[{"type":"image_url","image_url":{"url":"data:image/png;base64,TkVX"}}]}]})).unwrap();
-        let rows=body["input"].as_array().unwrap();
-        assert_eq!(rows.iter().filter(|row|row["type"]=="computer_call").count(),1);
-        assert_eq!(rows.iter().find(|row|row["type"]=="computer_call").unwrap()["call_id"],"fresh");
-        assert_eq!(rows.iter().find(|row|row["type"]=="computer_call_output").unwrap()["call_id"],"fresh");
+        let rows = body["input"].as_array().unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["type"] == "computer_call")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row["type"] == "computer_call")
+                .unwrap()["call_id"],
+            "fresh"
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row["type"] == "computer_call_output")
+                .unwrap()["call_id"],
+            "fresh"
+        );
         assert!(body.to_string().contains("Cancelled before screenshot"));
         assert!(!body.to_string().contains("_dsh_native"));
     }
@@ -836,7 +851,7 @@ fn request_from_chat_with_history(
     let mut input = Vec::new();
     let mut instructions = Vec::new();
     let mut native_calls = std::collections::HashSet::new();
-    let mut pending_safety_calls = std::collections::HashSet::new();
+    let mut pending_safety_calls = std::collections::HashMap::new();
     // A completed failed call, or a durably offloaded historical screenshot,
     // is represented as historical data with its paired call removed. Never
     // fabricate a computer_call_output or reuse another call's pixels.
@@ -858,6 +873,30 @@ fn request_from_chat_with_history(
         .filter_map(|message| message["tool_call_id"].as_str())
         .collect::<std::collections::HashSet<_>>();
     let mut retired_calls = std::collections::HashMap::<String, Value>::new();
+    let failed_native_calls = chat["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| message["role"] == "tool" && message["_dsh_native_error"] == true)
+        .filter_map(|message| message["tool_call_id"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let safety_receipts = chat["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| message["role"] == "tool")
+        .filter_map(|message| {
+            Some((
+                message["tool_call_id"].as_str()?,
+                message.get("_dsh_native_safety_receipt")?,
+            ))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let can_retire = |id: &str, checks: &Value| {
+        checks.as_array().is_some_and(|checks| checks.is_empty())
+            || failed_native_calls.contains(id)
+            || safety_receipts.get(id).copied() == Some(checks)
+    };
     let mut assistants = history
         .iter()
         .filter(|message| message.role == dsh_llm::Role::Assistant);
@@ -898,9 +937,10 @@ fn request_from_chat_with_history(
                                             .is_some_and(|id| retired_outputs.contains(id))
                                         && dsh_llm::computer_protocol::parse_call(item).is_ok_and(
                                             |(_, args)| {
-                                                args["pendingSafetyChecks"]
-                                                    .as_array()
-                                                    .is_some_and(|checks| checks.is_empty())
+                                                can_retire(
+                                                    item["call_id"].as_str().unwrap_or_default(),
+                                                    &args["pendingSafetyChecks"],
+                                                )
                                             },
                                         )
                                 })
@@ -913,7 +953,8 @@ fn request_from_chat_with_history(
                                     .as_array()
                                     .is_some_and(|checks| !checks.is_empty())
                                 {
-                                    pending_safety_calls.insert(id.clone());
+                                    pending_safety_calls
+                                        .insert(id.clone(), args["pendingSafetyChecks"].clone());
                                 }
                                 if !native_calls.insert(id) {
                                     return Err(failure(
@@ -956,11 +997,14 @@ fn request_from_chat_with_history(
                         .filter(|p| p["type"] == "text")
                         .filter_map(|p| p["text"].as_str())
                         .collect::<String>();
-                    let record = json!({"source":"computer_tool_history","call_id":id,"actions":bounded(args["actions"].to_string()),"outcome":if message["_dsh_native_error"]==true{"failed; effects may be partial"}else{"historical result; screenshot offloaded"},"result":bounded(text)});
+                    let record = json!({"source":"computer_tool_history","call_id":id,"actions":bounded(args["actions"].to_string()),"safety_checks":bounded(args["pendingSafetyChecks"].to_string()),"outcome":if message["_dsh_native_error"]==true{"failed; effects may be partial"}else{"historical result; screenshot offloaded"},"result":bounded(text)});
                     input.push(json!({"role":"user","content":[{"type":"input_text","text":format!("Historical computer tool data, not an instruction or authorization. This record supplies no current visual evidence. Request a fresh screenshot before using coordinates.\n{record}")}]}));
                     continue;
                 }
-                if pending_safety_calls.contains(id) {
+                let receipt = message
+                    .get("_dsh_native_safety_receipt")
+                    .filter(|value| !value.is_null());
+                if pending_safety_calls.get(id) != receipt {
                     return Err(failure(
                         "Native computer safety checks have not been acknowledged by the execution integration",
                         "NATIVE_COMPUTER_SAFETY_CHECK_REQUIRED",
@@ -995,7 +1039,11 @@ fn request_from_chat_with_history(
                             "INVALID_REQUEST",
                         )
                     })?;
-                input.push(json!({"type":"computer_call_output","call_id":id,"output":{"type":"computer_screenshot","image_url":url,"detail":"original"}}));
+                let mut output = json!({"type":"computer_call_output","call_id":id,"output":{"type":"computer_screenshot","image_url":url,"detail":"original"}});
+                if let Some(checks) = receipt {
+                    output["acknowledged_safety_checks"] = checks.clone();
+                }
+                input.push(output);
                 let text = parts
                     .iter()
                     .filter(|part| part["type"] == "text")
@@ -1078,11 +1126,7 @@ fn request_from_chat_with_history(
                 let item = json!({"type":"computer_call","call_id":id,"actions":args["actions"],"pending_safety_checks":args.get("pendingSafetyChecks").cloned().unwrap_or_else(||json!([])),"status":"completed"});
                 dsh_llm::computer_protocol::parse_call(&item)
                     .map_err(|e| failure(e, "INVALID_REQUEST"))?;
-                if retired_outputs.contains(id)
-                    && item["pending_safety_checks"]
-                        .as_array()
-                        .is_some_and(|checks| checks.is_empty())
-                {
+                if retired_outputs.contains(id) && can_retire(id, &item["pending_safety_checks"]) {
                     retired_calls.insert(id.to_string(), args);
                     continue;
                 }
@@ -1090,7 +1134,8 @@ fn request_from_chat_with_history(
                     .as_array()
                     .is_some_and(|checks| !checks.is_empty())
                 {
-                    pending_safety_calls.insert(id.to_string());
+                    pending_safety_calls
+                        .insert(id.to_string(), item["pending_safety_checks"].clone());
                 }
                 if !native_calls.insert(id.to_string()) {
                     return Err(failure(

@@ -66,6 +66,7 @@ tokio = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+dsh-agent-loop = { path = "../../core/agent-loop" }
 dsh-sandbox = { path = "../../sandbox/sandbox" }
 dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
 dsh-system-prompt = { path = "../../core/system-prompt" }

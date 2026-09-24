@@ -342,6 +342,13 @@ impl InteractionState {
                 ctx,
                 "api-proxy: approval answerer",
                 "approval/request",
+                listener.clone(),
+                &EventOptions::default(),
+            );
+            ctx.events.register(
+                ctx,
+                "api-proxy: human approval answerer",
+                "approval/human-request",
                 listener,
                 &EventOptions::default(),
             );
@@ -748,6 +755,83 @@ fn bad_response() -> RpcReceipt {
 #[cfg(test)]
 mod approval_response_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn human_request_round_trips_through_the_scoped_ui_response() {
+        use dsh_agent::{AgentFactory, AgentRegistry, CreateAgentOptions};
+        let ctx = Context::root();
+        dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+        dsh_llm::LlmRuntime::install(&ctx);
+        dsh_session::SessionStore::install(&ctx);
+        AgentRegistry::install(&ctx);
+        let loops = dsh_agent_loop::AgentLoop::install(&ctx, Default::default()).unwrap();
+        let owner = loops
+            .create_agent(&ctx, CreateAgentOptions::default())
+            .await
+            .unwrap();
+        owner
+            .agent
+            .session()
+            .append("turn/start", serde_json::json!({"turn":1}), None)
+            .unwrap();
+        let service = dsh_user_approval::ApprovalService::install(&ctx, Default::default());
+        service.set_runtime_options(1000, dsh_user_approval::UnattendedPolicy::AllowAll);
+        let state = InteractionState::new();
+        state.activate(&ctx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _subscription = state.subscribe(tx);
+        let request = ApprovalRequest {
+            agent: owner.agent.clone(),
+            tool_name: "computer_native".into(),
+            call_id: Some("native-confirm".into()),
+            reason: Some("check-1".into()),
+            grant_key: Some("cannot-remember".into()),
+            rememberable: true,
+            signal: None,
+        };
+        let task = tokio::spawn(async move { service.request_human(&request).await.unwrap() });
+        let frame = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.payload["rememberable"], false);
+        assert_eq!(frame.payload["callId"], "native-confirm");
+        let approval_id = approval_request_id(frame.payload["approvalId"].as_str().unwrap());
+        assert!(matches!(
+            state.respond(response(
+                &frame.rpc_id,
+                &dsh_session::session_id("wrong-owner"),
+                &approval_id,
+                ApprovalClientOutcome::AllowedOnce
+            )),
+            RpcReceipt::Rejected { .. }
+        ));
+        assert!(!task.is_finished());
+        assert!(matches!(
+            state.respond(response(
+                &frame.rpc_id,
+                owner.agent.id(),
+                &approval_id,
+                ApprovalClientOutcome::AllowedOnce
+            )),
+            RpcReceipt::Accepted { .. }
+        ));
+        assert_eq!(task.await.unwrap(), ApprovalOutcome::AllowedOnce);
+        assert!(matches!(
+            state.respond(response(
+                &frame.rpc_id,
+                owner.agent.id(),
+                &approval_id,
+                ApprovalClientOutcome::AllowedOnce
+            )),
+            RpcReceipt::Rejected { .. }
+        ));
+        assert!(state.inner.lock().pending_approvals.is_empty());
+        owner.dispose.await;
+        for dispose in ctx.fiber.disposables.clear() {
+            dispose().await;
+        }
+    }
 
     fn pending(
         session_id: &dsh_session::SessionId,

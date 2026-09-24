@@ -266,10 +266,33 @@ async fn native_batches_bind_frames_identity_and_control_and_stop_on_first_failu
         "COMPUTER_USE_ABORTED"
     );
     assert_eq!(driver.calls.lock().len(), count);
-    driver.fail_type.store(false,Ordering::SeqCst);
-    native.execute(owner.agent.clone(),"recovered-frame",&screenshot,active.clone()).await.unwrap();
-    native.execute(owner.agent.clone(),"recovered-click",&click,active.clone()).await.unwrap();
-    assert!(driver.calls.lock().iter().filter(|args|args["action"]=="click").all(|args|args["observedViewport"]==json!({"width":100,"height":80})));
+    driver.fail_type.store(false, Ordering::SeqCst);
+    native
+        .execute(
+            owner.agent.clone(),
+            "recovered-frame",
+            &screenshot,
+            active.clone(),
+        )
+        .await
+        .unwrap();
+    native
+        .execute(
+            owner.agent.clone(),
+            "recovered-click",
+            &click,
+            active.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        driver
+            .calls
+            .lock()
+            .iter()
+            .filter(|args| args["action"] == "click")
+            .all(|args| args["observedViewport"] == json!({"width":100,"height":80}))
+    );
     let store: Arc<dyn AttachmentStore> = Arc::new(Store(dsh_attachment::ImageAttachmentLimits {
         max_image_bytes: 1_000_000,
         max_images_per_message: 8,
@@ -302,6 +325,90 @@ async fn native_batches_bind_frames_identity_and_control_and_stop_on_first_failu
             .iter()
             .any(|part| matches!(part, dsh_llm::ContentBlock::Image { .. }))
     );
+    owner
+        .agent
+        .session()
+        .append("turn/start", json!({"turn":1}), None)
+        .unwrap();
+    let approval = dsh_user_approval::ApprovalService::install(&ctx, Default::default());
+    approval.set_runtime_options(100, dsh_user_approval::UnattendedPolicy::AllowAll);
+    let checked = json!({"actions":[{"type":"screenshot"}],"pendingSafetyChecks":[{"id":"check-1","code":"untrusted","message":"Confirm this operation"}]});
+    let count = driver.calls.lock().len();
+    assert_eq!(
+        native
+            .execute(owner.agent.clone(), "safety", &checked, Arc::new(|| false))
+            .await
+            .unwrap_err()
+            .code,
+        "COMPUTER_USE_HUMAN_REQUIRED"
+    );
+    assert_eq!(driver.calls.lock().len(), count);
+    let human: Arc<cordis::Listener> = Arc::new(|_, args| {
+        let request = cordis::downcast::<dsh_user_approval::ApprovalRequest>(&args[0]).unwrap();
+        assert_eq!(request.call_id.as_deref(), Some("safety"));
+        assert!(request.reason.as_deref().unwrap().contains("check-1"));
+        assert!(!request.rememberable);
+        Box::pin(async { Some(cordis::arc(dsh_user_approval::ApprovalOutcome::AllowedOnce)) })
+    });
+    let dispose = ctx.events.register(
+        &ctx,
+        "human fixture",
+        "approval/human-request",
+        human,
+        &Default::default(),
+    );
+    let output = native
+        .execute(owner.agent.clone(), "safety", &checked, Arc::new(|| false))
+        .await
+        .unwrap();
+    assert_eq!(
+        output.value["nativeSafetyReceipt"],
+        json!({"callId":"safety","checks":checked["pendingSafetyChecks"]})
+    );
+    let mut value = output.value;
+    value["screenshot"] = json!({"attachmentId":"frame"});
+    let content = render_native_output(&value).unwrap();
+    assert_eq!(
+        dsh_llm::computer_protocol::safety_receipt(&content, "safety").unwrap(),
+        Some(checked["pendingSafetyChecks"].clone())
+    );
+    assert!(dsh_llm::computer_protocol::safety_receipt(&content, "wrong-call").is_err());
+    assert!(
+        content
+            .iter()
+            .filter_map(|part| part.as_text())
+            .all(|text| !text.contains("nativeSafetyReceipt"))
+    );
+    let checked_result = tools
+        .execute(dsh_tools::ToolExecutionInput {
+            call_id: dsh_llm::call_id("safety"),
+            root_call_id: None,
+            name: TOOL_NAME.into(),
+            arguments: checked.clone(),
+            agent: Some(owner.agent.clone()),
+            parent: None,
+            signal: Arc::new(|| false),
+        })
+        .await;
+    assert!(!checked_result.is_error, "{:?}", checked_result.error);
+    assert_eq!(
+        dsh_llm::computer_protocol::safety_receipt(&checked_result.content, "safety").unwrap(),
+        Some(checked["pendingSafetyChecks"].clone())
+    );
+    dispose().await;
+    let count = driver.calls.lock().len();
+    assert!(
+        native
+            .execute(
+                owner.agent.clone(),
+                "safety-again",
+                &checked,
+                Arc::new(|| false)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(driver.calls.lock().len(), count);
     runtime.shutdown().await.unwrap();
     owner.dispose.await;
     for disposer in ctx.fiber.disposables.clear() {

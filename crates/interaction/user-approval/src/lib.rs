@@ -204,6 +204,79 @@ mod policy_tests {
         })
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn human_requests_ignore_automatic_grants_and_unattended_fallback() {
+        let ctx = Context::root();
+        let service = ApprovalService::install(&ctx, Config::default());
+        service.set_runtime_options(30_000, super::UnattendedPolicy::AllowAll);
+        let owner = agent(&ctx, "human-confirmation").await;
+        service.grants.grant(owner.id().as_str(), "remembered");
+        let automatic: Arc<cordis::Listener> =
+            Arc::new(|_, _| Box::pin(async { Some(cordis::arc(ApprovalOutcome::AllowedAlways)) }));
+        ctx.events.register(
+            &ctx,
+            "automatic",
+            "approval/request",
+            automatic,
+            &Default::default(),
+        );
+        let request = ApprovalRequest {
+            agent: owner.clone(),
+            tool_name: "computer_native".into(),
+            call_id: Some("native-call".into()),
+            reason: None,
+            grant_key: Some("remembered".into()),
+            rememberable: true,
+            signal: None,
+        };
+        assert_eq!(
+            service.request_human(&request).await.unwrap(),
+            ApprovalOutcome::Unavailable
+        );
+        let pending: Arc<cordis::Listener> = Arc::new(|_, _| Box::pin(futures::future::pending()));
+        let disposer = ctx.events.register(
+            &ctx,
+            "human pending",
+            "approval/human-request",
+            pending,
+            &Default::default(),
+        );
+        assert_eq!(
+            service.request_human(&request).await.unwrap(),
+            ApprovalOutcome::TimedOut
+        );
+        disposer().await;
+        let human: Arc<cordis::Listener> = Arc::new(|_, args| {
+            let request = cordis::downcast::<ApprovalRequest>(&args[0]).unwrap();
+            assert!(!request.rememberable);
+            assert!(request.grant_key.is_none());
+            assert_eq!(request.call_id.as_deref(), Some("native-call"));
+            Box::pin(async { Some(cordis::arc(ApprovalOutcome::AllowedOnce)) })
+        });
+        ctx.events.register(
+            &ctx,
+            "human response",
+            "approval/human-request",
+            human,
+            &Default::default(),
+        );
+        assert_eq!(
+            service.request_human(&request).await.unwrap(),
+            ApprovalOutcome::AllowedOnce
+        );
+        let mut cancelled = request.clone();
+        cancelled.signal = Some(Arc::new(|| true));
+        assert_eq!(
+            service.request_human(&cancelled).await.unwrap(),
+            ApprovalOutcome::Cancelled
+        );
+        service.set_policy(&owner, ApprovalPolicy::Never).unwrap();
+        assert_eq!(
+            service.request_human(&request).await.unwrap(),
+            ApprovalOutcome::Rejected
+        );
+    }
+
     #[test]
     fn allowed_always_round_trips_through_audit_vocabulary() {
         assert_eq!(ApprovalOutcome::AllowedAlways.as_str(), "allowed-always");
@@ -709,6 +782,23 @@ impl ApprovalService {
     /// Ask the composed answerers to decide one readonly same-process
     /// request (TS `request`).
     pub async fn request(&self, req: &ApprovalRequest) -> Result<ApprovalOutcome, String> {
+        self.request_inner(req, false).await
+    }
+
+    /// Require a fresh response from the human UI. Neither remembered grants,
+    /// ordinary automatic answerers nor unattended fallback may satisfy it.
+    pub async fn request_human(&self, req: &ApprovalRequest) -> Result<ApprovalOutcome, String> {
+        let mut req = req.clone();
+        req.rememberable = false;
+        req.grant_key = None;
+        self.request_inner(&req, true).await
+    }
+
+    async fn request_inner(
+        &self,
+        req: &ApprovalRequest,
+        human: bool,
+    ) -> Result<ApprovalOutcome, String> {
         let session = req.agent.session();
         if !has_open_turn(&session.events()) {
             return Err(
@@ -739,7 +829,10 @@ impl ApprovalService {
         }
         asked["rememberable"] = serde_json::json!(req.rememberable);
         session.append("approval/asked", asked, None)?;
-        let mut outcome = self.decide(req, session).await;
+        let mut outcome = self.decide(req, session, human).await;
+        if human && req.signal.as_ref().is_some_and(|signal| signal()) {
+            outcome = ApprovalOutcome::Cancelled;
+        }
         if outcome == ApprovalOutcome::AllowedAlways {
             match (req.rememberable, req.grant_key.as_deref()) {
                 (true, Some(key)) => self.grants.grant(session.id().as_str(), key),
@@ -756,7 +849,12 @@ impl ApprovalService {
 
     /// Dispatch the scoped waterfall, contained and raced against the request
     /// signal (TS `decide`).
-    async fn decide(&self, req: &ApprovalRequest, session: &Session) -> ApprovalOutcome {
+    async fn decide(
+        &self,
+        req: &ApprovalRequest,
+        session: &Session,
+        human: bool,
+    ) -> ApprovalOutcome {
         if req.signal.as_ref().is_some_and(|signal| signal()) {
             return ApprovalOutcome::Cancelled;
         }
@@ -774,7 +872,12 @@ impl ApprovalService {
             Box::pin(async { arc(ApprovalOutcome::Unavailable) });
         let payload = arc(req.clone());
         let answer = async move {
-            let dispatch = dispatch_ctx.waterfall("approval/request", vec![payload], fallback);
+            let event = if human {
+                "approval/human-request"
+            } else {
+                "approval/request"
+            };
+            let dispatch = dispatch_ctx.waterfall(event, vec![payload], fallback);
             // Fail-closed fallback: Ok(ApprovalOutcome::Unavailable) | Err(_) => unattended.
             // Contain a throwing answerer (sync or async): the question fails
             // closed, never the caller's tool call.
@@ -789,8 +892,16 @@ impl ApprovalService {
             }
         };
         let timeout_ms = self.timeout_ms.load(std::sync::atomic::Ordering::Acquire);
-        let unavailable = self.unattended_outcome(ApprovalOutcome::Unavailable);
-        let timed_out = self.unattended_outcome(ApprovalOutcome::TimedOut);
+        let unavailable = if human {
+            ApprovalOutcome::Unavailable
+        } else {
+            self.unattended_outcome(ApprovalOutcome::Unavailable)
+        };
+        let timed_out = if human {
+            ApprovalOutcome::TimedOut
+        } else {
+            self.unattended_outcome(ApprovalOutcome::TimedOut)
+        };
         let timed_answer = async move {
             match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), answer).await {
                 Ok(ApprovalOutcome::Unavailable) => unavailable,

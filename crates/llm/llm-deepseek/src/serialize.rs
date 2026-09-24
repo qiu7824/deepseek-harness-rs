@@ -35,9 +35,23 @@ const TOOL_RESULT_IMAGE_TEXT: &str =
 
 /// Reserved vocabulary must never silently vanish on a provider route.
 pub(crate) fn validate_projected_content(options: &GenerateOptions) -> Result<(), LlmFailure> {
-    fn content(blocks: &[ContentBlock]) -> Result<(), LlmFailure> {
+    validate_projected_content_mode(options, false)
+}
+
+fn validate_projected_content_mode(
+    options: &GenerateOptions,
+    native: bool,
+) -> Result<(), LlmFailure> {
+    fn content(blocks: &[ContentBlock], receipt_id: Option<&str>) -> Result<(), LlmFailure> {
+        if let Some(id) = receipt_id {
+            dsh_llm::computer_protocol::safety_receipt(blocks, id)
+                .map_err(|message| failure(message, "INVALID_REQUEST"))?;
+        }
         for block in blocks {
             match block {
+                ContentBlock::Extension(block)
+                    if receipt_id.is_some()
+                        && block.type_ == dsh_llm::computer_protocol::SAFETY_RECEIPT => {}
                 ContentBlock::File { .. } => {
                     return Err(failure(
                         "File attachment must be resolved to an authorized handle before provider serialization",
@@ -57,7 +71,7 @@ pub(crate) fn validate_projected_content(options: &GenerateOptions) -> Result<()
                 }
                 ContentBlock::ToolResult {
                     content: nested, ..
-                } => content(nested)?,
+                } => content(nested, None)?,
                 _ => {}
             }
         }
@@ -74,7 +88,12 @@ pub(crate) fn validate_projected_content(options: &GenerateOptions) -> Result<()
         ));
     }
     for message in &options.messages {
-        content(&message.content)?;
+        let receipt_id = if native && message.role == Role::Tool {
+            message.as_tool_result().map(|(id, _, _)| id.as_str())
+        } else {
+            None
+        };
+        content(&message.content, receipt_id)?;
     }
     Ok(())
 }
@@ -232,8 +251,16 @@ fn serialize_messages(
                     ));
                 }
                 let parts = content_parts(content, image_urls, image_file_ids, image_meta)?;
+                let receipt = dsh_llm::computer_protocol::safety_receipt(content, id.as_str())
+                    .map_err(|message| failure(message, "INVALID_REQUEST"))?;
+                if receipt.is_some() && !native_calls.contains(id.as_str()) {
+                    return Err(failure(
+                        "Safety receipt has no native computer call",
+                        "INVALID_REQUEST",
+                    ));
+                }
                 if native_calls.contains(id.as_str()) {
-                    messages.push(json!({"role":"tool","tool_call_id":id.as_str(),"_dsh_native_output":parts,"_dsh_native_error":is_error,"_dsh_native_image_offloaded":content.iter().any(|part|matches!(part,ContentBlock::Image{offloaded:Some(true),..}))}));
+                    messages.push(json!({"role":"tool","tool_call_id":id.as_str(),"_dsh_native_output":parts,"_dsh_native_safety_receipt":receipt,"_dsh_native_error":is_error,"_dsh_native_image_offloaded":content.iter().any(|part|matches!(part,ContentBlock::Image{offloaded:Some(true),..}))}));
                     continue;
                 }
                 let output: String = parts
@@ -459,7 +486,7 @@ fn serialize_request_mode(
     image_meta: Option<&HashMap<String, PreparedImageMeta>>,
     native_computer: bool,
 ) -> Result<Value, LlmFailure> {
-    validate_projected_content(options)?;
+    validate_projected_content_mode(options, native_computer)?;
     let mut body = Map::new();
     body.insert("model".to_string(), json!(options.model));
     body.insert(
