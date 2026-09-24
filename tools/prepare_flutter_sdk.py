@@ -178,6 +178,74 @@ def prepare_asset_recovery(sdk: Path, backup: Path) -> dict:
     return result
 
 
+def prepare_aot_paths(sdk: Path, backup: Path) -> dict:
+    """Pass Windows AOT paths relative to a Unicode-safe process directory."""
+    if os.name != "nt":
+        return {"changed": False, "applicable": False}
+    sdk = sdk.resolve()
+    path = sdk / "packages/flutter_tools/lib/src/base/build.dart"
+    original = path.read_bytes()
+    text = original.decode("utf-8").replace("\r\n", "\n")
+    before = [
+        "    Iterable<String> additionalArgs = const <String>[],\n  }) {",
+        "    ], mapFunction: (String line) => kIgnoredWarnings.contains(line) ? null : line);",
+        "    final snapshotType = SnapshotType(platform, buildMode);\n"
+        "    final int genSnapshotExitCode = await _genSnapshot.run(",
+        "      additionalArgs: genSnapshotArgs,\n      darwinArch: darwinArch,",
+    ]
+    after = [
+        "    Iterable<String> additionalArgs = const <String>[],\n"
+        "    String? workingDirectory,\n  }) {",
+        "    ], workingDirectory: workingDirectory, mapFunction: (String line) => kIgnoredWarnings.contains(line) ? null : line);",
+        """    // DSH_WINDOWS_AOT_RELATIVE_PATHS: native CRT argument decoding must not
+    // reinterpret Unicode filesystem paths. Keep file arguments relative to
+    // the kernel directory; the process working directory is passed as UTF-16.
+    final bool nativeWindows = platform == TargetPlatform.windows_x64 ||
+        platform == TargetPlatform.windows_arm64;
+    final String? snapshotDirectory = nativeWindows ? _fileSystem.file(mainPath).parent.path : null;
+    final snapshotArguments = !nativeWindows ? genSnapshotArgs : genSnapshotArgs.map((String argument) {
+      final int separator = argument.indexOf('=');
+      final String value = separator < 0 ? argument : argument.substring(separator + 1);
+      if (!_fileSystem.path.isAbsolute(value)) return argument;
+      final String relative = _fileSystem.path.relative(value, from: snapshotDirectory);
+      return separator < 0 ? relative : '${argument.substring(0, separator + 1)}$relative';
+    }).toList();
+    final snapshotType = SnapshotType(platform, buildMode);
+    final int genSnapshotExitCode = await _genSnapshot.run(""",
+        "      additionalArgs: snapshotArguments,\n"
+        "      workingDirectory: snapshotDirectory,\n      darwinArch: darwinArch,",
+    ]
+    installed = [text.count(value) == 1 for value in after]
+    if all(installed):
+        return {"changed": False, "applicable": True}
+    if any(installed) or "DSH_WINDOWS_AOT_RELATIVE_PATHS" in text:
+        raise ValueError("Flutter AOT path preparation is incomplete; review SDK before patching")
+    for old in before:
+        if text.count(old) != 1:
+            raise ValueError("Flutter AOT compiler differs; review path handling before patching")
+    for old, new in zip(before, after):
+        text = text.replace(old, new)
+    digest = hashlib.sha256(original).hexdigest()
+    destination = backup.resolve() / ("aot-" + digest)
+    destination.mkdir(parents=True, exist_ok=True)
+    saved = destination / path.name
+    if saved.exists() and saved.read_bytes() != original:
+        raise ValueError("AOT SDK backup identity mismatch")
+    saved.write_bytes(original)
+    if path.read_bytes() != original:
+        raise ValueError("AOT compiler changed while preparing the path fix")
+    path.write_text(text, encoding="utf-8")
+    stamp = sdk / "bin/cache/flutter_tools.stamp"
+    if stamp.is_file():
+        shutil.copy2(stamp, destination / stamp.name)
+        stamp.unlink()
+    result = {"changed": True, "applicable": True,
+              "beforeSha256": digest, "afterSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              "backup": str(destination)}
+    (destination / "repair.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdk", type=Path, required=True)
@@ -185,7 +253,8 @@ def main() -> None:
     args = parser.parse_args()
     result = {"analysis": prepare(args.sdk, args.backup_dir),
               "shader": prepare_shader_paths(args.sdk, args.backup_dir),
-              "assets": prepare_asset_recovery(args.sdk, args.backup_dir)}
+              "assets": prepare_asset_recovery(args.sdk, args.backup_dir),
+              "aot": prepare_aot_paths(args.sdk, args.backup_dir)}
     print(json.dumps(result, ensure_ascii=True))
 
 
