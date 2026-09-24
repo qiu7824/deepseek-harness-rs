@@ -37,9 +37,40 @@ fn forged_worker_entry() {
     .unwrap();
 }
 struct Temp(PathBuf);
+#[test]
+fn missing_os_temporary_base_is_rejected() {
+    let temporary = Temp::new();
+    assert!(crate::store::temporary_codec_root(&temporary.0).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn os_temporary_alias_is_resolved_without_trusting_owned_links() {
+    let temporary = Temp::new();
+    let physical = temporary.0.join("physical");
+    std::fs::create_dir_all(&physical).unwrap();
+    let alias = temporary.0.join("alias");
+    std::os::unix::fs::symlink(&physical, &alias).unwrap();
+    let root = crate::store::temporary_codec_root(&alias).unwrap();
+    assert_eq!(root, physical.join("dsh-image-codec-v1"));
+    assert!(crate::codec::check_path(&root).is_ok());
+    let outside = temporary.0.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &root).unwrap();
+    assert_eq!(
+        crate::codec::check_path(&root).unwrap_err().code,
+        "ATTACHMENT_UNSAFE_PATH"
+    );
+}
+
 impl Temp {
     fn new() -> Self {
-        Self(std::env::temp_dir().join(format!("codec-regression-{}", uuid::Uuid::new_v4())))
+        Self(
+            std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("codec-regression-{}", uuid::Uuid::new_v4())),
+        )
     }
     fn root(&self) -> PathBuf {
         self.0.join("attachments/v1")

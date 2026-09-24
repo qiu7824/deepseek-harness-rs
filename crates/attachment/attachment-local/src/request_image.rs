@@ -386,7 +386,7 @@ mod tests {
 
     impl TempRoot {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
+            let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
                 "dsh-attachment-animated-request-{}",
                 uuid::Uuid::new_v4()
             ));

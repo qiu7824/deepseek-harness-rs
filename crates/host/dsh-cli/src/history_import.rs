@@ -1050,8 +1050,10 @@ mod tests {
     fn native_file_export_import_roundtrip_and_corruption_preflight() {
         use dsh_attachment::AttachmentStore;
         use futures::TryStreamExt;
-        let root =
-            std::env::temp_dir().join(format!("file-history-roundtrip-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("file-history-roundtrip-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let original = b"PK\x03\x04document bytes with \0 binary data".to_vec();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1202,8 +1204,10 @@ mod tests {
         )
         .unwrap();
         use sha2::Digest;
-        let root =
-            std::env::temp_dir().join(format!("dsh-import-zip-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("dsh-import-zip-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let image: Vec<u8> = vec![
             137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
@@ -1251,7 +1255,10 @@ mod tests {
 
     #[test]
     fn batch_preflight_retry_and_conflict_preserve_files() {
-        let root = std::env::temp_dir().join(format!("dsh-import-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("dsh-import-test-{}", uuid::Uuid::new_v4()));
         let source = root.join("source");
         let home = root.join("home");
         std::fs::create_dir_all(&source).unwrap();

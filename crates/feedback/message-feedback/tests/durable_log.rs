@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::Ordering};
 
 use cordis::Context;
 use dsh_message_feedback::*;
-use dsh_session::{SessionEvent, SessionHeader, SessionSeq, SessionStore, SurfaceOp, session_id};
+use dsh_session::{SessionEvent, SessionHeader, SessionStore, session_id};
 use dsh_session_persistence::SessionPersistenceApi;
 use dsh_session_persistence_jsonl::{JsonlCompression, JsonlConfig, JsonlSessionPersistence};
 use dsh_storage::Storage;
@@ -93,7 +93,7 @@ impl Fixture {
         };
         self.persistence.create(header.clone(), None).await.unwrap();
         self.persistence
-            .append(&header.id, &[assistant_event()])
+            .append(&header.id, &assistant_events())
             .await
             .unwrap();
         header
@@ -110,19 +110,24 @@ impl Fixture {
     }
     async fn close(self) {
         self.feedback.dispose();
-        self.ctx.fiber.dispose().await;
+        for dispose in self.ctx.fiber.disposables.clear() {
+            dispose().await;
+        }
     }
 }
-fn assistant_event() -> SessionEvent {
-    SessionEvent {
-        type_: "assistant/message".into(),
-        seq: SessionSeq::new(0).unwrap(),
-        time: 1,
-        data: json!({"turn":1,"step":1,"message":{"id":"assistant-1","role":"assistant","content":[{"type":"text","text":"A finalized answer"}],"source":{"kind":"model","provider":"fixture","model":"fixture"}}}),
-        ignorable: None,
-        surface_op: Some(SurfaceOp::Append),
-        source_event_seqs: None,
-    }
+fn assistant_events() -> Vec<SessionEvent> {
+    vec![
+        json!({"type":"turn/start","data":{"turn":1}}),
+        json!({"type":"step/start","data":{"turn":1,"step":1}}),
+        json!({"type":"system/message","surfaceOp":"append","data":{"turn":1,"step":1,"message":{"id":"system-1","role":"system","source":{"kind":"system-prompt"},"content":[]}}}),
+        json!({"type":"assistant/message","surfaceOp":"append","data":{"turn":1,"step":1,"message":{"id":"assistant-1","role":"assistant","content":[{"type":"text","text":"A finalized answer"}],"source":{"kind":"model","provider":"fixture","model":"fixture"}}}}),
+        json!({"type":"step/end","data":{"turn":1,"step":1}}),
+        json!({"type":"turn/end","data":{"turn":1,"reason":{"kind":"completed"}}}),
+    ].into_iter().enumerate().map(|(seq, mut event)| {
+        event["seq"] = json!(seq);
+        event["time"] = json!(seq + 1);
+        serde_json::from_value(event).unwrap()
+    }).collect()
 }
 fn put(
     header: &SessionHeader,
@@ -252,10 +257,10 @@ async fn cold_feedback_survives_index_failure_restart_and_cas_races() {
         "cold feedback must not create a live session or wake an Agent"
     );
     let log = fixture.persistence.read_from(&header.id, 0).await.unwrap();
-    assert_eq!(log.events.len(), 2);
-    assert_eq!(log.events[1].type_, "feedback/message-put");
+    assert_eq!(log.events.len(), assistant_events().len() + 1);
+    assert_eq!(log.events.last().unwrap().type_, "feedback/message-put");
     assert!(
-        dsh_session::derive_event_message(&log.events[1]).is_none(),
+        dsh_session::derive_event_message(log.events.last().unwrap()).is_none(),
         "feedback never enters model messages"
     );
     fixture.close().await;
@@ -338,7 +343,7 @@ async fn live_annotations_keep_sequence_ownership_and_stay_out_of_model_history(
         session
             .append(
                 "session/title",
-                json!({"title":"Updated while rating"}),
+                json!({"title":"Updated while rating","messageSeqs":[],"source":{"kind":"user"}}),
                 None,
             )
             .unwrap();
@@ -364,11 +369,14 @@ async fn live_annotations_keep_sequence_ownership_and_stay_out_of_model_history(
             .count(),
         1
     );
-    assert!(
-        !persisted
+    assert_eq!(
+        persisted
             .events
             .iter()
-            .any(|event| event.type_ == "turn/start")
+            .filter(|event| event.type_ == "turn/start")
+            .count(),
+        1,
+        "rating an existing reply must not start another turn"
     );
     detach().await;
     fixture.close().await;
@@ -393,17 +401,22 @@ async fn fork_and_reused_ids_cannot_inherit_another_lifecycles_feedback() {
         is_seeded: true,
         ..header.clone()
     };
+    let inherited = dsh_session::SessionLogOffset::new(parent_log.events.len() as u64).unwrap();
+    let child_session = dsh_session::Session::create(
+        child.id.clone(),
+        Some(parent_log.events.clone()),
+        Some(&child),
+        Some(inherited),
+    )
+    .unwrap();
     fixture
         .persistence
-        .create(
-            child.clone(),
-            Some(dsh_session::SessionLogOffset::new(parent_log.events.len() as u64).unwrap()),
-        )
+        .create(child_session.header().clone(), Some(inherited))
         .await
         .unwrap();
     fixture
         .persistence
-        .append(&child.id, &parent_log.events)
+        .append(&child.id, &child_session.events())
         .await
         .unwrap();
     assert!(

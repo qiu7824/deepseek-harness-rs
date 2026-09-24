@@ -253,8 +253,10 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let root =
-                std::env::temp_dir().join(format!("dsh-verbatim-files-{}", uuid::Uuid::new_v4()));
+            let root = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("dsh-verbatim-files-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&root).unwrap();
             Self {
                 root,
@@ -285,7 +287,10 @@ mod tests {
                     writable(file);
                 }
             }
-            assert_eq!(self.root.parent(), Some(std::env::temp_dir().as_path()));
+            assert_eq!(
+                self.root.parent(),
+                Some(std::env::temp_dir().canonicalize().unwrap().as_path())
+            );
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }

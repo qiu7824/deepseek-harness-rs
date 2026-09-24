@@ -135,11 +135,19 @@ async fn stage_bytes(
     .run(None, None)
     .await
 }
+pub(crate) fn temporary_codec_root(base: &Path) -> Result<PathBuf, AttachmentError> {
+    // Resolve only the OS-supplied temporary base (macOS /var is an alias).
+    // Owned codec descendants still pass the no-links storage checks.
+    std::fs::canonicalize(base)
+        .map(|base| base.join("dsh-image-codec-v1"))
+        .map_err(io_error)
+}
+
 pub async fn validate_image_file(
     input: &SaveImageAttachment,
     limits: &ImageAttachmentLimits,
 ) -> Result<(), AttachmentError> {
-    let root = std::env::temp_dir().join("dsh-image-codec-v1");
+    let root = temporary_codec_root(&std::env::temp_dir())?;
     stage_bytes(&root, input, limits).await?;
     Ok(())
 }
