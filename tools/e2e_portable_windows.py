@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent))
 from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import rpc,require_ok
+from e2e_tool_results import tool_result_blocks
 
 entered=threading.Event();release=threading.Event();requests=[]
 class Model(BaseHTTPRequestHandler):
@@ -60,7 +61,7 @@ try:
             time.sleep(.2)
         else:raise AssertionError('search did not finish')
         calls={e['data']['callId']:e['data']['name'] for e in events if e['type']=='tool/call'}
-        results=[p for e in events if e['type']=='tool/result' for p in e['data']['message']['content'] if p['type']=='tool-result' and calls.get(p['toolCallId']) in ('grep','glob')]
+        results=[p for p in tool_result_blocks(events) if calls.get(p['toolCallId']) in ('grep','glob')]
         assert len(results)==2,results
         assert all(not r.get('isError') for r in results),results
         assert all('sample.txt' in json.dumps(r) for r in results),results

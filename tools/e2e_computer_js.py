@@ -4,6 +4,7 @@ import argparse,json,os,pathlib,threading,time,uuid,urllib.request
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from e2e_model_management import isolated_environment,running_fixture_host
 from e2e_settings_model_preserves_data import require_ok,rpc
+from e2e_tool_results import tool_result_blocks
 
 TASK='computer-js-kernel-regression'
 class Model(BaseHTTPRequestHandler):
@@ -58,8 +59,9 @@ def main():
                 if any(e['type']=='turn/end' for e in events):break
                 time.sleep(.1)
             else:raise AssertionError('JS regression turn did not finish')
+            (run/'events.json').write_text(json.dumps(events,ensure_ascii=False,indent=2),encoding='utf-8')
             calls={e['data']['callId']:e['data']['name'] for e in events if e['type']=='tool/call'}
-            results=[p for e in events if e['type']=='tool/result' for p in e['data']['message']['content'] if p['type']=='tool-result' and calls.get(p['toolCallId'])=='computer_use_js']
+            results=[p for p in tool_result_blocks(events) if calls.get(p['toolCallId'])=='computer_use_js']
             assert len(results)==4,results
             assert results[0].get('isError') and 'EXPECTED_KERNEL_ERROR' in json.dumps(results[0]),results[0]
             assert all(not p.get('isError') for p in results[1:]),results[1:]

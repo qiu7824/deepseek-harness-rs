@@ -88,6 +88,7 @@ jobs:
           python -B -m unittest tools.tests.test_node_runtime_package -v
           python -B -m unittest tools.tests.test_release_promotion -v
           python -B -m unittest tools.tests.test_e2e_http -v
+          python -B -m unittest tools.tests.test_e2e_tool_results -v
           python -m unittest tools.tests.test_history_window_contract tools.tests.test_product_surface_contract tools.tests.test_rust_ui_contract tools.tests.test_rust_runtime_contract tools.tests.test_release_product_contract tools.tests.test_release_integrity tools.tests.test_launcher_release_contract tools.tests.test_client_performance tools.tests.test_free_model_evidence tools.tests.test_release_variants tools.tests.test_settings_migration_contract tools.tests.test_installer_compile_gate -v
       - name: 固定网页测试 Node 运行时
         timeout-minutes: 5
@@ -236,6 +237,7 @@ jobs:
           VERSION="${{ steps.release.outputs.version }}"
           python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
       - name: 核验便携包内容
+        id: core_verify
         shell: bash
         run: |
           VERSION="${{ steps.release.outputs.version }}"
@@ -244,6 +246,9 @@ jobs:
         timeout-minutes: 40
         shell: bash
         run: |
+          DSH_E2E_FAILED=0
+          trap 'DSH_E2E_FAILED=1' ERR
+          set +e
           STAGE="dist/${{ steps.release.outputs.prefix }}-core"
           HOST="$STAGE/deepseek-harness-rs"
           [[ "${{ matrix.platform }}" == "windows" ]] && HOST="$HOST.exe"
@@ -290,7 +295,10 @@ jobs:
           for image in animated-png animated-gif animated-webp; do
             python tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --image-kind "$image"
           done
+          exit "$DSH_E2E_FAILED"
       - name: 准备固定 Flutter SDK
+        id: flutter_sdk
+        if: ${{ !cancelled() && steps.core_verify.outcome == 'success' }}
         timeout-minutes: 15
         shell: bash
         run: |
@@ -304,6 +312,8 @@ jobs:
           echo "$SDK/bin" >> "$GITHUB_PATH"
           echo "PUB_CACHE=$RUNNER_TEMP/flutter-pub-cache" >> "$GITHUB_ENV"
       - name: Flutter 客户端验证与构建
+        id: flutter_build
+        if: ${{ !cancelled() && steps.flutter_sdk.outcome == 'success' }}
         timeout-minutes: 40
         shell: bash
         run: |
@@ -317,6 +327,7 @@ jobs:
           VERSION="${{ steps.release.outputs.version }}"
           flutter build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
       - name: 组装并核验 Flutter 完整包
+        if: ${{ !cancelled() && steps.flutter_build.outcome == 'success' }}
         timeout-minutes: 10
         shell: bash
         run: |

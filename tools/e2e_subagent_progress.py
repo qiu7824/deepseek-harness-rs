@@ -18,6 +18,7 @@ from e2e_http import ThreadingHTTPServer
 sys.dont_write_bytecode = True
 from e2e_model_management import isolated_environment, running_fixture_host
 from e2e_settings_model_preserves_data import require_ok, rpc
+from e2e_tool_results import tool_result_blocks
 
 MODELS = [{"id": name, "contextWindow": 65536, "maxTokens": 2048} for name in ("parent", "child-ok", "child-error")]
 LABELS = {"success": "独立模块检查", "failure": "失败分支检查", "parent-running": "运行中回流检查", "interrupt": "中止分支检查", "archive-delete": "归档清理检查"}
@@ -240,7 +241,7 @@ def main():
                 row["parentHistory"] = history
                 results = [item["event"] for item in history["events"] if item["event"]["type"] == "tool/result"]
                 assert len(results) == 1, results
-                result = results[0]["data"]["message"]["content"][0]
+                result = tool_result_blocks(results)[0]
                 assert result["isError"] is False, result
                 if phase != "skill":
                     # A cold read racing retirement may legitimately return a diagnostic row.

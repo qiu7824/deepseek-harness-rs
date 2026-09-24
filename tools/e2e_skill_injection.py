@@ -17,6 +17,7 @@ from e2e_http import ThreadingHTTPServer
 sys.dont_write_bytecode = True
 from e2e_model_management import isolated_environment, running_fixture_host
 from e2e_settings_model_preserves_data import require_ok, rpc
+from e2e_tool_results import tool_result_blocks
 
 
 SKILL = "fixture-live-skill"
@@ -131,7 +132,7 @@ def tool_results(events):
 
 
 def loader_result(events, marker, is_error):
-    results = [block for event in tool_results(events) for block in event.get("data", {}).get("message", {}).get("content", []) if block.get("type") == "tool-result"]
+    results = tool_result_blocks(events)
     return len(results) == 1 and results[0].get("isError") is is_error and marker in json.dumps(results[0], ensure_ascii=False)
 
 
