@@ -24,6 +24,21 @@ def load_tool(name: str):
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
+    def test_remote_helper_preflight_rejects_missing_and_incompatible_binaries(self):
+        package = load_tool("package_release")
+        with tempfile.TemporaryDirectory(dir=os.environ.get("DSH_TEST_TEMP_DIR")) as directory:
+            binary = pathlib.Path(directory) / "dsh-remote-helper"
+            with self.assertRaisesRegex(ValueError, "missing remote helper"):
+                package.verify_remote_helper(binary)
+            binary.write_bytes(b"fixture")
+            with mock.patch.object(package.subprocess, "check_output", return_value="1\n") as run:
+                package.verify_remote_helper(binary)
+                run.assert_called_once_with([str(binary), "--protocol-version"], text=True, timeout=10)
+            for output in ("2", "1 extra", "", "diagnostics\n1"):
+                with self.subTest(output=output), mock.patch.object(package.subprocess, "check_output", return_value=output):
+                    with self.assertRaisesRegex(ValueError, "protocol mismatch"):
+                        package.verify_remote_helper(binary)
+
     def web_fixture(self, root):
         source = root / "web" / "dist"
         (source / "plugins").mkdir(parents=True)

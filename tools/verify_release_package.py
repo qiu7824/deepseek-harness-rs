@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from native_sandbox_identity import IDENTITY_FILE, checkout_identity, source_identity, verify_record as verify_native_record
+from package_release import verify_remote_helper
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -197,6 +198,7 @@ def main() -> None:
     required = {
         launcher,
         host,
+        prefix + f"dsh-remote-helper{executable_suffix}",
         prefix + "deepseek-black.ico",
         prefix + "deepseek-black.png",
         prefix + "PACKAGE.json",
@@ -226,6 +228,11 @@ def main() -> None:
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"archive is missing required entries: {missing}")
+    remote_name = f"dsh-remote-helper{executable_suffix}"
+    remote_source = ROOT / "target/release" / remote_name
+    verify_remote_helper(remote_source)
+    if hashlib.sha256(read_archive_file(archive, prefix + remote_name)).digest() != hashlib.sha256(remote_source.read_bytes()).digest():
+        raise SystemExit("archive remote helper differs from the compiled release binary")
     if args.platform == "windows":
         native_identity = json.loads(read_archive_file(archive, prefix + "native-sandbox/" + IDENTITY_FILE))
         revision, _, version = checkout_identity(ROOT)

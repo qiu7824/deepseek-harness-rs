@@ -7,6 +7,7 @@ import pathlib
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -36,6 +37,18 @@ def copy_tree(src: pathlib.Path, dst: pathlib.Path) -> None:
 
 def binary_name(platform: str, stem: str) -> str:
     return f"{stem}.exe" if platform == "windows" else stem
+
+
+def verify_remote_helper(binary: pathlib.Path) -> None:
+    if not binary.is_file():
+        raise ValueError(f"missing remote helper: {binary}; build dsh-remote-execution --bin dsh-remote-helper")
+    protocol_source = ROOT / "crates/workspace/remote-execution/src/protocol.rs"
+    declared = re.search(r"pub const PROTOCOL_VERSION: u32 = ([0-9]+);", protocol_source.read_text(encoding="utf-8"))
+    if declared is None:
+        raise ValueError("remote helper protocol version is missing from source")
+    output = subprocess.check_output([str(binary), "--protocol-version"], text=True, timeout=10).strip()
+    if output != declared.group(1):
+        raise ValueError(f"remote helper protocol mismatch: expected {declared.group(1)}, got {output!r}")
 
 
 def verify_docx_runtime(root: pathlib.Path) -> None:
@@ -113,6 +126,8 @@ def main() -> None:
     verify_docx_runtime(ROOT)
     core_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh")
     verify_release_version(version, core_source)
+    remote_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-remote-helper")
+    verify_remote_helper(remote_source)
 
     suffix = f"deepseek-harness-rs-v{version}-{args.platform}-{arch}-{args.variant}"
     stage = ROOT / "dist" / suffix
@@ -127,6 +142,7 @@ def main() -> None:
     launcher_output = binary_name(args.platform, "dsh-launcher")
     shutil.copy2(core_source, stage / core_output)
     shutil.copy2(launcher_source, stage / launcher_output)
+    shutil.copy2(remote_source, stage / remote_source.name)
     if args.platform == "windows":
         native_source = ROOT / "target" / "native-windows-sandbox" / "release"
         verify_native_directory(ROOT, native_source)
@@ -154,7 +170,7 @@ def main() -> None:
     )
     shutil.copy2(ROOT / "packaging" / "windows" / "deepseek-black.png", stage / "deepseek-black.png")
     if args.platform != "windows":
-        for executable in (stage / core_output, stage / launcher_output):
+        for executable in (stage / core_output, stage / launcher_output, stage / remote_source.name):
             executable.chmod(
                 executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
             )

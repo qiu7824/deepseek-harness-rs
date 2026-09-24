@@ -6,11 +6,11 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: `0.1.3-alpha.31`.
+Current release line: [`0.1.3-alpha.29-r5`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.29-r5).
 
-Development version: `0.1.3-alpha.31`; see the [change notes](release/notes/v0.1.3-alpha.31.md).
+Development version: `0.1.3-alpha.34+local.20260923.3`; development source does not identify a published installer.
 
-See the [alpha.29 release notes](release/notes/v0.1.3-alpha.31.md) for the complete changes.
+See the historical [alpha.31 change notes](release/notes/v0.1.3-alpha.31.md).
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 

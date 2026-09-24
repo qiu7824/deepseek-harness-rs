@@ -215,7 +215,7 @@ class ReleaseProductContractTests(unittest.TestCase):
                 "send_message",
                 "web_fetch",
                 "core",
-                "https://opencode.ai/zen/v1/models",
+                "config/agent-presets",
             ):
                 self.assertIn(marker, source)
         for marker in (
@@ -327,7 +327,8 @@ class ReleaseProductContractTests(unittest.TestCase):
             "dispose_serialized",
             "admission_gate",
             "let mut activation = activation.lock()",
-            "drain/disposal",
+            "handle.dispose.await;",
+            "activation.lock().resident_permit.take();",
         ):
             self.assertIn(marker, source)
 

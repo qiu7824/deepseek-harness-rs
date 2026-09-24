@@ -612,6 +612,10 @@ pub async fn worker(root: PathBuf, id: &str) -> Result<(), String> {
 }
 
 pub async fn run_cli(args: Vec<String>) -> Result<i32, String> {
+    if args.len() == 1 && args[0] == "--protocol-version" {
+        println!("{PROTOCOL_VERSION}");
+        return Ok(0);
+    }
     #[cfg(windows)]
     {
         if args.first().map(String::as_str) == Some("__dsh-sandbox-windows") {
@@ -692,7 +696,7 @@ pub async fn run_cli(args: Vec<String>) -> Result<i32, String> {
                 .map_err(|e| e.to_string())?;
             Ok(0)
         }
-        _ => Err("usage: dsh-remote-helper --authorize <workspace> <mode> | --stdio".into()),
+        _ => Err("usage: dsh-remote-helper --authorize <workspace> <mode> | --stdio | --protocol-version".into()),
     }
 }
 
