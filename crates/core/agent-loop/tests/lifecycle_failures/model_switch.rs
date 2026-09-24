@@ -1,9 +1,6 @@
 use super::support::{harness, message, register_adapter};
 use dsh_agent::{Agent, ModelSelection, ModelSelectionRef, install_model_selection};
-use dsh_llm::{
-    ChunkStream, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, MessageSource,
-    StreamChunk,
-};
+use dsh_llm::{ChunkStream, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, StreamChunk};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,7 +78,10 @@ async fn model_notice_is_persisted_once_and_reaches_first_switched_request() {
             .unwrap();
     }
     let notices = |messages: &[dsh_llm::Message]| {
-        messages.iter().filter(|message| matches!(&message.source,MessageSource::Plugin{plugin,..} if plugin=="model-selection")).count()
+        messages
+            .iter()
+            .filter(|message| message.source.kind() == "model-selection")
+            .count()
     };
     let calls = calls.lock();
     assert_eq!(calls.len(), 4);

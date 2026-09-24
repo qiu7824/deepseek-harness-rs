@@ -39,6 +39,29 @@ pub fn media_entry_path(reference: &ImageAttachmentRef) -> String {
     )
 }
 
+/// Portable archive path for verbatim file bytes, distinct from image variants.
+pub fn file_entry_path(reference:&dsh_attachment::FileAttachmentRef)->Result<String,String> {
+    let digest=reference.attachment_id.as_str().strip_prefix("sha256:").filter(|s|s.len()==64 && s.bytes().all(|b|b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).ok_or("invalid file attachment identity")?;
+    let name=&reference.name;
+    if name.is_empty() || name.len()>240 || name.ends_with(['.',' ']) || name.chars().any(|c|c.is_control() || "<>:\"/\\|?*".contains(c)) {return Err("invalid file attachment name".into());}
+    Ok(format!("files/{digest}/{name}"))
+}
+pub fn collect_event_file_refs(event:&dsh_session::SessionEvent,files:&mut HashMap<String,dsh_attachment::FileAttachmentRef>)->Result<(),String> {
+    let mut refs=dsh_attachment::file_references_for_event(&event.type_,&event.data);
+    if event.type_=="agent/inbox/spliced" {
+        for message in ["inserted","cancelled"].into_iter().flat_map(|key|event.data[key].as_array().into_iter().flatten()) {
+            refs.extend(dsh_attachment::file_references_for_event("user/message",message));
+        }
+    }
+    for reference in refs {
+        let path=file_entry_path(&reference)?;
+        if let Some(existing)=files.insert(path,reference.clone()) {
+            if existing!=reference {return Err("conflicting file attachment metadata".into());}
+        }
+    }
+    Ok(())
+}
+
 /// Collect every image reference inside one content array, descending into
 /// nested tool results the way the live attachment route does.
 pub fn collect_image_refs(
@@ -93,6 +116,11 @@ pub fn collect_event_image_refs(
     {
         collect_image_refs(content, refs);
     }
+    if event.type_ == "agent/inbox/spliced" {
+        for message in ["inserted","cancelled"].into_iter().flat_map(|key|data.get(key).and_then(serde_json::Value::as_array).into_iter().flatten()) {
+            collect_image_refs(&message["content"],refs);
+        }
+    }
     if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
         for message in messages {
             if let Some(content) = message
@@ -114,6 +142,7 @@ pub fn collect_event_image_refs(
 pub enum SessionLogZipEntry {
     Text { path: String, content: String },
     Data { path: String, data: Vec<u8> },
+    Stream { path: String, bytes:u64, reader:dsh_attachment::AttachmentReader },
 }
 
 /// The services a session-log export needs.
@@ -152,15 +181,24 @@ pub async fn flush_live_session_log(
 
 /// Collect media references from one artifact text (one JSON event per
 /// line).
-fn image_refs_in_artifact(content: &str, media: &mut HashMap<String, ImageAttachmentRef>) {
-    for line in content.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if let Ok(event) = serde_json::from_value::<dsh_session::SessionEvent>(value) {
-            collect_event_image_refs(&event, media);
+fn artifact_refs(content:&str,media:&mut HashMap<String,ImageAttachmentRef>,files:&mut HashMap<String,dsh_attachment::FileAttachmentRef>)->Result<(),String> {
+    let mut lines=content.lines();
+    let header:serde_json::Value=serde_json::from_str(lines.next().ok_or("empty session artifact")?).map_err(|e|e.to_string())?;
+    let mut decoder=if header["version"]==4 {Some(dsh_session::format_v4::V4Decoder::new(header,dsh_session::format_v4::V4Recovery::Strict)?)}else{None};
+    for line in lines {
+        let row:serde_json::Value=serde_json::from_str(line).map_err(|e|e.to_string())?;
+        if let Some(decoder)=&mut decoder {
+            if let Some(row)=decoder.decode_row(row)? {
+                let event=serde_json::from_value(row).map_err(|e|e.to_string())?;
+                collect_event_image_refs(&event,media);collect_event_file_refs(&event,files)?;
+            }
+        } else {
+            dsh_session::visit_storage_record_events(&row,|event| {
+                collect_event_image_refs(&event,media);collect_event_file_refs(&event,files)?;Ok(true)
+            })?;
         }
     }
+    Ok(())
 }
 
 /// Produce export entries in ZIP order through a bounded channel. The
@@ -175,7 +213,8 @@ pub async fn produce_session_log_zip_entries(
     sender: &tokio::sync::mpsc::Sender<Result<SessionLogZipEntry, String>>,
 ) -> Result<(), String> {
     let mut media: HashMap<String, ImageAttachmentRef> = HashMap::new();
-    image_refs_in_artifact(&root.content, &mut media);
+    let mut files=HashMap::new();
+    artifact_refs(&root.content, &mut media, &mut files)?;
     sender
         .send(Ok(SessionLogZipEntry::Text {
             path: root.filename,
@@ -224,7 +263,7 @@ pub async fn produce_session_log_zip_entries(
             else {
                 return Err(format!("subagent \"{id}\" has no stored log artifact"));
             };
-            image_refs_in_artifact(&raw.content, &mut media);
+            artifact_refs(&raw.content, &mut media, &mut files)?;
             sender
                 .send(Ok(SessionLogZipEntry::Text {
                     path: format!(
@@ -243,6 +282,12 @@ pub async fn produce_session_log_zip_entries(
     let Some(attachments) = &deps.attachments else {
         return Err("session log export requires the attachments service".to_string());
     };
+    let abort=signal.clone();
+    let attachment_abort:dsh_attachment::AttachmentAbort=Arc::new(move ||abort.aborted());
+    for (path,reference) in files {
+        let stored=attachments.open_file(&reference,Some(&attachment_abort)).await.map_err(|e|e.to_string())?;
+        sender.send(Ok(SessionLogZipEntry::Stream {path,bytes:reference.bytes,reader:stored.reader})).await.map_err(|_|"session log export consumer closed".to_string())?;
+    }
     for reference in media.values() {
         if signal.aborted() {
             return Err("session log export was cancelled".to_string());
@@ -287,6 +332,7 @@ pub fn assemble_session_log_zip(
                         .write_all(content.as_bytes())
                         .map_err(|error| error.to_string())?;
                 }
+                SessionLogZipEntry::Stream { .. } => return Err("file attachments require streaming ZIP export".into()),
                 SessionLogZipEntry::Data { path, data } => {
                     writer
                         .start_file(path, options)
@@ -339,5 +385,19 @@ mod generated_image_tests {
         assert_eq!(found.len(), 2);
         assert!(found.contains_key(&generated_id));
         assert!(found.contains_key(&source_id));
+    }
+}
+
+#[cfg(test)]
+mod file_archive_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn declared_user_files_are_collected_but_opaque_tool_arguments_are_not() {
+        let reference=json!({"attachmentId":format!("sha256:{}","a".repeat(64)),"name":"file.bin","bytes":3});
+        let mut event:dsh_session::SessionEvent=serde_json::from_value(json!({"type":"user/message","seq":0,"time":0,"data":{"role":"user","source":{"kind":"user"},"content":[{"type":"file","attachment":reference}]}})).unwrap();
+        let mut refs=HashMap::new();collect_event_file_refs(&event,&mut refs).unwrap();assert_eq!(refs.len(),1);
+        event.type_="tool/call".into();refs.clear();collect_event_file_refs(&event,&mut refs).unwrap();assert!(refs.is_empty());
+        let mut bad:dsh_attachment::FileAttachmentRef=serde_json::from_value(reference).unwrap();bad.name="../escape".into();assert!(file_entry_path(&bad).is_err());
     }
 }

@@ -151,6 +151,27 @@ impl LocalAttachmentStore {
 
 #[async_trait::async_trait]
 impl AttachmentStore for LocalAttachmentStore {
+    async fn save_file_stream(
+        &self,
+        reader: dsh_attachment::FileUploadReader<'_>,
+        name: String,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<dsh_attachment::FileAttachmentRef, AttachmentError> {
+        crate::file_store::save(&self.root, reader, &name, signal).await
+    }
+
+    async fn open_file(
+        &self,
+        reference: &dsh_attachment::FileAttachmentRef,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<dsh_attachment::FileAttachmentStream, AttachmentError> {
+        crate::file_store::open(&self.root, reference, signal).await
+    }
+
+    fn file_host_path(&self, reference: &dsh_attachment::FileAttachmentRef) -> Option<PathBuf> {
+        crate::file_store::path(&self.root, reference).ok()
+    }
+
     fn image_limits(&self) -> &ImageAttachmentLimits {
         &self.limits
     }
@@ -170,14 +191,35 @@ impl AttachmentStore for LocalAttachmentStore {
         &self,
         inputs: &[SaveImageAttachment],
     ) -> Result<Vec<ImageAttachmentRef>, AttachmentError> {
-        for input in inputs {
-            validate_image_file(input, &self.limits).await?;
-        }
-        let mut references = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            references.push(save_image_file(&self.root, input, &self.limits).await?);
-        }
-        Ok(references)
+        crate::store::save_images_files(&self.root, inputs, &self.limits).await
+    }
+
+    async fn save_image_stream(
+        &self,
+        reader: dsh_attachment::AttachmentReader,
+        media_type: ImageMediaType,
+        name: Option<String>,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<ImageAttachmentRef, AttachmentError> {
+        crate::store::save_image_stream(&self.root, reader, media_type, name, &self.limits, signal)
+            .await
+    }
+
+    async fn open_image(
+        &self,
+        reference: &ImageAttachmentRef,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<dsh_attachment::ImageAttachmentStream, AttachmentError> {
+        crate::store::open_image_file(&self.root, reference, signal).await
+    }
+
+    async fn open_image_request(
+        &self,
+        reference: &ImageAttachmentRef,
+        policy: &RequestImagePolicy,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<dsh_attachment::RequestImageStream, AttachmentError> {
+        crate::request_image::open_request_image_file(&self.root, reference, policy, signal).await
     }
 
     async fn read_image(

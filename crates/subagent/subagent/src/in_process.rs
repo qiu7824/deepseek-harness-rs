@@ -123,6 +123,10 @@ pub async fn start_in_process_run(
         handle.dispose.await;
         return Err(SubagentError::new("CHILD_COMPOSE_FAILED", error));
     }
+    if let Err(error) = crate::descriptor::record_child_catalog(parent.session(), handle.agent.session(), &request.descriptor) {
+        handle.dispose.await;
+        return Err(SubagentError::new("CHILD_CATALOG_FAILED", error));
+    }
     let structured = if let Some(schema) = request.request.output_schema.clone() {
         match crate::structured::attach_structured_runtime(handle.agent.ctx(), schema).await {
             Ok(attachment) => Some(attachment),

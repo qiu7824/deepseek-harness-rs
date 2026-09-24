@@ -686,6 +686,23 @@ impl BrowserSession {
     ) -> Result<AdapterOutput, AdapterError> {
         self.ensure_alive()?;
         let action = request.action.as_str();
+        if matches!(
+            action,
+            "click"
+                | "double_click"
+                | "move"
+                | "drag"
+                | "scroll"
+                | "key"
+                | "keypress"
+                | "type"
+                | "input"
+        ) {
+            if let Some(expected) = request.arguments.get("observedViewport") {
+                let state = self.state(signal).await?;
+                validate_observed_viewport(expected, &state["viewport"])?;
+            }
+        }
         if let Some(expected) = &request.permission_target {
             if !created && expected.target_revision != self.page_websocket {
                 return Err(AdapterError::new(
@@ -910,8 +927,15 @@ impl BrowserSession {
                         "button must be left, right, middle, back or forward",
                     ));
                 }
-                self.click(x, y, button, action == "double_click", signal)
-                    .await?;
+                self.click(
+                    x,
+                    y,
+                    button,
+                    action == "double_click",
+                    pointer_modifiers(&request.arguments)?,
+                    signal,
+                )
+                .await?;
                 settle(signal, argument_wait_ms(&request.arguments, 100)?).await?;
             }
             "type" | "input" => {
@@ -921,7 +945,7 @@ impl BrowserSession {
                 ) {
                     validate_number("x", x, 0.0, 100_000.0)?;
                     validate_number("y", y, 0.0, 100_000.0)?;
-                    self.click(x, y, "left", false, signal).await?;
+                    self.click(x, y, "left", false, 0, signal).await?;
                 }
                 let text = required_string(&request.arguments, "text", 32_768)?;
                 self.insert_text(text, signal).await?;
@@ -934,7 +958,15 @@ impl BrowserSession {
                     optional_number(&request.arguments, "deltaX", -100_000.0, 100_000.0, 0.0)?;
                 let delta_y =
                     optional_number(&request.arguments, "deltaY", -100_000.0, 100_000.0, 0.0)?;
-                self.scroll(x, y, delta_x, delta_y, signal).await?;
+                self.scroll(
+                    x,
+                    y,
+                    delta_x,
+                    delta_y,
+                    pointer_modifiers(&request.arguments)?,
+                    signal,
+                )
+                .await?;
                 settle(signal, argument_wait_ms(&request.arguments, 100)?).await?;
             }
             "key" | "keypress" => {
@@ -960,24 +992,40 @@ impl BrowserSession {
                 })??;
                 settle(signal, argument_wait_ms(&request.arguments, 100)?).await?;
             }
-            "drag" => {
+            "move" => {
                 let x = required_number(&request.arguments, "x", 0.0, 100_000.0)?;
                 let y = required_number(&request.arguments, "y", 0.0, 100_000.0)?;
-                let end_x = required_number(&request.arguments, "endX", 0.0, 100_000.0)?;
-                let end_y = required_number(&request.arguments, "endY", 0.0, 100_000.0)?;
-                let pressed=self.cdp("Input.dispatchMouseEvent",json!({"type":"mousePressed","x":x,"y":y,"button":"left","buttons":1,"clickCount":1}),signal).await;
+                let modifiers = pointer_modifiers(&request.arguments)?;
+                self.cdp(
+                    "Input.dispatchMouseEvent",
+                    json!({"type":"mouseMoved","x":x,"y":y,"modifiers":modifiers}),
+                    signal,
+                )
+                .await?;
+            }
+            "drag" => {
+                let points = drag_points(&request.arguments)?;
+                let (x, y) = points[0];
+                let modifiers = pointer_modifiers(&request.arguments)?;
+                self.cdp(
+                    "Input.dispatchMouseEvent",
+                    json!({"type":"mouseMoved","x":x,"y":y,"modifiers":modifiers}),
+                    signal,
+                )
+                .await?;
+                let pressed=self.cdp("Input.dispatchMouseEvent",json!({"type":"mousePressed","x":x,"y":y,"button":"left","buttons":1,"clickCount":1,"modifiers":modifiers}),signal).await;
                 let mut last = (x, y);
                 let moved=async {
                     pressed?;
-                    for step in 1..=12 {
-                        let ratio=f64::from(step)/12.0;last=(x+(end_x-x)*ratio,y+(end_y-y)*ratio);
-                        self.cdp("Input.dispatchMouseEvent",json!({"type":"mouseMoved","x":last.0,"y":last.1,"button":"left","buttons":1}),signal).await?;
+                    for &point in &points[1..] {
+                        last=point;
+                        self.cdp("Input.dispatchMouseEvent",json!({"type":"mouseMoved","x":last.0,"y":last.1,"button":"left","buttons":1,"modifiers":modifiers}),signal).await?;
                         settle(signal,16).await?;
                     }
                     Ok::<(),AdapterError>(())
                 }.await;
                 let cleanup: AbortPredicate = Arc::new(|| false);
-                let released=tokio::time::timeout(Duration::from_secs(2),self.cdp("Input.dispatchMouseEvent",json!({"type":"mouseReleased","x":last.0,"y":last.1,"button":"left","buttons":0,"clickCount":1}),&cleanup)).await;
+                let released=tokio::time::timeout(Duration::from_secs(2),self.cdp("Input.dispatchMouseEvent",json!({"type":"mouseReleased","x":last.0,"y":last.1,"button":"left","buttons":0,"clickCount":1,"modifiers":modifiers}),&cleanup)).await;
                 moved?;
                 released.map_err(|_| {
                     AdapterError::new(
@@ -1020,6 +1068,7 @@ impl BrowserSession {
                 | "navigate"
                 | "click"
                 | "double_click"
+                | "move"
                 | "type"
                 | "input"
                 | "scroll"
@@ -1181,34 +1230,46 @@ impl BrowserSession {
         y: f64,
         button: &str,
         double: bool,
+        modifiers: u8,
         signal: &AbortPredicate,
     ) -> Result<(), AdapterError> {
         let count = if double { 2 } else { 1 };
         for click_count in 1..=count {
-            self.cdp(
-                "Input.dispatchMouseEvent",
-                json!({
-                    "type": "mousePressed",
-                    "x": x,
-                    "y": y,
-                    "button": button,
-                    "clickCount": click_count
-                }),
-                signal,
+            let pressed = self
+                .cdp(
+                    "Input.dispatchMouseEvent",
+                    json!({
+                        "type": "mousePressed",
+                        "x": x,
+                        "y": y,
+                        "button": button,
+                        "clickCount": click_count,
+                        "modifiers": modifiers
+                    }),
+                    signal,
+                )
+                .await;
+            let cleanup: AbortPredicate = Arc::new(|| false);
+            let released = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.cdp(
+                    "Input.dispatchMouseEvent",
+                    json!({
+                        "type": "mouseReleased",
+                        "x": x,
+                        "y": y,
+                        "button": button,
+                        "clickCount": click_count,
+                        "modifiers": modifiers
+                    }),
+                    &cleanup,
+                ),
             )
-            .await?;
-            self.cdp(
-                "Input.dispatchMouseEvent",
-                json!({
-                    "type": "mouseReleased",
-                    "x": x,
-                    "y": y,
-                    "button": button,
-                    "clickCount": click_count
-                }),
-                signal,
-            )
-            .await?;
+            .await;
+            pressed?;
+            released.map_err(|_| {
+                AdapterError::new("COMPUTER_USE_TIMEOUT", "releasing browser click timed out")
+            })??;
         }
         Ok(())
     }
@@ -1225,6 +1286,7 @@ impl BrowserSession {
         y: f64,
         delta_x: f64,
         delta_y: f64,
+        modifiers: u8,
         signal: &AbortPredicate,
     ) -> Result<(), AdapterError> {
         self.cdp(
@@ -1234,7 +1296,8 @@ impl BrowserSession {
                 "x": x,
                 "y": y,
                 "deltaX": delta_x,
-                "deltaY": delta_y
+                "deltaY": delta_y,
+                "modifiers": modifiers
             }),
             signal,
         )
@@ -1288,6 +1351,96 @@ impl BrowserSession {
         })?;
         decode_screenshot(encoded, MAX_SCREENSHOT_BYTES)
     }
+}
+
+pub(super) fn validate_pointer_modifiers(args: &Value) -> Result<(), AdapterError> {
+    pointer_modifiers(args).map(|_| ())
+}
+pub(super) fn validate_key_event(args: &Value) -> Result<(), AdapterError> {
+    key_event(args).map(|_| ())
+}
+fn validate_observed_viewport(expected: &Value, current: &Value) -> Result<(), AdapterError> {
+    for key in ["width", "height"] {
+        if !expected[key]
+            .as_u64()
+            .is_some_and(|v| v > 0 && current[key].as_u64() == Some(v))
+        {
+            return Err(AdapterError::new(
+                "COMPUTER_USE_FRAME_STALE",
+                "Browser viewport changed after the observed frame",
+            ));
+        }
+    }
+    if let Some(scale) = expected.get("deviceScaleFactor") {
+        if !scale.as_f64().is_some_and(|v| {
+            v.is_finite() && v > 0.0 && current["deviceScaleFactor"].as_f64() == Some(v)
+        }) {
+            return Err(AdapterError::new(
+                "COMPUTER_USE_FRAME_STALE",
+                "Browser scale changed after the observed frame",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn pointer_modifiers(args: &Value) -> Result<u8, AdapterError> {
+    let Some(keys) = args.get("keys") else {
+        return Ok(0);
+    };
+    let invalid = || {
+        AdapterError::new(
+            "COMPUTER_USE_INVALID_ARGUMENT",
+            "pointer keys must contain at most four modifier names",
+        )
+    };
+    let keys = keys
+        .as_array()
+        .filter(|keys| keys.len() <= 4)
+        .ok_or_else(invalid)?;
+    let mut flags = 0;
+    for key in keys {
+        flags |= match key.as_str().unwrap_or("").to_ascii_lowercase().as_str() {
+            "alt" | "option" => 1,
+            "ctrl" | "control" => 2,
+            "meta" | "cmd" | "command" => 4,
+            "shift" => 8,
+            _ => return Err(invalid()),
+        };
+    }
+    Ok(flags)
+}
+fn drag_points(args: &Value) -> Result<Vec<(f64, f64)>, AdapterError> {
+    if let Some(path) = args.get("path") {
+        let path = path
+            .as_array()
+            .filter(|p| (2..=256).contains(&p.len()))
+            .ok_or_else(|| {
+                AdapterError::new(
+                    "COMPUTER_USE_INVALID_ARGUMENT",
+                    "drag path must contain 2 to 256 points",
+                )
+            })?;
+        return path
+            .iter()
+            .map(|p| {
+                Ok((
+                    required_number(p, "x", 0.0, 100_000.0)?,
+                    required_number(p, "y", 0.0, 100_000.0)?,
+                ))
+            })
+            .collect();
+    }
+    let x = required_number(args, "x", 0.0, 100_000.0)?;
+    let y = required_number(args, "y", 0.0, 100_000.0)?;
+    let ex = required_number(args, "endX", 0.0, 100_000.0)?;
+    let ey = required_number(args, "endY", 0.0, 100_000.0)?;
+    Ok((0..=12)
+        .map(|n| {
+            let ratio = f64::from(n) / 12.0;
+            (x + (ex - x) * ratio, y + (ey - y) * ratio)
+        })
+        .collect())
 }
 
 fn key_event(arguments: &Value) -> Result<Value, AdapterError> {
@@ -1642,6 +1795,90 @@ pub fn discover_browser_executable(explicit: Option<&Path>) -> Result<PathBuf, A
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_viewport_guard_rejects_geometry_and_scale_changes() {
+        let current = serde_json::json!({"width":1280,"height":720,"deviceScaleFactor":1});
+        assert!(super::validate_observed_viewport(&current, &current).is_ok());
+        for expected in [
+            serde_json::json!({"width":640,"height":720}),
+            serde_json::json!({"width":1280,"height":720,"deviceScaleFactor":2}),
+            serde_json::json!({"width":0,"height":0}),
+            serde_json::json!({"width":"1280","height":720}),
+        ] {
+            assert!(super::validate_observed_viewport(&expected, &current).is_err());
+        }
+    }
+    #[test]
+    fn browser_pointer_paths_and_modifier_flags_preserve_native_actions() {
+        let args = serde_json::json!({"path":[{"x":1,"y":2},{"x":90,"y":3},{"x":4,"y":60}],"keys":["CTRL","SHIFT"]});
+        assert_eq!(
+            super::drag_points(&args).unwrap(),
+            vec![(1.0, 2.0), (90.0, 3.0), (4.0, 60.0)]
+        );
+        assert_eq!(super::pointer_modifiers(&args).unwrap(), 10);
+        assert!(
+            super::drag_points(&serde_json::json!({"path":[{"x":0,"y":0},{"x":-1,"y":2}]}))
+                .is_err()
+        );
+        assert!(super::pointer_modifiers(&serde_json::json!({"keys":["A"]})).is_err());
+    }
+
+    #[tokio::test]
+    async fn browser_click_releases_pressed_button_after_cancellation() {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flip = cancelled.clone();
+        let server = tokio::spawn(async move {
+            let mut events = Vec::new();
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                let message = ws.next().await.unwrap().unwrap();
+                let event: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                events.push(event["params"].clone());
+                if event["params"]["type"] == "mousePressed" {
+                    flip.store(true, Ordering::SeqCst);
+                }
+                let _ = ws
+                    .send(Message::Text(
+                        json!({"id":1,"result":{}}).to_string().into(),
+                    ))
+                    .await;
+            }
+            events
+        });
+        #[cfg(windows)]
+        let child = {
+            let mut cmd = tokio::process::Command::new("cmd.exe");
+            cmd.args(["/d", "/c", "exit", "0"])
+                .creation_flags(0x08000000);
+            cmd.spawn().unwrap()
+        };
+        #[cfg(not(windows))]
+        let child = tokio::process::Command::new("true").spawn().unwrap();
+        let mut session = BrowserSession {
+            id: "fixture".into(),
+            child,
+            profile: PathBuf::new(),
+            page_websocket: url.clone(),
+            browser_websocket: url,
+            action_timeout: Duration::from_secs(2),
+        };
+        let signal: AbortPredicate = Arc::new(move || cancelled.load(Ordering::SeqCst));
+        let _ = session.click(20.0, 30.0, "left", false, 10, &signal).await;
+        let events = tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["type"], "mousePressed");
+        assert_eq!(events[1]["type"], "mouseReleased");
+        assert!(events.iter().all(|event| event["modifiers"] == 10));
+        let _ = session.child.wait().await;
+    }
     use super::*;
 
     #[test]

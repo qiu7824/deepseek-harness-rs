@@ -7,6 +7,10 @@ fn git(manifest: &Path, args: &[&str]) -> Option<String> {
 }
 
 pub fn emit(manifest: &Path) {
+    emit_named(manifest, "DSH_BUILD");
+}
+
+pub fn emit_named(manifest: &Path, prefix: &str) {
     println!("cargo:rerun-if-env-changed=CARGO_MANIFEST_DIR");
     // Release orchestration supplies this identity so a shared Cargo cache
     // cannot reuse a build-script result from another frozen source tree.
@@ -22,8 +26,8 @@ pub fn emit(manifest: &Path) {
     let revision = git(manifest, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let dirty = git(manifest, &["status", "--porcelain", "--untracked-files=no"])
         .is_none_or(|status| !status.is_empty());
-    println!("cargo:rustc-env=DSH_BUILD_REVISION={revision}");
-    println!("cargo:rustc-env=DSH_BUILD_DIRTY={dirty}");
+    println!("cargo:rustc-env={prefix}_REVISION={revision}");
+    println!("cargo:rustc-env={prefix}_DIRTY={dirty}");
     let mut refs = vec!["HEAD".to_owned(), "index".to_owned(), "packed-refs".to_owned()];
     if let Some(reference) = git(manifest, &["symbolic-ref", "-q", "HEAD"]) { refs.push(reference); }
     for reference in refs {

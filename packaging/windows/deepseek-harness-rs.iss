@@ -1,8 +1,8 @@
 ﻿#ifndef MyAppVersion
-#define MyAppVersion "0.1.3-alpha.34"
+#define MyAppVersion "0.1.3-alpha.34+local.20260923.3"
 #endif
 #ifndef SourceDir
-#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.34-windows-x86_64-core"
+#define SourceDir "dist\deepseek-harness-rs-v0.1.3-alpha.34+local.20260923.3-windows-x86_64-core"
 #endif
 #ifndef OutputDir
 #define OutputDir "dist"
@@ -28,18 +28,11 @@
 #if !FileExists(SourceDir + "\PACKAGE.json")
 #error The installer payload is missing PACKAGE.json
 #endif
-#if Variant == "core"
+#if Variant != "core"
+#error Only the Web core distribution is supported
+#endif
 #define MyAppId "{{A6F42843-79DD-4FA1-91D2-0B71F8974B78}"
 #define MyVariantDisplay "Core"
-#elif Variant == "skin"
-#define MyAppId "{{7D47BC56-AB4A-4E87-8E62-652A319F6C4F}"
-#define MyVariantDisplay "Skin"
-#elif Variant == "free"
-#define MyAppId "{{F0B73461-F37A-407E-BE7D-71D6B84139D2}"
-#define MyVariantDisplay "Free"
-#else
-#error Unknown release variant
-#endif
 #define MyAppName "DeepSeek Harness-rs (" + MyVariantDisplay + ")"
 [Setup]
 AppId={#MyAppId}

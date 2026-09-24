@@ -25,6 +25,7 @@ dsh-host-plugin-inventory = { path = "../plugin-inventory" }
 dsh-home-paths = { path = "../../util/home-paths" }
 dsh-cordis-loader = { path = "../../vendor/loader" }
 dsh-atomic-write = { path = "../../util/atomic-write" }
+dsh-app-boot = { path = "../../boot/app-boot" }
 dsh-llm = { path = "../../core/llm" }
 dsh-message-feedback = { path = "../../feedback/message-feedback" }
 dsh-command-feedback = { path = "../../feedback/command-feedback" }
@@ -65,6 +66,8 @@ tokio = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+dsh-sandbox = { path = "../../sandbox/sandbox" }
+dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
 dsh-jobs-local = { path = "../../jobs/jobs-local" }
 dsh-agent-presets = { path = "../../preset/agent-presets" }

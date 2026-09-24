@@ -79,7 +79,7 @@ async fn small_history_page_allocations_do_not_scale_with_scan_ceiling() {
     for seq in 0..8 {
         let message = seq == 0 || seq == 7;
         events.push(SessionEvent{seq:SessionSeq::new(seq).unwrap(),time:seq as i64,type_:if seq==0{"user/message"}else if seq==7{"assistant/message"}else{"assistant/chunk"}.into(),
-            data:if message{serde_json::json!({})}else{serde_json::json!({"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"hello"}})},
+            data:if seq==0{serde_json::json!({"id":"u","role":"user","source":{"kind":"user"},"content":[]})}else if seq==7{serde_json::json!({"turn":1,"step":1,"message":{"id":"a","role":"assistant","source":{"kind":"model","provider":"mock","model":"test"},"content":[]}})}else{serde_json::json!({"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"hello"}})},
             surface_op:message.then_some(SurfaceOp::Append),source_event_seqs:None,ignorable:None});
     }
     backend.append(&id, &events).await.unwrap();
@@ -98,6 +98,7 @@ async fn small_history_page_allocations_do_not_scale_with_scan_ceiling() {
         assert_eq!(window.unwrap().events, events);
         measured.push(bytes);
     }
+    for dispose in ctx.fiber.disposables.clear() { dispose().await; }
     tokio::fs::remove_dir_all(&root).await.unwrap();
     println!(
         "history allocation bytes: small_ceiling={}, large_ceiling={}",

@@ -714,3 +714,114 @@ async fn validation_cancel_is_typed_even_without_an_agent_generation_change() {
         f.dispose().await;
     }
 }
+
+struct UserWorkControl {
+    busy: AtomicBool,
+    calls: AtomicUsize,
+}
+impl GoalUserControl for UserWorkControl {
+    fn with_idle(
+        &self,
+        agent: &Arc<dyn Agent>,
+        operation: &mut dyn FnMut() -> Result<(), GoalError>,
+    ) -> Result<(), GoalError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.busy.load(Ordering::SeqCst) {
+            return Err(GoalError::new(
+                "descendant is still working",
+                GoalErrorCode::AgentBusy,
+            ));
+        }
+        let _control = agent
+            .try_idle_control()
+            .map_err(|_| GoalError::new("agent busy", GoalErrorCode::AgentBusy))?;
+        operation()
+    }
+}
+
+#[tokio::test]
+async fn user_create_edit_and_clear_share_the_host_work_boundary_but_pause_and_budget_do_not() {
+    let f = Fixture::new().await;
+    let original = f.create("A");
+    let control = Arc::new(UserWorkControl {
+        busy: AtomicBool::new(true),
+        calls: AtomicUsize::new(0),
+    });
+    let provided: Arc<dyn GoalUserControl> = control.clone();
+    f.ctx.reflect.provide(
+        &f.ctx,
+        GOAL_USER_CONTROL_SERVICE,
+        Some(cordis::arc(provided)),
+        None,
+    );
+    let seq = f.agent.session().seq();
+    let edited = EditGoalRequest {
+        objective: Some("B".into()),
+        max_goal_rounds: None,
+    };
+    assert_eq!(
+        f.goals
+            .edit_for_user(&f.agent, &reference(&original), &edited)
+            .unwrap_err()
+            .code,
+        GoalErrorCode::AgentBusy
+    );
+    assert_eq!(
+        f.goals
+            .clear_for_user(&f.agent, &reference(&original))
+            .unwrap_err()
+            .code,
+        GoalErrorCode::AgentBusy
+    );
+    assert_eq!(
+        f.goals
+            .create_for_user(
+                &f.agent,
+                CreateGoalRequest {
+                    objective: "B".into(),
+                    max_goal_rounds: Some(8)
+                }
+            )
+            .unwrap_err()
+            .code,
+        GoalErrorCode::AgentBusy
+    );
+    assert_eq!(f.agent.session().seq(), seq);
+    let budget = f
+        .goals
+        .edit_for_user(
+            &f.agent,
+            &reference(&original),
+            &EditGoalRequest {
+                objective: None,
+                max_goal_rounds: Some(16),
+            },
+        )
+        .unwrap();
+    let paused = f.goals.pause(&f.agent, &reference(&budget)).unwrap();
+    assert_eq!(control.calls.load(Ordering::SeqCst), 3);
+    control.busy.store(false, Ordering::SeqCst);
+    let revised = f
+        .goals
+        .edit_for_user(&f.agent, &reference(&paused), &edited)
+        .unwrap();
+    assert_eq!(revised.objective, "B");
+    f.goals
+        .clear_for_user(&f.agent, &reference(&revised))
+        .unwrap();
+    assert!(f.goals.get(&f.agent).unwrap().is_none());
+    assert_eq!(
+        f.goals
+            .create_for_user(
+                &f.agent,
+                CreateGoalRequest {
+                    objective: "C".into(),
+                    max_goal_rounds: Some(8)
+                }
+            )
+            .unwrap()
+            .objective,
+        "C"
+    );
+    f.dispose().await;
+}

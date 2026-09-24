@@ -3324,10 +3324,10 @@ window.__ModuleLoader__.load({
 			}, [line]);
 			if (groups.length === 0) return null;
 			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-				label: [line,t("stats.rateMeaning"),...(stats.requestSources??[]).map(source=>`${source.provider} / ${source.model} · ${t("stats.backend")} ${source.executionInstanceId}`)].join("\n"),
+				label: [line,t("stats.modelTimeMeaning"),t("stats.rateMeaning"),...(stats.requestSources??[]).map(source=>`${source.provider} / ${source.model} · ${t("stats.backend")} ${source.executionInstanceId}`)].join("\n"),
 				side: "top",
 				delayMs: 500,
-				disabled: !truncated && !(stats.requestSources?.length>0),
+				disabled: !truncated && stats.steps === 0 && !(stats.requestSources?.length>0),
 				children: (0, react_jsx_runtime.jsx)("div", {
 					ref: rootRef,
 					className: StatsLine_module_css_default.root,
@@ -3651,11 +3651,11 @@ window.__ModuleLoader__.load({
 			const [confirmation, setConfirmation] = (0, react.useState)(null);
 			const [acknowledged, setAcknowledged] = (0, react.useState)(false);
 			(0, react.useEffect)(() => {
-				if (!locked && value !== void 0) return;
+				if (!locked && value !== void 0 && (confirmation !== "auto" || value.options.some(option=>option.value==="auto"))) return;
 				setOpen(false);
 				setAcknowledged(false);
 				setConfirmation(null);
-			}, [locked, value]);
+			}, [locked, value, confirmation]);
 			if (value === void 0) return null;
 			const currentValue = pick ?? value.currentValue;
 			const current = value.options.find((option) => option.value === currentValue);
@@ -3677,7 +3677,7 @@ window.__ModuleLoader__.load({
 			const choose = (id) => {
 				setOpen(false);
 				if (id === value.currentValue) return;
-				if (id === FULL_ACCESS) {
+				if (id === FULL_ACCESS || id === "auto") {
 					setAcknowledged(false);
 					setConfirmation(id);
 					return;
@@ -3735,9 +3735,9 @@ window.__ModuleLoader__.load({
 				})
 			}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.RiskConfirmation, {
 				open: confirmation !== null,
-				title: t("access.confirm.title"),
-				description: t("access.confirm.description"),
-				acknowledgeLabel: t("access.confirm.acknowledge"),
+				title: confirmation === "auto" ? t("access.auto.title") : t("access.confirm.title"),
+				description: confirmation === "auto" ? t("access.auto.description") : t("access.confirm.description"),
+				acknowledgeLabel: confirmation === "auto" ? t("access.auto.acknowledge") : t("access.confirm.acknowledge"),
 				cancelLabel: t("access.confirm.cancel"),
 				confirmLabel: t("access.confirm.enable"),
 				acknowledged,
@@ -3815,6 +3815,54 @@ window.__ModuleLoader__.load({
 			const inserted = "\n" + match[1] + (Number(match[2]) + 1) + match[3] + (match[4] || " ");
 			return { text: text.slice(0, start) + inserted + text.slice(end), caret: start + inserted.length, insertedLength: inserted.length };
 		}
+		function DraftAttachmentRemove({ label, disabled, onRemove }) {
+			return react.createElement(_deepseek_ai_dsh_client_ui_primitives.Tooltip, { label },
+				react.createElement("button", { type: "button", className: "dshDraftRemove", disabled, "aria-label": label, onPointerDown: event => event.preventDefault(), onClick: onRemove },
+					react.createElement(_deepseek_ai_dsh_client_ui_primitives.IconCloseOutline16, { size: 14 })));
+		}
+		function DraftImageRail({ items, labels, removeDisabled, onOpen, onRemove }) {
+			const rail = react.useRef(null), previousCount = react.useRef(null);
+			const [edges, setEdges] = react.useState({ left: false, right: false });
+			const updateEdges = react.useCallback(() => {
+				const element = rail.current; if (!element) return;
+				const next = { left: element.scrollLeft > 1, right: element.scrollLeft < element.scrollWidth - element.clientWidth - 1 };
+				setEdges(previous => previous.left === next.left && previous.right === next.right ? previous : next);
+			}, []);
+			react.useLayoutEffect(() => {
+				if (rail.current && previousCount.current !== null && items.length > previousCount.current) rail.current.scrollLeft = rail.current.scrollWidth - rail.current.clientWidth;
+				previousCount.current = items.length; updateEdges();
+			}, [items.length, updateEdges]);
+			react.useEffect(() => {
+				const element = rail.current; if (!element) return;
+				const observer = typeof ResizeObserver === "function" ? new ResizeObserver(updateEdges) : null;
+				observer?.observe(element);
+				const wheel = event => {
+					if (event.deltaY === 0 || element.scrollWidth <= element.clientWidth) return;
+					const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientWidth : 1;
+					event.preventDefault(); element.scrollBy({ left: event.deltaX ? event.deltaX * unit : Math.sign(event.deltaY) * Math.min(Math.abs(event.deltaY) * unit, 60), behavior: "auto" });
+				};
+				element.addEventListener("wheel", wheel, { passive: false });
+				return () => { observer?.disconnect(); element.removeEventListener("wheel", wheel); };
+			}, [updateEdges]);
+			const scroll = direction => {
+				const element = rail.current; if (!element) return;
+				element.scrollBy({ left: direction * Math.max(element.clientWidth - 64, 200), behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+			};
+			const arrow = (direction, label, Icon) => react.createElement("button", { type: "button", className: "dshDraftRailArrow", "data-side": direction < 0 ? "left" : "right", "aria-label": label, onClick: () => scroll(direction) }, react.createElement(Icon, { size: 14 }));
+			return react.createElement("div", { className: "dshDraftImageRail", "data-draft-image-rail": true },
+				edges.left && arrow(-1, labels.scrollLeft, _deepseek_ai_dsh_client_ui_primitives.IconChevronLeftOutline14),
+				react.createElement("div", { ref: rail, className: "dshDraftImageStrip", role: "group", "aria-label": labels.group, onScroll: updateEdges }, items.map(item => react.createElement("div", { key: item.id, className: "dshDraftImageItem" },
+					react.createElement("button", { type: "button", className: "dshDraftImageThumb", title: labels.open, onClick: () => onOpen(item) }, react.createElement("img", { src: item.previewUrl, alt: item.alt })),
+					react.createElement("div", { className: "dshDraftImageRemove" }, react.createElement(DraftAttachmentRemove, { label: item.removeLabel, disabled: removeDisabled, onRemove: () => onRemove(item) }))))),
+				edges.right && arrow(1, labels.scrollRight, _deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutline14));
+		}
+		if (typeof document !== "undefined") {
+			const key = "dsh-draft-attachment-controls";
+			const style = document.querySelector(`style[data-plugin-css="${key}"]`) ?? document.createElement("style");
+			style.dataset.pluginCss = key;
+			style.textContent = ".dshDraftRemove,.dshDraftRailArrow{display:grid;place-items:center;flex:none;width:24px;height:24px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer}.dshDraftRemove:hover:not(:disabled),.dshDraftRailArrow:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.dshDraftRemove:disabled{opacity:.45;cursor:default}.dshDraftRemove:focus-visible,.dshDraftRailArrow:focus-visible,.dshDraftImageThumb:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}.dshDraftImageRail{position:relative;min-width:0}.dshDraftImageStrip{display:flex;gap:8px;overflow-x:auto;padding:6px;scrollbar-width:thin;overscroll-behavior-x:contain}.dshDraftImageItem{position:relative;flex:0 0 80px;height:80px}.dshDraftImageThumb{display:block;width:100%;height:100%;padding:0;border:0;border-radius:8px;overflow:hidden;background:var(--dsw-alias-bg-layer-2);cursor:pointer}.dshDraftImageThumb img{display:block;width:100%;height:100%;object-fit:cover}.dshDraftImageRemove{position:absolute;top:-4px;right:-4px}.dshDraftRailArrow{position:absolute;z-index:1;top:50%;transform:translateY(-50%)}.dshDraftRailArrow[data-side=left]{left:0}.dshDraftRailArrow[data-side=right]{right:0}";
+			if (!style.isConnected) document.head.appendChild(style);
+		}
 		function InputBar({ useComposerTips = () => ({mode:"on"}), useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages, resolveSubmitMode, toggleCommandMenu, toggleReferenceMenu, stop, command, t, renderSlot, useNotices, useLexicon, useMenuLauncher, useProjection, sessionId, variant, disabled: inert = false, blocked, workspacePickerOpen = false, onRequestWorkspace, placeholder, accessory, overlay, leftItems, rightItems, footer }) {
 			const input = useInput((s) => s);
 			const notice = useNotices((s) => s);
@@ -3822,6 +3870,7 @@ window.__ModuleLoader__.load({
 			const commandMenuOpen = useMenuLauncher((source) => source === "command");
 			const promptError = useSession((s) => s.promptError) ?? null;
 			const running = useSession((s) => s.running) ?? false;
+			const commandRunning = useSession((s) => s.commandRunning) ?? false;
 			const sending = useSession((s) => (s.queue ?? []).some((item) => item.placement === "sending"));
 			const [runningSeconds, setRunningSeconds] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
@@ -4156,8 +4205,8 @@ window.__ModuleLoader__.load({
 				const el = inputRef.current;
 				if (el !== null) toggleCommandMenu?.(selectionOf(el));
 			};
-			const primaryStops = (running || sending || machineBusy) && subagent === null;
-			const interruptible = (running || sending || machineBusy) && continuable;
+			const primaryStops = (running || commandRunning || sending || machineBusy) && subagent === null;
+			const interruptible = (running || commandRunning || sending || machineBusy) && continuable;
 			const primaryLabel = primaryStops ? t("input.stop") : t("input.send");
 			const onPrimary = () => {
 				if (primaryStops) {
@@ -4288,17 +4337,20 @@ window.__ModuleLoader__.load({
                             attachments.filter(item => item.kind === "file").map(item => react.createElement("div", { key: item.id, "data-file-draft": true, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", minWidth: 0, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, background: "var(--dsw-alias-bg-layer-1)" } },
                                 react.createElement("span", { title: item.file.name, style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1, color: "var(--dsw-alias-label-primary)" } }, item.file.name),
                                 react.createElement("span", { style: { flex: "none", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" } }, imageSizeText(item.file.size)),
-                                react.createElement("button", { type: "button", disabled: locked || machineBusy, "aria-label": t("file.remove", { name: item.file.name }), title: t("file.remove", { name: item.file.name }), onClick: () => removeImage?.(item.id), style: { flex: "none", width: 28, height: 28, display: "grid", placeItems: "center", border: 0, borderRadius: 999, background: "transparent", color: "var(--dsw-alias-label-tertiary)", cursor: "pointer", fontSize: 18, lineHeight: 1 } }, "×"))),
+                                react.createElement(DraftAttachmentRemove, { disabled: locked || machineBusy, label: t("file.remove", { name: item.file.name }), onRemove: () => { if (locked || machineBusy) return; removeImage?.(item.id); inputRef.current?.focus({ preventScroll: true }); } }))),
 							railItems.length > 0 && (0, react_jsx_runtime.jsx)("div", {
 								className: InputBar_module_css_default.attachments,
-								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.AttachmentRail, {
+								children: (0, react_jsx_runtime.jsx)(DraftImageRail, {
 									items: railItems,
+									removeDisabled: locked || machineBusy,
 									labels: attachmentRailLabels(t),
 									onOpen: (item) => {
 										setPreview(item.attachment);
 									},
 									onRemove: (item) => {
+										if (locked || machineBusy) return;
 										removeImage?.(item.attachment.id);
+										inputRef.current?.focus({ preventScroll: true });
 									}
 								})
 							}),
@@ -4636,9 +4688,10 @@ window.__ModuleLoader__.load({
 		*/
 		const CompactionItem = (0, react.memo)(function CompactionItem({ node, title, fallbackSummary, t }) {
 			const [expanded, setExpanded] = (0, react.useState)(false);
+			const stopped = !node.pending && ["cancelled", "compaction cancelled", "manual compaction was cancelled"].includes(node.failure);
 			const expandable = node.summary !== null;
 			const open = expandable && expanded;
-			const summary = node.pending ? t("message.compaction.running") : node.failure ?? (node.shadowedItemCount !== null && node.shadowedTokenCount !== null ? t("message.compaction.completed", {
+			const summary = stopped ? t("message.compaction.stopped") : node.pending ? t("message.compaction.running") : node.failure ?? (node.shadowedItemCount !== null && node.shadowedTokenCount !== null ? t("message.compaction.completed", {
 				items: node.shadowedItemCount,
 				tokens: node.shadowedTokenCount
 			}) : fallbackSummary ?? (expandable ? t("message.compaction.expand") : t("message.compaction.unavailable")));
@@ -4668,7 +4721,7 @@ window.__ModuleLoader__.load({
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: MessageItem_module_css_default.compactionTitle,
-						children: node.pending ? t("message.compaction.running") : node.failure ? t("message.compaction.failed") : title ?? t("message.compaction")
+						children: stopped ? t("message.compaction.stopped") : node.pending ? t("message.compaction.running") : node.failure ? t("message.compaction.failed") : title ?? t("message.compaction")
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
 							className: MessageItem_module_css_default.compactionSep,
@@ -5535,6 +5588,11 @@ window.__ModuleLoader__.load({
             if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`;
             return `${(size / 1024 / 1024).toFixed(1)} MiB`;
         }
+        function uploadedNativeFile(block) {
+            const ref = block?.type === "file" ? block.attachment : null;
+            if (!ref || typeof ref.name !== "string" || typeof ref.attachmentId !== "string" || !Number.isSafeInteger(ref.bytes) || ref.bytes < 0) return null;
+            return {name:ref.name, size:ref.bytes, path:"dsh-file-attachment:"+encodeURIComponent(JSON.stringify(ref)), native:true};
+        }
 		function retrySeconds(milliseconds) {
 			return Math.max(1, Math.ceil(milliseconds / 1e3));
 		}
@@ -5688,9 +5746,9 @@ window.__ModuleLoader__.load({
 		}
 		/** Right-aligned bubble shared by user and steering rows. */
 		function UserStyleBubble({ content, imageLoader, openFile, actions, pending = false, t }) {
-            const files = content.map(block => block.type === "text" ? uploadedFileReceipt(block.text) : null).filter(Boolean);
+            const files = content.map(block => block.type === "text" ? uploadedFileReceipt(block.text) : uploadedNativeFile(block)).filter(Boolean);
             const originalText = contentParts(content).text;
-            const { text, images, rest } = contentParts(content.filter(block => block.type !== "text" || !uploadedFileReceipt(block.text)));
+            const { text, images, rest } = contentParts(content.filter(block => !(block.type === "text" && uploadedFileReceipt(block.text)) && !uploadedNativeFile(block)));
 			const truncated = (total) => t("json.truncated", { total });
 			const showBubble = text !== "" || rest.length > 0;
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -5699,7 +5757,7 @@ window.__ModuleLoader__.load({
 				"data-time-hover-root": true,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
 					className: MessageItem_module_css_default.userStack,
-					children: [files.map((file, index) => react.createElement("button", { key: `${file.path}:${index}`, type: "button", "data-uploaded-file": true, disabled: !openFile, title: file.path, "aria-label": t("file.open", { name: file.name }), onClick: () => openFile?.(file.path), style: { display: "flex", gap: 8, maxWidth: "100%", alignItems: "center", padding: "8px 12px", borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2)", color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-interactive-bg-hover)", cursor: openFile ? "pointer" : "default" } },
+					children: [files.map((file, index) => react.createElement("button", { key: `${file.path}:${index}`, type: "button", "data-uploaded-file": true, disabled: !openFile, title: file.native ? file.name : file.path, "aria-label": t("file.open", { name: file.name }), onClick: () => openFile?.(file.path), style: { display: "flex", gap: 8, maxWidth: "100%", alignItems: "center", padding: "8px 12px", borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2)", color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-interactive-bg-hover)", cursor: openFile ? "pointer" : "default" } },
                             react.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, file.name),
                             react.createElement("span", { style: { flex: "none", fontSize: 12 } }, uploadedFileSize(file.size)))), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.ImageGallery, {
 						images,
@@ -6656,7 +6714,7 @@ window.__ModuleLoader__.load({
             "placeholder.tipReference": "输入 @ 可引用其他对话。",
             "placeholder.tipCommands": "输入 / 可查看可用命令。",
 			"placeholder.tipTeam": "可在设置中开启团队协作，并在会话中查看成员与共享任务。",
-			"placeholder.tipVoice": "按住语音按钮说话，松开后结束；识别文字会实时写入输入框。",
+			"placeholder.tipVoice": "按住输入框说话，松开结束，上移取消；识别文字会实时写入。",
 
             "placeholder.tipNewline": "Shift+Enter 换行，Enter 发送",
             "placeholder.tipImage": "粘贴或拖入图片，再输入你想修改的内容",
@@ -6718,6 +6776,7 @@ window.__ModuleLoader__.load({
 			"context.messages": "对话消息",
 			"stats.counts": "{turns} 轮 · {steps} 步",
 			"stats.llm": "LLM {duration}",
+			"stats.modelTimeMeaning": "模型耗时包含失败、取消和重试的请求；请求计时不含本地准备与工具执行，旧记录按阶段时间估算。",
 			"stats.toolCall": "工具调用 {duration}",
 			"stats.ttftAverage": "首 token 平均 {duration}",
 			"stats.tokensPerSecond": "请求平均 {throughput} tok/s",
@@ -6803,6 +6862,7 @@ window.__ModuleLoader__.load({
 			"message.context.recall.truncated": "已截断",
 			"message.compaction": "上下文已压缩",
 			"message.compaction.running": "正在压缩…",
+			"message.compaction.stopped": "压缩已停止",
 			"message.compaction.failed": "上下文压缩未完成",
 			"message.compaction.completed": "已压缩 {items} 条历史记录（约 {tokens} tokens）",
 			"message.compaction.expand": "点击查看压缩摘要",
@@ -6991,7 +7051,7 @@ window.__ModuleLoader__.load({
             "placeholder.tipReference": "Type @ to reference another conversation.",
             "placeholder.tipCommands": "Type / to browse available commands.",
 			"placeholder.tipTeam": "Enable team collaboration in Settings, then view members and shared tasks in the conversation.",
-			"placeholder.tipVoice": "Hold the voice button while speaking; release to finish. Text appears live in the input.",
+			"placeholder.tipVoice": "Hold the input field to speak, release to finish, or slide up to cancel. Text appears live.",
 
             "placeholder.tipNewline": "Shift+Enter for a new line; Enter to send",
             "placeholder.tipImage": "Paste or drop an image, then describe your changes",
@@ -7053,6 +7113,7 @@ window.__ModuleLoader__.load({
 			"context.messages": "Messages",
 			"stats.counts": "{turns} turns · {steps} steps",
 			"stats.llm": "LLM {duration}",
+			"stats.modelTimeMeaning": "Model time includes failed, cancelled and retried requests. Request timing excludes local preparation and tool execution; older records use phase-time estimates.",
 			"stats.toolCall": "Tool call {duration}",
 			"stats.ttftAverage": "TTFT avg {duration}",
 			"stats.tokensPerSecond": "Request avg {throughput} tok/s",
@@ -7138,6 +7199,7 @@ window.__ModuleLoader__.load({
 			"message.context.recall.truncated": "truncated",
 			"message.compaction": "Context compacted",
 			"message.compaction.running": "Compacting context…",
+			"message.compaction.stopped": "Compaction stopped",
 			"message.compaction.failed": "Context compaction incomplete",
 			"message.compaction.completed": "Compacted {items} history items (~{tokens} tokens)",
 			"message.compaction.expand": "View compaction summary",
@@ -8129,7 +8191,7 @@ window.__ModuleLoader__.load({
 				} : hero ? { placeholder: t("placeholder.hero") } : {},
 				overlay: renderSlot("conversation.input.overlay", {}),
 				leftItems: zone === void 0 ? null : renderSlot("conversation.input.left", zone),
-				rightItems: zone === void 0 ? null : renderSlot("conversation.input.right", zone),
+				rightItems: zone === void 0 ? null : renderSlot("conversation.input.right", {...zone,locked:inert}),
 				footer: !hero && zone !== void 0 ? renderSlot("conversation.composer.dock", zone) : null
 			});
 			const composerBar = (0, react_jsx_runtime.jsxs)("div", {
@@ -8256,9 +8318,11 @@ window.__ModuleLoader__.load({
 				}), !hideChrome && tabs.length > 1 && (0, react_jsx_runtime.jsx)("div", {
 					className: ConversationRoot_module_css_default.tabs,
 					role: "tablist",
+					style: { display: "flex", flexWrap: "nowrap", overflowX: "auto", minWidth: 0 },
 					children: tabs.map((viewTab) => (0, react_jsx_runtime.jsx)("button", {
 						type: "button",
 						role: "tab",
+						style: { flex: "0 0 auto", whiteSpace: "nowrap" },
 						"aria-selected": viewTab.id === active?.id,
 						className: clsx(ConversationRoot_module_css_default.tab, viewTab.id === active?.id && ConversationRoot_module_css_default.tabActive),
 						onClick: () => {
@@ -9173,7 +9237,7 @@ window.__ModuleLoader__.load({
 		function compactSource(event) {
 			if (event.type !== "user/message" || !(0, _deepseek_ai_dsh_client_runtime_client.isReplacementSurfaceEvent)(event)) return void 0;
 			const source = event.data.source;
-			if (source.kind !== "plugin" || source.plugin !== COMPACT_PLUGIN || typeof source.compactionId !== "string") return void 0;
+			if (!(source.kind === "compact-checkpoint" || source.kind === "plugin" && source.plugin === COMPACT_PLUGIN) || typeof source.compactionId !== "string") return void 0;
 			return {
 				compactionId: source.compactionId,
 				...typeof source.sourceCommandId !== "string" || !source.sourceCommandId ? {} : { sourceCommandId: source.sourceCommandId }
@@ -9432,7 +9496,7 @@ window.__ModuleLoader__.load({
 		function isCompactionCheckpoint(event) {
 			if (event.type !== "user/message" || !(0, _deepseek_ai_dsh_client_runtime_client.isReplacementSurfaceEvent)(event)) return false;
 			const source = event.data.source;
-			return source.kind === "plugin" && source.plugin === "compact";
+			return source.kind === "compact-checkpoint" || source.kind === "plugin" && source.plugin === "compact";
 		}
 		/** User, steering, system-prefix, and injected-context message classification Definition. */
 		const messageDefinition = {
@@ -9446,7 +9510,7 @@ window.__ModuleLoader__.load({
 						role: "start"
 					} : null;
 				}
-				return event.type === "user/message" && (0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event) && !isCompactionCheckpoint(event) && !(event.data.source.kind === "plugin" && event.data.source.plugin === "agent-loop:response-recovery") ? {
+				return event.type === "user/message" && (0, _deepseek_ai_dsh_client_runtime_client.isAppendSurfaceEvent)(event) && !isCompactionCheckpoint(event) && !(event.data.source.kind === "plugin:agent-loop:response-recovery" || event.data.source.kind === "plugin" && event.data.source.plugin === "agent-loop:response-recovery") ? {
 					id: String(event.data.id),
 					role: "start"
 				} : null;
@@ -9615,7 +9679,8 @@ window.__ModuleLoader__.load({
 		}
 		function rootResult(match, previous) {
 			if (match.event.type !== "tool/result") return void 0;
-			const result = match.event.data.message.content[0];
+			const message = match.event.data.message;
+			const result = message.role === "tool" ? message : message.content[0];
 			return {
 				kind: "tool-result",
 				seq: match.event.seq,
@@ -10469,12 +10534,12 @@ window.__ModuleLoader__.load({
 		function leadingFor(state) {
 			return state === "error" ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: "error" }) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, { size: 14 });
 		}
-		function GenericCommandCard({ node, t, runningSummary }) {
+		function GenericCommandCard({ node, t, runningSummary, stoppedSummary }) {
 			const [expanded, setExpanded] = (0, react.useState)(true);
 			const text = node.outcome?.text;
-			const summary = node.outcome === null ? runningSummary ?? t("command.running") : text ?? (node.outcome.kind === "error" ? t("command.failed") : t("command.done"));
+			const summary = stoppedSummary ?? (node.outcome === null ? runningSummary ?? t("command.running") : text ?? (node.outcome.kind === "error" ? t("command.failed") : t("command.done")));
 			const title = node.name ?? t("command.title");
-			const state = stateOf(node.outcome);
+			const state = stoppedSummary !== void 0 ? "stopped" : stateOf(node.outcome);
 			const body = text !== void 0 && text.includes("\n") ? text : null;
 			const open = expanded && body !== null;
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -10534,6 +10599,7 @@ window.__ModuleLoader__.load({
 			});
 			if (node.outcome !== null) return (0, react_jsx_runtime.jsx)(GenericCommandCard, {
 				node,
+				stoppedSummary: ["Compaction cancelled.", "command aborted"].includes(node.outcome.text) ? t("message.compaction.stopped") : void 0,
 				t
 			});
 			return (0, react_jsx_runtime.jsx)(GenericCommandCard, {
@@ -11217,7 +11283,22 @@ window.__ModuleLoader__.load({
 							layout.openDetails();
 						},
 						fileMentions: (owner) => ctx.get("chatFileMentions")?.forClosing(owner),
-						openFile: (path, options = {}) => {
+						openFile: async (path, options = {}) => {
+							if (path.startsWith("dsh-file-attachment:")) {
+								const owner = sessions.binding(sessionId)?.session;
+								if (!owner) return;
+								try {
+									const ref = JSON.parse(decodeURIComponent(path.slice("dsh-file-attachment:".length)));
+									const result = await owner.readFileAttachment(ref);
+									if (sessions.binding(sessionId)?.session !== owner) return;
+									if (!result.ok) throw new Error(result.error.message);
+									path = result.value.path; options = {...options, readOnly:true};
+								} catch (error) {
+									const actx = ctx.sessions.scope(sessionId);
+									if (actx) conversation.input.for(actx).notify("error", String(error.message ?? error));
+									return;
+								}
+							}
 							if (globalThis.__DSH_FILE_ACTIONS__) return globalThis.__DSH_FILE_ACTIONS__.open({ sessionId, path, ...options });
 							const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd;
 							return workspaces.openPath((0, _deepseek_ai_dsh_client_runtime_client.resolveWorkspacePath)(cwd, path));

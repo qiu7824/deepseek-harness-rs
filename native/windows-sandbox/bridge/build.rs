@@ -1,22 +1,19 @@
-use std::process::Command;
-fn git(args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
+#[allow(dead_code)]
+#[path = "../../../crates/host/dsh-cli/build_identity.rs"]
+mod build_identity;
+
 fn main() {
-    println!(
-        "cargo:rustc-env=DSH_NATIVE_REVISION={}",
-        git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into())
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../../../crates/host/dsh-cli/build_identity.rs");
+    build_identity::emit_named(
+        std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()),
+        "DSH_NATIVE",
     );
-    println!(
-        "cargo:rustc-env=DSH_NATIVE_DIRTY={}",
-        git(&["status", "--porcelain", "--untracked-files=no"]).is_none_or(|s| !s.is_empty())
-    );
-    for file in ["HEAD", "index"] {
-        if let Some(path) = git(&["rev-parse", "--git-path", file]) {
-            println!("cargo:rerun-if-changed={path}");
-        }
-    }
+    let source = std::env::var("DSH_BUILD_SOURCE_ID").unwrap_or_default();
+    let source = if source.len() == 64 && source.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        source.as_str()
+    } else {
+        "unknown"
+    };
+    println!("cargo:rustc-env=DSH_NATIVE_SOURCE_SHA256={source}");
 }

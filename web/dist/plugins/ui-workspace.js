@@ -881,12 +881,118 @@ window.__ModuleLoader__.load({
 		const ADD_GIT_WORKSPACE = "::add-git-workspace";
 		const ADD_CLOUD_WORKSPACE = "::add-cloud-workspace";
 		const ADD_SSH_WORKSPACE = "::add-ssh-workspace";
-		async function workspaceSourceRequest(path, payload) {
-			const response = await fetch(path, payload === undefined ? {cache:"no-store"} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-			const value = await response.json();
-			if (!response.ok || value.result?.ok === false) throw new Error(value.message || value.result?.error?.message || "工作目录操作失败");
+        const ADD_REMOTE_EXECUTION = "::add-remote-execution";
+		async function workspaceSourceRequest(path, payload, signal) {
+			const response = await fetch(path, payload === undefined ? {cache:"no-store",signal} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal});
+			let value;try{value=await response.json()}catch{throw new Error(`工作目录请求返回无效 JSON（HTTP ${response.status}）`);}
+			if (!response.ok || value.result?.ok === false) throw new Error(value.message || value.result?.error?.message || value.error?.message || (typeof value.error==="string"?value.error:"工作目录操作失败"));
 			return value;
 		}
+        const ENVIRONMENT_FIELDS=["pythonMode","pythonPath","shellKind","shellPath","rustcPath","cargoPath"];
+        const ENVIRONMENT_LABELS={pythonMode:"Python 环境",pythonPath:"Python 解释器文件",shellKind:"Shell 类型",shellPath:"Shell 可执行文件",rustcPath:"Rustc 可执行文件",cargoPath:"Cargo 可执行文件"};
+        function environmentFields(preferences={}){return {pythonMode:preferences.pythonPath?"custom":preferences.useProjectPython?"project":"auto",pythonPath:preferences.pythonPath||"",shellKind:preferences.shellKind||"",shellPath:preferences.shellPath||"",rustcPath:preferences.toolchainPaths?.rustc||"",cargoPath:preferences.toolchainPaths?.cargo||""};}
+        function environmentPatch(base,draft){
+            const patch={};for(const key of ENVIRONMENT_FIELDS){const value=String(draft[key]??"").trim();if(value!==base[key])patch[key]=value;}
+            if("pythonPath" in patch)patch.pythonMode=draft.pythonMode;
+            if("shellPath" in patch)patch.shellKind=draft.shellKind;
+            return patch;
+        }
+        function mergeEnvironmentPreferences(preferences,draft){
+            const patch=environmentPatch(environmentFields(preferences),draft),next={...preferences,toolchainPaths:{...preferences.toolchainPaths}};
+            if("pythonMode" in patch||"pythonPath" in patch){
+                if(!["auto","project","custom"].includes(draft.pythonMode))throw new Error("请选择 Python 环境");
+                if(draft.pythonMode==="custom"&&!draft.pythonPath.trim())throw new Error("请填写 Python 解释器文件的绝对路径，例如 .venv\\Scripts\\python.exe 所在的完整路径");
+                next.pythonPath=draft.pythonMode==="custom"?draft.pythonPath.trim():null;next.useProjectPython=draft.pythonMode==="project";
+            }
+            if("shellKind" in patch)next.shellKind=draft.shellKind||null;
+            if("shellPath" in patch)next.shellPath=draft.shellPath.trim()||null;
+            for(const [field,name] of [["rustcPath","rustc"],["cargoPath","cargo"]])if(field in patch){if(patch[field])next.toolchainPaths[name]=patch[field];else delete next.toolchainPaths[name];}
+            return next;
+        }
+        function environmentSnapshot(value){
+            if(!Number.isSafeInteger(value?.revision)||value.revision<0||!value.preferences||typeof value.preferences!=="object"||Array.isArray(value.preferences))throw new Error("执行环境配置缺少有效版本或配置对象");
+            return {revision:value.revision,preferences:{...value.preferences,toolchainPaths:{...value.preferences.toolchainPaths}},source:value.source,os:value.os,effective:value.effective};
+        }
+        function sameEnvironmentPreferences(left,right){const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;return JSON.stringify(canonical(left))===JSON.stringify(canonical(right));}
+        function useWorkspaceEnvironment(path){
+            const empty=path=>({path,status:path?"loading":"idle",baseline:null,draft:environmentFields(),edited:[],error:null,needsReload:false,forceProject:false,conflicts:[]});
+            const [state,setState]=react.useState(()=>empty(path)),version=react.useRef(0),request=react.useRef(null),currentPath=react.useRef(path),latest=react.useRef(state);
+            currentPath.current=path;const current=state.path===path?state:empty(path);latest.current=current;
+            const publish=value=>{latest.current=value;setState(value);};
+            const reload=async(preserve=true)=>{
+                const selected=path,ticket=++version.current,prior=latest.current;request.current?.abort();const controller=new AbortController();request.current=controller;
+                const diff=preserve&&prior.baseline?environmentPatch(environmentFields(prior.baseline.preferences),prior.draft):{},patch={...diff};
+                if(preserve)for(const key of prior.edited||[])patch[key]=String(prior.draft[key]??"").trim();
+                publish({...prior,path:selected,status:"loading",error:null});
+                try{
+                    const snapshot=environmentSnapshot(await workspaceSourceRequest("/__dsh-environment",{action:"describe",scope:"project",cwd:selected},controller.signal));
+                    if(version.current!==ticket||currentPath.current!==selected)return;
+                    const fields=environmentFields(snapshot.preferences),before=prior.baseline?environmentFields(prior.baseline.preferences):fields;
+                    const conflicts=Object.keys(patch).filter(key=>fields[key]!==before[key]&&fields[key]!==patch[key]).map(key=>({key,value:fields[key]}));
+                    const forceProject=preserve&&(prior.forceProject||Object.keys(diff).length>0)&&!String(snapshot.source||"").startsWith("project:");
+                    publish({path:selected,status:"ready",baseline:snapshot,draft:{...fields,...patch},edited:Object.keys(patch),error:null,needsReload:false,forceProject,conflicts});
+                }catch(error){if(version.current===ticket&&currentPath.current===selected&&error.name!=="AbortError")publish({...latest.current,status:"error",error:error.message,needsReload:!!prior.baseline});}
+            };
+            react.useEffect(()=>{publish(empty(path));if(path)void reload(false);return()=>{version.current++;request.current?.abort();};},[path]);
+            const dirty=!!current.baseline&&(current.forceProject||Object.keys(environmentPatch(environmentFields(current.baseline.preferences),current.draft)).length>0);
+            const change=(key,value)=>{
+                const row=latest.current;if(row.status!=="ready"||!ENVIRONMENT_FIELDS.includes(key))return;
+                const draft={...row.draft,[key]:value};if(key==="pythonMode"&&value!=="custom")draft.pythonPath="";if(key==="shellKind"&&value!==row.draft.shellKind)draft.shellPath="";
+                const edited=[...new Set([...(row.edited||[]),key,...(key==="pythonMode"?["pythonPath"]:key==="shellKind"?["shellPath"]:[])])];
+                publish({...row,draft,edited,forceProject:false});
+            };
+            const save=async()=>{
+                const row=latest.current;if(row.needsReload)throw new Error("保存结果尚未确认，请先重新读取执行环境配置");if(!row.baseline||!row.forceProject&&!Object.keys(environmentPatch(environmentFields(row.baseline.preferences),row.draft)).length)return;
+                if(row.path!==path||row.status!=="ready"||row.needsReload)throw new Error("请先重新读取执行环境配置并核对保留的输入");
+                const preferences=mergeEnvironmentPreferences(row.baseline.preferences,row.draft),ticket=version.current;
+                publish({...row,status:"saving",error:null});
+                try{
+                    const snapshot=environmentSnapshot(await workspaceSourceRequest("/__dsh-environment",{action:"save",scope:"project",cwd:path,expectedRevision:row.baseline.revision,preferences}));
+                    if(version.current!==ticket||currentPath.current!==path)throw new Error("工作区选择已改变，请重新确认配置");
+                    if(snapshot.revision<=row.baseline.revision||!String(snapshot.source||"").startsWith("project:")||!sameEnvironmentPreferences(snapshot.preferences,preferences))throw new Error("执行环境保存结果尚未确认，请重新读取配置");
+                    publish({path,status:"ready",baseline:snapshot,draft:environmentFields(snapshot.preferences),edited:[],error:null,needsReload:false,forceProject:false,conflicts:[]});
+                }catch(error){if(version.current===ticket&&currentPath.current===path)publish({...row,status:"ready",error:error.message,needsReload:true});throw error;}
+            };
+            return {...current,dirty,hasDraft:current.edited.length>0,change,reload,save};
+        }
+        function WorkspaceEnvironmentFields({environment,busy}){
+            const h=react.createElement,id=react.useId(),disabled=busy||environment.status!=="ready";
+            const field=(key,placeholder)=>h(react.Fragment,{key},h("label",{htmlFor:id+key},ENVIRONMENT_LABELS[key]),h("input",{id:id+key,"aria-label":ENVIRONMENT_LABELS[key],value:environment.draft[key],placeholder,disabled,onChange:event=>environment.change(key,event.target.value)}));
+            return h(react.Fragment,null,
+                environment.baseline&&h("p",{className:"dshWorkspaceHint"},String(environment.baseline.source||"").startsWith("project:")?"当前使用此工作区的执行环境配置。":"当前继承全局或系统配置；修改后保存为此工作区的执行环境。"),
+                environment.status==="loading"&&h("p",{role:"status"},"正在读取执行环境配置…"),
+                environment.error&&h("p",{role:"alert",className:"dshWorkspaceHint"},environment.error),
+                (environment.error||environment.needsReload)&&h(_deepseek_ai_dsh_client_ui_primitives.Button,{type:"button",variant:"outline",size:"sm",style:{alignSelf:"flex-start"},disabled:busy||environment.status==="loading",onClick:()=>environment.reload(true)},environment.hasDraft?"重新读取并保留输入":"重新读取配置"),
+                environment.conflicts.map(row=>h("p",{key:row.key,className:"dshWorkspaceHint"},`${ENVIRONMENT_LABELS[row.key]}的已保存值：${row.value||"自动"}。输入已保留，请核对后再添加。`)),
+                h("label",{htmlFor:id+"pythonMode"},"Python 环境"),h("select",{id:id+"pythonMode","aria-label":"Python 环境",value:environment.draft.pythonMode,disabled,onChange:event=>environment.change("pythonMode",event.target.value)},h("option",{value:"auto"},"自动探测"),h("option",{value:"project"},"使用项目 .venv"),h("option",{value:"custom"},"指定解释器文件")),
+                environment.draft.pythonMode==="custom"&&field("pythonPath","虚拟环境中的 python.exe 或 bin/python 的绝对路径"),
+                h("label",{htmlFor:id+"shellKind"},"Shell 类型"),h("select",{id:id+"shellKind","aria-label":"Shell 类型",value:environment.draft.shellKind,disabled,onChange:event=>environment.change("shellKind",event.target.value)},...[["","自动"],["powershell","PowerShell"],["bash","Bash"],["zsh","Zsh"]].map(([value,label])=>h("option",{key:value,value},label))),
+                field("shellPath","留空自动探测所选 Shell"),field("rustcPath","留空使用 PATH"),field("cargoPath","留空使用 PATH"),
+                environment.baseline?.effective?.status==="error"&&h("p",{role:"status",className:"dshWorkspaceHint"},environment.baseline.effective.error));
+        }
+        function RemoteExecutionDialog({onClose,createWorkspace,onPick}) {
+            const h=react.createElement;
+            const [form,setForm]=react.useState(()=>({id:globalThis.crypto.randomUUID(),host:"",user:"",port:22,workspace:"",helper:"dsh-remote-helper",configFile:""}));
+            const [items,setItems]=react.useState([]),[busy,setBusy]=react.useState(false),[error,setError]=react.useState(null);
+            const live=react.useRef(true),inflight=react.useRef(false);
+            const request=(payload)=>workspaceSourceRequest("/__dsh-remote-execution",payload);
+            const refresh=async()=>{const result=await request({action:"list"});if(live.current)setItems(result.items||[])};
+            react.useEffect(()=>{live.current=true;refresh().catch(e=>{if(live.current)setError(e.message)});return()=>{live.current=false}},[]);
+            const adopt=async(row,verify=true)=>{if(!live.current)return;if(verify)row=await request({action:"connect",connection:row.connection});if(!live.current)return;const workspace=await createWorkspace({kind:"ssh-execution",source:row.connection.id,path:`dsh-remote://${row.connection.id}/`});if(live.current){onPick(workspace.workspaceId);onClose()}};
+            const perform=async(action)=>{if(inflight.current)return;inflight.current=true;setBusy(true);setError(null);try{await action()}catch(e){if(live.current)setError(e.message)}finally{inflight.current=false;if(live.current){setBusy(false);await refresh().catch(()=>{})}}};
+            const field=([key,label,placeholder])=>h("label",{key,style:{display:"grid",gap:6,marginBottom:12}},label,h("input",{name:key,value:form[key],placeholder,disabled:busy,type:key==="port"?"number":"text",required:!["user","configFile"].includes(key),...(key==="port"?{min:1,max:65535,step:1}:{}),onChange:e=>setForm(previous=>({...previous,[key]:e.target.value}))}));
+            return h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:true,title:"SSH 执行环境",closeLabel:"关闭",onClose:()=>{if(!busy)onClose()}},h("div",{className:"dshWorkspaceForm dshSourceForm"},
+                h("p",null,"模型连接保留在本机，文件和命令通过 SSH 在指定远端目录执行。远端独立授权限制可用权限。"),
+                h("details",null,h("summary",null,"连接准备"),h("p",null,"在远端安装 dsh-remote-helper，并由该主机的所有者授权工作目录与权限上限；配置 SSH 密钥，核对并信任主机密钥。")),
+                h("form",{onSubmit:event=>{event.preventDefault();perform(async()=>{const row=await request({action:"connect",connection:{...form,host:form.host.trim(),user:form.user.trim(),workspace:form.workspace.trim(),helper:form.helper.trim(),port:Number(form.port)}});await adopt(row,false)})}},
+                    ...[["host","SSH 主机或配置别名","server.example.com"],["workspace","远端工作目录","/home/developer/project"],["helper","远端执行程序","dsh-remote-helper"],["port","SSH 端口","22"],["user","SSH 用户（可选）","留空使用 SSH 配置"],["configFile","本机 SSH 配置文件（可选）","绝对路径"]].map(field),
+                    h("button",{type:"submit",disabled:busy},busy?"正在核验远端环境…":"连接并添加工作区")),
+                error&&h("p",{role:"alert"},error),
+                ...items.map(row=>h("section",{key:row.connection.id,style:{marginTop:12,borderTop:"1px solid var(--dsw-alias-border-l2)",paddingTop:12}},h("p",null,`${row.connection.host} · ${row.handshake.workspace}`),h("p",null,`${row.handshake.os} / ${row.handshake.arch} · 权限上限：${row.handshake.permissionCeiling}`),
+                    h("button",{type:"button",disabled:busy,onClick:()=>perform(()=>adopt(row))},"使用此执行环境"),
+                    h("button",{type:"button",disabled:busy,onClick:()=>perform(()=>request({action:"remove",id:row.connection.id}))},"移除连接"))),
+                h("button",{type:"button",disabled:busy,onClick:onClose},"关闭")));
+        }
 		function SshWorkspaceDialog({onClose}) {
 			const fresh=()=>({id:globalThis.crypto.randomUUID(),host:"",user:"",port:22,remotePort:58080,path:"",configFile:""});
 			const [form,setForm]=react.useState(fresh),[items,setItems]=react.useState([]),[busy,setBusy]=react.useState(false),[error,setError]=react.useState(null),[connected,setConnected]=react.useState(null);
@@ -935,14 +1041,21 @@ window.__ModuleLoader__.load({
 			const [flowOpen, setFlowOpen] = (0, react.useState)(false);
 			const [pickingFolder, setPickingFolder] = (0, react.useState)(false);
             const [workspacePath,setWorkspacePath]=(0,react.useState)(null),[scratchPath,setScratchPath]=(0,react.useState)(""),[pickingScratch,setPickingScratch]=(0,react.useState)(false);
-            const [environmentRevision,setEnvironmentRevision]=(0,react.useState)(0),[environmentPrefs,setEnvironmentPrefs]=(0,react.useState)({shellPath:"",pythonPath:"",rustcPath:"",cargoPath:""});
+            const environment=useWorkspaceEnvironment(workspacePath);
+            const [scratchDirty,setScratchDirty]=react.useState(false),[scratchState,setScratchState]=react.useState({path:null,status:"idle",error:null}),[scratchReload,setScratchReload]=react.useState(0);
 			const [advanced,setAdvanced]=(0,react.useState)(false);
 			const [gitForm,setGitForm]=(0,react.useState)(null),[gitBusy,setGitBusy]=(0,react.useState)(false),[gitError,setGitError]=(0,react.useState)(null);
-			const [sshOpen,setSshOpen]=react.useState(false),[gitCancelling,setGitCancelling]=react.useState(false),gitOperation=react.useRef(null);
+			const [remoteExecutionOpen,setRemoteExecutionOpen]=react.useState(false);
+            const [sshOpen,setSshOpen]=react.useState(false),[gitCancelling,setGitCancelling]=react.useState(false),gitOperation=react.useRef(null);
 			const cancelGit=async()=>{if(!gitOperation.current)return;setGitCancelling(true);try{await workspaceSourceRequest("/api/workspace.cancelCreate",{type:"client-request",rpcId:globalThis.crypto.randomUUID(),method:"workspace.cancelCreate",payload:{operationId:gitOperation.current}})}catch(error){setGitError(error.message);setGitCancelling(false)}};
 			react.useEffect(()=>()=>{if(gitOperation.current)workspaceSourceRequest("/api/workspace.cancelCreate",{type:"client-request",rpcId:globalThis.crypto.randomUUID(),method:"workspace.cancelCreate",payload:{operationId:gitOperation.current}}).catch(()=>{})},[]);
             const flowBusy = flowOpen || pickingFolder || gitBusy;
-            react.useEffect(()=>{if(!workspacePath)return;let active=true;fetch("/__dsh-environment",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"describe",scope:"project",cwd:workspacePath})}).then(response=>response.json()).then(value=>{if(active&&value){setEnvironmentRevision(Number(value.revision)||0);const p=value.preferences||{};setEnvironmentPrefs({shellPath:p.shellPath||"",pythonPath:p.pythonPath||"",rustcPath:p.toolchainPaths?.rustc||"",cargoPath:p.toolchainPaths?.cargo||""})}}).catch(()=>{});return()=>{active=false}},[workspacePath]);
+            react.useEffect(()=>{
+                if(!workspacePath||!advanced||scratchState.path===workspacePath&&scratchState.status==="ready")return;
+                let active=true;const controller=new AbortController();setScratchState({path:workspacePath,status:"loading",error:null});
+                workspaceSourceRequest("/__dsh-artifacts/workspace-settings",{path:workspacePath},controller.signal).then(value=>{if(active){if(typeof value.location!=="string")throw new Error("垃圾槽配置格式无效");setScratchPath(value.location);setScratchState({path:workspacePath,status:"ready",error:null});}}).catch(error=>{if(active&&error.name!=="AbortError")setScratchState({path:workspacePath,status:"error",error:error.message});});
+                return()=>{active=false;controller.abort();};
+            },[workspacePath,advanced,scratchReload]);
 			const flowAvailable = useDirectoryFlow((occupied) => occupied);
 			(0, react.useEffect)(() => {
 				if (flowOpen && !flowAvailable) setFlowOpen(false);
@@ -952,7 +1065,7 @@ window.__ModuleLoader__.load({
 				label: t("menu.addWorkspace"),
 				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutline16, { size: 16 }),
 				disabled: flowBusy
-			}, { id: ADD_GIT_WORKSPACE, label: "从 Git 克隆工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_CLOUD_WORKSPACE, label: "Cloud · 云端 Git 仓库", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_SSH_WORKSPACE, label: "SSH 远程工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }] : [];
+			}, { id: ADD_GIT_WORKSPACE, label: "从 Git 克隆工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_CLOUD_WORKSPACE, label: "Cloud · 云端 Git 仓库", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_REMOTE_EXECUTION, label: "SSH 执行环境", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }, { id: ADD_SSH_WORKSPACE, label: "SSH 远程工作目录", icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, { size: 16 }), disabled: flowBusy }] : [];
 			const pinAdd = !addOnly && workspaces.length > 0;
 			const items = pinAdd ? workspaces.map((workspace) => ({
 				id: workspace.workspaceId,
@@ -966,13 +1079,11 @@ window.__ModuleLoader__.load({
 				setModalError(null);
 			};
 			/** Adopt a picked directory; failures land in the folder-error dialog (Choose again reopens the flow). */
-			const adoptDirectory = async (path) => {
-                const response=await fetch("/__dsh-artifacts/workspace-settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path,location:scratchPath.trim()})});
-                const value=await response.json();if(!response.ok)throw new Error(value.message||"垃圾槽设置保存失败");
+            const adoptDirectory = async (path) => {
+                if(scratchDirty){const location=scratchPath.trim(),saved=await workspaceSourceRequest("/__dsh-artifacts/workspace-settings",{path,location});if(saved.location!==location)throw new Error("垃圾槽配置保存结果尚未确认，请重新读取配置");setScratchDirty(false);}
                 return createWorkspace({ path });
             };
-            const saveEnvironment=async()=>{const toolchainPaths={};if(environmentPrefs.rustcPath.trim())toolchainPaths.rustc=environmentPrefs.rustcPath.trim();if(environmentPrefs.cargoPath.trim())toolchainPaths.cargo=environmentPrefs.cargoPath.trim();const preferences={shellPath:environmentPrefs.shellPath.trim()||null,pythonPath:environmentPrefs.pythonPath.trim()||null,toolchainPaths,useProjectPython:false};const response=await fetch("/__dsh-environment",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"save",scope:"project",cwd:workspacePath,expectedRevision:environmentRevision,preferences})});const value=await response.json();if(!response.ok)throw new Error(value.error||"执行环境配置保存失败");setEnvironmentRevision(Number(value.revision)||environmentRevision+1)};
-            const confirmWorkspace=()=>{if(pickingFolder||!workspacePath)return;setPickingFolder(true);setModalError(null);saveEnvironment().then(()=>adoptDirectory(workspacePath)).then((workspace) => {
+            const confirmWorkspace=()=>{if(pickingFolder||!workspacePath||environment.needsReload||environment.dirty&&environment.status!=="ready")return;setPickingFolder(true);setModalError(null);environment.save().then(()=>adoptDirectory(workspacePath)).then((workspace) => {
                 setWorkspacePath(null);
 				setFlowOpen(false);
 				onPick(workspace.workspaceId);
@@ -1004,7 +1115,7 @@ window.__ModuleLoader__.load({
 				busy: pickingFolder,
 				onPicked: (path) => {
 					setFlowOpen(false);
-                    if(pickingScratch){setScratchPath(path);setPickingScratch(false)}else{setWorkspacePath(path);setScratchPath("");setAdvanced(false)}
+                    if(pickingScratch){setScratchPath(path);setScratchDirty(true);setPickingScratch(false)}else{setWorkspacePath(path);setScratchPath("");setScratchDirty(false);setScratchState({path,status:"idle",error:null});setAdvanced(false)}
 				},
 				onCancel: () => {
 					setFlowOpen(false);
@@ -1018,7 +1129,8 @@ window.__ModuleLoader__.load({
 				}
 			};
 			const handleSelect = (id) => {
-				if (id === ADD_SSH_WORKSPACE) { onClose();setSshOpen(true);return; }
+				if (id === ADD_REMOTE_EXECUTION) { onClose();setRemoteExecutionOpen(true);return; }
+                if (id === ADD_SSH_WORKSPACE) { onClose();setSshOpen(true);return; }
 				if (id === ADD_WORKSPACE) {
 					openDirectoryFlow();
 					return;
@@ -1030,7 +1142,8 @@ window.__ModuleLoader__.load({
 				onPick(id);
 			};
 			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-				sshOpen&&react_jsx_runtime.jsx(SshWorkspaceDialog,{onClose:()=>setSshOpen(false)}),
+				remoteExecutionOpen&&react_jsx_runtime.jsx(RemoteExecutionDialog,{onClose:()=>setRemoteExecutionOpen(false),createWorkspace,onPick}),
+                sshOpen&&react_jsx_runtime.jsx(SshWorkspaceDialog,{onClose:()=>setSshOpen(false)}),
 				gitForm && react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.Modal, {
 					open:true, title:gitForm.kind==="cloud"?"Cloud · 云端 Git 仓库":"克隆 Git 工作目录", closeLabel:t("close"), onClose:()=>{if(!gitBusy)setGitForm(null)},
 					children:react_jsx_runtime.jsxs("form",{className:"dshWorkspaceForm dshSourceForm",onSubmit:async event=>{
@@ -1062,21 +1175,17 @@ window.__ModuleLoader__.load({
 					children: t("picker.loading")
 				}),
 				renderDirectoryFlow(flowOwner),
-                (0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:workspacePath!==null&&!flowOpen&&!errorOpen,onClose:()=>{if(!pickingFolder)setWorkspacePath(null)},title:"添加工作区",closeLabel:t("close"),footer:(0,react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment,{children:[(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:pickingFolder,onClick:()=>setWorkspacePath(null),children:t("cancel")}),(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"primary",disabled:pickingFolder,onClick:confirmWorkspace,children:pickingFolder?"正在添加…":"添加"})]}),children:react_jsx_runtime.jsxs("div",{className:"dshWorkspaceForm",children:[
+                (0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:workspacePath!==null&&!flowOpen&&!errorOpen,onClose:()=>{if(!pickingFolder)setWorkspacePath(null)},title:"添加工作区",closeLabel:t("close"),footer:(0,react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment,{children:[(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:pickingFolder,onClick:()=>setWorkspacePath(null),children:t("cancel")}),(0,react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"primary",disabled:pickingFolder||environment.needsReload||environment.dirty&&environment.status!=="ready",onClick:confirmWorkspace,children:pickingFolder?"正在添加…":"添加"})]}),children:react_jsx_runtime.jsxs("div",{className:"dshWorkspaceForm",children:[
                     react_jsx_runtime.jsx("div",{className:"dshWorkspacePath",children:workspacePath}),
                     react_jsx_runtime.jsxs("button",{type:"button",className:"dshWorkspaceAdvanced","aria-expanded":advanced,onClick:()=>setAdvanced(value=>!value),children:[react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14,{size:14,style:{transform:advanced?undefined:"rotate(-90deg)"}}),"高级设置"]}),
                     advanced&&react_jsx_runtime.jsxs("div",{className:"dshWorkspaceFields",children:[
                         react_jsx_runtime.jsx("label",{htmlFor:"workspace-scratch-location",children:"垃圾槽位置"}),
-                        react_jsx_runtime.jsxs("div",{className:"dshWorkspaceLocation",children:[react_jsx_runtime.jsx("input",{id:"workspace-scratch-location",value:scratchPath,placeholder:"使用全局位置",disabled:pickingFolder,onChange:event=>setScratchPath(event.target.value)}),react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",size:"sm",disabled:pickingFolder,onClick:()=>{setPickingScratch(true);setFlowOpen(true)},children:"选择目录"})]}),
+                        react_jsx_runtime.jsxs("div",{className:"dshWorkspaceLocation",children:[react_jsx_runtime.jsx("input",{id:"workspace-scratch-location",value:scratchPath,placeholder:"使用全局位置",disabled:pickingFolder||scratchState.status!=="ready",onChange:event=>{setScratchPath(event.target.value);setScratchDirty(true)}}),react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",size:"sm",disabled:pickingFolder||scratchState.status!=="ready",onClick:()=>{setPickingScratch(true);setFlowOpen(true)},children:"选择目录"})]}),
                         react_jsx_runtime.jsx("p",{className:"dshWorkspaceHint",children:"留空使用全局位置。可选择空目录或已有垃圾槽，应用于此工作区的新运行。"}),
-                        react_jsx_runtime.jsx("label",{children:"Python 虚拟环境路径"}),
-                        react_jsx_runtime.jsx("input",{value:environmentPrefs.pythonPath,placeholder:"留空使用自动探测或项目 .venv",disabled:pickingFolder,onChange:event=>setEnvironmentPrefs(value=>({...value,pythonPath:event.target.value}))}),
-                        react_jsx_runtime.jsx("label",{children:"Shell 路径"}),
-                        react_jsx_runtime.jsx("input",{value:environmentPrefs.shellPath,placeholder:"留空使用系统 PowerShell",disabled:pickingFolder,onChange:event=>setEnvironmentPrefs(value=>({...value,shellPath:event.target.value}))}),
-                        react_jsx_runtime.jsx("label",{children:"Rustc 路径"}),
-                        react_jsx_runtime.jsx("input",{value:environmentPrefs.rustcPath,placeholder:"留空使用 PATH",disabled:pickingFolder,onChange:event=>setEnvironmentPrefs(value=>({...value,rustcPath:event.target.value}))}),
-                        react_jsx_runtime.jsx("label",{children:"Cargo 路径"}),
-                        react_jsx_runtime.jsx("input",{value:environmentPrefs.cargoPath,placeholder:"留空使用 PATH",disabled:pickingFolder,onChange:event=>setEnvironmentPrefs(value=>({...value,cargoPath:event.target.value}))}),
+                        scratchState.status==="loading"&&react_jsx_runtime.jsx("p",{role:"status",children:"正在读取垃圾槽配置…"}),
+                        scratchState.error&&react_jsx_runtime.jsx("p",{role:"alert",children:scratchState.error}),
+                        scratchState.error&&react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.Button,{type:"button",variant:"outline",size:"sm",disabled:pickingFolder,onClick:()=>setScratchReload(value=>value+1),children:"重新读取垃圾槽配置"}),
+                        react_jsx_runtime.jsx(WorkspaceEnvironmentFields,{environment,busy:pickingFolder}),
                         react_jsx_runtime.jsx("p",{className:"dshWorkspaceHint",children:"SSH 或远端批量执行请使用 SSH 远程工作目录；本机批量负载仍由 Host 资源策略控制。"})]})]})}),
 				(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Modal, {
 					open: errorOpen,
@@ -1810,7 +1919,7 @@ window.__ModuleLoader__.load({
 		* @param props - composed slot props (shell owner share + store + injected actions).
 		* @returns the region element tree.
 		*/
-		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, t }) {
+		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, readSessionTitle, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, t }) {
 			const workspaces = useWorkspaces((state) => state.items);
 			const workspacePhase = useWorkspaces((state) => state.phase);
 			const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
@@ -1974,32 +2083,46 @@ window.__ModuleLoader__.load({
 			const [sessionRenameDraft, setSessionRenameDraft] = (0, react.useState)("");
 			const [sessionRenaming, setSessionRenaming] = (0, react.useState)(false);
 			const [sessionRenameError, setSessionRenameError] = (0, react.useState)(null);
+			const [sessionRenameConflict, setSessionRenameConflict] = (0, react.useState)(false);
 			const sessionRenameTrimmed = sessionRenameDraft.trim();
-			const sessionRenameBlocked = sessionRenaming || sessionRenameTrimmed === "" || sessionRenameTarget === null;
+			const sessionRenameBlocked = sessionRenaming || sessionRenameTrimmed === "" || sessionRenameTarget === null || sessionRenameTarget.base === null || sessionRenameConflict;
 			const closeSessionRename = () => {
 				if (sessionRenaming) return;
 				setSessionRenameTarget(null);
 				setSessionRenameError(null);
+				setSessionRenameConflict(false);
 			};
 			const confirmSessionRename = () => {
 				if (sessionRenameBlocked) return;
 				setSessionRenaming(true);
 				setSessionRenameError(null);
-				renameSession(sessionRenameTarget.sessionId, sessionRenameTrimmed).then(() => {
+				renameSession(sessionRenameTarget.sessionId, sessionRenameTrimmed, sessionRenameTarget.base).then(() => {
 					setSessionRenaming(false);
 					setSessionRenameTarget(null);
 				}).catch((reason) => {
 					setSessionRenaming(false);
-					setSessionRenameError(reason instanceof Error ? reason.message : String(reason));
+					const conflict = reason?.code === "title-conflict";
+					setSessionRenameConflict(conflict);
+					setSessionRenameError(conflict ? t("rename.session.conflict", { title: reason.details?.title ?? "" }) : reason instanceof Error ? reason.message : String(reason));
 				});
 			};
 			const onSessionRename = (sessionId, currentTitle) => {
+				const base = readSessionTitle?.(sessionId) ?? null;
 				setSessionRenameTarget({
 					sessionId,
-					currentTitle
+					currentTitle,
+					base
 				});
 				setSessionRenameDraft(currentTitle);
-				setSessionRenameError(null);
+				setSessionRenameError(base === null ? t("rename.session.loading") : null);
+				setSessionRenameConflict(false);
+			};
+			const adoptLatestSessionTitle = () => {
+				if (sessionRenameTarget === null || sessionRenaming) return;
+				const base = readSessionTitle?.(sessionRenameTarget.sessionId) ?? null;
+				if (base === null) { setSessionRenameError(t("rename.session.loading")); return; }
+				setSessionRenameTarget({ ...sessionRenameTarget, base, currentTitle: base.value ?? "" });
+				setSessionRenameConflict(false); setSessionRenameError(null);
 			};
 			const onSessionArchive = (sessionId) => {
 				archiveSession(sessionId).catch((reason) => {
@@ -2312,7 +2435,7 @@ window.__ModuleLoader__.load({
 							},
 							onChange: (e) => {
 								setSessionRenameDraft(e.target.value);
-								setSessionRenameError(null);
+								if (!sessionRenameConflict) setSessionRenameError(null);
 							},
 							onCompositionStart: () => {
 								composingRef.current = true;
@@ -2330,6 +2453,9 @@ window.__ModuleLoader__.load({
 							className: WorkspaceBrowser_module_css_default.renameError,
 							role: "alert",
 							children: sessionRenameError
+						}), (sessionRenameConflict || sessionRenameTarget?.base === null) && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+							variant: "outline", disabled: sessionRenaming, onClick: adoptLatestSessionTitle,
+							children: t("rename.session.adoptLatest")
 						})]
 					}),
 					(0, react_jsx_runtime.jsxs)(_deepseek_ai_dsh_client_ui_primitives.Modal, {
@@ -2583,6 +2709,9 @@ window.__ModuleLoader__.load({
 			"rename": "重命名",
 			"rename.workspace.title": "重命名工作区",
 			"rename.session.title": "重命名会话",
+			"rename.session.conflict": "标题已更新为“{title}”。草稿已保留，采用最新版本后可再次保存。",
+			"rename.session.loading": "标题尚未加载，请读取最新版本后保存。",
+			"rename.session.adoptLatest": "采用最新版本",
 			"field.workspaceName": "工作区名称",
 			"field.sessionName": "会话名称",
 			"delete.workspace": "删除工作区",
@@ -2674,6 +2803,9 @@ window.__ModuleLoader__.load({
 			"rename": "Rename",
 			"rename.workspace.title": "Rename workspace",
 			"rename.session.title": "Rename session",
+			"rename.session.conflict": "The title changed to “{title}”. Your draft is preserved. Adopt the latest version before saving.",
+			"rename.session.loading": "The title has not loaded. Read the latest version before saving.",
+			"rename.session.adoptLatest": "Adopt latest version",
 			"field.workspaceName": "Workspace name",
 			"field.sessionName": "Session name",
 			"delete.workspace": "Delete workspace",
@@ -2776,11 +2908,13 @@ window.__ModuleLoader__.load({
 				},
 				searchSessions,
 				searchResultLimit: ctx.sessions.searchResultLimit,
-				renameSession: async (sessionId, title) => {
+				readSessionTitle: (sessionId) => ctx.sessions.binding(sessionId)?.session?.titleEditBase() ?? null,
+				renameSession: async (sessionId, title, expectedTitle) => {
 					const session = ctx.sessions.binding(sessionId)?.session;
 					if (session === void 0) throw new Error(`unknown session "${sessionId}"`);
-					const result = await session.rename(title);
-					if (!result.ok) throw new Error(result.error.message);
+					if (expectedTitle === null || expectedTitle === void 0) throw new Error(t("rename.session.loading"));
+					const result = await session.rename(title, expectedTitle);
+					if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code, details: result.error.details });
 				},
 				forkSession: (sessionId) => {
 					ctx.sessions.fork({

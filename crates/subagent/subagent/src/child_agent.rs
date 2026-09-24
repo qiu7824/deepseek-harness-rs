@@ -5,8 +5,8 @@
 //!
 //! # Deviations
 //!
-//! - `agentPresets` is not ported: `childSessionMeta` records no preset and
-//!   `applyChildComposition` cannot join the parent's preset rows.
+//! - The Host's preset roster supplies the child's inherited composition;
+//!   explicit per-child restrictions and persona are applied in its scope.
 //! - `captureDelegatedPolicyOverrides` reads the sandbox-policy override
 //!   through the mounted service only; without it the sandbox seed is
 //!   absent (the TS behavior for a rosterless/policyless deployment).
@@ -162,50 +162,36 @@ fn resolve_child_options(
     child_depth: u64,
     defaults: Option<&SubagentDefaults>,
 ) -> AgentOptions {
-    // Priority: call-time requested > settings defaults > parent/current route.
-    // `default_provider`/`default_model` only win when no parent route is
-    // already selected, mirroring the existing inheritance model.
-    let (default_provider, default_model, default_effort, default_max_tokens) = defaults
-        .map(|d| {
-            let g = d.read();
-            (
-                g.provider.clone(),
-                g.model.clone(),
-                g.reasoning_effort.clone(),
-                g.max_tokens,
-            )
-        })
-        .unwrap_or((None, None, None, None));
-
+    // Merge routes as provider/model pairs. Switching provider must never
+    // send the previous provider's model to the new adapter.
+    let configured = defaults.map(|d| d.read().clone()).unwrap_or_default();
     let mut resolved = AgentOptions {
-        execution_mode: Default::default(),
-        provider: current_selection
-            .as_ref()
-            .map(|selection| selection.provider.clone())
-            .or_else(|| parent_options.provider.clone())
-            .or(default_provider),
-        model: current_selection
-            .as_ref()
-            .map(|selection| selection.model.clone())
-            .or_else(|| parent_options.model.clone())
-            .or(default_model),
-        max_tokens: parent_options.max_tokens.or(default_max_tokens),
-        // Reasoning effort remains opt-in per delegation; a settings default,
-        // if provided, applies only when neither parent nor request specify
-        // one (the existing code intentionally clears inherited effort).
-        reasoning_effort: default_effort.map(dsh_llm::reasoning_effort_id),
+        provider: current_selection.map(|s| s.provider.clone()).or_else(|| parent_options.provider.clone()),
+        model: current_selection.map(|s| s.model.clone()).or_else(|| parent_options.model.clone()),
+        max_tokens: configured.max_tokens.or(parent_options.max_tokens),
+        max_steps: configured.max_turns,
+        timeout_seconds: configured.timeout_seconds,
+        reasoning_effort: configured.reasoning_effort.map(dsh_llm::reasoning_effort_id),
         subagent_depth: Some(child_depth),
+        ..Default::default()
     };
+    fn route(options: &mut AgentOptions, provider: Option<&String>, model: Option<&String>) {
+        if let Some(provider) = provider {
+            if options.provider.as_ref() != Some(provider) {
+                options.model = None;
+            }
+            options.provider = Some(provider.clone());
+        }
+        if let Some(model) = model {
+            options.model = Some(model.clone());
+        }
+    }
+    route(&mut resolved, configured.provider.as_ref(), configured.model.as_ref());
     if let Some(requested) = requested {
-        if requested.provider.is_some() {
-            resolved.provider = requested.provider.clone();
-        }
-        if requested.model.is_some() {
-            resolved.model = requested.model.clone();
-        }
-        if requested.max_tokens.is_some() {
-            resolved.max_tokens = requested.max_tokens;
-        }
+        route(&mut resolved, requested.provider.as_ref(), requested.model.as_ref());
+        resolved.max_tokens = requested.max_tokens.or(resolved.max_tokens);
+        resolved.max_steps = requested.max_steps.or(resolved.max_steps);
+        resolved.timeout_seconds = requested.timeout_seconds.or(resolved.timeout_seconds);
         if requested.reasoning_effort.is_some() {
             resolved.reasoning_effort = requested.reasoning_effort.clone();
         }
@@ -234,9 +220,8 @@ fn resolve_child_options(
     resolved
 }
 
-/// Resolve the child's `AgentOptions`: the parent's provider/model/maxTokens
-/// route unless the request overrides it, stamped with the child's own
-/// delegation depth. Reasoning effort is deliberately call-only.
+/// Resolve requested options over configured defaults over the current parent
+/// route, stamped with the child depth. Ordinary parent effort is not inherited.
 pub fn resolve_child_agent_options(
     parent: &dyn Agent,
     requested: Option<&AgentOptions>,
@@ -268,6 +253,12 @@ pub fn configured_max_depth(ctx: &Context) -> Option<u64> {
     ctx_defaults(ctx).and_then(|d| d.read().max_depth)
 }
 
+/// A configured zero leaves the provider in charge; no host settings service
+/// means the tool's own policy is used.
+pub fn effective_max_depth(ctx:&Context,fallback:Option<u64>)->Option<u64> {
+    ctx_defaults(ctx).map(|defaults|defaults.read().max_depth).unwrap_or(fallback)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SubagentDefaults, resolve_child_options};
@@ -282,6 +273,7 @@ mod tests {
             max_tokens: Some(4096),
             reasoning_effort: Some(reasoning_effort_id("max")),
             subagent_depth: None,
+            ..Default::default()
         }
     }
 
@@ -337,6 +329,23 @@ mod tests {
         assert_eq!(resolved.provider.as_deref(), Some("other"));
         assert_eq!(resolved.model.as_deref(), Some("model"));
         assert!(resolved.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn settings_override_parent_and_request_overrides_settings_without_cross_provider_models() {
+        let defaults = SubagentDefaults::from_strings("configured", "small", "low", 512.0, 1.0, 3.0, 20.0);
+        let resolved = resolve_child_options(&parent(), None, None, 1, Some(&defaults));
+        assert_eq!(resolved.provider.as_deref(), Some("configured"));
+        assert_eq!(resolved.model.as_deref(), Some("small"));
+        assert_eq!(resolved.max_tokens, Some(512));
+        assert_eq!(resolved.max_steps, Some(3));
+        assert_eq!(resolved.timeout_seconds, Some(20));
+        let request = AgentOptions {provider:Some("third".into()), ..Default::default()};
+        let resolved = resolve_child_options(&parent(), None, Some(&request), 1, Some(&defaults));
+        assert_eq!(resolved.provider.as_deref(), Some("third"));
+        assert_eq!(resolved.model, None);
+        let defaults = SubagentDefaults::from_strings("configured", "", "", 0.0, 1.0, 0.0, 0.0);
+        assert_eq!(resolve_child_options(&parent(), None, None, 1, Some(&defaults)).model, None);
     }
 
     #[test]
@@ -459,6 +468,8 @@ pub fn apply_child_composition(
 /// Policy seeded onto a child session's log at the delegation boundary.
 #[derive(Debug, Clone, Default)]
 pub struct DelegatedPolicyOverrides {
+    /// Auto children retain their independent per-call review requirement.
+    pub permission_preset: Option<String>,
     /// The parent session's explicit sandbox-mode override, or `None`
     /// without one.
     pub sandbox_mode: Option<dsh_sandbox::SandboxMode>,
@@ -479,7 +490,9 @@ pub fn capture_delegated_policy_overrides(parent: &dyn Agent) -> DelegatedPolicy
     } else {
         None
     };
+    let permission_preset=parent.session().with_events(|events|events.iter().rev().find(|e|e.type_=="permission/preset").and_then(|e|e.data["preset"].as_str()).filter(|preset|*preset=="auto").map(str::to_owned));
     DelegatedPolicyOverrides {
+        permission_preset,
         sandbox_mode,
         approval_policy,
     }
@@ -491,6 +504,9 @@ pub fn append_delegated_policy_overrides(
     child_session: &Session,
     overrides: &DelegatedPolicyOverrides,
 ) -> Result<(), String> {
+    if let Some(preset)=&overrides.permission_preset {
+        child_session.append("permission/preset",serde_json::json!({"preset":preset}),None)?;
+    }
     if let Some(mode) = &overrides.sandbox_mode {
         child_session.append(
             "sandbox/mode",

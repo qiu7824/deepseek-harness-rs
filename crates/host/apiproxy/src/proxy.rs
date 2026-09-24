@@ -32,6 +32,14 @@ use crate::api::rpc::{
     ClientResponse, EmptyDetails, RpcError, RpcErrorBody, RpcId, RpcRequest, RpcResponse, RpcResult,
 };
 use crate::api::sessions::ModelSelection;
+#[path = "file_attachments.rs"]
+mod file_attachments;
+#[path="plugin_enablement.rs"]
+mod plugin_enablement;
+pub use plugin_enablement::{PluginOperationControl, PluginClientReady, PluginProgress};
+#[cfg(test)]
+#[path="plugin_profile_tests.rs"]
+mod plugin_profile_tests;
 use crate::fetch::handler::{
     AbortSignal, ApiProxyCarrier, Body, DownloadResponse, FrameRequest, SessionLogQuery,
 };
@@ -607,8 +615,14 @@ async fn retire_idle_agent(
 mod control_agent_admission_tests;
 
 #[cfg(test)]
+#[path = "command_activity_api_tests.rs"]
+mod command_activity_api_tests;
+#[cfg(test)]
 #[path = "goal_completion_api_tests.rs"]
 mod goal_completion_api_tests;
+#[cfg(test)]
+#[path = "title_edit_api_tests.rs"]
+mod title_edit_api_tests;
 
 #[cfg(test)]
 mod idle_retirement_tests {
@@ -1881,6 +1895,7 @@ impl ApiProxyService {
                 model: Some(selection.model),
                 attached_sessions,
                 can_open_path,
+                supports_idle_todo_edits: true,
             },
         )
     }
@@ -2081,109 +2096,20 @@ impl ApiProxyService {
     }
 
     async fn plugin_inventory_set_enabled(
-        &self,
-        request: RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>,
-    ) -> RpcResponse<serde_json::Value> {
-        let Some(loader) = self
-            .ctx
-            .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
-            .map(|slot| slot.as_ref().clone())
-        else {
-            return err(
-                request.rpc_id,
-                RpcError::Internal(RpcErrorBody {
-                    message: "loader service is not composed".to_string(),
-                    details: EmptyDetails {},
-                }),
-            );
+        &self, request:RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>,
+    )->RpcResponse<serde_json::Value> {
+        self.plugin_inventory_set_enabled_with_signal(request,AbortSignal::new()).await
+    }
+
+    async fn plugin_inventory_set_enabled_with_signal(
+        &self, request:RpcRequest<dsh_host_plugin_inventory::PluginSetEnabledRequest>, signal:AbortSignal,
+    )->RpcResponse<serde_json::Value> {
+        let result=if let Some(control)=self.ctx.get_typed::<Arc<PluginOperationControl>>("pluginOperationControl",false) {
+            (control.run)(request.payload.entry_id,request.payload.enabled,signal).await
+        } else {
+            self.apply_plugin_enablement(request.payload.entry_id,request.payload.enabled,signal,None,Arc::new(|_|{}),None).await
         };
-        let _mutation = self.defaults.plugin_mutation_lock.lock().await;
-        let Ok(entry) = loader.tree.resolve(&request.payload.entry_id) else {
-            return err(
-                request.rpc_id,
-                RpcError::Internal(RpcErrorBody {
-                    message: format!("unknown plugin entry {:?}", request.payload.entry_id),
-                    details: EmptyDetails {},
-                }),
-            );
-        };
-        let previous = entry.options.lock().clone();
-        let mut patch = indexmap::IndexMap::new();
-        patch.insert(
-            "disabled".to_string(),
-            serde_json::Value::Bool(!request.payload.enabled),
-        );
-        if let Err(error) = entry.update(patch, false).await {
-            return err(
-                request.rpc_id,
-                RpcError::Internal(RpcErrorBody {
-                    message: format!("plugin enablement failed: {error}"),
-                    details: EmptyDetails {},
-                }),
-            );
-        }
-        if let Some(path) = &self.defaults.plugins_document {
-            let entry_id = request.payload.entry_id.clone();
-            let enabled = request.payload.enabled;
-            let write = dsh_atomic_write::with_file_lock(path, async {
-                let raw = tokio::fs::read(path).await?;
-                let mut entries: Vec<serde_json::Value> = serde_json::from_slice(&raw)
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-                if !set_plugin_document_enabled(&mut entries, &entry_id, enabled) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("plugin entry {entry_id:?} is absent from the latest config"),
-                    ));
-                }
-                let bytes = serde_json::to_vec_pretty(&entries)
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-                dsh_atomic_write::write_file_atomic(
-                    path,
-                    &bytes,
-                    dsh_atomic_write::WriteFileAtomicOptions {
-                        mode: 0o600,
-                        dir_mode: Some(0o700),
-                    },
-                )
-                .await
-            })
-            .await
-            .and_then(|result| result);
-            if let Err(error) = write {
-                let rollback = entry.replace_options(previous).await;
-                let message = match rollback {
-                    Ok(()) => format!("plugin config persist failed: {error}"),
-                    Err(rollback_error) => format!(
-                        "plugin config persist failed: {error}; runtime rollback failed: {rollback_error}"
-                    ),
-                };
-                return err(
-                    request.rpc_id,
-                    RpcError::Internal(RpcErrorBody {
-                        message,
-                        details: EmptyDetails {},
-                    }),
-                );
-            }
-        }
-        let inventory = self
-            .ctx
-            .get_typed::<Arc<dsh_host_plugin_inventory::PluginInventoryGateway>>(
-                "pluginInventory",
-                false,
-            )
-            .map(|slot| slot.as_ref().clone())
-            .expect("plugin inventory service");
-        let snapshot = inventory.list().await;
-        let selected = snapshot
-            .entries
-            .into_iter()
-            .find(|entry| entry.entry_id.as_str() == request.payload.entry_id)
-            .expect("updated entry remains in inventory");
-        ok(
-            request.rpc_id,
-            dsh_host_plugin_inventory::PluginSetEnabledResult { entry: selected },
-        )
+        match result {Ok(value)=>ok(request.rpc_id,value),Err(message)=>err(request.rpc_id,RpcError::Internal(RpcErrorBody {message,details:EmptyDetails {}}))}
     }
 
     async fn skill_list(
@@ -2682,6 +2608,18 @@ impl ApiProxyService {
         let rpc_id = request.rpc_id.clone();
         let session_id = request.payload.session_id.clone();
         let goal_ref = request.payload.goal_ref.clone();
+        let _admission = match self.resolver.admission(&session_id).try_lock_owned() {
+            Ok(lease) => lease,
+            Err(_) => {
+                return Self::goal_error(
+                    rpc_id,
+                    dsh_goal::GoalError::new(
+                        "another input or control operation is pending; finish or stop it before clearing goal requirements",
+                        dsh_goal::GoalErrorCode::AgentBusy,
+                    ),
+                );
+            }
+        };
         let resolved = self.resolver.resolve(&session_id).await;
         let agent = match resolved {
             crate::agent_lookup::ApiRemoteAgentResult::Agent(agent) => agent,
@@ -2693,7 +2631,7 @@ impl ApiProxyService {
             Ok(goals) => goals,
             Err(error) => return err(rpc_id, error),
         };
-        match goals.clear(&agent, &Self::goal_verb_ref(&goal_ref)) {
+        match goals.clear_for_user(&agent, &Self::goal_verb_ref(&goal_ref)) {
             Ok(_) => ok(rpc_id, crate::api::goals::GoalClearResult { cleared: true }),
             Err(error) => Self::goal_error(rpc_id, error),
         }
@@ -2711,7 +2649,7 @@ fn goal_requirements_command(line: &str) -> bool {
     }
     let input = command.raw_input.trim();
     !input.is_empty()
-        && !["clear", "pause", "resume", "edit"]
+        && !["pause", "resume", "edit"]
             .iter()
             .any(|verb| input.eq_ignore_ascii_case(verb))
 }
@@ -4504,7 +4442,12 @@ impl ApiProxyService {
                 }),
             );
         };
-        match titles.rename(agent.session(), &request.payload.title) {
+        let expected = request
+            .payload
+            .expected_title
+            .as_ref()
+            .map(|base| (base.value.as_deref(), base.through_seq));
+        match titles.rename_checked(agent.session(), &request.payload.title, expected) {
             Ok(snapshot) => ok(
                 request.rpc_id,
                 crate::api::sessions::SessionRenameResult {
@@ -4518,6 +4461,17 @@ impl ApiProxyService {
                     message: error.to_string(),
                     details: crate::api::rpc::SessionIdDetails {
                         session_id: session_id.to_string(),
+                    },
+                }),
+            ),
+            Err(dsh_session_title::RenameFailure::Conflict(current)) => err(
+                request.rpc_id,
+                RpcError::TitleConflict(RpcErrorBody {
+                    message: "标题已更新，请核对最新标题后再保存；当前草稿已保留。".to_string(),
+                    details: crate::api::rpc::TitleConflictDetails {
+                        session_id: session_id.to_string(),
+                        title: current.as_ref().map(|snapshot| snapshot.title.clone()),
+                        seq: current.map_or(-1, |snapshot| snapshot.event_seq as i64),
                     },
                 }),
             ),
@@ -6254,12 +6208,24 @@ impl ApiProxyService {
             .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
             .map(|slot| slot.as_ref().clone());
         let mut content = Vec::with_capacity(request.payload.content.len());
+        let mut prepared_files = pending_files.iter();
         for part in &request.payload.content {
             match part {
                 PromptContentPart::Text { text } => {
                     content.push(dsh_llm::ContentBlock::Text { text: text.clone() });
                 }
-                PromptContentPart::File { .. } => {}
+                PromptContentPart::File { .. } => {
+                    let Some(store) = attachment_store.as_ref() else {
+                        return err(request.rpc_id, invalid_prompt("上传文件需要附件存储服务"));
+                    };
+                    let file = prepared_files.next().expect("validated file order");
+                    match crate::prompt_files::save_reference(file, store.as_ref(), Some(&aborted)).await {
+                        Ok(attachment) => content.push(dsh_llm::ContentBlock::File { attachment }),
+                        Err(error) => return err(request.rpc_id, RpcError::AttachmentError(RpcErrorBody {
+                            message:error.message, details:crate::api::rpc::ReasonDetails { reason:error.code },
+                        })),
+                    }
+                }
                 PromptContentPart::Image {
                     media_type,
                     data,
@@ -6319,27 +6285,14 @@ impl ApiProxyService {
                             height: Some(saved.height),
                             name: saved.name,
                         },
+
+                        offloaded: None,
                     });
                 }
             }
         }
-        let files = match crate::prompt_files::save(
-            agent.session().header().cwd.as_deref(),
-            agent.id().as_str(),
-            &pending_files,
-        )
-        .await
-        {
-            Ok(files) => files,
-            Err(message) => return err(request.rpc_id, invalid_prompt(&message)),
-        };
         drop(pending_files);
         drop(request.payload.content);
-        content.extend(
-            files
-                .into_iter()
-                .map(|text| dsh_llm::ContentBlock::Text { text }),
-        );
         // Request identity and optional browser zone ride the exact durable
         // user message.
         let source = dsh_llm::MessageSource::User {
@@ -7297,6 +7250,8 @@ impl ApiProxyService {
                             height: None,
                             name: name.clone(),
                         },
+
+                        offloaded: None,
                     });
                 }
             }
@@ -7414,6 +7369,8 @@ impl ApiProxyService {
                             height: Some(saved.height),
                             name: saved.name.clone(),
                         },
+
+                        offloaded: None,
                     });
                 }
             }
@@ -8185,7 +8142,7 @@ impl ApiProxyCarrier for ApiProxyService {
                             return err(rpc_id, bad_request("pluginInventory.setEnabled", error));
                         }
                     };
-                self.plugin_inventory_set_enabled(RpcRequest { rpc_id, payload })
+                self.plugin_inventory_set_enabled_with_signal(RpcRequest { rpc_id, payload }, signal)
                     .await
             }
             "credentials.describe" => {
@@ -8363,6 +8320,31 @@ impl ApiProxyCarrier for ApiProxyService {
                         }),
                     ),
                 }
+            }
+            "commands.activity" => {
+                let Some(id) = request
+                    .payload
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    return err(
+                        rpc_id,
+                        RpcError::BadRequest(RpcErrorBody {
+                            message: "commands.activity requires sessionId".into(),
+                            details: crate::api::rpc::BadRequestDetails { issues: vec![] },
+                        }),
+                    );
+                };
+                // Status reads must not materialize cold sessions or restore history.
+                let active = self
+                    .agents()
+                    .and_then(|agents| agents.get(&dsh_session::session_id(id)))
+                    .zip(
+                        self.ctx
+                            .get_typed::<Arc<dsh_commands::CommandRuntime>>("commands", false),
+                    )
+                    .is_some_and(|(agent, commands)| commands.has_owner_activity(&agent));
+                ok(rpc_id, serde_json::json!({"active": active}))
             }
             "commands.list" => {
                 let session_id = request
@@ -8783,6 +8765,13 @@ impl ApiProxyCarrier for ApiProxyService {
                     };
                 self.session_attachment(RpcRequest { rpc_id, payload })
                     .await
+            }
+            "session.fileAttachment" => {
+                let payload: crate::api::sessions::SessionFileAttachmentRequest = match serde_json::from_value(request.payload) {
+                    Ok(payload) => payload,
+                    Err(error) => return err(rpc_id, bad_request("session.fileAttachment", error)),
+                };
+                self.session_file_attachment(RpcRequest { rpc_id, payload }, signal).await
             }
             "session.search" => {
                 let payload: crate::api::sessions::SessionSearchRequest =

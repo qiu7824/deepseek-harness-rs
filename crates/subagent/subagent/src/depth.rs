@@ -13,10 +13,8 @@ pub fn delegation_depth_of(agent: &dyn Agent) -> Result<u64, String> {
 
 /// Reject a recursion cap that cannot represent an exact delegation depth.
 pub fn assert_subagent_max_depth(max_depth: Option<u64>) -> Result<(), String> {
-    if max_depth.is_some() {
-        // u64 is always a non-negative integer; the check exists for the
-        // runtime boundary parity with the TS safe-integer validation.
-        return Ok(());
+    if max_depth.is_some_and(|value| value > 9_007_199_254_740_991) {
+        return Err("maxDepth must be a nonnegative safe integer".into());
     }
     Ok(())
 }

@@ -103,8 +103,28 @@ impl SandboxPolicyService {
                 .and_then(|session| session.header().cwd.as_deref())
                 .unwrap_or(&self.workspace_root),
         );
+        let read_only_roots = match (
+            session,
+            self.ctx
+                .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false),
+        ) {
+            (Some(session), Some(store)) => session.with_events(|events| {
+                let mut paths = std::collections::BTreeSet::new();
+                for event in events {
+                    for reference in
+                        dsh_attachment::file_references_for_event(&event.type_, &event.data)
+                    {
+                        if let Some(path) = store.file_host_path(&reference) {
+                            paths.insert(path.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+                paths.into_iter().collect()
+            }),
+            _ => Vec::new(),
+        };
         SandboxExecutionPolicy {
-            read_only_roots: Vec::new(),
+            read_only_roots,
             mode,
             workspace_root,
             session_id: session.map(|session| session.header().id.clone()),
@@ -113,7 +133,7 @@ impl SandboxPolicyService {
 
     /// Read the session override without applying the deployment default.
     pub fn override_of(&self, session: &Session) -> Option<SandboxMode> {
-        effective_sandbox_mode(&session.events())
+        session.with_events(effective_sandbox_mode)
     }
 
     /// The service's context.

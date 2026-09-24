@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -34,6 +35,11 @@ use dsh_session_projection::{ProjectionCheckpoint, ProjectionSnapshot, SessionPr
 use dsh_storage_domain::{Domain, DomainFacility, KvTable};
 
 use crate::spec::{CheckpointIdentity, CheckpointRecord, projection_cache_domain_spec, rows_of};
+
+struct CancelProjectionRead(Arc<AtomicBool>);
+impl Drop for CancelProjectionRead {
+    fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+}
 
 /// Plugin config (TS `Config`). Both throttle triggers are deployment
 /// choices; the two mandatory write points (`turn/end` and session
@@ -106,6 +112,7 @@ pub struct SessionProjectionCache {
     dirty: Mutex<HashMap<usize, DirtyState>>,
     /// One writer and at most one superseding cut per resident session.
     flushes: Mutex<HashMap<usize, Option<(ProjectionCheckpoint, &'static str)>>>,
+    cold_reads: Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl Service for SessionProjectionCache {
@@ -139,6 +146,7 @@ impl SessionProjectionCache {
             persistence,
             dirty: Mutex::new(HashMap::new()),
             flushes: Mutex::new(HashMap::new()),
+            cold_reads: Mutex::new(HashMap::new()),
         });
         ctx.register_service(service.clone());
 
@@ -346,9 +354,64 @@ impl SessionProjectionCache {
         .await
     }
 
-    /// Cold-read one persisted session's projections with zero full-log
-    /// load (TS `coldSnapshot`).
+    async fn restore_streamed(
+        &self,
+        id: &SessionId,
+        metadata: &dsh_session_persistence::SessionListMetadata,
+        cached: &ProjectionCheckpoint,
+        floor: i64,
+    ) -> Result<Option<(ProjectionSnapshot, ProjectionCheckpoint)>, String> {
+        if !self.persistence.supports_projection_streaming() { return Ok(None); }
+        let before = self.persistence.read_snapshot(id).await?.ok_or("projection source disappeared")?;
+        if before.header != metadata.meta { return Err("projection source identity changed".into()); }
+        let registry = self.registry();
+        let (floor, restore) = match registry.prepare_stream_restore(&metadata.meta, cached, floor, metadata.last_seq) {
+            Ok(restore) => (floor, restore),
+            Err(_) => (0, registry.prepare_stream_restore(&metadata.meta, &ProjectionCheckpoint::new(), 0, metadata.last_seq)?),
+        };
+        let restore = Arc::new(Mutex::new(Some(restore)));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let _cancel_on_drop = CancelProjectionRead(cancelled.clone());
+        let state = restore.clone(); let cancel = cancelled.clone();
+        let visitor = Arc::new(move |event: &SessionEvent| {
+            if cancel.load(Ordering::Acquire) { return Err("projection replay cancelled".into()); }
+            if event.seq.get() < floor as u64 { return Ok(()); }
+            state.lock().as_mut().ok_or("projection stage already consumed")?.push(event)
+        });
+        if !self.persistence.try_visit_projection_events(id, cancelled, visitor).await? { return Ok(None); }
+        let after = self.persistence.read_snapshot(id).await?.ok_or("projection source disappeared")?;
+        if before.header != after.header || before.revision != after.revision {
+            return Err("projection source changed before checkpoint publication".into());
+        }
+        let restore = restore.lock().take().ok_or("projection stage already consumed")?;
+        if !registry.stream_restore_is_current(&restore) {
+            return Err("projection definitions changed during replay".into());
+        }
+        Ok(Some(restore.finish()?))
+    }
+
+    /// Share serialized reconstruction for the same cold Session. The next
+    /// waiter rechecks the persisted checkpoint instead of repeating the fold.
     pub async fn cold_snapshot(&self, id: &SessionId) -> Result<ProjectionSnapshot, String> {
+        let lock = {
+            let mut reads = self.cold_reads.lock();
+            reads.retain(|_, weak| weak.strong_count() > 0);
+            match reads.get(id.as_str()).and_then(std::sync::Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    reads.insert(id.as_str().to_owned(), Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        let _read = lock.lock().await;
+        self.cold_snapshot_inner(id).await
+    }
+
+    /// Native logs use streamed replay; unsupported historical recovery paths
+    /// retain their existing reader until they have a bounded implementation.
+    async fn cold_snapshot_inner(&self, id: &SessionId) -> Result<ProjectionSnapshot, String> {
         let registry = self.registry();
         let record: Option<CheckpointRecord> = self
             .table
@@ -472,6 +535,12 @@ impl SessionProjectionCache {
                 "cold-read metadata write-back",
             )
             .await;
+            return Ok(snapshot);
+        }
+        if let Some(metadata) = list_metadata.as_ref()
+            && let Some((snapshot, checkpoint)) = self.restore_streamed(id, metadata, &cached, floor).await?
+        {
+            self.put_soft(id, &identity_of(&metadata.meta, metadata.inherited_event_count), &checkpoint, "streamed cold-read write-back").await;
             return Ok(snapshot);
         }
         let tail = self.persistence.read_from(id, floor as u64).await?;

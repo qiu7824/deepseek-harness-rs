@@ -290,6 +290,9 @@ use crate::{
 
 const INSTRUCTION: &str = "You are acting as a compaction engine. Condense the conversation above into a structured checkpoint that preserves the user's goals, constraints, decisions, exact paths, commands, errors, completed work, pending work, and the single next action. Output only concise Markdown. Do not call tools and do not mention compaction.";
 const PREAMBLE: &str = "This checkpoint condenses earlier conversation context. Treat it as established background and continue directly from the messages that follow.";
+#[cfg(test)]
+#[path = "cancellation_tests.rs"]
+mod cancellation_tests;
 
 pub struct BasicCompactionEngine {
     llm: Arc<LlmRuntime>,
@@ -600,6 +603,14 @@ impl BasicCompactionEngine {
                         return Err(ManualCompactionError::new(ManualCompactionErrorCode::Cancelled, "compaction cancelled"));
                     }
                 }
+            }
+            // The provider may surface cancellation before the polling timer.
+            // Preserve the control outcome instead of reporting summary failure.
+            if Self::cancelled(signal) {
+                return Err(ManualCompactionError::new(
+                    ManualCompactionErrorCode::Cancelled,
+                    "compaction cancelled",
+                ));
             }
             if let FinishReason::Error { failure } = assembler.finish() {
                 if failure.code == "IMAGE_OFFLOAD_REQUIRED" && failure.offload_images.is_some() {

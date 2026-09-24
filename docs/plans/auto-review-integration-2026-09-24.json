@@ -1,0 +1,71 @@
+{
+  "recordedAt": "2026-09-24T18:36:21.220688+08:00",
+  "status": "source_and_composed_host_verified_pending_installed_acceptance",
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "checks": {
+    "auto-review-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\auto-review-tests.log",
+      "sha256": "5534f55f740cdc19733119ff4350973153521fcdb2bb3aa41b90d69f78730642",
+      "results": [
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\r"
+      ]
+    },
+    "auto-review-combined-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\auto-review-combined-tests.log",
+      "sha256": "56ff1ee70688d8dce773a6754354f692ec126e4ba9271acc2c5bf9c3bd00378b",
+      "results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\r",
+        "test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s\r",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s\r",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\r",
+        "test result: ok. 296 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 20.45s\r",
+        "test result: ok. 15 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.33s\r",
+        "test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.14s\r",
+        "test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s\r"
+      ]
+    },
+    "auto-review-dom-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\auto-review-dom-tests.log",
+      "sha256": "4d4e00a04805e2fe1ce91dc61fbc91df05ae4cd239d1decefdb6993626b55b14",
+      "results": [
+        "PASS Auto review UI: composer and popup consent, stale option cleanup, native/PTC denial metadata and model-content separation\r",
+        "PASS PTC tool cards: nested structure, native disclosure, command/output expansion and truthful exit state\r",
+        "PASS response rendering DOM: same attachment leases; collapse/paging/late load cleanup; image dedup; live locales; native safe Markdown and actual local-file click; internal recovery filtering; initial, dynamic and legacy system context disclosures\r"
+      ]
+    }
+  },
+  "files": {
+    "crates/interaction/auto-review/src/lib.rs": "d43d8238b4f611fbb2e4e079424452f7387580051ef9c921b45ebc0237dc6453",
+    "crates/interaction/auto-review/src/snapshot.rs": "bdec41aa9259850df1689bf26240bedc620e330eeeb20106531a21927bcea0f6",
+    "crates/interaction/auto-review/src/decision.rs": "3e738432dcfa868d7294a4266cf8ba6a2103cde5416f78de0a1f239881e18e86",
+    "crates/interaction/auto-review/src/policy.txt": "92d0c9b0ae3bcb0276385cc41911ffa9fbbbd2cad8b94bb9bd06bcfe6b3ac2ea",
+    "crates/core/tools/src/code_mode.rs": "682faa82474bc8487cc8bfdf9ad06a3164487d503b6664fe6ef81c3055fdaad7",
+    "crates/core/tools/src/index.rs": "12df4098a4d08a6c63526c54227eb7124d9fc942e2bf6316b6d1013f961939db",
+    "crates/interaction/permission-presets/src/lib.rs": "7d6e8cc550dbc54c6f252b37fa859fa99ba0bc8889625412a30cfdc795d262ef",
+    "crates/core/session/src/format_v4/transform.rs": "317f66fc1203c09a027517242f15e8a510823c3cc970f30d65fd66ea14cc7d7b",
+    "crates/host/dsh-host/src/auto_review_plugin_tests.rs": "e7dadf63afb2e043faf890653156d9c648c60537c0dd7bf943218a1c6f1ffab8",
+    "web/src/runtime-plugins/ui-conversation.js": "c98ba71131215dd2b3201b3eb8b4d03f35913e605b1404668f79fd4514aa469c",
+    "web/src/runtime-plugins/ui-permission.js": "24497b878cae0cae96d55d96b0c0e25cfed5cbaf5dbad4e42a1da9af5e58a9fc",
+    "web/src/runtime-plugins/ui-tool.js": "3800c2905bf0d0d229d820f3cd88a0dd51c4d277accee05b21eb3ff51804e046",
+    "web/src/runtime-plugins/ui-trajectory.js": "c29b664c8d2952ee68d79ae317fa8d3ba89edfeca2ef9ac1c810a93437489682"
+  },
+  "implemented": [
+    "Optional bundled plugin defaults disabled; Auto is current-session-only and absent from future-session defaults.",
+    "Fixed reviewer policy, frozen provenance-filtered input, exact native/PTC action matching, strict JSON decisions and no model-visible raw denial reason.",
+    "Every in-process Auto child reviews independently; user stop and unload cancel/drain reviews; unavailable integration refuses cold Auto restore.",
+    "Hot replacement cannot reuse a prepared authorization; code transport closure fences unawaited bindings and settles PTC records before turn end.",
+    "Plugin disable migrates live Auto sessions through the preset owner without changing already-full-access knobs; re-enable never reselects Auto.",
+    "Dynamic permission options are persisted as V4 metadata so clients receive a newer projection watermark; no duplicate model context is injected.",
+    "Composer and command-popup risk consent, UI-only reasons, native/PTC cards and stopped state are wired in source/dist."
+  ],
+  "fixedIntegrationIssues": [
+    "Agent factory publication was asynchronous and could reject immediate child creation; registration is now synchronous with install.",
+    "V4 writer vocabulary explicitly owns permission/options without changing historical migration lists."
+  ],
+  "remainingAcceptance": [
+    "Installed plugin lifecycle, actual provider behavior and full GUI matrix.",
+    "All remaining goal-status requirements, native helper/build identity, platform packages and publication gates."
+  ]
+}

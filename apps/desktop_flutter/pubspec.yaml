@@ -1,0 +1,48 @@
+name: dsh_desktop
+description: "Windows desktop client for DeepSeek Harness."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dsh_client:
+    path: ../../packages/dsh_client_dart
+  flutter_markdown_plus: ^1.0.12
+  file_selector: ^1.0.4
+  shadcn_ui: ^0.57.0
+  lucide_icons_flutter: ^3.1.20
+  flutter_svg: ^2.3.0
+  xterm: ^4.0.0
+  pdfrx: ^2.6.5
+  desktop_drop: ^0.8.4
+  two_dimensional_scrollables: ^0.5.4
+  flutter_math_fork: ^0.7.4
+  flutter_mermaid: ^0.1.0
+  window_manager: ^0.5.2
+  url_launcher: ^6.3.2
+  path: ^1.9.1
+  markdown: ^7.3.1
+  characters: ^1.4.1
+  flutter_code_editor: ^0.3.5
+  cupertino_ui: 1.0.2
+  material_ui: 1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/brand.svg
+    - assets/provider-presets.json
+    - assets/brand-dark.svg
+    - assets/icons/
+    - assets/licenses/

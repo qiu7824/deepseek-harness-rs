@@ -69,25 +69,21 @@ impl Fold {
                     }
                 }
             }
-            MessageSource::Plugin {
-                plugin,
-                sections: Some(sections),
-                ..
-            } if plugin == PLUGIN => {
-                for section in sections.iter().take(MAX_SKILLS + 1) {
-                    if section.name == "__bounded_restore__" {
+            _ if source.plugin_name() == Some(PLUGIN) => {
+                for (name, text) in source.snapshot_sections().take(MAX_SKILLS + 1) {
+                    if name == "__bounded_restore__" {
                         self.warned = true;
                         continue;
                     }
-                    if section.text.len() > 256 {
+                    if text.len() > 256 {
                         continue;
                     }
-                    if let Ok(value) = serde_json::from_str::<Loaded>(&section.text) {
+                    if let Ok(value) = serde_json::from_str::<Loaded>(text) {
                         if matches!(value.origin.as_str(), "user" | "model")
                             && matches!(value.status.as_str(), "active" | "inactive")
                             && value.digest.len() <= 96
                         {
-                            self.put(section.name.clone(), value);
+                            self.put(name.to_owned(), value);
                         }
                     }
                 }
@@ -103,7 +99,7 @@ impl Fold {
             };
             // Only inspect producer-tagged skill events; never deserialize arbitrary chat bodies.
             if matches!(&source, MessageSource::SkillInvocation { .. })
-                || matches!(&source, MessageSource::Plugin { plugin, .. } if plugin == PLUGIN)
+                || source.plugin_name() == Some(PLUGIN)
             {
                 let content = event.data["content"]
                     .as_array()

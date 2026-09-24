@@ -25,6 +25,14 @@ pub(crate) fn attach_replay(chat: &mut Value, options: &GenerateOptions, base_ur
     let Some(wire) = chat.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
+    let results: BTreeMap<_, _> = options.messages.iter().filter_map(|message| {
+        message.as_tool_result().map(|(id, _, error)| (id.as_str(), error.unwrap_or(false)))
+    }).collect();
+    for message in wire.iter_mut().filter(|message| message["role"] == "tool") {
+        if let Some(error) = message["tool_call_id"].as_str().and_then(|id| results.get(id)) {
+            message["is_error"] = json!(error);
+        }
+    }
     for (message, source) in wire.iter_mut().filter(|m| m["role"] == "assistant").zip(
         options
             .messages
@@ -55,9 +63,18 @@ pub(crate) fn attach_replay(chat: &mut Value, options: &GenerateOptions, base_ur
     }
 }
 
-fn replay_endpoint_hash(base_url: &str) -> String {
+pub(crate) fn replay_endpoint_hash(base_url: &str) -> String {
     let endpoint = super::anthropic_transport::endpoint(base_url, "messages");
     format!("{:x}", Sha256::digest(endpoint.as_bytes()))
+}
+
+/// History can include rejected calls from older agents. Degrade only the
+/// outbound replay; the durable call and live tool admission stay unchanged.
+pub(crate) fn historical_tool_input(raw: &str) -> Value {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
 }
 
 pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
@@ -113,20 +130,11 @@ pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| failure("Tool call is missing its name", "INVALID_REQUEST"))?;
-                let input: Value = serde_json::from_str(
+                let input = historical_tool_input(
                     call.pointer("/function/arguments")
                         .and_then(Value::as_str)
                         .unwrap_or("{}"),
-                )
-                .map_err(|_| {
-                    failure("Tool call arguments are not valid JSON", "INVALID_REQUEST")
-                })?;
-                if !input.is_object() {
-                    return Err(failure(
-                        "Anthropic tool arguments must be an object",
-                        "INVALID_REQUEST",
-                    ));
-                }
+                );
                 parts.push(json!({"type":"tool_use","id":id,"name":name,"input":input}));
             }
         }
@@ -332,6 +340,9 @@ fn content(value: Option<&Value>) -> Result<Vec<Value>, LlmFailure> {
 
 #[derive(Default)]
 pub(crate) struct AnthropicTranslator {
+    protocol: Option<&'static str>,
+    started: bool,
+    invalid_tool_input: bool,
     requested_model: Option<String>,
     response_model: Option<String>,
     response_id: Option<String>,
@@ -344,6 +355,9 @@ pub(crate) struct AnthropicTranslator {
     completed: bool,
 }
 impl AnthropicTranslator {
+    pub(crate) fn set_protocol(&mut self, protocol: &'static str) {
+        self.protocol = Some(protocol);
+    }
     pub(crate) fn is_finished(&self) -> bool {
         self.completed
     }
@@ -362,6 +376,56 @@ impl AnthropicTranslator {
             )
         })?;
         let mut out = Vec::new();
+        let deepseek = self.protocol == Some(crate::messages::API);
+        if deepseek {
+            let kind = event["type"].as_str().unwrap_or("");
+            if kind == "message_start" {
+                if self.started {
+                    return Err(failure(
+                        "Duplicate Messages message_start",
+                        "MALFORMED_RESPONSE",
+                    ));
+                }
+                self.started = true;
+            } else if matches!(
+                kind,
+                "content_block_start"
+                    | "content_block_delta"
+                    | "content_block_stop"
+                    | "message_delta"
+                    | "message_stop"
+            ) && !self.started
+            {
+                return Err(failure(
+                    "Messages content precedes message_start",
+                    "MALFORMED_RESPONSE",
+                ));
+            }
+            if kind == "content_block_start" && self.stop.is_some() {
+                return Err(failure(
+                    "Messages content starts after settlement",
+                    "MALFORMED_RESPONSE",
+                ));
+            }
+            for usage in [event.pointer("/message/usage"), event.get("usage")]
+                .into_iter()
+                .flatten()
+            {
+                for key in [
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ] {
+                    if usage.get(key).is_some_and(|value| value.as_u64().is_none()) {
+                        return Err(failure(
+                            format!("Invalid Messages usage {key}"),
+                            "MALFORMED_RESPONSE",
+                        ));
+                    }
+                }
+            }
+        }
         match event.get("type").and_then(Value::as_str).unwrap_or("") {
             "ping" => (),
             "error" => {
@@ -393,6 +457,22 @@ impl AnthropicTranslator {
                     return Err(failure("Duplicate content block", "MALFORMED_RESPONSE"));
                 }
                 let kind = block["type"].as_str().unwrap_or("");
+                if deepseek {
+                    let required_fields: &[&str] = match kind {
+                        "text" => &["text"],
+                        "thinking" => &["thinking"],
+                        "tool_use" => &["id", "name"],
+                        _ => &[],
+                    };
+                    for key in required_fields {
+                        if !block[*key].is_string() || (kind == "tool_use" && block[*key] == "") {
+                            return Err(failure(
+                                format!("Invalid Messages content {key}"),
+                                "MALFORMED_RESPONSE",
+                            ));
+                        }
+                    }
+                }
                 let block_type = match kind {
                     "text" => "text",
                     "thinking" => "reasoning",
@@ -494,24 +574,25 @@ impl AnthropicTranslator {
                         text: block["thinking"].as_str().unwrap_or("").into(),
                     }),
                     "tool_use" => {
-                        if let Some(args) = self.args.remove(&index) {
-                            block["input"] = serde_json::from_str(&args).map_err(|_| {
-                                failure(
-                                    "Anthropic streamed invalid tool arguments",
-                                    "MALFORMED_RESPONSE",
-                                )
-                            })?;
-                        }
-                        if !block["input"].is_object() {
+                        let arguments = self
+                            .args
+                            .remove(&index)
+                            .unwrap_or_else(|| block["input"].to_string());
+                        let parsed = serde_json::from_str::<Value>(&arguments)
+                            .ok()
+                            .filter(Value::is_object);
+                        if parsed.is_none() && !deepseek {
                             return Err(failure(
                                 "Anthropic tool input is not an object",
                                 "MALFORMED_RESPONSE",
                             ));
                         }
+                        self.invalid_tool_input |= parsed.is_none();
+                        block["input"] = parsed.unwrap_or(Value::Null);
                         Some(ContentBlock::ToolCall {
                             id: call_id(required(&block, "id")?),
                             name: required(&block, "name")?,
-                            arguments: block["input"].to_string(),
+                            arguments,
                         })
                     }
                     "redacted_thinking" => None,
@@ -560,6 +641,18 @@ impl AnthropicTranslator {
                         ));
                     }
                 };
+                if deepseek && self.invalid_tool_input && reason != FinishReason::MaxTokens {
+                    return Err(failure(
+                        "Messages tool input must be a valid JSON object",
+                        "MALFORMED_RESPONSE",
+                    ));
+                }
+                if deepseek && self.finished.is_empty() && reason == FinishReason::Stop {
+                    return Err(failure(
+                        "DeepSeek Messages returned no content",
+                        "EMPTY_RESPONSE",
+                    ));
+                }
                 self.completed = true;
                 out.push(StreamChunk::Usage {
                     usage: self.usage.clone(),
@@ -567,7 +660,7 @@ impl AnthropicTranslator {
                 out.push(StreamChunk::Finish {
                     reason,
                     replay_state: Some(json!({
-                        "protocol":"anthropic-messages",
+                        "protocol":self.protocol.unwrap_or("anthropic-messages"),
                         "requestedModel":self.requested_model,"responseModel":self.response_model,
                         "responseId":self.response_id,"endpointHash":self.endpoint_hash,
                         "content":self.finished.values().collect::<Vec<_>>()

@@ -100,6 +100,7 @@ fn main() {
                         | "key_up"
                         | "release_inputs"
                         | "click"
+                        | "move"
                         | "double_click"
                         | "drag"
                         | "scroll"

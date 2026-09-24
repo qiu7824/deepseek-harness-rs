@@ -166,23 +166,26 @@ fn assert_current_llm_shape(record: &Map<String, JsonValue>, index: usize) -> Re
             index,
         )?;
     }
-    if type_ != "user/message" && type_ != "assistant/message" && type_ != "tool/result" {
+    if !crate::surface::is_surface_eligible_type(type_) {
         return Ok(());
     }
-    assert_message_event_shape(record, &format!("seed {type_} at index {index}"))
+    assert_message_event_shape(
+        type_,
+        record.get("data"),
+        &format!("seed {type_} at index {index}"),
+    )
 }
 
 /// Validate only the event-specific invariants needed to safely replay a
 /// message (TS `assertMessageEventShape`).
-fn assert_message_event_shape(event: &Map<String, JsonValue>, subject: &str) -> Result<(), String> {
-    let type_ = event
-        .get("type")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    if type_ != "user/message" && type_ != "assistant/message" && type_ != "tool/result" {
+fn assert_message_event_shape(
+    type_: &str,
+    data_value: Option<&JsonValue>,
+    subject: &str,
+) -> Result<(), String> {
+    if !crate::surface::is_surface_eligible_type(type_) {
         return Ok(());
     }
-    let data_value = event.get("data");
     let data = data_value.and_then(|value| value.as_object());
     let message = match type_ {
         "user/message" => data_value,
@@ -195,10 +198,14 @@ fn assert_message_event_shape(event: &Map<String, JsonValue>, subject: &str) -> 
     if id.is_none_or(|id| id.is_empty()) {
         return Err(format!("{subject} lacks an identified message"));
     }
-    let expected_role = if type_ == "assistant/message" {
-        "assistant"
-    } else {
-        "user"
+    let expected_role = match type_ {
+        "assistant/message" => "assistant",
+        "system/message" => "system",
+        "developer/message" => "developer",
+        "tool/result" if message_record.get("role").and_then(JsonValue::as_str) == Some("tool") => {
+            "tool"
+        }
+        _ => "user",
     };
     if message_record.get("role").and_then(|value| value.as_str()) != Some(expected_role) {
         return Err(format!(
@@ -241,6 +248,26 @@ fn assert_message_event_shape(event: &Map<String, JsonValue>, subject: &str) -> 
         .get("content")
         .and_then(|value| value.as_array())
         .expect("content array checked above");
+    if expected_role == "tool" {
+        if message_record.get("toolCallId") != source.get("callId") {
+            return Err(format!("{subject} message has mismatched tool call ids"));
+        }
+        if message_record
+            .get("isError")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(format!("{subject} message has invalid isError"));
+        }
+        if content
+            .iter()
+            .any(|block| block.get("type").and_then(JsonValue::as_str) == Some("tool-result"))
+        {
+            return Err(format!(
+                "{subject} tool message must contain flat result content"
+            ));
+        }
+        return Ok(());
+    }
     let block = content.first();
     let block_ok = content.len() == 1
         && block
@@ -368,17 +395,35 @@ impl Session {
         id: SessionId,
         seed: Option<Vec<SessionEvent>>,
         header: Option<&SessionHeader>,
-        restore: bool,
+        _restore: bool,
         supplied_inherited_event_count: Option<SessionLogOffset>,
     ) -> Result<Session, String> {
         let had_seed = seed.is_some();
-        let seed = if header.is_some_and(|value| value.version == LEGACY_SESSION_FORMAT_VERSION) {
-            let legacy = header.cloned().expect("header present");
-            let events = seed.clone().unwrap_or_default();
-            Some(crate::migrate_v0_to_v3(legacy, &events)?.events)
-        } else {
-            seed
-        };
+        let mut owned_header = header.cloned();
+        let mut seed = seed;
+        let mut supplied_inherited_event_count = supplied_inherited_event_count;
+        if let Some(meta) = owned_header.as_mut().filter(|meta| matches!(meta.version, 0 | 3)) {
+            let mut events = seed.take().unwrap_or_default();
+            let mut inherited = supplied_inherited_event_count.unwrap_or(SessionLogOffset::ZERO);
+            if meta.version == LEGACY_SESSION_FORMAT_VERSION {
+                let report = crate::migrate_v0_to_v3(meta.clone(), &events)?;
+                inherited = SessionLogOffset::new(*report.source_cuts.get(inherited.get() as usize)
+                    .ok_or("inherited cut exceeds historical seed")? as u64)?;
+                *meta = report.header;
+                events = report.events;
+            }
+            if !_restore && meta.is_seeded && inherited.get() == events.len() as u64 {
+                events.push(SessionEvent {
+                    type_:"session/end-seed".into(), seq:SessionSeq::new(events.len() as u64)?, time:now_ms(),
+                    data:serde_json::json!({"inherited":true}), ignorable:None, surface_op:None, source_event_seqs:None,
+                });
+            }
+            let (current, cut, current_events) = crate::format_v4::upgrade_v3_events(meta.clone(), inherited, events, vec![])?;
+            *meta = current;
+            supplied_inherited_event_count = Some(cut);
+            seed = had_seed.then_some(current_events);
+        }
+        let header = owned_header.as_ref();
         let mut state = SessionState::default();
         if let Some(seed) = seed {
             for (index, snapshot) in seed.into_iter().enumerate() {
@@ -413,21 +458,6 @@ impl Session {
                 let value = serde_json::to_value(header).map_err(|_| {
                     "session header is not losslessly JSON-serializable".to_string()
                 })?;
-                // Alpha.1 introduced the V3 envelope.  Callers restoring an
-                // in-memory session may still hand us the pre-V3 (V0)
-                // header; upgrade that metadata at the boundary so the live
-                // session always exposes the canonical V3 shape.  Durable
-                // logs are migrated by the persistence backend where the
-                // event history is available for prompt reconstruction.
-                let value = if value.get("version").and_then(JsonValue::as_u64)
-                    == Some(LEGACY_SESSION_FORMAT_VERSION)
-                {
-                    let mut upgraded = value;
-                    upgraded["version"] = JsonValue::from(SESSION_FORMAT_VERSION);
-                    upgraded
-                } else {
-                    value
-                };
                 validate_session_header(&id, &value)?
             }
             None => snapshot_session_header(&id, None)?,
@@ -448,15 +478,16 @@ impl Session {
         }
         // Appended here so the marker is already in `events` when a backend
         // captures the creation seed; re-marking is skipped.
+        let inherited_marker = header.is_seeded && inherited_event_count.get() == state.log.len() as u64;
         if had_seed
-            && state.log.last().map(|event| event.type_.as_str()) != Some("session/end-seed")
+            && (inherited_marker || state.log.last().map(|event| event.type_.as_str()) != Some("session/end-seed"))
         {
             let event = SessionEvent {
                 type_: "session/end-seed".to_string(),
                 seq: SessionSeq::new(state.log.len() as u64)
                     .expect("a Rust Vec length fits the public Session wire"),
                 time: now_ms(),
-                data: end_seed_data(),
+                data: if inherited_marker { serde_json::json!({"inherited":true}) } else { end_seed_data() },
                 ignorable: None,
                 surface_op: None,
                 source_event_seqs: None,
@@ -630,6 +661,14 @@ impl Session {
         })
     }
 
+    /// Read one coherent surface and event prefix. The callback must not
+    /// re-enter this session; no events are cloned by this boundary.
+    pub fn with_surface_events<R>(&self,read:impl FnOnce(&[SessionEvent],&[u64])->R)->Result<R,String> {
+        let state=&mut *self.inner.state.lock();
+        let nodes=state.surface.nodes(&state.log)?;
+        Ok(read(&state.log,&nodes))
+    }
+
     /// Append one typed event to the log and notify observers via the
     /// store-owned publication hooks (TS `Session.append`).
     pub fn append(
@@ -663,6 +702,11 @@ impl Session {
             &data_snapshot,
             &format!("session event \"{type_}\""),
         )?;
+        assert_message_event_shape(
+            type_,
+            Some(&data_snapshot),
+            &format!("session event \"{type_}\""),
+        )?;
         let entry = attachment_of(self);
         if let Some(entry) = &entry
             && !entry.try_begin_append()
@@ -692,7 +736,11 @@ impl Session {
             seq: SessionSeq::new(state.log.len() as u64)?,
             time: now_ms(),
             data: data_snapshot,
-            ignorable: matches!(type_, "request/phase" | "tools/discovery").then_some(true),
+            ignorable: matches!(
+                type_,
+                "request/phase" | "tools/discovery" | "computer-use/activity"
+            )
+            .then_some(true),
             surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),
             source_event_seqs: intent.and_then(|intent| intent.source_event_seqs),
         };

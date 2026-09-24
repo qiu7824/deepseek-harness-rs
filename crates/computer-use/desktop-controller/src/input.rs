@@ -121,6 +121,95 @@ pub struct Bounds {
     pub width: i32,
     pub height: i32,
 }
+
+pub fn validate_observed_viewport(
+    args: &serde_json::Value,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if let Some(viewport) = args.get("observedViewport") {
+        if width == 0
+            || height == 0
+            || viewport["width"].as_u64() != Some(u64::from(width))
+            || viewport["height"].as_u64() != Some(u64::from(height))
+        {
+            return Err("COMPUTER_USE_FRAME_STALE: 画面尺寸已变化，请重新截图".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn pointer_modifiers(args: &serde_json::Value) -> Result<Vec<u16>, String> {
+    let Some(keys) = args.get("keys") else {
+        return Ok(Vec::new());
+    };
+    let keys = keys
+        .as_array()
+        .filter(|keys| keys.len() <= 4)
+        .ok_or("最多允许四个指针修饰键")?;
+    let mut result = Vec::new();
+    for key in keys {
+        let code = match key
+            .as_str()
+            .ok_or("修饰键必须为字符串")?
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "ctrl" | "control" => 17,
+            "alt" | "option" => 18,
+            "shift" => 16,
+            "meta" | "cmd" | "command" => 91,
+            _ => return Err("不支持的指针修饰键".into()),
+        };
+        if !result.contains(&code) {
+            result.push(code);
+        }
+    }
+    Ok(result)
+}
+
+pub fn drag_points(
+    args: &serde_json::Value,
+    w: u32,
+    h: u32,
+    rect: Bounds,
+) -> Result<Vec<(i32, i32)>, String> {
+    if let Some(path) = args.get("path") {
+        let path = path
+            .as_array()
+            .filter(|p| (2..=256).contains(&p.len()))
+            .ok_or("拖拽路径须包含2至256个坐标点")?;
+        return path
+            .iter()
+            .map(|p| {
+                position(
+                    p["x"].as_f64().ok_or("缺少横坐标")?,
+                    p["y"].as_f64().ok_or("缺少纵坐标")?,
+                    w,
+                    h,
+                    rect,
+                )
+            })
+            .collect();
+    }
+    let (x, y) = position(
+        args["x"].as_f64().ok_or("缺少横坐标")?,
+        args["y"].as_f64().ok_or("缺少纵坐标")?,
+        w,
+        h,
+        rect,
+    )?;
+    let (ex, ey) = position(
+        args["endX"].as_f64().ok_or("缺少横坐标")?,
+        args["endY"].as_f64().ok_or("缺少纵坐标")?,
+        w,
+        h,
+        rect,
+    )?;
+    Ok((0..=12)
+        .map(|n| (x + (ex - x) * n / 12, y + (ey - y) * n / 12))
+        .collect())
+}
 pub fn position(
     x: f64,
     y: f64,
@@ -367,6 +456,51 @@ pub fn key_code(name: &str) -> Result<u16, String> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn viewport_guard_rejects_a_new_capture_geometry_before_input() {
+        let args = serde_json::json!({"observedViewport":{"width":100,"height":80}});
+        assert!(super::validate_observed_viewport(&args, 100, 80).is_ok());
+        assert!(super::validate_observed_viewport(&args, 200, 80).is_err());
+        assert!(super::validate_observed_viewport(&args, 100, 40).is_err());
+        assert!(
+            super::validate_observed_viewport(
+                &serde_json::json!({"observedViewport":null}),
+                100,
+                80
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn native_pointer_paths_preserve_every_point_and_validate_before_injection() {
+        use serde_json::json;
+        let rect = super::Bounds {
+            left: -100,
+            top: 20,
+            width: 200,
+            height: 100,
+        };
+        let path = json!({"path":[{"x":0,"y":0},{"x":80,"y":10},{"x":5,"y":40}]});
+        assert_eq!(
+            super::drag_points(&path, 100, 50, rect).unwrap(),
+            vec![(-100, 20), (60, 40), (-90, 100)]
+        );
+        assert!(
+            super::drag_points(
+                &json!({"path":[{"x":0,"y":0},{"x":100,"y":10}]}),
+                100,
+                50,
+                rect
+            )
+            .is_err()
+        );
+        assert!(super::drag_points(&json!({"path":[]}), 100, 50, rect).is_err());
+        assert_eq!(
+            super::pointer_modifiers(&json!({"keys":["CTRL","SHIFT","CMD"]})).unwrap(),
+            vec![17, 16, 91]
+        );
+        assert!(super::pointer_modifiers(&json!({"keys":["Delete"]})).is_err());
+    }
     use super::*;
     #[test]
     fn hook_marker_survives_32_bit_transport_without_trusting_foreign_input() {

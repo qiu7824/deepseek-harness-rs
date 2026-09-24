@@ -216,6 +216,10 @@ fn control_outcome(code: &str) -> bool {
     matches!(
         code,
         "ABORTED"
+            | "PARALLEL_LIMIT_REACHED"
+            | "ACTIVATION_LIMIT_REACHED"
+            | "AUTO_REVIEW_DENIED"
+            | "TOOL_BINDING_CHANGED"
             | "APPROVAL_REJECTED"
             | "SHELL_ABORTED"
             | "TOOL_ABORTED"
@@ -226,6 +230,11 @@ fn control_outcome(code: &str) -> bool {
             | "USER_APPROVAL_CANCELLED"
             | "USER_APPROVAL_TIMED_OUT"
             | "USER_APPROVAL_UNAVAILABLE"
+            | "COMPUTER_USE_PERMISSION_REQUIRED"
+            | "COMPUTER_USE_PERMISSION_DENIED"
+            | "COMPUTER_USE_PERMISSION_REVOKED"
+            | "COMPUTER_USE_OWNER_REQUIRED"
+            | "COMPUTER_USE_APP_IDENTITY_CHANGED"
             | "COMPUTER_USE_MANUAL_CONTROL"
             | "COMPUTER_USE_ABORTED"
             | "COMPUTER_USE_HUMAN_REQUIRED"
@@ -233,6 +242,9 @@ fn control_outcome(code: &str) -> bool {
             | "COMPUTER_USE_DESKTOP_DISCONNECTED"
             | "COMPUTER_USE_BUSY"
             | "COMPUTER_USE_FRAME_PENDING"
+            | "COMPUTER_USE_FRAME_REQUIRED"
+            | "COMPUTER_USE_FRAME_STALE"
+            | "COMPUTER_USE_STALE_CONTROL"
             | "COMPUTER_USE_CAPTURE_INTERRUPTED"
             | "COMPUTER_USE_DEVICE_BUSY"
             | "COMPUTER_USE_SESSION_LIMIT"
@@ -305,6 +317,14 @@ pub fn rule(code: &str, source: &str) -> (&'static str, &'static str, &'static s
             "runtime",
             "核对所选程序路径、执行身份和沙箱就绪阶段；宿主可运行不代表沙箱可运行，启动失败不能判定程序未安装。修复环境后重新验证，勿原样反复重试。",
             false,
+        ),
+        "SANDBOX_BUSY" => (
+            "sandbox-slot-busy", "sandbox-runtime",
+            "隔离槽位暂被占用，当前命令未启动；等待已有执行释放槽位，勿重复初始化或关闭沙箱。", false,
+        ),
+        "SANDBOX_QUARANTINED" => (
+            "sandbox-slot-quarantined", "sandbox-runtime",
+            "没有可复用的隔离槽位，当前命令未启动；检查原执行、隔离记录与清理状态，不能直接复用隔离中的账户。", false,
         ),
         "SANDBOX_SETUP_FAILED"
         | "SANDBOX_SETUP_REQUIRED"
@@ -1058,6 +1078,19 @@ impl LearningStore {
             .unwrap()
             .retain(|item| !recovered.contains(&item.id));
         Ok(recovered)
+    }
+
+    /// Retain source material while an observation still needs verification.
+    /// A damaged ledger cannot authorize evidence reclamation.
+    pub fn pending_evidence(&self)->Result<(std::collections::BTreeSet<String>,std::collections::BTreeSet<String>),String> {
+        if let Some(error)=self.read_only_error.as_ref(){return Err(error.clone());}
+        let document=self.document.read().unwrap();let mut owners=std::collections::BTreeSet::new();let mut workspaces=std::collections::BTreeSet::new();
+        for entry in &document.entries {
+            if entry.status=="verified" && reusable_rule(entry){continue;}
+            if let Some(owner)=&entry.last_session_id{owners.insert(owner.clone());}
+            if !entry.workspace_key.is_empty(){workspaces.insert(entry.workspace_key.clone());}
+        }
+        Ok((owners,workspaces))
     }
 
     pub fn list(&self, payload: &Value) -> Value {

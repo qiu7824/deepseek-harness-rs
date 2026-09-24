@@ -168,6 +168,18 @@ pub type NonpackedEventVisitor =
 /// The backend contract (TS abstract members + defaults).
 #[async_trait::async_trait]
 pub trait SessionPersistenceApi: Send + Sync {
+    /// Whether complete native logs can be replayed without a whole-history
+    /// allocation. Unsupported physical recovery paths retain their existing
+    /// reader and return false before emitting any event.
+    fn supports_projection_streaming(&self) -> bool { false }
+
+    async fn try_visit_projection_events(
+        &self,
+        _id: &SessionId,
+        _cancelled: Arc<std::sync::atomic::AtomicBool>,
+        _visitor: Arc<dyn for<'a> Fn(&'a SessionEvent) -> Result<(), String> + Send + Sync>,
+    ) -> Result<bool, String> { Ok(false) }
+
     /// Resolve this backend's independent local artifact for a session
     /// without reading, creating, flushing, or materializing it.
     fn locate(&self, meta: &SessionHeader) -> Option<SessionLocation>;
@@ -206,6 +218,12 @@ pub trait SessionPersistenceApi: Send + Sync {
     async fn delete(&self, id: &SessionId) -> Result<bool, String> {
         let _ = id;
         Err("this session persistence backend does not support deletion".to_string())
+    }
+
+    /// Reserve a newly constructed Session before agent setup. Durable
+    /// backends retain writer ownership until publication or disposal.
+    async fn prepare_new(&self, session: dsh_session::Session) -> Result<dsh_session::SessionPreparation, String> {
+        Ok(dsh_session::SessionPreparation::create(session, Default::default()))
     }
 
     /// Prepare the exact unpublished Session used by resume (default: load +

@@ -172,11 +172,11 @@ jobs:
         run: cargo test --locked -p dsh-desktop-controller -p dsh-uu-controller input::tests -- --test-threads=1
       - name: 构建正式二进制
         timeout-minutes: 45
-        run: cargo build --locked --release --timings -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher -p dsh-skin-installer --bin dsh-skin-installer
+        run: cargo build --locked --release --timings -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher
       - name: Build Windows native sandbox
         if: matrix.platform == 'windows'
         run: |
-          cargo build --locked --release --workspace --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+          python tools/build_native_sandbox.py --target-dir target/native-windows-sandbox
           if ($LASTEXITCODE -ne 0) { throw 'Native sandbox build failed' }
           cargo test --locked -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
           if ($LASTEXITCODE -ne 0) { throw 'Native sandbox protocol tests failed' }
@@ -198,16 +198,10 @@ jobs:
         timeout-minutes: 2
         shell: bash
         run: python tools/verify_host_startup.py --binary target/release/${{ matrix.binary }} --workdir "$RUNNER_TEMP/dsh-startup-trace" --trace-startup
-      - name: 验证免费模型完整运行链路
-        id: free_probe
-        timeout-minutes: 20
-        continue-on-error: true
-        shell: bash
-        run: python tools/verify_free_model_catalog.py --all --prefer ling-3.0-flash-fin-free --timeout 160 --binary target/release/${{ matrix.binary }} --report target/free-model-verification.json 2>&1 | tee target/free-model-verification.log
-      - name: 选择已验收的发布版本
+      - name: 固定 Web 核心版发行
         id: variants
         shell: bash
-        run: python tools/release_variants.py select --report target/free-model-verification.json --binary target/release/${{ matrix.binary }} --probe-outcome '${{ steps.free_probe.outcome }}' --selection-report target/release-variants.json --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+        run: python tools/release_variants.py select --binary target/release/${{ matrix.binary }} --selection-report target/release-variants.json --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
       - name: 解析发布产物前缀
         id: release
         shell: bash
@@ -220,19 +214,11 @@ jobs:
         run: |
           VERSION="${{ steps.release.outputs.version }}"
           python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
-          python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant skin --version "$VERSION"
-          if [[ " ${{ steps.variants.outputs.variants }} " == *" free "* ]]; then
-            python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant free --version "$VERSION"
-          fi
       - name: 核验便携包内容
         shell: bash
         run: |
           VERSION="${{ steps.release.outputs.version }}"
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
-          python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant skin --version "$VERSION"
-          if [[ " ${{ steps.variants.outputs.variants }} " == *" free "* ]]; then
-            python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant free --version "$VERSION"
-          fi
       - name: 正式包数据与图片回归
         timeout-minutes: 40
         shell: bash
@@ -369,15 +355,12 @@ jobs:
         shell: bash
         run: |
           python tools/release_variants.py checksums --directory dist --prefix "${{ steps.release.outputs.prefix }}" --platform ${{ matrix.platform }} --variants-json '${{ steps.variants.outputs.variants_json }}' --output dist/SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt
-      - name: 保留免费模型验收证据
+      - name: 保留发行身份
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: free-model-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            target/free-model-verification.json
-            target/free-model-verification.log
-            target/release-variants.json
+          name: web-core-identity-${{ matrix.platform }}-${{ matrix.arch }}
+          path: target/release-variants.json
           if-no-files-found: warn
       - name: 保留 Host 启动诊断
         if: failure()

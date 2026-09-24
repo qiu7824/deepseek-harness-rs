@@ -311,7 +311,7 @@ async fn oversized_tool_output_is_pruned_before_a_summary_and_original_log_is_pr
             .any(|e| e.type_ == "compaction/prune")
     );
     assert_eq!(
-        original.data["message"]["content"][0]["content"][0]["text"]
+        original.data["message"]["content"][0]["text"]
             .as_str()
             .unwrap()
             .len(),

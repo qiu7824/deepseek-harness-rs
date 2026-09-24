@@ -28,6 +28,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+dsh-subagent = { path = "../../subagent/subagent" }
+dsh-subagent-spawn-in-process = { path = "../../subagent/subagent-spawn" }
 dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }
 dsh-compaction-tool-result-pruner = { path = "../../compaction/compaction-tool-result-pruner" }
 dsh-compaction = { path = "../../compaction/compaction" }

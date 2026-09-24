@@ -33,6 +33,15 @@ impl Store {
         argv: &[String],
         explicit: &[(String, Option<String>)],
     ) -> Result<ExecutionResources> {
+        self.prepare_execution_with_environment(cwd, argv, explicit, &|key| std::env::var(key).ok())
+    }
+    fn prepare_execution_with_environment(
+        self: &Arc<Self>,
+        cwd: &str,
+        argv: &[String],
+        explicit: &[(String, Option<String>)],
+        inherited: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<ExecutionResources> {
         let lookup = |key: &str| {
             explicit
                 .iter()
@@ -65,6 +74,7 @@ impl Store {
                 .iter()
                 .any(|arg| arg == "cargo" || arg.starts_with("cargo "));
         let cache = if cargo
+            && inherited("CARGO_TARGET_DIR").is_none()
             && !explicit
                 .iter()
                 .any(|(name, _)| name.eq_ignore_ascii_case("CARGO_TARGET_DIR"))
@@ -85,11 +95,7 @@ impl Store {
                 key.push('\0');
                 key.push_str(name);
                 key.push('=');
-                key.push_str(
-                    &lookup(name)
-                        .or_else(|| std::env::var(name).ok())
-                        .unwrap_or_default(),
-                );
+                key.push_str(&lookup(name).or_else(|| inherited(name)).unwrap_or_default());
             }
             let cache = self.cache(&project, &key)?;
             environment.push((
@@ -120,8 +126,12 @@ mod tests {
         let store = Store::open(fixture.0.join("managed")).unwrap();
         let cwd = root.to_string_lossy();
         let argv = vec!["cargo".into(), "test".into()];
-        let mut first = store.prepare_execution(&cwd, &argv, &[]).unwrap();
-        let mut second = store.prepare_execution(&cwd, &argv, &[]).unwrap();
+        let mut first = store
+            .prepare_execution_with_environment(&cwd, &argv, &[], &|_| None)
+            .unwrap();
+        let mut second = store
+            .prepare_execution_with_environment(&cwd, &argv, &[], &|_| None)
+            .unwrap();
         let get = |execution: &ExecutionResources, key: &str| {
             execution
                 .environment
@@ -136,6 +146,19 @@ mod tests {
             get(&first, "CARGO_TARGET_DIR"),
             get(&second, "CARGO_TARGET_DIR")
         );
+        let mut inherited = store
+            .prepare_execution_with_environment(&cwd, &argv, &[], &|key| {
+                (key == "CARGO_TARGET_DIR").then(|| "user-target".into())
+            })
+            .unwrap();
+        assert!(
+            inherited
+                .environment
+                .iter()
+                .all(|(key, _)| key != "CARGO_TARGET_DIR")
+        );
+        assert!(inherited.cache.is_none());
+        inherited.finish(true);
         let mut explicit = store
             .prepare_execution(
                 &cwd,

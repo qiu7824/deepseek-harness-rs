@@ -1,0 +1,32 @@
+{
+  "recordedAt": "2026-09-24T20:39:21.159723+08:00",
+  "status": "native_wire_serialization_verified_controller_integration_pending",
+  "installed": false,
+  "published": false,
+  "checks": {
+    "path": "D:\\codex操作目录\\learning-repair-20260922\\native-computer-wire-tests.log",
+    "sha256": "607a311234dced71bb9a709096e1e3d87d1fdf1b2423747cff8c11502f2e0823",
+    "results": [
+      "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 105 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s"
+    ]
+  },
+  "files": {
+    "crates/llm/llm-deepseek/src/serialize.rs": "5ba98671c74f895cbe8498dcfca4c4f2af6844d6f450309cf9b6f79e9ebeec7c",
+    "crates/llm/llm-deepseek/src/serialize_tests.rs": "e5339b6b5ac036dc2000de616f9816949439add0443883b1b884f75b79b787f0",
+    "crates/llm/llm-deepseek/src/responses.rs": "9b73d2522e315ff3105b4286bf8a99ef62781bcb686fa5f8337e5e9d83b94d0f",
+    "crates/llm/llm-deepseek/src/lib.rs": "a33f0a30a900d24879df8834c860f34c7b7f99ea9eccf626035f335495b88569"
+  },
+  "implemented": [
+    "Responses-only serialization preserves each native tool result screenshot under its exact call ID; ordinary tool images remain on the existing path.",
+    "Native and legacy tool-result messages are covered; missing, multiple, failed and mismatched screenshot results are rejected without borrowing an adjacent image.",
+    "Native replay compares normalized actions and checks against the current assistant message; edited actions discard stale provider replay items.",
+    "An explicitly marked computer_native tool is advertised as the native computer type; the stream translator enables native parsing only when that tool is actually offered.",
+    "Unacknowledged safety checks remain blocking; internal serialization markers never reach the wire."
+  ],
+  "remaining": [
+    "Register and configure the native computer tool and integrate all actions with controller identity, permission, cancellation and observed frame checks.",
+    "Complete failure/cancellation recovery, old screenshot offload policy and explicit safety-check confirmation; no substitute screenshot or automatic acknowledgement is implemented.",
+    "Verify real provider requests, installed GUI and all original release requirements."
+  ]
+}

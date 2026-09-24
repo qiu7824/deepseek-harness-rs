@@ -454,8 +454,14 @@ impl ShellExecutor for LocalPwshExecutor {
                                 if cause.load(std::sync::atomic::Ordering::SeqCst) == 1 {
                                     return Err("[SHELL_ABORTED] PowerShell startup cancelled".to_string());
                                 }
+                                // A short command may finish between the first readiness
+                                // check and this completion notification.
+                                if startup.is_ready().map_err(|error| format!("[SANDBOX_SETUP_FAILED] {error}"))? {
+                                    return Ok(());
+                                }
                                 let detail = handle.collected().stderr.map(|reader| reader.read_from(0).text).unwrap_or_default();
-                                return Err(format!("[SANDBOX_SETUP_FAILED] Runner exited before command readiness ({result:?}): {}", detail.chars().take(2048).collect::<String>()));
+                                let code = dsh_sandbox::native_startup_failure_code(&detail);
+                                return Err(format!("[{code}] Runner exited before command readiness ({result:?}): {}", detail.chars().take(2048).collect::<String>()));
                             }
                             _ = tokio::time::sleep(std::time::Duration::from_millis(15)) => {}
                         }

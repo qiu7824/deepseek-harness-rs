@@ -158,16 +158,12 @@ fn interrupted_tool_result_message(call_id: &str, seq: u64, started: bool) -> Me
     };
     Message {
         id: dsh_llm::message_id(format!("interrupted-tool-result-{call_id}-{seq}")),
-        role: Role::User,
+        role: Role::Tool,
         source: MessageSource::Tool {
             call_id: dsh_llm::call_id(call_id),
         },
-        content: vec![ContentBlock::ToolResult {
-            tool_call_id: dsh_llm::call_id(call_id),
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            is_error: Some(true),
-        }],
+        content: vec![ContentBlock::Text { text: text.to_string() }],
+        tool_call_id: Some(dsh_llm::call_id(call_id)),
+        is_error: Some(true),
     }
 }

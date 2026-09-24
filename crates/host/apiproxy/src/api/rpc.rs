@@ -68,6 +68,7 @@ pub enum RpcErrorCode {
     CredentialRejected,
     ModelDiscoveryFailed,
     TitleInvalid,
+    TitleConflict,
     ForkUnavailable,
     SubagentParentUnavailable,
     SubagentNotFound,
@@ -117,6 +118,7 @@ impl RpcErrorCode {
             Self::CredentialRejected => "credential-rejected",
             Self::ModelDiscoveryFailed => "model-discovery-failed",
             Self::TitleInvalid => "title-invalid",
+            Self::TitleConflict => "title-conflict",
             Self::ForkUnavailable => "fork-unavailable",
             Self::SubagentParentUnavailable => "subagent-parent-unavailable",
             Self::SubagentNotFound => "subagent-not-found",
@@ -163,6 +165,7 @@ impl RpcErrorCode {
             "credential-rejected" => Self::CredentialRejected,
             "model-discovery-failed" => Self::ModelDiscoveryFailed,
             "title-invalid" => Self::TitleInvalid,
+            "title-conflict" => Self::TitleConflict,
             "fork-unavailable" => Self::ForkUnavailable,
             "subagent-parent-unavailable" => Self::SubagentParentUnavailable,
             "subagent-not-found" => Self::SubagentNotFound,
@@ -210,6 +213,14 @@ pub struct SessionConflictDetails {
     pub requested_cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub existing_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleConflictDetails {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub seq: i64,
 }
 
 /// `invalid-time-zone` details.
@@ -424,6 +435,7 @@ pub enum RpcError {
     CredentialRejected(RpcErrorBody<CredentialRefDetails>),
     ModelDiscoveryFailed(RpcErrorBody<ModelDiscoveryFailedDetails>),
     TitleInvalid(RpcErrorBody<SessionIdDetails>),
+    TitleConflict(RpcErrorBody<TitleConflictDetails>),
     ForkUnavailable(RpcErrorBody<SessionIdDetails>),
     SubagentParentUnavailable(RpcErrorBody<ParentSessionIdDetails>),
     SubagentNotFound(RpcErrorBody<SubagentPairDetails>),
@@ -492,6 +504,7 @@ impl RpcError {
             Self::CredentialRejected(_) => RpcErrorCode::CredentialRejected,
             Self::ModelDiscoveryFailed(_) => RpcErrorCode::ModelDiscoveryFailed,
             Self::TitleInvalid(_) => RpcErrorCode::TitleInvalid,
+            Self::TitleConflict(_) => RpcErrorCode::TitleConflict,
             Self::ForkUnavailable(_) => RpcErrorCode::ForkUnavailable,
             Self::SubagentParentUnavailable(_) => RpcErrorCode::SubagentParentUnavailable,
             Self::SubagentNotFound(_) => RpcErrorCode::SubagentNotFound,
@@ -537,6 +550,7 @@ impl RpcError {
             Self::CredentialRejected(body) => &body.message,
             Self::ModelDiscoveryFailed(body) => &body.message,
             Self::TitleInvalid(body) => &body.message,
+            Self::TitleConflict(body) => &body.message,
             Self::ForkUnavailable(body) => &body.message,
             Self::SubagentParentUnavailable(body) => &body.message,
             Self::SubagentNotFound(body) => &body.message,

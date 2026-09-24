@@ -22,6 +22,7 @@ async-trait = { workspace = true }
 indexmap = { workspace = true }
 
 [dev-dependencies]
+dsh-session-persistence-jsonl = { path = "../session-persistence-jsonl" }
 tokio = { workspace = true, features = ["test-util"] }
 dsh-storage = { path = "../../storage/storage" }
 dsh-storage-test-support = { path = "../../storage/storage-test-support" }

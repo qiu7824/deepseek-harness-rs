@@ -14,8 +14,8 @@ pub struct SessionStatsProjection {
     /// Closed steps (`step/end` events) — completed, failed, and cancelled
     /// alike.
     pub steps: u64,
-    /// Summed model wall time (`step/start` → `assistant/message`) over
-    /// steps that assembled a message, ms.
+    /// Summed request network time, including failed and cancelled attempts.
+    /// Older logs without telemetry use step start → message/closing boundary.
     pub llm_ms: u64,
     /// Summed tool wall time over `tool/call` → `tool/result` pairs matched
     /// by callId, ms.

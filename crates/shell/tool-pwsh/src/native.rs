@@ -310,7 +310,18 @@ pub(super) fn install(
                             Err(error)=> {
                                 if let (Some(profiles),Some(context),Some(capability)) = (&profiles,&request.execution_context_id,&capabilities[index]) { profiles.report_failure(context,capability); }
                                 let mut failure = super::shell_runtime_failure(error);
-                                failure.message = format!("{}\nStep {} has no completed execution result; {} dependent steps were not dispatched. Inspect possible effects before retrying.\nPrevious results: {}", failure.message,index+1,total-index-1,Value::Array(results));
+                                let not_started = failure.receipt.as_ref().is_some_and(|receipt| receipt["commandStarted"] == false && receipt["effects"] == "none");
+                                let detail = if not_started { "was not dispatched" } else { "has no completed execution result" };
+                                failure.message = format!("{}\nStep {} {}; {} dependent steps were not dispatched. {}\nPrevious results: {}", failure.message,index+1,detail,total-index-1,if results.is_empty() && not_started {"The requested command has no effects."} else {"Inspect existing effects before retrying."},Value::Array(results.clone()));
+                                if let Some(receipt) = failure.receipt.as_mut() {
+                                    receipt["executionId"] = json!(call_id);
+                                    if !results.is_empty() {
+                                        receipt["commandStarted"] = json!(true);
+                                        receipt["effects"] = json!("possible");
+                                    }
+                                    receipt["steps"] = json!(results);
+                                    receipt["undispatchedSteps"] = json!(total-index);
+                                }
                                 return Err(failure);
                             },
                         };

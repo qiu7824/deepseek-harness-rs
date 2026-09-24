@@ -12,6 +12,17 @@ pub struct GoalRequirementsIdentity {
 }
 
 pub const GOAL_COMPLETION_GUARD_SERVICE: &str = "goalCompletionGuard";
+pub const GOAL_USER_CONTROL_SERVICE: &str = "goalUserRequirementsControl";
+
+/// Host execution boundary for direct user changes. The callback runs once,
+/// synchronously, while the parent, descendants and background work are idle.
+pub trait GoalUserControl: Send + Sync {
+    fn with_idle(
+        &self,
+        agent: &Arc<dyn Agent>,
+        operation: &mut dyn FnMut() -> Result<(), crate::GoalError>,
+    ) -> Result<(), crate::GoalError>;
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalCompletionError {

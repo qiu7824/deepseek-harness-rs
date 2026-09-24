@@ -27,6 +27,8 @@ pub mod lifecycle;
 pub mod list_children;
 pub mod projection;
 pub mod run_settlement;
+pub mod resident_quota;
+pub mod parallel_quota;
 pub mod structured;
 pub mod types;
 pub mod ultra;

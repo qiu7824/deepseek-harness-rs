@@ -20,9 +20,9 @@ class SharedCargoIdentityTests(unittest.TestCase):
             run(['git', 'config', 'user.email', 'fixture@example.invalid'])
             (repo/'Cargo.toml').write_text('[package]\nname="identity-fixture"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
             (repo/'src').mkdir()
-            (repo/'src/main.rs').write_text('fn main(){ println!("{} {}",env!("DSH_BUILD_REVISION"),env!("DSH_BUILD_DIRTY")); }', encoding='utf-8')
+            (repo/'src/main.rs').write_text('fn main(){ println!("{} {} {} {}",env!("DSH_BUILD_REVISION"),env!("DSH_BUILD_DIRTY"),env!("DSH_NATIVE_REVISION"),env!("DSH_NATIVE_DIRTY")); }', encoding='utf-8')
             (repo/'build_identity.rs').write_bytes((SOURCE/'crates/host/dsh-cli/build_identity.rs').read_bytes())
-            (repo/'build.rs').write_text('mod build_identity; fn main(){build_identity::emit(std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()));}', encoding='utf-8')
+            (repo/'build.rs').write_text('mod build_identity; fn main(){let path=std::env::var("CARGO_MANIFEST_DIR").unwrap();let path=std::path::Path::new(&path);build_identity::emit(path);build_identity::emit_named(path,"DSH_NATIVE");}', encoding='utf-8')
             (repo/'.gitignore').write_text('Cargo.lock\n', encoding='utf-8')
             run(['git', 'add', '.'])
             run(['git', 'commit', '-qm', 'first'])
@@ -38,7 +38,7 @@ class SharedCargoIdentityTests(unittest.TestCase):
             for source, expected in [(repo, first), (tree, second), (repo, first)]:
                 run(['cargo', 'build', '--offline', '-q'], source, env)
                 exe = root/'target/debug'/('identity-fixture.exe' if os.name=='nt' else 'identity-fixture')
-                self.assertEqual(run([str(exe)], source), f'{expected} false')
+                self.assertEqual(run([str(exe)], source), f'{expected} false {expected} false')
 
 if __name__ == '__main__':
     unittest.main()

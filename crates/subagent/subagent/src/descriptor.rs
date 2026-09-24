@@ -10,7 +10,7 @@ use serde_json::Value;
 /// The current descriptor format version, stamped into every appended
 /// `subagent/descriptor` event and required verbatim by
 /// [`fold_subagent_descriptor`].
-pub const SUBAGENT_DESCRIPTOR_VERSION: u32 = 4;
+pub const SUBAGENT_DESCRIPTOR_VERSION: u32 = 5;
 
 /// The supported durable subagent identity and optional continuation
 /// composition (TS `SubagentDescriptorData`).
@@ -61,6 +61,10 @@ pub enum SubagentDescriptorData {
             rename = "agentMaxTokens"
         )]
         agent_max_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentMaxSteps")]
+        agent_max_steps: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentTimeoutSeconds")]
+        agent_timeout_seconds: Option<u64>,
         /// Per-child persona that shadows the deployment persona on resume.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         persona: Option<String>,
@@ -85,6 +89,30 @@ impl SubagentDescriptorData {
     pub fn is_continuable(&self) -> bool {
         matches!(self, SubagentDescriptorData::Continuable { .. })
     }
+}
+
+/// Publish the direct child's durable discovery fact before its first input.
+pub(crate) fn record_child_catalog(
+    parent: &dsh_session::Session,
+    child: &dsh_session::Session,
+    descriptor: &SubagentDescriptorData,
+) -> Result<(), String> {
+    let header = child.header();
+    if header.origin.as_deref() != Some("subagent") || header.parent_session.as_ref() != Some(parent.id()) {
+        return Err("subagent catalog child does not belong to this parent".into());
+    }
+    let (mode, label) = match descriptor {
+        SubagentDescriptorData::OneShot { label, .. } => ("one-shot", label.as_deref()),
+        SubagentDescriptorData::Continuable { label, .. } => ("continuable", Some(label.as_str())),
+    };
+    let mut fact = serde_json::json!({"version":0,"childId":child.id(),"childCreatedAt":header.created_at,"mode":mode});
+    if let Some(label) = label { fact["label"] = serde_json::json!(label); }
+    let existing = parent.with_events(|events| events.iter().rev().find(|event| event.seq.get() >= parent.inherited_event_count().get() && event.type_ == "subagent/catalog" && event.data["childId"] == child.id().as_str()).map(|event| event.data.clone()));
+    if let Some(existing) = existing {
+        return if existing == fact { Ok(()) } else { Err("conflicting subagent catalog identity".into()) };
+    }
+    parent.append("subagent/catalog", fact, None)?;
+    Ok(())
 }
 
 const DESCRIPTOR_BASE_KEYS: [&str; 4] = ["version", "mode", "provider", "label"];
@@ -169,7 +197,7 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
     let Some(version) = map.get("version").and_then(Value::as_u64) else {
         return Err("persisted subagent descriptor version must be a number".to_string());
     };
-    if !matches!(version, 2 | 3 | 4) {
+    if !matches!(version, 2 | 3 | 4 | 5) {
         return Ok(None);
     }
     let mode = map.get("mode").and_then(Value::as_str).unwrap_or("");
@@ -193,6 +221,8 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
                 "agentModel",
                 "agentReasoningEffort",
                 "agentMaxTokens",
+                "agentMaxSteps",
+                "agentTimeoutSeconds",
                 "persona",
                 "toolFilter",
             ],
@@ -224,6 +254,12 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
                 )
             })
             .transpose()?;
+    let positive = |key: &str| -> Result<Option<u64>, String> {
+        map.get(key).map(|value| value.as_u64().filter(|n| *n > 0)
+            .ok_or_else(|| format!("persisted subagent descriptor {key} must be a positive integer"))).transpose()
+    };
+    let agent_max_steps = positive("agentMaxSteps")?;
+    let agent_timeout_seconds = positive("agentTimeoutSeconds")?;
     let persona = optional_string(map, "persona")?;
     let tool_filter = match map.get("toolFilter") {
         None => None,
@@ -237,6 +273,8 @@ fn parse_subagent_descriptor(value: &Value) -> Result<Option<SubagentDescriptorD
         agent_model,
         agent_reasoning_effort,
         agent_max_tokens,
+        agent_max_steps,
+        agent_timeout_seconds,
         persona,
         tool_filter,
     }))
@@ -262,6 +300,8 @@ pub fn snapshot_subagent_descriptor(
             agent_model,
             agent_reasoning_effort,
             agent_max_tokens,
+        agent_max_steps,
+        agent_timeout_seconds,
             persona,
             tool_filter,
             ..
@@ -273,6 +313,8 @@ pub fn snapshot_subagent_descriptor(
             agent_model: agent_model.clone(),
             agent_reasoning_effort: agent_reasoning_effort.clone(),
             agent_max_tokens: *agent_max_tokens,
+            agent_max_steps: *agent_max_steps,
+            agent_timeout_seconds: *agent_timeout_seconds,
             persona: persona.clone(),
             tool_filter: tool_filter.clone(),
         },
@@ -305,10 +347,12 @@ mod tests {
             let descriptor=parse_subagent_descriptor(&serde_json::json!({"version":version,"mode":"continuable","provider":"spawn","label":"worker","agentProvider":"route","agentModel":"model"})).unwrap().unwrap();
             assert!(descriptor.is_continuable());
         }
-        let input = serde_json::json!({"version":4,"mode":"continuable","provider":"spawn","label":"worker","agentProvider":"route","agentModel":"model","agentMaxTokens":1024,"toolFilter":{"deny":["subagent"]}});
+        let input = serde_json::json!({"version":5,"agentMaxSteps":3,"agentTimeoutSeconds":20,"mode":"continuable","provider":"spawn","label":"worker","agentProvider":"route","agentModel":"model","agentMaxTokens":1024,"toolFilter":{"deny":["subagent"]}});
         let parsed = parse_subagent_descriptor(&input).unwrap().unwrap();
         let saved = serde_json::to_value(snapshot_subagent_descriptor(&parsed).unwrap()).unwrap();
         assert_eq!(saved["agentMaxTokens"], 1024);
+        assert_eq!(saved["agentMaxSteps"], 3);
+        assert_eq!(saved["agentTimeoutSeconds"], 20);
         assert_eq!(saved["toolFilter"]["deny"], serde_json::json!(["subagent"]));
         for value in [
             serde_json::json!(0),

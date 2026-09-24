@@ -131,7 +131,7 @@ pub fn apply_compaction_event(
         }
         "user/message" => {
             let source = event.data.get("source");
-            let is_checkpoint = source
+            let is_checkpoint = source.and_then(|source| source.get("kind")).and_then(|kind| kind.as_str()) == Some("compact-checkpoint") || source
                 .and_then(|source| source.get("kind"))
                 .and_then(|kind| kind.as_str())
                 == Some("plugin")

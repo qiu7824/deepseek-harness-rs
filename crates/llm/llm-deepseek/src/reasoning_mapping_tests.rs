@@ -167,6 +167,7 @@ async fn catalog_protocol_and_parameter_capabilities_reach_the_actual_http_body(
     options.temperature = Some(0.7);
     options.stop = Some(vec!["STOP".into()]);
     options.tools = Some(vec![dsh_llm::ToolSchema {
+        defer_loading: None,
         name: "glob".into(),
         description: "List files".into(),
         parameters: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),

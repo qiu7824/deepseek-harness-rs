@@ -179,6 +179,7 @@ struct WorkState {
 #[derive(Debug)]
 pub enum RenameFailure {
     Invalid(SessionTitleInvalidError),
+    Conflict(Option<SessionTitleSnapshot>),
     Error(String),
 }
 
@@ -186,6 +187,7 @@ impl std::fmt::Display for RenameFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RenameFailure::Invalid(error) => write!(f, "{error}"),
+            RenameFailure::Conflict(_) => write!(f, "session title changed while editing"),
             RenameFailure::Error(message) => write!(f, "{message}"),
         }
     }
@@ -935,7 +937,7 @@ impl SessionTitleService {
     /// Read the latest folded title from one live or replayed session (TS
     /// `get`).
     pub fn get(&self, session: &Session) -> Option<SessionTitleSnapshot> {
-        fold_session_title(&session.events())
+        session.with_events(fold_session_title)
     }
 
     /// Accept an explicit user title (TS `rename`). Appends a
@@ -944,6 +946,18 @@ impl SessionTitleService {
         &self,
         session: &Session,
         title: &str,
+    ) -> Result<SessionTitleSnapshot, RenameFailure> {
+        self.rename_checked(session, title, None)
+    }
+
+    /// Reject a stale edit against the exact log prefix used for the append.
+    /// The watermark is the client's title projection cut, not the last title
+    /// event; unrelated conversation events do not invalidate an edit.
+    pub fn rename_checked(
+        &self,
+        session: &Session,
+        title: &str,
+        expected: Option<(Option<&str>, i64)>,
     ) -> Result<SessionTitleSnapshot, RenameFailure> {
         self.assert_service_active().map_err(RenameFailure::Error)?;
         let store = self.sessions_store().ok_or_else(|| {
@@ -964,18 +978,32 @@ impl SessionTitleService {
                 "session title must contain visible characters",
             )));
         }
+        if expected.is_some_and(|(_, seq)| !(-1..=9_007_199_254_740_991).contains(&seq)) {
+            return Err(RenameFailure::Invalid(SessionTitleInvalidError::new("invalid title edit watermark")));
+        }
         let state = self.state_for(session);
-        self.supersede(&state, "user rename superseded automatic title generation");
-        session
-            .append(
+        let accepted = session
+            .append_if(
                 "session/title",
                 title_event_data(&normalized, Vec::new(), &SessionTitleSource::User),
                 None,
+                |events| {
+                    let matches = expected.is_none_or(|(value, through)| {
+                        let current = fold_session_title(events);
+                        current.as_ref().map(|snapshot| snapshot.title.as_str()) == value
+                            && current.as_ref().is_none_or(|snapshot| snapshot.event_seq as i64 <= through)
+                    });
+                    if matches {
+                        self.supersede(&state, "user rename superseded automatic title generation");
+                    }
+                    matches
+                },
             )
             .map_err(|error| {
                 RenameFailure::Error(format!("session title append failed: {error}"))
             })?;
-        self.get(session)
+        let Some(accepted) = accepted else { return Err(RenameFailure::Conflict(self.get(session))); };
+        fold_session_title(&[accepted])
             .ok_or_else(|| RenameFailure::Error("renamed title failed to fold".to_string()))
     }
 
@@ -1019,7 +1047,7 @@ impl SessionTitleService {
                 .is_some_and(|current| current.source.kind() == "user")
                 && first.is_some()
             {
-                self.append_fallback(session, &first.unwrap())?;
+                self.append_fallback(session, &first.unwrap(), current.as_ref().map(|snapshot| snapshot.event_seq))?;
                 if let Some(signal) = signal {
                     if let Some(reason) = signal.abort_reason() {
                         return Err(reason);
@@ -1330,6 +1358,7 @@ impl SessionTitleService {
             self.assert_current(session, work)?;
             self.ensure_fallback(session).await?;
             self.assert_current(session, work)?;
+            let title_before = self.get(session).map(|snapshot| snapshot.event_seq);
             let messages =
                 collect_session_title_messages(&session.events(), Some(work.through_seq));
             let result = work
@@ -1353,9 +1382,13 @@ impl SessionTitleService {
                     model: accepted.model.clone(),
                 },
             );
-            session
-                .append("session/title", data, None)
+            let accepted = session
+                .append_if("session/title", data, None, |events| {
+                    !work.signal.is_aborted()
+                        && fold_session_title(events).map(|snapshot| snapshot.event_seq) == title_before
+                })
                 .map_err(|error| format!("session title append failed: {error}"))?;
+            if accepted.is_none() { return Ok(self.get(session)); }
             Ok(self.get(session))
         })
         .await;
@@ -1652,6 +1685,7 @@ impl SessionTitleService {
         &self,
         session: &Session,
         first: &SessionTitleUserMessage,
+        expected_title_seq: Option<u64>,
     ) -> Result<(), String> {
         let title = fallback_session_title(
             &first.text,
@@ -1662,10 +1696,11 @@ impl SessionTitleService {
             return Ok(());
         }
         session
-            .append(
+            .append_if(
                 "session/title",
                 title_event_data(&title, vec![first.seq], &SessionTitleSource::Fallback),
                 None,
+                |events| fold_session_title(events).map(|snapshot| snapshot.event_seq) == expected_title_seq,
             )
             .map_err(|error| format!("session title append failed: {error}"))?;
         Ok(())
@@ -1723,7 +1758,7 @@ impl SessionTitleService {
                             return Ok(Some(accepted));
                         }
                         session_for_run
-                            .append(
+                            .append_if(
                                 "session/title",
                                 title_event_data(
                                     &title_for_run,
@@ -1731,6 +1766,7 @@ impl SessionTitleService {
                                     &SessionTitleSource::Fallback,
                                 ),
                                 None,
+                                |events| fold_session_title(events).is_none(),
                             )
                             .map_err(|error| format!("session title append failed: {error}"))?;
                         Ok(service.get(&session_for_run))

@@ -410,12 +410,29 @@ window.__ModuleLoader__.load({
 		* permissions projection.
 		* @param ctx - client root context.
 		*/
+        function installAutoConfirmation(ctx,t) {
+            let pending=null;const listeners=new Set();
+            const notify=()=>{for(const listener of listeners)listener()};
+            const finish=(request,value)=>{if(pending!==request)return;pending=null;notify();request.resolve(value)};
+            function Confirmation(){
+                const request=react.useSyncExternalStore(listener=>{listeners.add(listener);return()=>listeners.delete(listener)},()=>pending,()=>null);
+                const [acknowledgedFor,setAcknowledgedFor]=react.useState(null);
+                if(request===null)return null;
+                return react_jsx_runtime.jsx(_deepseek_ai_dsh_client_ui_primitives.RiskConfirmation,{open:true,title:t("auto.title"),description:t("auto.description")+" · "+request.label,acknowledgeLabel:t("auto.acknowledge"),cancelLabel:t("confirm.cancel"),confirmLabel:t("confirm.enable"),acknowledged:acknowledgedFor===request,onAcknowledgedChange:value=>setAcknowledgedFor(value?request:null),onCancel:()=>finish(request,false),onConfirm:()=>{if(acknowledgedFor===request)finish(request,true)}});
+            }
+            ctx.slots.inject("shell.overlay",()=>ctx.slots.register({name:"shell.overlay",id:"auto-review-confirmation",order:100},Confirmation));
+            ctx.effect(()=>()=>{if(pending)finish(pending,false)},"permission: cancel detached Auto confirmation");
+            return session=>new Promise(resolve=>{if(pending)finish(pending,false);pending={resolve,label:typeof session.title==="string"?session.title:session.sessionId};notify()});
+        }
 		function apply(ctx) {
 			const command = ctx.get("commandUi");
 			const sessions = ctx.sessions;
 			ctx.effect(() => {
 				const disposers = [ctx.locale.register(ACCESS_NS, "zh", {
-					"preset.readOnly": accessZh["preset.readOnly"],
+					"auto.title":"启用 Auto review？",
+                    "auto.description":"模型将逐调用审查操作，获准后以完全访问执行。它可能误判，并消耗额外 token；仅对所选会话生效。",
+                    "auto.acknowledge":"我了解实验性模型审查不能替代文件沙箱。",
+                    "preset.readOnly": accessZh["preset.readOnly"],
                     "description.workspaceWrite": accessZh["description.workspaceWrite"],
                     "description.fullAccess": accessZh["description.fullAccess"],
 					"preset.workspaceWrite": accessZh["preset.workspaceWrite"],
@@ -426,7 +443,10 @@ window.__ModuleLoader__.load({
 					"confirm.cancel": accessZh["confirm.cancel"],
 					"confirm.enable": accessZh["confirm.enable"]
 				}), ctx.locale.register(ACCESS_NS, "en", {
-					"preset.readOnly": accessEn["preset.readOnly"],
+					"auto.title":"Enable Auto review?",
+                    "auto.description":"The model reviews each call and allowed actions run with full access. It may make mistakes and uses extra tokens. This applies only to the selected session.",
+                    "auto.acknowledge":"I understand that experimental model review does not provide a file sandbox.",
+                    "preset.readOnly": accessEn["preset.readOnly"],
                     "description.workspaceWrite": accessEn["description.workspaceWrite"],
                     "description.fullAccess": accessEn["description.fullAccess"],
 					"preset.workspaceWrite": accessEn["preset.workspaceWrite"],
@@ -442,6 +462,7 @@ window.__ModuleLoader__.load({
 				};
 			}, "ui-permission: Full access confirmation dictionaries");
 			const t = ctx.locale.bind(ACCESS_NS);
+            const confirmAuto=installAutoConfirmation(ctx,t);
 			const sessionFor = (session) => sessions.binding(session.sessionId)?.session;
 			ctx.effect(() => ctx.locale.register("settings.permission", {
 				zh,
@@ -490,6 +511,7 @@ window.__ModuleLoader__.load({
 					onSelect: async (option, session) => {
 						const live = sessionFor(session);
 						if (live === void 0) throw new Error("this session is not materialized yet");
+						if(option.id==="auto" && selectOf(live)?.currentValue!=="auto" && !await confirmAuto(session))return;
 						const result = await live.command(`/permission ${option.id}`);
 						if (!result.ok) throw new Error(`permission switch failed: ${result.error.code}: ${result.error.message}`);
 						if (!result.value.matched) throw new Error("the host offers no /permission command");

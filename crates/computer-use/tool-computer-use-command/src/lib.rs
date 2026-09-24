@@ -3,6 +3,8 @@
 
 mod adapter;
 mod arguments;
+mod native_protocol;
+pub use native_protocol::{install_native_protocol,native_protocol_failure};
 mod browser;
 mod command;
 mod control;
@@ -21,7 +23,7 @@ mod lifecycle_tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -88,6 +90,7 @@ pub struct ComputerUseRuntime {
     adapter: Arc<dyn ComputerUseAdapter>,
     timeout: Duration,
     owner_agents: SyncMutex<HashMap<String, Weak<dyn dsh_agent::Agent>>>,
+    observation_epochs: SyncMutex<HashMap<String, Arc<AtomicU64>>>,
 }
 
 impl cordis::Service for ComputerUseRuntime {
@@ -97,6 +100,7 @@ impl cordis::Service for ComputerUseRuntime {
 }
 
 impl ComputerUseRuntime {
+    pub fn native_protocol_status(&self)->Value {native_protocol::status(&self.ctx)}
     pub fn adapter_id(&self) -> &'static str {
         self.adapter.adapter_id()
     }
@@ -146,6 +150,7 @@ impl ComputerUseRuntime {
             arguments,
             signal,
             ControlOrigin::Agent,
+            None,
         )
         .await
     }
@@ -165,6 +170,7 @@ impl ComputerUseRuntime {
             arguments,
             signal,
             ControlOrigin::Agent,
+            None,
         )
         .await
     }
@@ -184,6 +190,7 @@ impl ComputerUseRuntime {
             arguments,
             signal,
             ControlOrigin::Human,
+            None,
         )
         .await
     }
@@ -194,7 +201,7 @@ impl ComputerUseRuntime {
         arguments: &Value,
         signal: AbortPredicate,
     ) -> Result<AdapterOutput, AdapterError> {
-        self.execute_inner(owner_id, None, arguments, signal, ControlOrigin::Human)
+        self.execute_inner(owner_id, None, arguments, signal, ControlOrigin::Human, None)
             .await
     }
 
@@ -205,16 +212,24 @@ impl ComputerUseRuntime {
         arguments: &Value,
         signal: AbortPredicate,
         origin: ControlOrigin,
+        binding: Option<&native_protocol::Frame>,
     ) -> Result<AdapterOutput, AdapterError> {
         let selected_adapter = self.adapter.adapter_id_for(arguments)?;
         let normalized = arguments::normalize(selected_adapter, arguments)?;
         let arguments = normalized.as_ref();
+        let epoch={let mut epochs=self.observation_epochs.lock();if epochs.len()>=128 && !epochs.contains_key(&owner_id) {epochs.retain(|owner,_|self.adapter.has_owner_activity(owner));}if epochs.len()>=128 && !epochs.contains_key(&owner_id){return Err(AdapterError::new("COMPUTER_USE_SESSION_LIMIT","Observation catalog is full"));}epochs.entry(owner_id.clone()).or_insert_with(||Arc::new(AtomicU64::new(0))).clone()};
+        let current=epoch.load(Ordering::SeqCst);
+        if binding.is_some_and(|frame| !Arc::ptr_eq(&frame.epoch,&epoch)||frame.revision!=current) {return Err(AdapterError::new("COMPUTER_USE_FRAME_STALE","Computer state changed after the observed frame"));}
+        let revision=if action_requires_approval(arguments["action"].as_str().unwrap_or_default()) {if binding.is_some(){epoch.compare_exchange(current,current+1,Ordering::SeqCst,Ordering::SeqCst).map_err(|_|AdapterError::new("COMPUTER_USE_FRAME_STALE","Computer state changed before dispatch"))?+1}else{epoch.fetch_add(1,Ordering::SeqCst)+1}}else{current};
+        let source_signal=signal.clone();let active_epoch=epoch.clone();
+        let signal:AbortPredicate=if binding.is_some(){Arc::new(move||source_signal()||active_epoch.load(Ordering::SeqCst)!=revision)}else{signal};
         validate_adapter_url(selected_adapter, arguments)?;
         validate_window_target(selected_adapter, arguments)?;
         let was_active = self.adapter.has_owner_activity(&owner_id);
         let mut request = AdapterRequest::from_arguments(arguments)?
             .with_owner_id(owner_id.clone())
             .with_origin(origin);
+        if let Some(frame)=binding {request.permission_target=Some(frame.identity.clone());request.arguments["observedControlGeneration"]=json!(frame.control_generation);request.arguments["observedViewport"]=frame.viewport.clone();}
         request.workspace_root = owner
             .as_ref()
             .and_then(|agent| agent.session().header().cwd.clone())
@@ -257,12 +272,14 @@ impl ComputerUseRuntime {
         object
             .entry("adapter".to_string())
             .or_insert_with(|| Value::String(selected_adapter.to_string()));
+        object.insert("observationRevision".into(),json!(revision));
         Ok(output)
     }
 
     pub async fn shutdown(&self) -> Result<(), AdapterError> {
         let result = self.adapter.shutdown().await;
         self.owner_agents.lock().clear();
+        for epoch in self.observation_epochs.lock().drain().map(|(_,epoch)|epoch){epoch.fetch_add(1,Ordering::SeqCst);}
         result
     }
 
@@ -270,6 +287,7 @@ impl ComputerUseRuntime {
         let result = self.adapter.close_owner(owner_id).await;
         if !self.adapter.has_owner_activity(owner_id) {
             self.owner_agents.lock().remove(owner_id);
+            if let Some(epoch)=self.observation_epochs.lock().remove(owner_id){epoch.fetch_add(1,Ordering::SeqCst);}
         }
         result
     }
@@ -302,12 +320,54 @@ impl ComputerUseRuntime {
                 .lock()
                 .remove(&owner_id)
                 .and_then(|owner| owner.upgrade());
+            if let Some(epoch)=self.observation_epochs.lock().remove(&owner_id){epoch.fetch_add(1,Ordering::SeqCst);}
             if let Some(owner) = owner {
                 self.ctx
                     .emit("computer-use/owner-idle", vec![cordis::arc(owner)]);
             }
         }
     }
+}
+
+/// Publish only a successful model-owned control binding. This optional UI
+/// event contains no screenshot, input text or model-visible surface content.
+fn publish_control_activity(
+    session: &dsh_session::Session,
+    arguments: &Value,
+    output: &Value,
+    call_id: &str,
+) {
+    if output["state"]["connected"] != true || arguments["action"] == "close" {
+        return;
+    }
+    let adapter = output["adapter"].as_str().unwrap_or("");
+    let browser_session = arguments["sessionId"].as_str().unwrap_or("default");
+    let control_id = output["state"]["controlId"].as_str();
+    if adapter.len() > 128
+        || browser_session.len() > 256
+        || call_id.len() > 512
+        || control_id.is_some_and(|id| id.len() > 256)
+    {
+        return;
+    }
+    let target = arguments["target"].as_str().unwrap_or(match adapter {
+        "native-browser" => "browser",
+        "uu-desktop" => "remote",
+        _ => "local",
+    });
+    if !matches!(target, "local" | "remote" | "browser") {
+        return;
+    }
+    let _ = session.append(
+        "computer-use/activity",
+        json!({
+            "ownerSessionId":session.id(), "callId":call_id,
+            "browserSessionId":browser_session,
+            "target":target, "adapter":adapter, "action":arguments["action"].as_str(),
+            "controlId":control_id,
+        }),
+        None,
+    );
 }
 
 fn computer_use_grant_key(adapter: &str, arguments: &Value) -> String {
@@ -375,6 +435,7 @@ fn supported_actions(adapter: &str) -> Option<&'static [&'static str]> {
             "capture",
             "navigate",
             "cua_browser_state",
+            "move",
             "click",
             "double_click",
             "type",
@@ -398,6 +459,7 @@ fn supported_actions(adapter: &str) -> Option<&'static [&'static str]> {
             "set_value",
             "select",
             "scroll_element",
+            "move",
             "start",
             "status",
             "capture",
@@ -643,6 +705,7 @@ pub fn install_adapter(
         adapter,
         timeout: Duration::from_millis(timeout_ms),
         owner_agents: SyncMutex::new(HashMap::new()),
+        observation_epochs: SyncMutex::new(HashMap::new()),
     });
     ctx.register_service(Arc::clone(&runtime));
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -783,9 +846,10 @@ pub fn install_adapter(
                     "deltaY": { "type": "number", "description": "Vertical scroll amount: positive moves down, negative moves up." },
                     "scrollX": { "type": "number", "description": "Alias for deltaX; do not supply conflicting values." },
                     "scrollY": { "type": "number", "description": "Alias for deltaY; do not supply conflicting values." },
-                    "keys": { "type":"array", "items":{"type":"string"}, "description":"One to five names: optional modifiers followed by one key, e.g. [Control,a] or [Enter]." },
+                    "keys": { "type":"array", "items":{"type":"string"}, "description":"For key: optional modifiers followed by one key, e.g. [Control,a]. For click, double_click, move, drag or scroll: up to four modifier names only (Control, Alt, Shift, Meta)." },
                     "endX": { "type":"number", "description":"Drag end x coordinate in the returned viewport." },
                     "endY": { "type":"number", "description":"Drag end y coordinate in the returned viewport." },
+                    "path": {"type":"array","minItems":2,"maxItems":256,"items":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"description":"Full ordered drag path in the observed viewport. Overrides x/y/endX/endY; press once and release after the last point."},
                     "waitMs": { "type": "integer", "description": "Optional settle delay from 0 through 10000 milliseconds." },
                     "includeScreenshot": { "type": "boolean" }
                 },
@@ -808,6 +872,8 @@ pub fn install_adapter(
                 let arguments = args.clone();
                 let signal = run.signal.lock().clone();
                 let owner = run.agent.clone();
+                let activity_owner = owner.clone();
+                let activity_call = run.call_id.clone();
                 Box::pin(async move {
                     let mut output = match owner {
                         Some(owner) => runtime
@@ -820,6 +886,9 @@ pub fn install_adapter(
                     .map_err(tool_body_error)?;
                     if signal() {
                         return Err(tool_body_error(AdapterError::cancelled()));
+                    }
+                    if let Some(owner) = activity_owner {
+                        publish_control_activity(owner.session(), &arguments, &output.value, activity_call.as_str());
                     }
                     let object = output
                         .value
@@ -904,7 +973,10 @@ fn render_output(value: &Value) -> Result<Vec<dsh_llm::ContentBlock>, String> {
     if let Some(screenshot) = value.get("screenshot") {
         let attachment = serde_json::from_value::<dsh_llm::ImageAttachmentRef>(screenshot.clone())
             .map_err(|error| format!("invalid computer-use screenshot reference: {error}"))?;
-        blocks.push(dsh_llm::ContentBlock::Image { attachment });
+        blocks.push(dsh_llm::ContentBlock::Image {
+            attachment,
+            offloaded: None,
+        });
     }
     Ok(blocks)
 }
@@ -912,6 +984,55 @@ fn render_output(value: &Value) -> Result<Vec<dsh_llm::ContentBlock>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn control_activity_is_scoped_bounded_and_absent_from_model_history() {
+        let session =
+            dsh_session::Session::create(dsh_session::session_id("owner-a"), None, None, None)
+                .unwrap();
+        let output = json!({"adapter":"native-browser","state":{"connected":true,"controlId":"controller-a"},"screenshot":{"base64":"private-pixels"}});
+        publish_control_activity(
+            &session,
+            &json!({"action":"start","sessionId":"model-browser","target":"browser","text":"private-input"}),
+            &output,
+            "js-call:computer-js:1",
+        );
+        let events = session.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].ignorable, Some(true));
+        assert_eq!(events[0].data["ownerSessionId"], "owner-a");
+        assert_eq!(events[0].data["browserSessionId"], "model-browser");
+        assert_eq!(events[0].data["target"], "browser");
+        assert!(dsh_session::derive_event_message(&events[0]).is_none());
+        assert!(!events[0].data.to_string().contains("private-"));
+        drop(events);
+        publish_control_activity(&session, &json!({"action":"close"}), &output, "close");
+        publish_control_activity(
+            &session,
+            &json!({"action":"list_windows"}),
+            &json!({"windows":[]}),
+            "list",
+        );
+        publish_control_activity(
+            &session,
+            &json!({"action":"capture"}),
+            &json!({"state":{"connected":false}}),
+            "disconnected",
+        );
+        assert_eq!(session.events().len(), 1);
+        let mut oversized = output;
+        oversized["state"]["controlId"] = json!("x".repeat(257));
+        publish_control_activity(
+            &session,
+            &json!({"action":"capture"}),
+            &oversized,
+            "oversized",
+        );
+        assert_eq!(
+            session.events().len(),
+            1,
+            "untrusted adapter identity cannot inflate activity history"
+        );
+    }
 
     struct DesktopMustNotStart;
     #[async_trait::async_trait]
@@ -977,6 +1098,7 @@ mod tests {
             adapter: Arc::new(DesktopMustNotStart),
             timeout: Duration::from_secs(1),
             owner_agents: SyncMutex::new(HashMap::new()),
+            observation_epochs: SyncMutex::default(),
         };
         let error = runtime
             .execute(
@@ -1240,6 +1362,7 @@ mod tests {
             adapter: Arc::new(SlowAdapter),
             timeout: Duration::from_millis(25),
             owner_agents: SyncMutex::new(HashMap::new()),
+            observation_epochs: SyncMutex::default(),
         };
         let timed_out = runtime
             .execute("owner", &json!({"action":"capture"}), Arc::new(|| false))
@@ -1283,6 +1406,7 @@ mod tests {
                 adapter: adapter.clone(),
                 timeout: Duration::from_secs(5),
                 owner_agents: SyncMutex::new(HashMap::new()),
+                observation_epochs: SyncMutex::default(),
             },
             adapter,
         )

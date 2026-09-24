@@ -288,3 +288,54 @@ async fn fifty_real_persistence_resumes_release_old_history_generations() {
     drop(persistence);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn competing_factories_reserve_storage_before_setup_and_release_failed_resumes() {
+    use dsh_session_persistence::SessionPersistenceApi;
+    use dsh_session_persistence_jsonl::{JsonlConfig, JsonlSessionPersistence};
+    let root = std::env::temp_dir().join(format!("agent-writer-owner-{}", uuid::Uuid::new_v4()));
+    let (a_ctx, _, _, a_adapter) = fixture(false);
+    let (b_ctx, b_sessions, b_agents, b_adapter) = fixture(false);
+    let config = || JsonlConfig { root: root.to_string_lossy().into_owned(), ..Default::default() };
+    let a_persistence = JsonlSessionPersistence::install(&a_ctx, config()).unwrap();
+    let _b_persistence = JsonlSessionPersistence::install(&b_ctx, config()).unwrap();
+    let a = AgentLoop::install(&a_ctx, Default::default()).unwrap();
+    let b = AgentLoop::install(&b_ctx, Default::default()).unwrap();
+    let id = session_id("single-writer-agent");
+    let first = a.create_agent(&a_ctx, CreateAgentOptions {
+        session_id: Some(id.clone()), agent_options: Some(options()), ..Default::default()
+    }).await.unwrap();
+    response(first.agent.as_ref(), &a_adapter).await;
+    let setup_calls = Arc::new(AtomicUsize::new(0));
+    let counting_setup: dsh_agent::AgentSetup = Arc::new({
+        let setup_calls = setup_calls.clone();
+        move |_, _| { setup_calls.fetch_add(1, Ordering::SeqCst); Box::pin(async { Ok(None) }) }
+    });
+    let blocked = b.resume(&b_ctx, dsh_agent::ResumeAgentOptions {
+        resume_session_id: Some(id.clone()), agent_options: Some(options()), setup: Some(counting_setup.clone())
+    }).await.unwrap_err();
+    assert!(blocked.contains("SESSION_IN_USE"), "{blocked}");
+    let blocked = b.create_agent(&b_ctx, CreateAgentOptions {
+        session_id: Some(id.clone()), agent_options: Some(options()), setup: Some(counting_setup), ..Default::default()
+    }).await.unwrap_err();
+    assert!(blocked.contains("SESSION_IN_USE"), "{blocked}");
+    assert_eq!(setup_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(b_adapter.calls.load(Ordering::SeqCst), 0);
+    assert!(b_sessions.list().is_empty()); assert!(b_agents.list().is_empty());
+    first.dispose.await; drop(first.agent);
+    a_persistence.inspect(&id).await.unwrap();
+    let failed = b.resume(&b_ctx, dsh_agent::ResumeAgentOptions {
+        resume_session_id: Some(id.clone()), agent_options: Some(options()),
+        setup: Some(Arc::new(|_, _| Box::pin(async { Err("controlled setup failure".into()) }))),
+    }).await.unwrap_err();
+    assert_eq!(failed, "controlled setup failure");
+    let recovered = a.resume(&a_ctx, dsh_agent::ResumeAgentOptions {
+        resume_session_id: Some(id.clone()), agent_options: Some(options()), ..Default::default()
+    }).await.unwrap();
+    response(recovered.agent.as_ref(), &a_adapter).await;
+    recovered.dispose.await; drop(recovered.agent);
+    for ctx in [&a_ctx, &b_ctx] {
+        for dispose in ctx.fiber.disposables.clear() { dispose().await; }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

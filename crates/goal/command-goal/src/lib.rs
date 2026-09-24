@@ -156,7 +156,7 @@ fn execute_goal_command(
                     source_event_seq: None,
                 });
             };
-            goals.clear(&invocation.agent, &goal_ref(&current))?;
+            goals.clear_for_user(&invocation.agent, &goal_ref(&current))?;
             Ok(CommandResult::Success {
                 text: Some("Goal cleared.".to_string()),
                 source_event_seq: None,

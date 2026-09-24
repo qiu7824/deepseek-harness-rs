@@ -180,11 +180,7 @@ impl ToolResultPruner {
                     .ok_or("tool/result missing message")?,
             )
             .map_err(|error| error.to_string())?;
-            let Some(ContentBlock::ToolResult {
-                tool_call_id,
-                content,
-                is_error,
-            }) = message.content.first()
+            let Some((tool_call_id, content, is_error)) = message.as_tool_result()
             else {
                 continue;
             };
@@ -194,11 +190,10 @@ impl ToolResultPruner {
             let before = self.measure_content(content);
             let after = self.measure_content(&pruned_content);
             let mut replacement_message = message.clone();
-            replacement_message.content[0] = ContentBlock::ToolResult {
-                tool_call_id: tool_call_id.clone(),
-                content: pruned_content,
-                is_error: *is_error,
-            };
+            replacement_message.role = dsh_llm::Role::Tool;
+            replacement_message.content = pruned_content;
+            replacement_message.tool_call_id = Some(tool_call_id.clone());
+            replacement_message.is_error = is_error;
             let meter = self
                 .meter
                 .as_ref()

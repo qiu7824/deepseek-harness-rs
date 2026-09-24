@@ -1,5 +1,5 @@
-import { getDocument, PDFWorker } from "pdfjs-dist";
-import { assets, workerSource } from "dsh-pdf-assets";
+import { getDocument, PDFWorker, version } from "pdfjs-dist";
+import { assets, workerSource, workerVersion } from "dsh-pdf-assets";
 
 class BinaryDataFactory {
   async fetch({kind,filename}) {
@@ -20,6 +20,7 @@ function open(data,signal) {
     try{await loading?.destroy()}catch{}finally{try{bridge?.destroy()}catch{}worker?.terminate();if(url)URL.revokeObjectURL(url);}
   })();
   const initialize=async()=>{
+    if(version!==workerVersion)throw new Error(`PDF 查看器资源版本不一致（${version} / ${workerVersion}），请更新查看器资源`);
     if(signal?.aborted)throw abortError();
     signal?.addEventListener("abort",onAbort,{once:true});
     url=URL.createObjectURL(new Blob([workerSource,'\nself.postMessage({type:"dsh-pdf-ready"});'],{type:"text/javascript"}));
@@ -36,4 +37,4 @@ function open(data,signal) {
   const document=Promise.race([initialize(),failed]).catch(async error=>{await dispose();throw error});
   return {document,dispose};
 }
-globalThis.__DSH_SIDEBAR_PDF__=Object.freeze({open});
+globalThis.__DSH_SIDEBAR_PDF__=Object.freeze({open,version,workerVersion});

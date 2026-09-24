@@ -1,43 +1,21 @@
-//! Content-addressed, owner-private local attachment storage. Rust port of
-//! `packages/attachment/attachment-local/src/store.ts`.
-//!
-//! # Deviations
-//!
-//! - Directory fsync is a no-op on Windows (NTFS metadata journaling owns
-//!   entry durability), exactly like the TS `win32` early return.
-//! - The abort seam is a predicate without a reason payload, so an aborted
-//!   read surfaces as `ATTACHMENT_ABORTED` ("attachment read cancelled")
-//!   instead of the caller's own error object.
-
-use std::collections::HashSet;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
+//! Immutable attachment files, bounded verification and worker admission.
+use crate::codec::{CodecJob, ImageInfo, check_cancel, check_path, error, io_error, read_handle};
 use dsh_attachment::{
-    AttachmentAbort, AttachmentError, ImageAttachmentLimits, ImageAttachmentRef, ImageMediaType,
-    SaveImageAttachment, StoredImageAttachment, attachment_id,
+    AttachmentAbort, AttachmentError, AttachmentReader, ImageAttachmentLimits, ImageAttachmentRef,
+    ImageAttachmentStream, ImageMediaType, SaveImageAttachment, StoredImageAttachment,
+    attachment_id,
 };
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
-
-use crate::image::{detect_image, probe_image};
-
+use std::collections::HashSet;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 const ID_PATTERN: &str = r"^sha256:([a-f0-9]{64})$";
-
 static DURABLE_HOMES: std::sync::OnceLock<Mutex<HashSet<PathBuf>>> = std::sync::OnceLock::new();
-
 fn durable_homes() -> &'static Mutex<HashSet<PathBuf>> {
     DURABLE_HOMES.get_or_init(|| Mutex::new(HashSet::new()))
 }
-
-fn digest(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let result = hasher.finalize();
-    result.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// Strip both separator styles by hand (TS `displayName`).
 fn display_name(value: Option<&str>) -> Option<String> {
     let value = value?;
@@ -78,45 +56,6 @@ fn ensure_reference(reference: &ImageAttachmentRef) -> Result<String, Attachment
         .ok_or_else(|| {
             AttachmentError::new("INVALID_ATTACHMENT_REF", "Attachment reference is invalid.")
         })
-}
-
-async fn inspect_metadata(
-    data: &[u8],
-    declared_media_type: ImageMediaType,
-    max_pixels: Option<u64>,
-) -> Result<(ImageMediaType, u64, u64, u64), AttachmentError> {
-    if data.is_empty() {
-        return Err(AttachmentError::new("INVALID_IMAGE", "Image is empty."));
-    }
-    let detected = detect_image(data, max_pixels)?;
-    if detected.media_type != declared_media_type {
-        return Err(AttachmentError::new(
-            "IMAGE_TYPE_MISMATCH",
-            "Declared image type does not match its bytes.",
-        ));
-    }
-    Ok((
-        detected.media_type,
-        data.len() as u64,
-        detected.width,
-        detected.height,
-    ))
-}
-
-/// Run the full admission policy for one image without touching storage (TS
-/// `validateImageFile`).
-pub async fn validate_image_file(
-    input: &SaveImageAttachment,
-    limits: &ImageAttachmentLimits,
-) -> Result<(), AttachmentError> {
-    if input.data.len() as u64 > limits.image_byte_limit() {
-        return Err(AttachmentError::new(
-            "IMAGE_TOO_LARGE",
-            "Image exceeds the configured byte limit.",
-        ));
-    }
-    inspect_metadata(&input.data, input.media_type, Some(limits.max_image_pixels)).await?;
-    Ok(())
 }
 
 /// Make a directory's entries durable (fsync on a read-only directory
@@ -178,175 +117,295 @@ fn ensure_durable_home(path: &Path) -> Result<PathBuf, AttachmentError> {
     Ok(home)
 }
 
-/// Save and verify immutable image bytes below a versioned attachment root
-/// (TS `saveImageFile`).
+async fn stage_bytes(
+    root: &Path,
+    input: &SaveImageAttachment,
+    limits: &ImageAttachmentLimits,
+) -> Result<(CodecJob, ImageInfo), AttachmentError> {
+    let mut reader = input.data.as_slice();
+    CodecJob::stage(
+        root,
+        &mut reader,
+        input.media_type,
+        limits.image_byte_limit(),
+        limits.max_image_pixels,
+        None,
+    )
+    .await?
+    .run(None, None)
+    .await
+}
+pub async fn validate_image_file(
+    input: &SaveImageAttachment,
+    limits: &ImageAttachmentLimits,
+) -> Result<(), AttachmentError> {
+    let root = std::env::temp_dir().join("dsh-image-codec-v1");
+    stage_bytes(&root, input, limits).await?;
+    Ok(())
+}
 pub async fn save_image_file(
     root: &Path,
     input: &SaveImageAttachment,
     limits: &ImageAttachmentLimits,
 ) -> Result<ImageAttachmentRef, AttachmentError> {
-    if input.data.len() as u64 > limits.image_byte_limit() {
-        return Err(AttachmentError::new(
-            "IMAGE_TOO_LARGE",
-            "Image exceeds the configured byte limit.",
-        ));
-    }
-    let (media_type, bytes, width, height) =
-        inspect_metadata(&input.data, input.media_type, Some(limits.max_image_pixels)).await?;
-    let sha256 = digest(&input.data);
-    let bucket = root.join("objects").join(&sha256[..2]);
-    let staging = root.join("tmp");
-    // Establish DSH_HOME itself against the filesystem root once per process.
-    let home = root.parent().and_then(Path::parent).ok_or_else(|| {
-        AttachmentError::new("ATTACHMENT_WRITE_FAILED", "invalid attachment root")
-    })?;
-    let boundary = ensure_durable_home(home)?;
-    ensure_durable_directory(&bucket, &boundary)?;
-    ensure_durable_directory(&staging, &boundary)?;
-    let temporary = staging.join(uuid::Uuid::new_v4().to_string());
-    let target = object_path(root, &sha256);
-
-    let persist = (|| -> Result<(), AttachmentError> {
-        let mut handle = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;
-        handle
-            .write_all(&input.data)
-            .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;
-        handle
-            .sync_all()
-            .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;
-        drop(handle);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)).ok();
-        }
-        match std::fs::hard_link(&temporary, &target) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                // The dedup path: another writer published first. Verify the
-                // existing object bytes.
-                let existing = std::fs::read(&target).map_err(|error| {
-                    AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string())
-                })?;
-                if digest(&existing) != sha256 {
-                    return Err(AttachmentError::new(
-                        "ATTACHMENT_CORRUPT",
-                        "Stored attachment failed integrity verification.",
-                    ));
-                }
-            }
-            Err(error) => {
-                return Err(AttachmentError::new(
-                    "ATTACHMENT_WRITE_FAILED",
-                    error.to_string(),
-                ));
-            }
-        }
-        // Persist the target entry and close a concurrent bucket-creation
-        // window before the reference can reach a session checkpoint.
-        let _ = sync_directory(&bucket);
-        let _ = sync_directory(&root.join("objects"));
-        Ok(())
-    })();
-
-    match persist {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        Err(error) => {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error);
-        }
-    }
-    let name = display_name(input.name.as_deref());
-    let mut reference = ImageAttachmentRef {
-        attachment_id: attachment_id(format!("sha256:{sha256}")),
+    let (job, info) = stage_bytes(root, input, limits).await?;
+    publish_image(root, &job.input(), &info, input.name.as_deref(), None).await
+}
+pub async fn save_image_stream(
+    root: &Path,
+    mut reader: AttachmentReader,
+    media_type: ImageMediaType,
+    name: Option<String>,
+    limits: &ImageAttachmentLimits,
+    signal: Option<&AttachmentAbort>,
+) -> Result<ImageAttachmentRef, AttachmentError> {
+    let (job, info) = CodecJob::stage(
+        root,
+        &mut reader,
         media_type,
-        bytes,
-        width,
-        height,
-        name: None,
-    };
-    if let Some(name) = name {
-        reference.name = Some(name);
+        limits.image_byte_limit(),
+        limits.max_image_pixels,
+        signal,
+    )
+    .await?
+    .run(None, signal)
+    .await?;
+    publish_image(root, &job.input(), &info, name.as_deref(), signal).await
+}
+pub async fn save_images_files(
+    root: &Path,
+    inputs: &[SaveImageAttachment],
+    limits: &ImageAttachmentLimits,
+) -> Result<Vec<ImageAttachmentRef>, AttachmentError> {
+    // No duplicate decode and no reference publication until every input passes.
+    let mut validated = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        validated.push(stage_bytes(root, input, limits).await?);
     }
-    Ok(reference)
+    let mut references = Vec::with_capacity(inputs.len());
+    for (input, (job, info)) in inputs.iter().zip(validated.iter()) {
+        references
+            .push(publish_image(root, &job.input(), info, input.name.as_deref(), None).await?);
+    }
+    Ok(references)
 }
 
-/// Read and verify one content-addressed image (TS `readImageFile`).
+async fn verify_hash(
+    handle: std::fs::File,
+    sha256: &str,
+    bytes: u64,
+    signal: Option<&AttachmentAbort>,
+) -> Result<std::fs::File, AttachmentError> {
+    let mut input = tokio::fs::File::from_std(handle);
+    let mut digest = Sha256::new();
+    let mut size = 0u64;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        check_cancel(signal)?;
+        let count = input.read(&mut buffer).await.map_err(io_error)?;
+        if count == 0 {
+            break;
+        }
+        size += count as u64;
+        if size > bytes {
+            return Err(error(
+                "ATTACHMENT_CORRUPT",
+                "Stored attachment length changed.",
+            ));
+        }
+        digest.update(&buffer[..count]);
+    }
+    check_cancel(signal)?;
+    if size != bytes || format!("{:x}", digest.finalize()) != sha256 {
+        return Err(error(
+            "ATTACHMENT_CORRUPT",
+            "Stored attachment failed integrity verification.",
+        ));
+    }
+    input.seek(SeekFrom::Start(0)).await.map_err(io_error)?;
+    Ok(input.into_std().await)
+}
+fn probe_handle(handle: &mut std::fs::File) -> Result<crate::DetectedImage, AttachmentError> {
+    let result = crate::image::probe_reader(std::io::BufReader::new(&mut *handle));
+    handle.seek(SeekFrom::Start(0)).map_err(io_error)?;
+    result
+}
+async fn publish_object(
+    source: &Path,
+    target: &Path,
+    info: &ImageInfo,
+    signal: Option<&AttachmentAbort>,
+) -> Result<(), AttachmentError> {
+    check_cancel(signal)?;
+    check_path(source)?;
+    check_path(target)?;
+    std::fs::create_dir_all(target.parent().expect("object bucket")).map_err(io_error)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(source, std::fs::Permissions::from_mode(0o600))
+            .map_err(io_error)?;
+    }
+    // Verify before linking and keep the immutable handle through publication.
+    let _lease = verify_hash(read_handle(source)?, &info.sha256, info.bytes, signal).await?;
+    check_cancel(signal)?;
+    match std::fs::hard_link(source, target) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            verify_hash(read_handle(target)?, &info.sha256, info.bytes, signal).await?;
+        }
+        Err(e) => return Err(io_error(e)),
+    }
+    sync_directory(target.parent().expect("object bucket")).map_err(io_error)?;
+    Ok(())
+}
+async fn publish_image(
+    root: &Path,
+    source: &Path,
+    info: &ImageInfo,
+    name: Option<&str>,
+    signal: Option<&AttachmentAbort>,
+) -> Result<ImageAttachmentRef, AttachmentError> {
+    let home = root
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| error("ATTACHMENT_WRITE_FAILED", "Invalid attachment root."))?;
+    let boundary = ensure_durable_home(home)?;
+    let target = object_path(root, &info.sha256);
+    ensure_durable_directory(target.parent().expect("object bucket"), &boundary)?;
+    publish_object(source, &target, info, signal).await?;
+    check_cancel(signal)?;
+    Ok(ImageAttachmentRef {
+        attachment_id: attachment_id(format!("sha256:{}", info.sha256)),
+        media_type: info.media_type,
+        bytes: info.bytes,
+        width: info.width,
+        height: info.height,
+        name: display_name(name),
+    })
+}
+pub async fn open_image_file(
+    root: &Path,
+    reference: &ImageAttachmentRef,
+    signal: Option<&AttachmentAbort>,
+) -> Result<ImageAttachmentStream, AttachmentError> {
+    check_cancel(signal)?;
+    let sha256 = ensure_reference(reference)?;
+    let path = object_path(root, &sha256);
+    let file = read_handle(&path).map_err(|e| {
+        if !path.exists() {
+            error("ATTACHMENT_NOT_FOUND", "Image attachment is missing.")
+        } else {
+            e
+        }
+    })?;
+    let mut file = verify_hash(file, &sha256, reference.bytes, signal).await?;
+    let metadata = probe_handle(&mut file)?;
+    if metadata.media_type != reference.media_type
+        || metadata.width != reference.width
+        || metadata.height != reference.height
+    {
+        return Err(error(
+            "ATTACHMENT_CORRUPT",
+            "Stored attachment metadata does not match its reference.",
+        ));
+    }
+    Ok(ImageAttachmentStream {
+        reference: reference.clone(),
+        reader: Box::pin(tokio::fs::File::from_std(file)),
+    })
+}
 pub async fn read_image_file(
     root: &Path,
     reference: &ImageAttachmentRef,
     signal: Option<&AttachmentAbort>,
 ) -> Result<StoredImageAttachment, AttachmentError> {
-    let aborted = |signal: Option<&Arc<dyn Fn() -> bool + Send + Sync>>| {
-        signal.is_some_and(|signal| signal())
-    };
-    if aborted(signal) {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_ABORTED",
-            "attachment read cancelled",
-        ));
-    }
-    let sha256 = ensure_reference(reference)?;
-    let data = match std::fs::read(object_path(root, &sha256)) {
-        Ok(data) => data,
-        Err(error) => {
-            if aborted(signal) {
-                return Err(AttachmentError::new(
-                    "ATTACHMENT_ABORTED",
-                    "attachment read cancelled",
-                ));
-            }
-            if error.kind() == std::io::ErrorKind::NotFound {
-                return Err(AttachmentError::new(
-                    "ATTACHMENT_NOT_FOUND",
-                    "Attachment object is missing.",
-                ));
-            }
-            return Err(AttachmentError::new(
-                "ATTACHMENT_READ_FAILED",
-                "Unable to read image attachment.",
-            ));
-        }
-    };
-    if aborted(signal) {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_ABORTED",
-            "attachment read cancelled",
-        ));
-    }
-    if digest(&data) != sha256 {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_CORRUPT",
-            "Stored attachment failed integrity verification.",
-        ));
-    }
-    // The digest proves these are the exact bytes admission fully decoded,
-    // so the read path only re-derives the header fields.
-    let metadata = probe_image(&data)?;
-    if aborted(signal) {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_ABORTED",
-            "attachment read cancelled",
-        ));
-    }
-    if metadata.media_type != reference.media_type
-        || data.len() as u64 != reference.bytes
-        || metadata.width != reference.width
-        || metadata.height != reference.height
-    {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_CORRUPT",
-            "Stored attachment metadata does not match its reference.",
-        ));
-    }
+    let mut stream = open_image_file(root, reference, signal).await?;
+    let mut data = Vec::new();
+    stream
+        .reader
+        .read_to_end(&mut data)
+        .await
+        .map_err(io_error)?;
+    check_cancel(signal)?;
     Ok(StoredImageAttachment {
-        reference: reference.clone(),
+        reference: stream.reference,
         data,
     })
+}
+pub(crate) async fn publish_variant(
+    source: &Path,
+    cached: &Path,
+    info: &ImageInfo,
+    signal: Option<&AttachmentAbort>,
+) -> Result<(), AttachmentError> {
+    // Content is immutable; a short manifest is the sole atomic commit point.
+    let object = cached.with_file_name(format!("{}.blob", info.sha256));
+    publish_object(source, &object, info, signal).await?;
+    check_cancel(signal)?;
+    let bytes = serde_json::to_vec(info)
+        .map_err(|_| error("ATTACHMENT_WRITE_FAILED", "Cannot encode image metadata."))?;
+    check_path(cached)?;
+    dsh_atomic_write::write_file_atomic(
+        cached,
+        &bytes,
+        dsh_atomic_write::WriteFileAtomicOptions {
+            mode: 0o600,
+            dir_mode: Some(0o700),
+        },
+    )
+    .await
+    .map_err(io_error)
+}
+pub(crate) async fn open_variant(
+    cached: &Path,
+    signal: Option<&AttachmentAbort>,
+) -> Result<Option<(std::fs::File, ImageInfo)>, AttachmentError> {
+    check_cancel(signal)?;
+    check_path(cached)?;
+    if !cached.exists() {
+        return Ok(None);
+    }
+    let mut data = Vec::new();
+    read_handle(cached)?
+        .take(4097)
+        .read_to_end(&mut data)
+        .map_err(io_error)?;
+    if data.len() > 4096 {
+        return Err(error(
+            "ATTACHMENT_CORRUPT",
+            "Image metadata exceeds its bound.",
+        ));
+    }
+    let info: ImageInfo = serde_json::from_slice(&data)
+        .map_err(|_| error("ATTACHMENT_CORRUPT", "Image metadata is invalid."))?;
+    if info.sha256.len() != 64
+        || !info
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(error(
+            "ATTACHMENT_CORRUPT",
+            "Image metadata digest is invalid.",
+        ));
+    }
+    let mut file = verify_hash(
+        read_handle(&cached.with_file_name(format!("{}.blob", info.sha256)))?,
+        &info.sha256,
+        info.bytes,
+        signal,
+    )
+    .await?;
+    let metadata = probe_handle(&mut file)?;
+    if metadata.width != info.width
+        || metadata.height != info.height
+        || metadata.media_type != info.media_type
+    {
+        return Err(error(
+            "ATTACHMENT_CORRUPT",
+            "Image variant metadata does not match its bytes.",
+        ));
+    }
+    Ok(Some((file, info)))
 }

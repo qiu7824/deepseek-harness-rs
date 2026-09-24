@@ -240,11 +240,15 @@ fn bounded_goal_zstd_reader_rejects_frames_above_the_writer_window() {
     let root = std::env::temp_dir().join(format!("dsh-goal-scan-{}", uuid::Uuid::new_v4()));
     let id = dsh_session::session_id("large-window");
     let path = write_log(&root, &id, JsonlCompression::Zstd);
-    let mut bytes = std::fs::read(&path).unwrap();
-    assert_eq!(bytes[5], 0x58);
-    bytes[5] = 0x60;
+    let original = std::fs::read(&path).unwrap();
+    let header = crate::zstd::scan_zstd_frames(&original).unwrap().frames[0];
+    let plaintext = decompress_zstd_frame(&original[header.start..header.end]).unwrap();
+    let mut bytes = crate::zstd::legacy_streaming_fixture(&plaintext, MAX_AUTHORITY_WINDOW_LOG + 1);
+    bytes.extend_from_slice(&original[header.end..]);
+    assert_eq!(zstd::stream::decode_all(bytes.as_slice()).unwrap(), zstd::stream::decode_all(original.as_slice()).unwrap());
     std::fs::write(&path, bytes).unwrap();
     let (_, visit) = visitor();
-    assert!(goal_stream::visit_path(&path, JsonlCompression::Zstd, visit).is_err());
+    let error = goal_stream::visit_path(&path, JsonlCompression::Zstd, visit).unwrap_err();
+    assert!(error.contains("memory") || error.contains("window"), "must reject the valid frame for its oversized window: {error}");
     cleanup(&root);
 }

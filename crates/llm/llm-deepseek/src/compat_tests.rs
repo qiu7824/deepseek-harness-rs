@@ -213,6 +213,7 @@ fn explicit_field_overrides_legacy_alias_and_model_overrides_provider() {
     assert_eq!(merged.vllm_priority, Some(0));
     let connection = resolve_adapter_options(&DeepSeekConfig {
         compat: Some(merged),
+        api: Some("openai-completions".into()),
         ..Default::default()
     })
     .unwrap();

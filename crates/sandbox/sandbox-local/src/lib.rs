@@ -246,12 +246,17 @@ impl SandboxProvider for LocalSandboxProvider {
                 }
                 Ok(Some(native)) => {
                     let native = native.clone();
+                    let home = self.native_home.clone();
                     let workspace = policy.workspace_root.clone();
                     let read_only = policy.mode == SandboxMode::ReadOnly;
                     return Box::pin(async move {
-                        tokio::task::spawn_blocking(move || native.prepare(&workspace, read_only))
-                            .await
-                            .map_err(|e| format!("native readiness task: {e}"))?
+                        native.prepare(&workspace, read_only).await?;
+                        if let Some(home) = home
+                            && native_backend::NativeBackend::load_from_home(&home)? != Some(native)
+                        {
+                            return Err("[SANDBOX_CONFIGURATION_CHANGED] sandbox selection changed during preparation; retry validation; requested command not dispatched".into());
+                        }
+                        Ok(())
                     });
                 }
                 Ok(None) => {

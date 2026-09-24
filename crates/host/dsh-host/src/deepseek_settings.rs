@@ -3,10 +3,25 @@ use dsh_llm_deepseek::{DeepSeekCatalogModel, DeepSeekConfig, resolve_adapter_opt
 use dsh_schemastery::{Data, Schema};
 use serde_json::Value;
 
+fn protocol_schema() -> Schema {
+    Schema::union(
+        [
+            "deepseek-messages",
+            "openai-completions",
+            "openai-responses",
+            "anthropic-messages",
+        ]
+        .into_iter()
+        .map(|api| Schema::constant(Data::String(api.into())))
+        .collect(),
+    )
+}
+
 pub(crate) fn schema() -> Schema {
     let defaults = resolve_adapter_options(&DeepSeekConfig::default()).expect("DeepSeek defaults");
     let model = Schema::object(indexmap::IndexMap::from([
         ("id".into(), Schema::string().required(true)),
+        ("api".into(), protocol_schema()),
         ("enabled".into(), Schema::boolean()),
         ("name".into(), Schema::string()),
         ("description".into(), Schema::string()),
@@ -34,6 +49,7 @@ pub(crate) fn schema() -> Schema {
         })
         .collect::<Vec<_>>();
     Schema::object(indexmap::IndexMap::from([
+        ("api".into(), protocol_schema()),
         ("compat".into(), super::provider_compatibility::schema()),
         (
             "modelPreferences".into(),
@@ -104,7 +120,8 @@ pub(crate) fn config(value: &Value) -> Result<DeepSeekConfig, String> {
             }
         }
     }
-    Ok(DeepSeekConfig {
+    let config = DeepSeekConfig {
+        api: value.get("api").and_then(Value::as_str).map(str::to_string),
         compat: value
             .get("compat")
             .cloned()
@@ -124,7 +141,9 @@ pub(crate) fn config(value: &Value) -> Result<DeepSeekConfig, String> {
         default_context_window: value.get("defaultContextWindow").and_then(Value::as_u64),
         models,
         ..Default::default()
-    })
+    };
+    resolve_adapter_options(&config).map_err(|error| error.failure.message)?;
+    Ok(config)
 }
 
 /// OAuth records contain refresh tokens and account metadata, not API keys.
@@ -144,6 +163,35 @@ pub(crate) fn validate_api_key_reference(reference: &str) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_messages_defaults_and_explicit_protocol_survive_settings_validation() {
+        for (value, expected) in [
+            (serde_json::json!({}), "deepseek-messages"),
+            (
+                serde_json::json!({"baseURL":"https://api.deepseek.com"}),
+                "deepseek-messages",
+            ),
+            (
+                serde_json::json!({"api":"openai-completions","baseURL":"https://api.deepseek.com"}),
+                "openai-completions",
+            ),
+            (
+                serde_json::json!({"api":"anthropic-messages","baseURL":"https://gateway.test/anthropic"}),
+                "anthropic-messages",
+            ),
+        ] {
+            let parsed =
+                Schema::validate(&schema(), super::super::json_to_settings_data(&value)).unwrap();
+            let parsed = parsed.to_json().unwrap();
+            assert_eq!(
+                resolve_adapter_options(&config(&parsed).unwrap())
+                    .unwrap()
+                    .api,
+                expected
+            );
+        }
+        assert!(config(&serde_json::json!({"api":"unsupported"})).is_err());
+    }
     #[tokio::test]
     async fn native_catalog_settings_affect_visibility_capacity_and_names() {
         use dsh_llm::LlmAdapter;

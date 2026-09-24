@@ -12,7 +12,7 @@ let task = { taskId: 'report', revision: 7, state: 'completed', spec: { objectiv
 ] }, steps: [], outputIdentities: { 'report.docx': 'same-input' }, acceptanceResults: [
   { checkId: 'doc', status: 'passed', evidenceRefs: [], inputIdentity: 'same-input' }, manual
 ] };
-let blockers = ['Checker version requires revalidation'], Component;
+let blockers = ['Checker version requires revalidation','Goal requirements changed or the linked goal is no longer current; old acceptance does not satisfy the current goal','Acceptance doc has not passed','Output report.docx has no verified identity','Step call-old is Unknown'], Component;
 const requests = [], pending = [];
 const response = value => ({ ok: true, status: 200, text: async () => JSON.stringify(value) });
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../web/src/runtime-plugins/ui-task-execution.js'), 'utf8'), {
@@ -32,6 +32,11 @@ async function settle(fn) { await React.act(async () => { fn?.(); await new Prom
 (async () => {
   await settle(() => root.render(React.createElement(Component, { sessionId: 'session-a' })));
   assert.match(document.body.textContent, /历史已完成 · 当前证据需复核/);
+  assert.match(document.body.textContent, /目标已变化，旧验收不再适用/);
+  assert.match(document.body.textContent, /验收项“Office content”尚未通过/);
+  assert.match(document.body.textContent, /产物“report.docx”尚无已核验版本/);
+  assert.match(document.body.textContent, /步骤“call-old”：效果未知/);
+  assert.match(document.body.textContent, /Checker version requires revalidation/, 'unrecognized backend details remain visible');
   await settle(() => { button('刷新验收证据').click(); button('刷新验收证据').click(); });
   assert.equal(pending.length, 1, 'same-frame double submit cannot start two validations');
   assert.equal(pending[0].input.revision, 7);

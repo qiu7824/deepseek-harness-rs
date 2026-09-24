@@ -2,6 +2,7 @@
   "builder": "esbuild@0.25.10",
   "target": "es2022",
   "format": "iife",
+  "resolution": "pinned-module-tree",
   "dependencies": {
     "@codemirror/commands": "6.8.1",
     "@codemirror/lang-css": "6.3.1",
@@ -12,18 +13,21 @@
     "@codemirror/lang-python": "6.2.1",
     "@codemirror/lang-rust": "6.0.2",
     "@codemirror/search": "6.5.11",
-    "@codemirror/state": "6.5.2",
-    "@codemirror/view": "6.38.2",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.13",
     "codemirror": "6.0.2",
     "dompurify": "3.4.14",
+    "docx-preview": "0.4.1",
+    "jszip": "3.10.1",
     "marked": "16.3.0",
     "mermaid": "11.16.1",
     "pdfjs-dist": "6.3.289"
   },
   "outputs": {
-    "lib/editor.js": "sha256:3b038c1d2bad494d03aa80d4f7a58c1bc7f5d0ebb44913d4899b4c56e7c60e23",
+    "lib/editor.js": "sha256:c9aa5f3625472ba3cefbed90fe7001b8b6610862dbc03015ee7e96d82130568c",
     "lib/markdown.js": "sha256:329c23964f24e62967aed9d7a414e8625ea5f582c972f10f1ea4c7abc5103651",
     "lib/mermaid.js": "sha256:c2e9bfb2af758128ad383f7aea2d6bec40c38762c684cfc6efddbf4ab122c847",
-    "lib/pdf.js": "sha256:32cee500a47968c75aa6555a0e65b166a43f769c175110fb736d791482add5a0"
+    "lib/docx.js": "sha256:9151f3203fa3ccc05479754ffd68719d1a9e8e1390af43c13897bcd8735ec206",
+    "lib/pdf.js": "sha256:facfc5262d9db79c19fbe5bb7cf214d183af7cf3b9f55b1fcaf00c6b5848df7e"
   }
 }

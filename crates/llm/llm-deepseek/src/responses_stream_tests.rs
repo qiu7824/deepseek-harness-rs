@@ -2,6 +2,79 @@ use super::*;
 use dsh_llm::BlockAssembler;
 
 #[test]
+fn native_computer_calls_require_integration_and_complete_valid_actions() {
+    let item = json!({"type":"computer_call","id":"cu1","call_id":"c1","actions":[{"type":"screenshot"}],"status":"completed"});
+    let event = json!({"type":"response.completed","response":{"status":"completed","output":[item.clone()]}});
+    let disabled = collect(vec![event.clone()]);
+    assert!(disabled.iter().any(|chunk| matches!(chunk,StreamChunk::Finish {reason:FinishReason::Error {failure},..} if failure.code=="UNSUPPORTED_TOOL_CALL")));
+    assert!(!disabled.iter().any(|chunk| matches!(
+        chunk,
+        StreamChunk::BlockEnd {
+            block: ContentBlock::ToolCall { .. },
+            ..
+        }
+    )));
+    let mut parser = ResponsesTranslator::default();
+    parser.enable_native_computer();
+    let chunks = parser.consume(&event.to_string()).unwrap();
+    assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::BlockEnd {block:ContentBlock::ToolCall {id,name,arguments},..} if id.as_str()=="c1"&&name==dsh_llm::computer_protocol::TOOL_NAME&&serde_json::from_str::<Value>(arguments).unwrap()["actions"]==item["actions"])));
+    assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::Finish {reason:FinishReason::ToolCalls,replay_state:Some(state)} if state["items"]==json!([item.clone()]))));
+}
+
+#[test]
+fn native_computer_conflicts_duplicate_ids_and_truncated_stream_never_dispatch() {
+    let item = json!({"type":"computer_call","id":"cu1","call_id":"c1","actions":[{"type":"type","text":"a"}],"status":"completed"});
+    let mut changed = item.clone();
+    changed["actions"][0]["text"] = json!("b");
+    for events in [
+        vec![
+            json!({"type":"response.output_item.done","output_index":0,"item":item.clone()}),
+            json!({"type":"response.completed","response":{"status":"completed","output":[changed]}}),
+        ],
+        vec![
+            json!({"type":"response.completed","response":{"status":"completed","output":[item.clone(),{"type":"computer_call","id":"cu2","call_id":"c1","actions":[{"type":"wait"}],"status":"completed"}]}}),
+        ],
+        vec![
+            json!({"type":"response.output_item.done","output_index":0,"item":item.clone()}),
+            json!({"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}),
+        ],
+    ] {
+        let mut parser = ResponsesTranslator::default();
+        parser.enable_native_computer();
+        let chunks = events
+            .into_iter()
+            .flat_map(|event| parser.consume(&event.to_string()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            !chunks.iter().any(|chunk| matches!(
+                chunk,
+                StreamChunk::BlockEnd {
+                    block: ContentBlock::ToolCall { .. },
+                    ..
+                }
+            )),
+            "{chunks:?}"
+        );
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            StreamChunk::Finish {
+                reason: FinishReason::Error { .. } | FinishReason::MaxTokens,
+                ..
+            }
+        )));
+    }
+}
+
+#[test]
+fn native_computer_terminal_snapshot_does_not_keep_partial_action_suffixes() {
+    let mut parser = ResponsesTranslator::default();
+    parser.enable_native_computer();
+    parser.consume(&json!({"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu1","call_id":"c1","status":"in_progress","actions":[{"type":"screenshot"},{"type":"type","text":"stale"}]}}).to_string()).unwrap();
+    let chunks=parser.consume(&json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"computer_call","id":"cu1","call_id":"c1","status":"completed","actions":[{"type":"screenshot"}]}]}}).to_string()).unwrap();
+    assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::BlockEnd {block:ContentBlock::ToolCall {arguments,..},..} if serde_json::from_str::<Value>(arguments).unwrap()["actions"]==json!([{"type":"screenshot"}]))));
+}
+
+#[test]
 fn streamed_context_overflow_preserves_the_compaction_recovery_code() {
     for event in [
         json!({"type":"error","code":"context_length_exceeded","message":"request too large"}),

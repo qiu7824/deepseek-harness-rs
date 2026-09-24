@@ -17,7 +17,7 @@ const result=(engine,parts)=>engine.onresult({resultIndex:0,results:parts.map(([
  await act(async()=>result(r,[['你好世界',true],['继续',false]]));assert.equal(draft,'开头 你好世界继续');
  await act(async()=>result(r,[['你好世界',true],['继续说',true]]));assert.equal(draft,'开头 你好世界继续说','no duplicated final segments');
  await act(async()=>pointer('pointerup'));assert.equal(r.stopped,true);await act(async()=>r.onend());assert.equal(engines.length,1,'release must not restart');
- await act(async()=>pointer('pointerdown'));r=engines.at(-1);await act(async()=>r.onerror({error:'not-allowed'}));assert.match(document.querySelector('[role=alert]').textContent,/权限被拒绝/);await act(async()=>r.onend());
+ await act(async()=>pointer('pointerdown'));r=engines.at(-1);const lateEnd=r.onend;await act(async()=>r.onerror({error:'not-allowed'}));assert.match(document.querySelector('[role=alert]').textContent,/权限被拒绝/);assert.equal(r.aborted,true);await act(async()=>lateEnd());
  await act(async()=>pointer('pointerdown'));r=engines.at(-1);await act(async()=>root.render(React.createElement(App,{sessionId:'two'})));assert.equal(r.aborted,true);assert.equal(r.onresult,null);assert.equal(document.querySelector('button').getAttribute('aria-pressed'),'false');
  await act(async()=>root.unmount());console.log('PASS voice hold/release, immediate partials, final replacement, failure display and session isolation');
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -11,7 +11,7 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("--build-info") {
         println!(
             "{}",
-            serde_json::json!({"backend":"windows-native","protocolVersion":1,"version":env!("CARGO_PKG_VERSION"),"revision":env!("DSH_NATIVE_REVISION"),"dirty":env!("DSH_NATIVE_DIRTY")!="false","engineRevision":"bb5054fe47abe73ecbbd454751066a28c89f4bb9"})
+            serde_json::json!({"backend":"windows-native","protocolVersion":1,"version":env!("CARGO_PKG_VERSION"),"revision":env!("DSH_NATIVE_REVISION"),"dirty":env!("DSH_NATIVE_DIRTY")!="false","sourceSha256":env!("DSH_NATIVE_SOURCE_SHA256"),"engineRevision":"bb5054fe47abe73ecbbd454751066a28c89f4bb9"})
         );
         return;
     }

@@ -14,6 +14,8 @@
 //! - `commands/change` observers run through `ctx.emit` (per-listener
 //!   containment already provided by the event bus).
 
+#[cfg(test)]
+mod control_tests;
 pub mod invariant;
 
 use std::sync::Arc;
@@ -191,6 +193,50 @@ pub struct CommandRuntime {
     layers: ScopedLayers<CommandLayer>,
     command_seq: std::sync::atomic::AtomicU64,
     instance_token: String,
+    active: Arc<parking_lot::Mutex<std::collections::HashMap<usize, usize>>>,
+}
+
+struct CommandActivity {
+    active: Arc<parking_lot::Mutex<std::collections::HashMap<usize, usize>>>,
+    owner: usize,
+}
+impl Drop for CommandActivity {
+    fn drop(&mut self) {
+        let mut active = self.active.lock();
+        if let Some(count) = active.get_mut(&self.owner) {
+            *count -= 1;
+            if *count == 0 {
+                active.remove(&self.owner);
+            }
+        }
+    }
+}
+struct CommandLifecycle {
+    session: Session,
+    id: CommandId,
+    done: bool,
+    activity: Option<CommandActivity>,
+}
+impl CommandLifecycle {
+    fn finish(&mut self) {
+        self.done = true;
+        drop(self.activity.take());
+    }
+}
+impl Drop for CommandLifecycle {
+    fn drop(&mut self) {
+        if !self.done {
+            self.finish();
+            let _ = self.session.append(
+                "command/done",
+                serde_json::json!({
+                    "commandId": self.id.as_str(), "kind": "error",
+                    "text": "Command interrupted; inspect any existing effects before retrying."
+                }),
+                None,
+            );
+        }
+    }
 }
 
 impl CommandRuntime {
@@ -204,9 +250,37 @@ impl CommandRuntime {
             }),
             command_seq: std::sync::atomic::AtomicU64::new(0),
             instance_token: uuid::Uuid::new_v4().to_string()[..8].to_string(),
+            active: Arc::default(),
         });
         ctx.register_service(runtime.clone());
         runtime
+    }
+
+    pub fn has_owner_activity(&self, agent: &Arc<dyn Agent>) -> bool {
+        let owner = Arc::as_ptr(agent).cast::<()>() as usize;
+        self.active
+            .try_lock()
+            .is_none_or(|active| active.contains_key(&owner))
+    }
+
+    fn start_activity(
+        &self,
+        agent: &Arc<dyn Agent>,
+        generation: Option<u64>,
+    ) -> Result<CommandActivity, String> {
+        let _admission = generation
+            .map(|generation| {
+                agent
+                    .try_generation_control(generation)
+                    .map_err(|_| "agent control changed before command admission".to_owned())
+            })
+            .transpose()?;
+        let owner = Arc::as_ptr(agent).cast::<()>() as usize;
+        *self.active.lock().entry(owner).or_default() += 1;
+        Ok(CommandActivity {
+            active: self.active.clone(),
+            owner,
+        })
     }
 
     /// Register a global or calling-agent-scoped command (the caller context
@@ -268,6 +342,27 @@ impl CommandRuntime {
         let Some(command) = view.get(&parsed.name) else {
             return Ok(None);
         };
+        // Goal verbs own their synchronous control boundary; pause intentionally
+        // changes the owner's cancellation generation from inside its handler.
+        let generation = agent.cancellation_generation();
+        let activity = if parsed.name == "goal" {
+            None
+        } else {
+            Some(self.start_activity(agent, generation)?)
+        };
+        let signal = if parsed.name == "goal" {
+            signal
+        } else {
+            let owner = Arc::downgrade(agent);
+            Arc::new(move || {
+                signal()
+                    || owner.upgrade().is_none_or(|agent| {
+                        generation.is_some_and(|generation| {
+                            agent.cancellation_generation() != Some(generation)
+                        })
+                    })
+            }) as CommandAbort
+        };
         if signal() {
             return Err("command aborted".to_string());
         }
@@ -281,6 +376,12 @@ impl CommandRuntime {
             run_data["args"] = serde_json::Value::String(parsed.raw_input.clone());
         }
         self.append_lifecycle(agent.session(), "command/run", run_data)?;
+        let mut lifecycle = CommandLifecycle {
+            session: agent.session().clone(),
+            id: command_id.clone(),
+            done: false,
+            activity,
+        };
         let invocation = CommandInvocation {
             command_id: command_id.clone(),
             agent: agent.clone(),
@@ -305,6 +406,7 @@ impl CommandRuntime {
             } {
                 Ok(result) => result,
                 Err(error) => {
+                    lifecycle.finish();
                     self.append_lifecycle(
                         agent.session(),
                         "command/done",
@@ -339,6 +441,7 @@ impl CommandRuntime {
                 done_data["text"] = serde_json::Value::String(text.clone());
             }
         }
+        lifecycle.finish();
         self.append_lifecycle(agent.session(), "command/done", done_data)?;
         Ok(Some(CommandExecution { command_id, result }))
     }

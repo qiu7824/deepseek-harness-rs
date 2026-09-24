@@ -101,18 +101,22 @@ class ReleaseIntegrityTests(unittest.TestCase):
                         manifest.write_text(json.dumps(value), encoding="utf-8")
                 self.assert_rejected_without_packaging_side_effects(package, root, "invalid web manifest")
 
-    def test_free_package_requires_recent_complete_inference_evidence(self):
-        from datetime import datetime, timezone, timedelta
+    def test_retired_distributions_are_refused_before_packaging(self):
+        import contextlib
+        import io
+        import sys
         package = load_tool("package_release")
-        with tempfile.TemporaryDirectory() as directory:
-            path = pathlib.Path(directory) / "verification.json"
-            report = {"url": "https://opencode.ai/zen/v1/models", "model": "ling-3.0-flash-fin-free", "pricingSource": "https://opencode.ai/docs/zen/", "binarySha256": "a" * 64, "verifiedAt": datetime.now(timezone.utc).isoformat(), **{key: True for key in ("available", "freePricingVerified", "harnessVerified", "inference", "streaming", "toolCall", "toolResult", "anonymous")}}
-            path.write_text(json.dumps(report), encoding="utf-8")
-            self.assertEqual(package.verified_free_model(path), report)
-            for invalid in ({**report, "toolResult": False}, {**report, "model": "different-free"}, {**report, "verifiedAt": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()}):
-                path.write_text(json.dumps(invalid), encoding="utf-8")
-                with self.assertRaises(ValueError):
-                    package.verified_free_model(path)
+        for variant in ("skin", "free"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                with mock.patch.object(package, "ROOT", root), mock.patch.object(sys, "argv", [
+                    "package_release", "--platform", "windows", "--arch", "x86_64",
+                    "--variant", variant, "--version", "1.0.0"
+                ]), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as failure:
+                        package.main()
+                    self.assertEqual(failure.exception.code, 2)
+                self.assertEqual(list(root.iterdir()), [])
 
     def test_release_inputs_are_not_gitignored(self):
         import subprocess

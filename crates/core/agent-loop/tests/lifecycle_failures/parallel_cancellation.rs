@@ -161,7 +161,7 @@ async fn cancellation_preserves_a_settled_parallel_result_waiting_for_model_orde
         "settled quick result was overwritten by cancellation: {results:#?}"
     );
     assert_eq!(
-        results[1].data["message"]["content"][0]["content"][0]["text"],
+        results[1].data["message"]["content"][0]["text"],
         "quick"
     );
 }

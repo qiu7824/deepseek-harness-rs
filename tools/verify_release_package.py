@@ -13,7 +13,7 @@ import zipfile
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from free_model_evidence import package_defaults
+from native_sandbox_identity import IDENTITY_FILE, checkout_identity, source_identity, verify_record as verify_native_record
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -140,7 +140,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", choices=["windows", "linux", "macos"], required=True)
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--variant", choices=["core", "skin", "free"], required=True)
+    parser.add_argument("--variant", choices=["core"], required=True)
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
     arch = validated_release_component("arch", args.arch)
@@ -217,16 +217,20 @@ def main() -> None:
         required.add(prefix + "dsh-desktop-controller.exe")
         required.add(prefix + "dsh-uu-controller.exe")
         required.add(prefix + "runtime/native-install-upgrade.cjs")
+        required.add(prefix + "native-sandbox/" + IDENTITY_FILE)
         for helper in ("dsh-windows-native.exe", "dsh-command-runner.exe", "dsh-windows-sandbox-setup.exe"):
             required.add(prefix + "native-sandbox/" + helper)
-    if args.variant == "skin":
-        required.add(prefix + "plugins/dsh-skin-center/lib/client.js")
-    elif any(name.startswith(prefix + "plugins/dsh-skin-center/") for name in names):
-        raise SystemExit("non-skin archive includes the skin-center plugin")
+    if any(name.startswith(prefix + "plugins/dsh-skin-center/") for name in names):
+        raise SystemExit("core archive includes the retired skin-center distribution")
 
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"archive is missing required entries: {missing}")
+    if args.platform == "windows":
+        native_identity = json.loads(read_archive_file(archive, prefix + "native-sandbox/" + IDENTITY_FILE))
+        revision, _, version = checkout_identity(ROOT)
+        verify_native_record(native_identity, source_identity(ROOT)["sha256"], revision, version,
+                             lambda name: hashlib.sha256(read_archive_file(archive, prefix + "native-sandbox/" + name)).hexdigest())
     node_lock=json.loads((ROOT/'tools/node_runtime_lock.json').read_text(encoding='utf-8'))
     from stage_search_runtime import ARCHIVES, VERSION
     search_identity=json.loads(read_archive_file(archive,prefix+'runtime/search/IDENTITY.json'))
@@ -262,27 +266,8 @@ def main() -> None:
         )
         raise SystemExit(f"{message}: {skin_assets[:5]}")
 
-    expected_payload = f"deepseek-harness-rs-skin{executable_suffix}"
-    skin_entry = prefix + expected_payload
-    has_skin_payload = skin_entry in names
-    if has_skin_payload != (args.variant == "skin"):
-        raise SystemExit("skin payload presence does not match package variant")
-    if has_skin_payload:
-        payload = file_bytes[skin_entry]
-        if args.platform == "windows" and not payload.startswith(b"MZ"):
-            raise SystemExit("Windows skin payload is not a PE executable")
-        if args.platform != "windows" and payload.startswith(b"#!"):
-            raise SystemExit("skin payload depends on a script runtime")
-        if SKIN_MARKER not in payload:
-            raise SystemExit("skin executable has no embedded skin payload")
-        embedded = payload.rsplit(SKIN_MARKER, 1)[1]
-        with zipfile.ZipFile(io.BytesIO(embedded)) as package:
-            embedded_names = package.namelist()
-            if not any(name.startswith("skins/") for name in embedded_names):
-                raise SystemExit("skin executable has an empty skin payload")
-            if any(name.startswith("web/") for name in embedded_names):
-                raise SystemExit("skin executable leaks bundled skin assets outside its payload")
-
+    if any(name.startswith(prefix + "deepseek-harness-rs-skin") for name in names):
+        raise SystemExit("core archive includes a retired skin payload")
     expected_manifest = {
         "name": suffix,
         "version": version,
@@ -291,8 +276,8 @@ def main() -> None:
         "variant": args.variant,
         "entry": f"dsh-launcher{executable_suffix}",
         "host": f"deepseek-harness-rs{executable_suffix}",
-        "skin_payload": expected_payload if args.variant == "skin" else None,
-        "default_skin": "deepseek-official" if args.variant == "skin" else None,
+        "skin_payload": None,
+        "default_skin": None,
     }
     if manifest != expected_manifest:
         raise SystemExit(f"unexpected PACKAGE.json: {manifest}")
@@ -306,31 +291,10 @@ def main() -> None:
         raise SystemExit(
             f"archive leaks physical skin assets outside the embedded skin payload: {forbidden_skin_paths[:5]}"
         )
-    if args.variant == "free":
-        evidence_entry = prefix + "free-model-verification.json"
-        if evidence_entry not in names:
-            raise SystemExit("free archive is missing inference verification")
-        evidence = json.loads(read_archive_file(archive, evidence_entry))
-        digest = hashlib.sha256(read_archive_file(archive, prefix + manifest["host"])).hexdigest()
-        try:
-            expected_defaults = package_defaults(evidence, digest)
-        except (ValueError, KeyError, TypeError) as error:
-            raise SystemExit(f"free archive has invalid inference verification: {error}") from error
-        if settings_entry not in names:
-            raise SystemExit("free archive is missing its package defaults")
-        settings = json.loads(file_bytes[settings_entry])
-        if settings != expected_defaults:
-            raise SystemExit("free archive model defaults differ from the individually verified routes")
-    elif args.variant == "skin":
-        if settings_entry not in names:
-            raise SystemExit("skin archive is missing its default skin settings")
-        settings = json.loads(file_bytes[settings_entry])
-        if settings != {"ui-theme": {"preference": "deepseek-official"}}:
-            raise SystemExit("skin archive does not select the official skin")
-    elif settings_entry in names:
-        raise SystemExit("core archive unexpectedly carries package defaults")
-    if manifest.get("default_skin") != ("deepseek-official" if args.variant == "skin" else None):
-        raise SystemExit("package default skin does not match the release variant")
+    if settings_entry in names or prefix + "free-model-verification.json" in names:
+        raise SystemExit("core archive unexpectedly carries model-specific package defaults")
+    if manifest.get("default_skin") is not None:
+        raise SystemExit("core archive unexpectedly selects a skin")
     theme_boundaries = (
         'NO_SKIN && !["light", "dark"].includes(section.preference)',
         "if (NO_SKIN) {",

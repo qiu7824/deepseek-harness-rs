@@ -147,6 +147,21 @@ pub trait PersistenceBackend<TornMarker: Clone + Send + Sync + 'static = ()>: Se
     /// Human-readable backend name.
     fn name(&self) -> &'static str;
 
+    /// Own one writable Session identity until the last lease is dropped.
+    /// Durable backends must exclude writers in other processes; reads remain
+    /// independent of this capability.
+    async fn acquire_writer(&self, meta: &SessionHeader) -> Result<SessionWriterLease, String> {
+        let _ = meta;
+        Ok(Arc::new(()))
+    }
+
+    /// Report an existing owner even before its first lazy disk write. The
+    /// eventual commit still acquires a lease and revalidates the revision.
+    async fn assert_writer_available(&self, id: &SessionId) -> Result<(), String> {
+        let _ = id;
+        Ok(())
+    }
+
     /// Read a stored prefix by id, scanning every backend storage scope.
     async fn load_stored(&self, id: &SessionId)
     -> Result<Option<StoredPrefix<TornMarker>>, String>;
@@ -213,6 +228,9 @@ pub trait PersistenceBackend<TornMarker: Clone + Send + Sync + 'static = ()>: Se
     }
 }
 
+/// Backend-owned resource whose lifetime spans writable residency.
+pub type SessionWriterLease = Arc<dyn Send + Sync>;
+
 /// Per-session write state held by the coordinator's in-memory bookkeeping.
 #[derive(Clone)]
 struct SessionState {
@@ -224,6 +242,8 @@ struct SessionState {
     materialized: bool,
     /// The live Session this state was bound to, if any.
     owner: Option<Session>,
+    writer: SessionWriterLease,
+    admission: Arc<()>,
 }
 
 #[derive(Clone)]
@@ -700,6 +720,35 @@ fn snapshot_stored_events(
     own_stored_events(events.to_vec(), id)
 }
 
+/// Stateful compatibility normalization for a forward stored-event stream.
+/// Only message identities needed by legacy references are retained.
+pub struct StoredEventNormalizer {
+    id: SessionId,
+    message_ids: HashMap<u64, String>,
+}
+impl StoredEventNormalizer {
+    pub fn new(id: SessionId) -> Self { Self { id, message_ids: HashMap::new() } }
+    pub fn normalize<'a>(&mut self, event: &'a SessionEvent) -> Result<std::borrow::Cow<'a, SessionEvent>, String> {
+        use std::borrow::Cow;
+        assert_supported_events(std::slice::from_ref(event), &self.id)?;
+        let value = match event.type_.as_str() {
+            "turn/start" if event.data.get("trigger").is_some() => Cow::Owned(migrate_legacy_turn_start_event(event, &self.id)?),
+            "turn/end" => Cow::Owned(migrate_legacy_turn_end_event(event, &self.id)?),
+            "steering/message" => {
+                let steering = migrate_legacy_steering_event(event, &self.id)?;
+                Cow::Owned(migrate_legacy_message_event(&steering, &self.id, &self.message_ids))
+            }
+            _ if needs_legacy_prefix(event) => Cow::Owned(migrate_legacy_message_event(event, &self.id, &self.message_ids)),
+            _ => Cow::Borrowed(event),
+        };
+        if !dsh_session::is_known_session_event_type(&value.type_) && value.ignorable != Some(true) {
+            return Err(format!("session {} contains unknown required event {} at seq {}", self.id.as_str(), value.type_, value.seq));
+        }
+        if let Some(id) = event_message_id(&value) { self.message_ids.insert(value.seq.get(), id); }
+        Ok(value)
+    }
+}
+
 /// Upgrade freshly decoded records without retaining their original full log.
 fn own_stored_events(
     events: Vec<SessionEvent>,
@@ -820,6 +869,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                     id.as_str()
                 ));
             }
+            let writer = coordinator.backend.acquire_writer(&meta).await?;
             if coordinator.backend.load_stored(&id).await?.is_some() {
                 return Err(format!(
                     "session \"{}\" already has a persisted log on disk; load/resume it instead of creating",
@@ -834,10 +884,34 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                     cursor: 0,
                     materialized: false,
                     owner: None,
+                    writer,
+                    admission: Arc::new(()),
                 },
             );
             Ok(())
         })
+    }
+
+    /// Reserve a new, unpublished Session before agent setup or publication.
+    pub async fn prepare_new(
+        self: &Arc<Self>,
+        session: Session,
+    ) -> Result<dsh_session::SessionPreparation, String> {
+        self.create(session.header().clone(), Some(session.inherited_event_count())).await?;
+        let state = self.states.lock().get(session.id().as_str()).cloned()
+            .ok_or("new Session lost its persistence admission")?;
+        let coordinator = self.clone();
+        Ok(dsh_session::SessionPreparation::create(session, dsh_session::SessionPreparationOptions {
+            release: Some(Box::new(move || coordinator.release_unattached(&state))),
+        }))
+    }
+
+    fn release_unattached(&self, expected: &SessionState) {
+        let mut states = self.states.lock();
+        if states.get(expected.meta.id.as_str()).is_some_and(|state|
+            state.owner.is_none() && Arc::ptr_eq(&state.admission, &expected.admission)) {
+            states.remove(expected.meta.id.as_str());
+        }
     }
 
     /// Durably persist a batch of events.
@@ -1040,6 +1114,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
     ) -> Result<dsh_session::SessionPreparation, String> {
         loop {
             self.wait_for_retirement(id).await?;
+            self.backend.assert_writer_available(id).await?;
             let sessions = self.sessions()?;
             if sessions.get(id).is_some() {
                 return Err(format!(
@@ -1056,6 +1131,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             };
             if sessions.get(id).is_some() {
                 self.preparations.release(&reservation, false);
+                self.release_unattached(&reservation.state);
                 return Err(format!(
                     "cannot prepare session \"{}\" while it is live",
                     id.as_str()
@@ -1072,6 +1148,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 dsh_session::SessionPreparationOptions {
                     release: Some(Box::new(move || {
                         coordinator.preparations.release(&reservation, reusable);
+                        coordinator.release_unattached(&reservation.state);
                     })),
                 },
             ));
@@ -1096,10 +1173,12 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             };
             if let Some(attached) = sessions.get(id) {
                 self.preparations.discard(&reservation);
+                self.release_unattached(&reservation.state);
                 return self.load_live_snapshot(&attached).await;
             }
             let inspection = reservation.source.inspection();
             self.preparations.discard(&reservation);
+            self.release_unattached(&reservation.state);
             return Ok(inspection);
         }
     }
@@ -1193,7 +1272,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                             .collect(),
                     });
                 }
-                let events = snapshot_stored_events(&suffix.events, &id)?;
+                let events = own_stored_events(suffix.events, &id)?;
                 coordinator.assert_events_supported(&suffix.meta, &events)?;
                 return Ok(SessionReadFromResult {
                     meta: suffix.meta,
@@ -1227,7 +1306,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             .ok_or_else(|| format!("session \"{}\" not found", id.as_str()))?;
         self.assert_stored_id(id, &stored.meta)?;
         self.assert_version(&stored.meta)?;
-        let events = snapshot_stored_events(&stored.events, id)?;
+        let events = own_stored_events(stored.events, id)?;
         self.assert_events_supported(&stored.meta, &events)?;
         Ok((stored.meta, stored.inherited_event_count, events))
     }
@@ -1301,6 +1380,11 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 id.as_str()
             ));
         }
+        let existing = self.states.lock().get(id.as_str()).cloned();
+        let writer = match &existing {
+            Some(state) => state.writer.clone(),
+            None => self.backend.acquire_writer(source.session.header()).await?,
+        };
         if !self.is_prepared_source_current(source.clone()).await? {
             return Ok(None);
         }
@@ -1316,19 +1400,22 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             // associating the old in-memory view.
             return Ok(None);
         }
-        let existing = self.states.lock().get(id.as_str()).cloned();
         let state = existing.unwrap_or(SessionState {
             meta: source.session.header().clone(),
             inherited_event_count: source.session.inherited_event_count(),
             cursor,
             materialized: true,
             owner: None,
+            writer: writer.clone(),
+            admission: Arc::new(()),
         });
         let mut state = state;
         state.meta = source.session.header().clone();
         state.inherited_event_count = source.session.inherited_event_count();
         state.cursor = cursor;
         state.materialized = true;
+        state.writer = writer;
+        state.admission = Arc::new(());
         self.states
             .lock()
             .insert(id.as_str().to_string(), state.clone());
@@ -1530,6 +1617,9 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                                 .error(vec![arc(format!("dispose failed: {}", errors.join("; ")))]);
                         }
                         let _ = coordinator.backend.close().await;
+                        coordinator.preparations.clear();
+                        coordinator.live.lock().clear();
+                        coordinator.states.lock().clear();
                     })
                 }))
             }),
@@ -1686,7 +1776,16 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
 
     /// Drain and release state owned by one exact disposed Session lifecycle.
     async fn retire_core(self: &Arc<Self>, session: &Session) -> Result<(), String> {
-        self.flush(session).await?;
+        if let Err(error) = self.flush(session).await {
+            // A rejected admission has no durable owner or accepted writes to
+            // preserve. Do not retain its failed initialization forever.
+            let owns_state = self.states.lock().get(session.id().as_str())
+                .is_some_and(|state| state.owner.as_ref().is_some_and(|owner| owner.ptr_eq(session)));
+            if !owns_state {
+                self.live.lock().remove(&session_ptr(session));
+            }
+            return Err(error);
+        }
         let id = session.id().clone();
         let coordinator = Arc::clone(self);
         let session = session.clone();
@@ -1924,9 +2023,10 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             }
         }
 
+        let writer = self.backend.acquire_writer(session.header()).await?;
         let stored = self.backend.load_stored(&id).await?;
         if let Some(stored) = stored {
-            self.adopt_live_prefix(session, seed, stored).await?;
+            self.adopt_live_prefix(session, seed, stored, writer).await?;
             return Ok(());
         }
 
@@ -1953,6 +2053,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         session: &Session,
         seed: &[SessionEvent],
         stored: StoredPrefix<TornMarker>,
+        writer: SessionWriterLease,
     ) -> Result<(), String> {
         let meta = stored.meta.clone();
         self.assert_stored_id(session.id(), &meta)?;
@@ -1993,6 +2094,8 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 cursor,
                 materialized: true,
                 owner: Some(session.clone()),
+                writer,
+                admission: Arc::new(()),
             },
         );
         let suffix: Vec<SessionEvent> = seed.iter().skip(cursor as usize).cloned().collect();

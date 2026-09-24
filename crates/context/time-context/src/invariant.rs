@@ -15,7 +15,7 @@ use cordis::{
     downcast_arc,
 };
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
-use dsh_llm::{ContentBlock, ContextForm, MessageSource, UserMessage};
+use dsh_llm::{ContentBlock, UserMessage};
 use dsh_session::{Session, SessionEvent};
 
 use crate::request_zone::{
@@ -47,8 +47,9 @@ fn is_reading_source(data: &serde_json::Value) -> bool {
     let Some(source) = data.get("source") else {
         return false;
     };
-    source.get("kind").and_then(|kind| kind.as_str()) == Some("plugin")
-        && source.get("plugin").and_then(|name| name.as_str()) == Some(SOURCE_NAME)
+    source.get("kind").and_then(|kind| kind.as_str()) == Some(SOURCE_NAME)
+        || source.get("kind").and_then(|kind| kind.as_str()) == Some("plugin")
+            && source.get("plugin").and_then(|name| name.as_str()) == Some(SOURCE_NAME)
 }
 
 /// Derive the open step boundary at which a time-context reading may append
@@ -135,25 +136,15 @@ pub fn validate_reading(history: &[SessionEvent], event: &SessionEvent) -> Resul
             "time-context reading names turn {turn}/step {step}, expected turn {expected_turn}/step {expected_step}"
         ));
     }
-    let MessageSource::Plugin {
-        plugin,
-        form,
-        sections,
-        summary,
-        compaction_id,
-        source_command_id,
-    } = &message.source
-    else {
-        return Err("time-context source must retain package ownership".to_string());
-    };
-    if plugin != SOURCE_NAME {
+    if message.source.plugin_name() != Some(SOURCE_NAME) {
         return Err("time-context source must retain package ownership".to_string());
     }
-    let exact_section = summary.is_none()
-        && compaction_id.is_none()
-        && source_command_id.is_none()
-        && *form == Some(ContextForm::Snapshot)
-        && matches!(sections.as_deref(), Some([section]) if section.name == SOURCE_NAME && section.text == text);
+    let source = serde_json::to_value(&message.source).expect("clock source serializes");
+    let legacy = source["kind"] == "plugin";
+    let exact_section = source["form"] == "snapshot"
+        && source["sections"] == serde_json::json!([{"name":SOURCE_NAME,"text":text}])
+        && source.as_object().is_some_and(|fields| fields.keys().all(|key|
+            matches!(key.as_str(), "kind" | "form" | "sections") || legacy && key == "plugin"));
     if !exact_section {
         return Err(
             "time-context source must carry only the exact snapshot text, not request authority"

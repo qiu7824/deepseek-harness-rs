@@ -157,6 +157,7 @@ fn run_unelevated(mut request: Request) -> Result<i32> {
     run_slot(request)
 }
 
+
 fn run_slot(mut request: Request) -> Result<i32> {
     if request.home.exists() {
         request.home = codex_windows_sandbox::canonicalize_path(&request.home);

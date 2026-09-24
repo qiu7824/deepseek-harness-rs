@@ -1,0 +1,526 @@
+[
+  {
+    "name": "recorded_cancel_before_first_output",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 1790134779731,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "request/phase",
+        "time": 1790134779744,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "request_sent",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "cancel",
+          "networkElapsedMs": 0,
+          "outputTokens": null
+        },
+        "seq": 1
+      },
+      {
+        "type": "request/phase",
+        "time": 1790134801780,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "cancelled",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "cancel",
+          "networkElapsedMs": 22035,
+          "outputTokens": null
+        },
+        "seq": 2
+      },
+      {
+        "type": "step/end",
+        "time": 1790134801781,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 3
+      },
+      {
+        "type": "turn/end",
+        "time": 1790134801782,
+        "data": {
+          "turn": 1
+        },
+        "seq": 4
+      }
+    ],
+    "expected": {
+      "llmMs": 22035,
+      "steps": 1,
+      "ttftSteps": 0,
+      "requestSamples": 0
+    }
+  },
+  {
+    "name": "network_time_excludes_local_preparation_and_post_processing",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 1000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "request/phase",
+        "time": 11000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "request_sent",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "success",
+          "networkElapsedMs": 0,
+          "outputTokens": null
+        },
+        "seq": 1
+      },
+      {
+        "type": "request/phase",
+        "time": 13000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "completed",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "success",
+          "networkElapsedMs": 2000,
+          "outputTokens": 100
+        },
+        "seq": 2
+      },
+      {
+        "type": "assistant/message",
+        "time": 14000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "reply",
+            "role": "assistant",
+            "content": []
+          }
+        },
+        "seq": 3
+      },
+      {
+        "type": "step/end",
+        "time": 15000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 4
+      },
+      {
+        "type": "turn/end",
+        "time": 16000,
+        "data": {
+          "turn": 1
+        },
+        "seq": 5
+      }
+    ],
+    "expected": {
+      "llmMs": 2000,
+      "requestMs": 2000,
+      "requestSamples": 1
+    }
+  },
+  {
+    "name": "all_terminal_attempts_count_but_only_completed_usage_sets_rate",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 1000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "request/phase",
+        "time": 2000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "failed",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "a",
+          "networkElapsedMs": 1000,
+          "outputTokens": null
+        },
+        "seq": 1
+      },
+      {
+        "type": "request/phase",
+        "time": 5000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "superseded",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "b",
+          "networkElapsedMs": 2000,
+          "outputTokens": null
+        },
+        "seq": 2
+      },
+      {
+        "type": "request/phase",
+        "time": 8000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "completed",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "c",
+          "networkElapsedMs": 1000,
+          "outputTokens": 50
+        },
+        "seq": 3
+      },
+      {
+        "type": "request/phase",
+        "time": 8001,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "completed",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "c",
+          "networkElapsedMs": 1000,
+          "outputTokens": 50
+        },
+        "seq": 4
+      },
+      {
+        "type": "assistant/message",
+        "time": 9000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "reply",
+            "role": "assistant",
+            "content": []
+          }
+        },
+        "seq": 5
+      },
+      {
+        "type": "step/end",
+        "time": 9500,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 6
+      }
+    ],
+    "expected": {
+      "llmMs": 4000,
+      "requestMs": 1000,
+      "requestOutputTokens": 50,
+      "requestSamples": 1
+    }
+  },
+  {
+    "name": "credentials_failure_never_reaches_model",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 1000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "request/phase",
+        "time": 1500,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "credentials",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "auth",
+          "networkElapsedMs": null,
+          "outputTokens": null
+        },
+        "seq": 1
+      },
+      {
+        "type": "request/phase",
+        "time": 5000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "failed",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "auth",
+          "networkElapsedMs": null,
+          "outputTokens": null
+        },
+        "seq": 2
+      },
+      {
+        "type": "step/end",
+        "time": 5500,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 3
+      }
+    ],
+    "expected": {
+      "llmMs": 0,
+      "requestSamples": 0
+    }
+  },
+  {
+    "name": "monotonic_measurement_survives_wall_clock_adjustment",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 9000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "request/phase",
+        "time": 9001,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "request_sent",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "clock",
+          "networkElapsedMs": 0,
+          "outputTokens": null
+        },
+        "seq": 1
+      },
+      {
+        "type": "request/phase",
+        "time": 1000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "phase": "cancelled",
+          "measurement": "request-average",
+          "provider": "fixture",
+          "model": "model",
+          "executionInstanceId": "host-a",
+          "attemptId": "clock",
+          "networkElapsedMs": 8000,
+          "outputTokens": null
+        },
+        "seq": 2
+      },
+      {
+        "type": "step/end",
+        "time": 1001,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 3
+      }
+    ],
+    "expected": {
+      "llmMs": 8000
+    }
+  },
+  {
+    "name": "legacy_cancel_without_message",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 1000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "step/end",
+        "time": 23000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 1
+      },
+      {
+        "type": "turn/end",
+        "time": 24000,
+        "data": {
+          "turn": 1
+        },
+        "seq": 2
+      }
+    ],
+    "expected": {
+      "llmMs": 22000,
+      "ttftSteps": 0
+    }
+  },
+  {
+    "name": "legacy_missing_step_end_closes_at_turn_boundary",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 1000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "turn/end",
+        "time": 23000,
+        "data": {
+          "turn": 1
+        },
+        "seq": 1
+      },
+      {
+        "type": "turn/end",
+        "time": 24000,
+        "data": {
+          "turn": 1
+        },
+        "seq": 2
+      }
+    ],
+    "expected": {
+      "llmMs": 22000
+    }
+  },
+  {
+    "name": "legacy_completed_message_excludes_later_tool_work",
+    "events": [
+      {
+        "type": "step/start",
+        "time": 1000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 0
+      },
+      {
+        "type": "assistant/message",
+        "time": 3000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "reply",
+            "role": "assistant",
+            "content": []
+          }
+        },
+        "seq": 1
+      },
+      {
+        "type": "tool/call",
+        "time": 4000,
+        "data": {
+          "callId": "tool-1"
+        },
+        "seq": 2
+      },
+      {
+        "type": "tool/result",
+        "time": 9000,
+        "data": {
+          "message": {
+            "source": {
+              "callId": "tool-1"
+            }
+          }
+        },
+        "seq": 3
+      },
+      {
+        "type": "step/end",
+        "time": 10000,
+        "data": {
+          "turn": 1,
+          "step": 1
+        },
+        "seq": 4
+      },
+      {
+        "type": "turn/end",
+        "time": 11000,
+        "data": {
+          "turn": 1
+        },
+        "seq": 5
+      }
+    ],
+    "expected": {
+      "llmMs": 2000,
+      "toolMs": 5000
+    }
+  }
+]

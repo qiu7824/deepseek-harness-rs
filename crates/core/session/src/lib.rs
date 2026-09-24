@@ -6,6 +6,7 @@
 //! `session/flush`).
 
 pub mod chunk_rows;
+pub mod format_v4;
 pub mod image_offload;
 pub mod invariant;
 pub mod json;

@@ -2,6 +2,10 @@ use super::*;
 
 pub(crate) fn endpoint(base: &str, suffix: &str) -> String {
     let base = base.trim_end_matches('/');
+    let base = base
+        .strip_suffix("/messages")
+        .or_else(|| base.strip_suffix("/chat/completions"))
+        .unwrap_or(base);
     if base.ends_with("/v1") {
         format!("{base}/{suffix}")
     } else {
@@ -40,7 +44,7 @@ pub(crate) async fn request(
     } else {
         (!connection.keyless).then_some(api_key)
     };
-    let mut response = transport::post_tracked(
+    let response = transport::post_tracked(
         &endpoint(&connection.base_url, "messages"),
         bearer,
         encoded,
@@ -66,8 +70,22 @@ pub(crate) async fn request(
             });
         return Err(http_failure(status, &headers, &bytes, provider_name));
     }
+    consume_response(response, options, connection, sender).await
+}
+
+pub(crate) async fn consume_response(
+    mut response: transport::CancelableResponse,
+    options: &GenerateOptions,
+    connection: &ResolvedDeepSeekOptions,
+    sender: &tokio::sync::mpsc::Sender<StreamChunk>,
+) -> Result<(), LlmFailure> {
     let mut parser = sse::SseParser::new();
     let mut translator = anthropic::AnthropicTranslator::new(&options.model, &connection.base_url);
+    translator.set_protocol(if connection.api == messages::API {
+        messages::API
+    } else {
+        "anthropic-messages"
+    });
     let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {
         let read = tokio::time::timeout(connection.stream_idle_timeout, response.next_data());

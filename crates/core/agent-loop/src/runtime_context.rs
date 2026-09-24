@@ -21,7 +21,7 @@ const CLEARED: &str =
     "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
 
 fn is_owned(message: &dsh_llm::UserMessage) -> bool {
-    matches!(&message.source, MessageSource::Plugin { plugin, .. } if plugin == SOURCE)
+    message.source.plugin_name() == Some(SOURCE)
 }
 
 fn text_of(message: &dsh_llm::UserMessage) -> Option<String> {

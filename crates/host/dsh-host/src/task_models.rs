@@ -271,7 +271,9 @@ impl TaskModels {
                 let signal=execution.signal.lock().clone();let agent=execution.agent.as_ref().ok_or_else(||ToolBodyError::plain("需要当前会话"))?;
                 let mut content=vec![ContentBlock::Text{text:args["prompt"].as_str().unwrap_or("").into()}];
                 let images=super::image_generation::read_references(&service.ctx,&execution,&args["reference_images"]).await.map_err(ToolBodyError::plain)?;
-                for image in images{content.push(ContentBlock::Image{attachment:serde_json::from_value(serde_json::to_value(image.reference).unwrap()).map_err(|e|ToolBodyError::plain(e.to_string()))?});}
+                for image in images{content.push(ContentBlock::Image{attachment:serde_json::from_value(serde_json::to_value(image.reference).unwrap()).map_err(|e|ToolBodyError::plain(e.to_string()))?,
+offloaded: None,
+});}
                 let options=GenerateOptions{provider:route["provider"].as_str().unwrap().into(),model:route["model"].as_str().unwrap().into(),reasoning_effort:route["reasoningEffort"].as_str().filter(|s|!s.is_empty()).map(dsh_llm::reasoning_effort_id),messages:vec![dsh_llm::create_user_message(content,MessageSource::User{rpc_id:None,client_time_zone:None})],system:Some(format!("You are the {role} consultant. Analyze the supplied evidence, distinguish facts from hypotheses, and give actionable findings. Do not claim to have executed tools or changed files.")),tools:None,temperature:None,max_tokens:None,stop:None,signal:Some(signal.clone()),session_id:Some(agent.id().to_string()),purpose:Some(role.into()),agent_loop_request:false, telemetry: None};
                 let mut stream=service.llm.stream(options);let mut assembler=dsh_llm::BlockAssembler::new();let mut received=0usize;let mut chunks=0usize;let mut finished=false;
                 loop {tokio::select!{

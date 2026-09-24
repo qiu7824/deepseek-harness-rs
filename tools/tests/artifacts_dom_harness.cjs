@@ -28,6 +28,7 @@ const button=text=>{const result=[...document.querySelectorAll('button')].find(n
  await act(()=>document.querySelector('.dsa-files li').dispatchEvent(new window.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:30,clientY:30})));await act(()=>button('移入垃圾槽').click());
  assert.ok(requests.some(request=>request.operation==='file-action'&&request.args.etag==='50:1'&&request.args.action==='trash'));
  await act(()=>button('查看产生的垃圾列表').click());assert.match(document.body.textContent,/正在使用/);assert.equal(button('移入恢复队列').disabled,true);
+ await act(()=>button('清理可回收项').click());assert.ok(requests.some(request=>request.operation==='collect'&&request.args.sessionId==='session-a'),'task cleanup must retain its displayed scope');
  await act(()=>root.render(React.createElement(View,{sessionId:'session-b',ctx})));
  assert.ok(requests.some(request=>request.operation==='list'&&request.args.sessionId==='session-b'));assert.equal(document.querySelector('.dsa-resources'),null,'new task resets resource panel');
  const Settings=slots.get('settings.section').component;await act(()=>root.render(React.createElement(Settings)));

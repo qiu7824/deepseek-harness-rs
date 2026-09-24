@@ -6,6 +6,7 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
+		let _deepseek_ai_dsh_client_ui_attachment = require("@deepseek-ai/dsh-client-ui-attachment");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		let _deepseek_ai_dsh_client_runtime_client = require("@deepseek-ai/dsh-client-runtime/client");
 		//#region lib/types/client/tool/models/tool-call-model.js
@@ -78,6 +79,7 @@ window.__ModuleLoader__.load({
 			for (const block of node.content) if (block.type === "text") parts.push(block.text);
 			else parts.push(JSON.stringify(block, null, 2));
 			if (parts.length === 0 && node.error !== void 0) parts.push(`${node.error.name}: ${node.error.code}`);
+			if (node.error?.code === "AUTO_REVIEW_DENIED" && typeof node.meta?.autoReview?.reason === "string") parts.push("Auto review: " + node.meta.autoReview.reason);
 			return parts.join("\n");
 		}
 		function parseArgs(argsRaw) {
@@ -178,12 +180,12 @@ window.__ModuleLoader__.load({
 			const variant = classifyTool(toolName);
 			const done = "kind" in block;
 			const argsRaw = (done ? block.call?.argsRaw : block.argsRaw) ?? "";
-			const state = !done ? "running" : block.error?.code === "interrupted" ? "stopped" : block.isError ? "error" : "ok";
+			const state = !done ? "running" : ["interrupted","ABORTED","ABORTED_BEFORE_DISPATCH","USER_APPROVAL_CANCELLED"].includes(block.error?.code) ? "stopped" : block.isError ? "error" : "ok";
 			const base = argsRaw === "" ? block.callId : relativizeToCwd(deriveSummary(variant, argsRaw), cwd);
 			const toolTitle = TOOL_TITLES[toolName];
 			const summary = variant === "others" && toolName !== "" && toolTitle === void 0 ? `${toolName} · ${base}` : base;
 			const output = done ? resultText(block) || null : null;
-			const errorSummary = state === "error" && output !== null ? firstLine(output) : null;
+			const errorSummary = block.error?.code === "AUTO_REVIEW_DENIED" ? "Auto review · 未执行" : state === "error" && output !== null ? firstLine(output) : null;
 			return {
 				variant,
 				title: toolTitle ?? VARIANT_TITLES[variant],
@@ -859,9 +861,10 @@ window.__ModuleLoader__.load({
             const [image, setImage] = (0, react.useState)(null);
             const [failed, setFailed] = (0, react.useState)(false);
             const [open, setOpen] = (0, react.useState)(false);
+            const closePreview = (0, react.useCallback)(() => setOpen(false), []);
             (0, react.useEffect)(() => {
                 let active = true, resource, request;
-                setImage(null); setFailed(false);
+                setImage(null); setFailed(false); setOpen(false);
                 Promise.resolve().then(() => {
                     if (!active) return null;
                     request = typeof loadImage.acquire === "function" ? loadImage.acquire(attachment) : loadImage(attachment).then(url => ({ url, release() {} }));
@@ -872,12 +875,12 @@ window.__ModuleLoader__.load({
                     resource = value; setImage(value.url);
                 }, () => { if (active) setFailed(true); });
                 return () => { active = false; request?.release?.(); resource?.release(); };
-            }, [attachment, loadImage]);
+            }, [attachment.attachmentId, loadImage]);
             if (image === null) return failed ? (0, react_jsx_runtime.jsx)("span", { role: "status", children: t("image.serviceUnavailable") }) : null;
             const alt = attachment.name ?? t("image.result");
             return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
                 (0, react_jsx_runtime.jsx)("button", { type: "button", "aria-label": t("image.open"), title: t("image.open"), onClick: () => setOpen(true), style: { display: "block", maxWidth: "100%", padding: 0, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, background: "transparent", cursor: "zoom-in" }, children: (0, react_jsx_runtime.jsx)("img", { src: image, alt, loading: "lazy", style: { display: "block", maxWidth: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 8 } }) }),
-                open && (0, react_jsx_runtime.jsx)("div", { role: "dialog", "aria-modal": "true", "aria-label": alt, onClick: () => setOpen(false), onKeyDown: event => { if (event.key === "Escape") setOpen(false); }, tabIndex: -1, ref: node => node?.focus(), style: { position: "fixed", zIndex: 200, inset: 0, display: "grid", placeItems: "center", padding: 24, background: "rgba(0,0,0,.72)", cursor: "zoom-out" }, children: (0, react_jsx_runtime.jsxs)("div", { onClick: event => event.stopPropagation(), style: { position: "relative", maxWidth: "min(96vw,1400px)", maxHeight: "94vh", padding: 12, borderRadius: 12, background: "var(--dsw-alias-bg-base)", boxShadow: "var(--dsw-shadow-lv3)" }, children: [(0, react_jsx_runtime.jsx)("button", { type: "button", "aria-label": t("image.close"), onClick: () => setOpen(false), style: { position: "absolute", top: 4, right: 4, zIndex: 1, width: 30, height: 30, border: 0, borderRadius: 999, background: "var(--dsw-alias-interactive-bg-hover)", color: "inherit", fontSize: 22, cursor: "pointer" }, children: "×" }), (0, react_jsx_runtime.jsx)("img", { src: image, alt, style: { display: "block", maxWidth: "calc(96vw - 48px)", maxHeight: "88vh", objectFit: "contain" } })] }) })
+                open && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.ImageLightbox, { src: image, alt, labels: { dialog: t("image.preview"), close: t("image.closePreview") }, onClose: closePreview })
             ] });
         }
         function ToolImages({ model, loadImage, t }) {
@@ -942,17 +945,6 @@ window.__ModuleLoader__.load({
 		}
 		/** One atomic call dispatched through the Tool-owned keyed slot. */
 		const ToolCall = (0, react.memo)(function ToolCall({ renderSlot, callId, toolName, block, openFile, loadImage, selected, cwd, inspectCall, t, children }) {
-			const announced = react.useRef(false);
-			react.useEffect(() => {
-				// Opening the shared workbench is a presentation side effect of a new
-				// computer-use run. The event is handled by the optional sidebar plugin;
-				// dispatching it here keeps the model/tool path independent of that UI.
-				if (toolName === "computer_use" && !("kind" in block) && !announced.current) {
-					announced.current = true;
-					const EventCtor = globalThis.CustomEvent ?? globalThis.window?.CustomEvent;
-					if (EventCtor) globalThis.dispatchEvent?.(new EventCtor("dsh:computer-use-start", { detail: { callId } }));
-				}
-			}, [toolName, callId, block]);
 			const owner = (0, react.useMemo)(() => ({
 				callId,
 				toolName,

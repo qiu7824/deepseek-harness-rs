@@ -7293,6 +7293,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			/** Session-owned business Context engine over the contiguous raw window. */
 			conversation;
 			running = false;
+			commandRunning = false;
+			liveCommands = new Set();
+			commandActivityRevision = 0;
+			commandActivityAbort = null;
 			/** Monotonic count of authoritative running relays; guards prompt RPC races even when the boolean returns to its starting value. */
 			runningRevision = 0;
 			address;
@@ -7599,13 +7603,26 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @param title - raw title text (the host normalizes acceptance).
 			* @returns the rename result (normalized accepted title + title event seq).
 			*/
-			async rename(title) {
+			titleEditBase() {
+				const row = this.projections.rows.get("title");
+				return row === void 0 ? null : { value: row.value ?? null, throughSeq: row.seq };
+			}
+			async readFileAttachment(attachment) {
+				try { return (await this.api.sessions.fileAttachment({sessionId:this.sessionId, attachment})).result; }
+				catch (error) { return transportError(error); }
+			}
+			async rename(title, expectedTitle) {
 				try {
 					const { result } = await this.api.sessions.rename({
 						sessionId: this.sessionId,
-						title
+						title,
+						...(expectedTitle === void 0 ? {} : { expectedTitle })
 					});
 					if (result.ok) this.projections.apply("title", result.value.title, result.value.seq);
+					else if (result.error.code === "title-conflict") {
+						const current = result.error.details;
+						if (Number.isSafeInteger(current?.seq) && (current.title === null || typeof current.title === "string")) this.projections.apply("title", current.title, current.seq);
+					}
 					return result;
 				} catch (error) {
 					return transportError(error);
@@ -7625,6 +7642,28 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					ok: true,
 					value: { matched: result.value !== void 0 }
 				};
+			}
+			async refreshCommandActivity() {
+				if (this.disposed || this.removed) return;
+				if (typeof this.api?.commandActivity !== "function") {
+					this.commandRunning = (this.liveCommands?.size ?? 0) > 0;
+					this.notifier.markDirty();
+					return;
+				}
+				const revision = ++this.commandActivityRevision, generation = this.openGeneration;
+				this.commandActivityAbort?.abort();
+				const abort = new AbortController(); this.commandActivityAbort = abort;
+				try {
+					const response = await this.api.commandActivity(this.sessionId, abort.signal);
+					if (this.disposed || this.removed || abort.signal.aborted || generation !== this.openGeneration || revision !== this.commandActivityRevision) return;
+					if (response.result.ok && typeof response.result.value.active === "boolean") {
+						this.commandRunning = response.result.value.active;
+						if (!this.commandRunning) this.liveCommands.clear();
+					} else this.commandRunning = this.liveCommands.size > 0;
+					this.notifier.markDirty();
+				} catch {
+					// Retain the last observed activity through a transient disconnect.
+				} finally { if (this.commandActivityAbort === abort) this.commandActivityAbort = null; }
 			}
 			/** First open: pull the tail page (idempotent — in-flight/already-open returns the existing promise). */
 			open() {
@@ -7910,6 +7949,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			    if (this.openState === "cold") return;
 			    if (this.readingAwayFromTail && this.historyTargetSeq === null && this.events.length) this.historyTargetSeq = this.baseSeq;
 			    this.openGeneration++;
+			    this.commandActivityAbort?.abort(); this.commandActivityRevision++;
+			    this.liveCommands?.clear();
 			    this.beginHistoryNavigation("resync");
                 this.historyFetch = null;
 			    this.openPromise = null; this.openState = "cold"; this.openError = null;
@@ -7945,6 +7986,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			handleMuxEnvelope(rpcId, frame) {
 				switch (frame.type) {
 					case "session/event":
+						if (frame.event.type === "command/run" || frame.event.type === "command/done") {
+							this.liveCommands ??= new Set();
+							const id = frame.event.data.commandId;
+							if (frame.event.type === "command/run" && frame.event.data.name !== "goal") {
+								this.liveCommands.add(id); this.commandRunning = true; this.notifier.markDirty();
+							} else if (frame.event.type === "command/done") this.liveCommands.delete(id);
+							void this.refreshCommandActivity();
+						}
 						this.acceptLiveEvent(frame.event, frame.view);
 						return;
 					case "session/queue":
@@ -7953,6 +8002,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						return;
 					case "session/subscribed":
 						this.subscribedLastSeq = frame.lastSeq;
+						void this.refreshCommandActivity();
 						if (this.queueMirror.reset()) this.notifier.markDirty();
 						return;
 					case "approval/requested": {
@@ -8047,6 +8097,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			/** Cancel pending history work before the owning scope drops the instance. */
 			dispose() {
                 this.disposed = true;
+                this.commandActivityAbort?.abort(); this.commandActivityRevision++;
+                this.liveCommands?.clear(); this.commandRunning = false;
                 this.promptRetry = null;
                 if (this.gapRetryTimer != null) clearTimeout(this.gapRetryTimer);
                 this.gapRetryTimer = null;
@@ -8090,6 +8142,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
                         if (result.ok) this.installWindow(result.value.events, result.value.hasMore, result.value.projections);
                     }
                     this.openState = "open";
+                    void this.refreshCommandActivity();
                     this.maybeRepairTail();
                 } catch (error) {
                     if (!current()) return;
@@ -8259,6 +8312,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					pending: this.pendingCache.value,
 					queue: this.queueMirror.snapshot(),
 					running: this.running,
+					commandRunning: this.commandRunning,
 					subagent: this.address === void 0 ? null : {
 						address: this.address,
 						parentAvailable: this.parentAvailable
@@ -10873,6 +10927,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		/** Runtime counterpart of the message-producing event union. */
 		const SURFACE_EVENT_TYPES = new Set([
 			"system/message",
+			"developer/message",
 			"user/message",
 			"assistant/message",
 			"tool/result"

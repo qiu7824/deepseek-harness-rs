@@ -36,3 +36,21 @@ pub(super) fn register(web:&Arc<WebServer>,remote:Arc<RemoteRuntime>)->RouteDisp
         Ok(http::Response::builder().status(status).header("content-type","application/json").header("cache-control","no-store").body(axum::body::Body::from(value.to_string())).expect("remote execution response"))
     })})})
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn composed_host_routes_remote_paths_without_local_fallback() {
+        let root=std::env::temp_dir().join(format!("host-remote-route-{}",uuid::Uuid::new_v4()));
+        let ctx=Context::root();let host=crate::compose_persistent_host_at(&ctx,&root,None).unwrap();
+        assert!(ctx.get_typed::<Arc<RemoteRuntime>>("remoteExecution",false).is_some());
+        let fs=ctx.get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs",false).unwrap();
+        let uri=format!("dsh-remote://{}/",uuid::Uuid::new_v4());
+        let error=fs.resolve("must-not-be-local.txt",Some(&dsh_fs::ResolveOptions {cwd:Some(uri),signal:None})).await.unwrap_err();
+        assert!(error.to_string().contains("not configured"),"{error}");
+        let local=fs.resolve(&root.to_string_lossy(),None).await.unwrap();assert!(fs.stat(&local,None).await.unwrap().is_some());
+        host.shutdown().await.unwrap();drop(host);drop(fs);drop(ctx);
+        assert!(root.canonicalize().unwrap().starts_with(std::env::temp_dir().canonicalize().unwrap()));std::fs::remove_dir_all(root).unwrap();
+    }
+}

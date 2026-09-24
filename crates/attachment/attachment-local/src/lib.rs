@@ -1,6 +1,8 @@
 //! Local durable attachment backend rooted below `DSH_HOME`. Rust port of
 //! `packages/attachment/attachment-local/src/index.ts`.
 
+pub mod codec;
+mod file_store;
 mod image;
 mod index;
 pub mod invariant;

@@ -15,6 +15,10 @@ class ReleaseTagTests(unittest.TestCase):
 
 
 class ReleaseBuildIdentityTests(unittest.TestCase):
+    def test_diagnostic_allocator_build_cannot_be_released(self):
+        with self.assertRaisesRegex(ValueError, "diagnostic"):
+            verify_build_identity({"version": "1.0", "revision": "new", "dirty": False, "allocationDiagnostics": True}, "1.0", "new")
+
     def test_same_version_from_another_commit_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "build identity"):
             verify_build_identity({"version": "1.0", "revision": "old", "dirty": False}, "1.0", "new")

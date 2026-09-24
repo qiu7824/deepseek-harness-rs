@@ -1,4 +1,4 @@
-//! DeepSeek official chat-completions adapter.
+//! DeepSeek Messages adapter and explicitly configured compatibility routes.
 
 mod anthropic;
 mod anthropic_transport;
@@ -8,6 +8,7 @@ mod devin_transport;
 mod devin_wire;
 mod files_api;
 mod files_cleanup;
+mod messages;
 mod responses;
 mod serialize;
 mod sse;
@@ -42,7 +43,8 @@ pub use upload_index::{
 
 pub const PROVIDER: &str = "deepseek-official";
 pub use compat::{ProviderCompatibility, ThinkingTokenBudgetField};
-pub const PUBLIC_BASE_URL: &str = "https://api.deepseek.com";
+pub use messages::API as DEEPSEEK_MESSAGES_API;
+pub const PUBLIC_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 
 const MAX_STREAM_EVENT_CHUNKS: usize = 100_000;
 pub const DEFAULT_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
@@ -252,6 +254,7 @@ pub fn resolve_adapter_options(
     if models.iter().any(|model| {
         model.api.as_deref().is_some_and(|api| {
             ![
+                messages::API,
                 "openai-completions",
                 "openai-responses",
                 "anthropic-messages",
@@ -266,11 +269,21 @@ pub fn resolve_adapter_options(
             Default::default(),
         ));
     }
-    let api = config
-        .api
-        .clone()
-        .unwrap_or_else(|| "openai-completions".to_string());
+    let api = config.api.clone().unwrap_or_else(|| {
+        if config
+            .base_url
+            .as_deref()
+            .is_none_or(messages::is_official_base)
+        {
+            messages::API
+        } else {
+            // Preserve the historical implicit protocol of custom gateways.
+            "openai-completions"
+        }
+        .to_string()
+    });
     if ![
+        messages::API,
         "openai-completions",
         "openai-responses",
         "anthropic-messages",
@@ -285,10 +298,44 @@ pub fn resolve_adapter_options(
         ));
     }
     let compat = config.compat.clone().unwrap_or_default();
-    let base_url = config
+    let mut base_url = config
         .base_url
         .clone()
         .unwrap_or_else(|| PUBLIC_BASE_URL.to_string());
+    if api == messages::API
+        || models
+            .iter()
+            .any(|model| model.api.as_deref() == Some(messages::API))
+    {
+        let valid = reqwest::Url::parse(&base_url).is_ok_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+        });
+        if !valid {
+            return Err(LlmError::new(
+                "Messages base URL must be HTTP(S) without credentials, query or fragment",
+                "INVALID_CONFIG",
+                Default::default(),
+            ));
+        }
+    }
+    // Older native settings saved the Chat endpoint even without an explicit
+    // protocol. Move only these known official roots to the Messages root.
+    if api == messages::API && messages::is_official_base(&base_url) {
+        if let Ok(url) = reqwest::Url::parse(&base_url) {
+            if matches!(
+                url.path().trim_end_matches('/'),
+                "" | "/v1" | "/chat/completions" | "/v1/chat/completions"
+            ) {
+                base_url = PUBLIC_BASE_URL.into();
+            }
+        }
+    } else if config.base_url.is_none() && api == "openai-completions" {
+        base_url = "https://api.deepseek.com".into();
+    }
     compat
         .validate_endpoint(&api, &base_url)
         .map_err(|message| LlmError::new(&message, "INVALID_CONFIG", Default::default()))?;
@@ -614,7 +661,10 @@ fn collect_image_attachments<'a>(
 ) {
     for block in blocks {
         match block {
-            dsh_llm::ContentBlock::Image { attachment } => {
+            dsh_llm::ContentBlock::Image {
+                attachment,
+                offloaded,
+            } if *offloaded != Some(true) => {
                 if seen.insert(attachment.attachment_id.clone()) {
                     ordered.push(attachment);
                 }
@@ -659,6 +709,9 @@ fn request_with_messages(
 }
 
 #[cfg(test)]
+#[path = "image_stream_tests.rs"]
+mod image_stream_tests;
+#[cfg(test)]
 #[path = "request_projection_ownership_tests.rs"]
 mod request_projection_ownership_tests;
 
@@ -700,7 +753,9 @@ fn require_durable_image_offload(
         blocks
             .iter()
             .map(|b| match b {
-                dsh_llm::ContentBlock::Image { .. } => 1,
+                dsh_llm::ContentBlock::Image { offloaded, .. } => {
+                    usize::from(*offloaded != Some(true))
+                }
                 dsh_llm::ContentBlock::ToolResult { content, .. } => count(content),
                 _ => 0,
             })
@@ -1117,9 +1172,16 @@ async fn resolve_image_urls(
     ),
     LlmFailure,
 > {
-    use base64::Engine;
+    use std::io::Write;
+    use tokio::io::AsyncReadExt;
     let mut urls = std::collections::HashMap::new();
     let mut image_meta = std::collections::HashMap::new();
+    let mut prepared = Vec::new();
+    let native_calls=options.messages.iter().filter(|m|m.role==dsh_llm::Role::Assistant).flat_map(|m|m.content.iter()).filter_map(|part|match part{dsh_llm::ContentBlock::ToolCall{id,name,..} if name==dsh_llm::computer_protocol::TOOL_NAME=>Some(id.as_str()),_=>None}).collect::<std::collections::HashSet<_>>();
+    let native_images=options.messages.iter().flat_map(|message| {
+        if let Some((id,content,_))=message.as_tool_result() {if native_calls.contains(id.as_str()){return content.iter().filter_map(|part|match part{dsh_llm::ContentBlock::Image{attachment,offloaded} if *offloaded!=Some(true)=>Some(attachment.attachment_id.as_str()),_=>None}).collect::<Vec<_>>();}}
+        message.content.iter().filter_map(|part|part.as_tool_result()).filter(|(id,_,_)|native_calls.contains(id.as_str())).flat_map(|(_,content,_)|content.iter().filter_map(|part|match part{dsh_llm::ContentBlock::Image{attachment,offloaded} if *offloaded!=Some(true)=>Some(attachment.attachment_id.as_str()),_=>None})).collect::<Vec<_>>()
+    }).collect::<std::collections::HashSet<_>>();
     if !request_image_attachments(options).is_empty() {
         if let Some(telemetry) = &options.telemetry {
             telemetry.phase("attachment_prepare", None);
@@ -1138,25 +1200,71 @@ async fn resolve_image_urls(
             max_bytes: 1024 * 1024,
             preferred_media_type: dsh_attachment::ImageMediaType::Webp,
         };
-        let version = store
-            .read_image_request(&reference, &policy, options.signal.as_ref())
-            .await
-            .map_err(|error| {
-                failure(format!("DeepSeek image read failed: {error}"), &error.code)
-            })?;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&version.data);
+        let version = if native_images.contains(attachment.attachment_id.as_str()) {
+            // Native computer coordinates refer to screenshot pixels. A generic
+            // 640k-pixel resize would change their meaning before the next call.
+            if reference.bytes>16*1024*1024 {return Err(failure("Native computer screenshot exceeds 16 MiB", "ATTACHMENT_TOO_LARGE"));}
+            let raw=store.open_image(&reference,options.signal.as_ref()).await.map_err(|error|failure(format!("Native screenshot read failed: {error}"),&error.code))?;
+            if raw.reference.bytes!=reference.bytes||raw.reference.width!=reference.width||raw.reference.height!=reference.height||raw.reference.media_type!=reference.media_type{return Err(failure("Native screenshot metadata changed", "ATTACHMENT_CORRUPT"));}
+            let original=dsh_attachment::RequestImagePolicy{max_pixels:raw.reference.width.saturating_mul(raw.reference.height),max_bytes:raw.reference.bytes,preferred_media_type:raw.reference.media_type};
+            dsh_attachment::RequestImageStream{attachment_id:raw.reference.attachment_id.clone(),variant_id:dsh_attachment::request_image_variant_id(&raw.reference,&original),media_type:raw.reference.media_type,bytes:raw.reference.bytes,width:raw.reference.width,height:raw.reference.height,reader:raw.reader}
+        } else {store.open_image_request(&reference, &policy, options.signal.as_ref()).await.map_err(|error|failure(format!("DeepSeek image read failed: {error}"), &error.code))?};
         image_meta.insert(
             attachment.attachment_id.clone(),
             serialize::PreparedImageMeta {
                 attachment_id: attachment.attachment_id.clone(),
-                bytes: version.data.len() as u64,
+                bytes: version.bytes,
                 width: version.width,
                 height: version.height,
             },
         );
+        prepared.push((attachment.attachment_id.clone(), version));
+    }
+    let exact = project_exact_request(
+        options,
+        &image_meta,
+        dsh_llm::RequestImageRepresentation::Base64,
+    );
+    require_durable_image_offload(options, &exact)?;
+    let retained: std::collections::HashSet<_> = request_image_attachments(&exact)
+        .into_iter()
+        .map(|image| image.attachment_id.clone())
+        .collect();
+    for (id, mut version) in prepared {
+        if !retained.contains(&id) {
+            continue;
+        }
+        let mut url = format!("data:{};base64,", version.media_type.as_str()).into_bytes();
+        let mut encoder =
+            base64::write::EncoderWriter::new(&mut url, &base64::engine::general_purpose::STANDARD);
+        let mut buffer = vec![0u8; 48 * 1024];
+        let mut streamed=0u64;
+        loop {
+            if options.signal.as_ref().is_some_and(|signal| signal()) {
+                return Err(failure("Image preparation cancelled", "CANCELLED"));
+            }
+            let count = version
+                .reader
+                .read(&mut buffer)
+                .await
+                .map_err(|e| failure(e.to_string(), "ATTACHMENT_READ_FAILED"))?;
+            if count == 0 {
+                break;
+            }
+            streamed=streamed.saturating_add(count as u64);
+            if streamed>version.bytes{return Err(failure("Image stream exceeded its declared size", "ATTACHMENT_CORRUPT"));}
+            encoder
+                .write_all(&buffer[..count])
+                .map_err(|e| failure(e.to_string(), "ATTACHMENT_READ_FAILED"))?;
+        }
+        if streamed!=version.bytes{return Err(failure("Image stream ended before its declared size", "ATTACHMENT_CORRUPT"));}
+        encoder
+            .finish()
+            .map_err(|e| failure(e.to_string(), "ATTACHMENT_READ_FAILED"))?;
+        drop(encoder);
         urls.insert(
-            attachment.attachment_id.clone(),
-            format!("data:{};base64,{encoded}", version.media_type.as_str()),
+            id,
+            String::from_utf8(url).map_err(|e| failure(e.to_string(), "ATTACHMENT_READ_FAILED"))?,
         );
     }
     Ok((urls, image_meta))
@@ -1240,9 +1348,12 @@ async fn resolve_image_file_ids(
             .join("files-v3.json")
     });
     let index = DeepSeekUploadIndex::new(index_path);
-    let scope = deepseek_file_scope(&connection.base_url, api_key);
-    let files =
-        DeepSeekFilesClient::new(&connection.base_url, api_key, connection.files_api_timeout);
+    let files = if connection.api == messages::API {
+        DeepSeekFilesClient::messages(&connection.base_url, api_key, connection.files_api_timeout)
+    } else {
+        DeepSeekFilesClient::new(&connection.base_url, api_key, connection.files_api_timeout)
+    };
+    let scope = deepseek_file_scope(files.api_root(), api_key);
     cleanup.schedule(files.clone(), index.clone(), scope.clone());
     let policy = dsh_attachment::RequestImagePolicy {
         max_pixels: 640_000,
@@ -1258,14 +1369,14 @@ async fn resolve_image_file_ids(
     for attachment in request_image_attachments(options) {
         let reference = attachment_reference(attachment)?;
         let version = store
-            .read_image_request(&reference, &policy, options.signal.as_ref())
+            .open_image_request(&reference, &policy, options.signal.as_ref())
             .await
             .map_err(|error| failure(error.to_string(), &error.code))?;
         image_meta.insert(
             attachment.attachment_id.clone(),
             serialize::PreparedImageMeta {
                 attachment_id: attachment.attachment_id.clone(),
-                bytes: version.data.len() as u64,
+                bytes: version.bytes,
                 width: version.width,
                 height: version.height,
             },
@@ -1314,8 +1425,9 @@ async fn resolve_image_file_ids(
             telemetry.phase("attachment_upload", None);
         }
         let uploaded = files
-            .upload(
-                version.data,
+            .upload_stream(
+                version.reader,
+                version.bytes,
                 version.media_type.as_str(),
                 name.as_deref().unwrap_or("image.webp"),
                 7 * 24 * 60 * 60,
@@ -1474,6 +1586,28 @@ fn map_reasoning_effort_for_request(
     Ok(())
 }
 
+fn serialize_provider_request(
+    options: &GenerateOptions,
+    connection: &ResolvedDeepSeekOptions,
+    wire: ReasoningWireFormat,
+    urls: Option<&std::collections::HashMap<String, String>>,
+    files: Option<&std::collections::HashMap<String, String>>,
+    metadata: Option<&std::collections::HashMap<String, serialize::PreparedImageMeta>>,
+) -> Result<serde_json::Value, LlmFailure> {
+    if connection.api == messages::API {
+        messages::serialize(options, connection, urls, files, metadata)
+    } else {
+        serialize::serialize_request_with_prepared_images(
+            options,
+            &connection.defaults,
+            wire,
+            urls,
+            files,
+            metadata,
+        )
+    }
+}
+
 async fn request_chunks(
     options: GenerateOptions,
     mut connection: ResolvedDeepSeekOptions,
@@ -1493,6 +1627,10 @@ async fn request_chunks(
     {
         if let Some(api) = &model.api {
             connection.api = api.clone();
+            // Explicit official model routes retain their former API root.
+            if api == "openai-completions" && connection.base_url == PUBLIC_BASE_URL {
+                connection.base_url = "https://api.deepseek.com".into();
+            }
         }
         if let Some(parameters) = &model.supported_parameters {
             if !parameters.iter().any(|p| p == "temperature") {
@@ -1525,7 +1663,8 @@ async fn request_chunks(
             dsh_llm::RequestImageRepresentation::Base64,
         );
         require_durable_image_offload(&options, &exact_options)?;
-        let chat_body = serialize::serialize_request_with_prepared_images(
+        let serializer = if connection.api == "openai-responses" { serialize::serialize_responses_request } else { serialize::serialize_request_with_prepared_images };
+        let chat_body = serializer(
             &exact_options,
             &connection.defaults,
             reasoning_wire_format,
@@ -1573,7 +1712,12 @@ async fn request_chunks(
         )
         .await;
     }
-    let url = endpoint_url(&connection.base_url, "openai-completions");
+    let messages_api = connection.api == messages::API;
+    let url = if messages_api {
+        anthropic_transport::endpoint(&connection.base_url, "messages")
+    } else {
+        endpoint_url(&connection.base_url, "openai-completions")
+    };
     let mut file_attempt = 0_u8;
     let mut response = loop {
         let preparation = async {
@@ -1589,9 +1733,9 @@ async fn request_chunks(
                 Ok(Some(files)) => {
                     let exact_options = request_with_messages(&options, files.messages.clone());
                     (
-                        serialize::serialize_request_with_prepared_images(
+                        serialize_provider_request(
                             &exact_options,
-                            &connection.defaults,
+                            &connection,
                             reasoning_wire_format,
                             None,
                             Some(&files.ids),
@@ -1616,9 +1760,9 @@ async fn request_chunks(
                     );
                     require_durable_image_offload(&options, &exact_options)?;
                     (
-                        serialize::serialize_request_with_prepared_images(
+                        serialize_provider_request(
                             &exact_options,
-                            &connection.defaults,
+                            &connection,
                             reasoning_wire_format,
                             Some(&image_urls),
                             None,
@@ -1631,11 +1775,13 @@ async fn request_chunks(
             Ok(prepared)
         };
         let (mut body, used_files) = prepare_attachments(preparation, cancelled.clone()).await?;
-        compat::apply_chat(
-            &mut body,
-            &connection,
-            stable_effort.as_ref().map(|effort| effort.as_str()),
-        )?;
+        if !messages_api {
+            compat::apply_chat(
+                &mut body,
+                &connection,
+                stable_effort.as_ref().map(|effort| effort.as_str()),
+            )?;
+        }
         let encoded = serde_json::to_vec(&body).map_err(|error| {
             failure(
                 format!("{provider_name} request encode failed: {error}"),
@@ -1643,15 +1789,31 @@ async fn request_chunks(
             )
         })?;
         drop(body);
+        let mut headers = request_headers_for_purpose(
+            &connection,
+            options.session_id.as_deref(),
+            options.purpose.as_deref(),
+        );
+        if messages_api {
+            headers.push(("anthropic-version".into(), "2023-06-01".into()));
+            if !connection.keyless {
+                headers.push(("x-api-key".into(), api_key.clone()));
+            }
+            if used_files
+                .as_ref()
+                .is_some_and(|files| !files.ids.is_empty())
+            {
+                headers.push((
+                    "anthropic-beta".into(),
+                    files_api::MESSAGES_FILES_BETA.into(),
+                ));
+            }
+        }
         let response = transport::post_tracked(
             &url,
-            (!connection.keyless).then_some(api_key.as_str()),
+            (!connection.keyless && !messages_api).then_some(api_key.as_str()),
             encoded,
-            &request_headers_for_purpose(
-                &connection,
-                options.session_id.as_deref(),
-                options.purpose.as_deref(),
-            ),
+            &headers,
             cancelled.clone(),
             options.telemetry.clone(),
         )
@@ -1706,7 +1868,8 @@ async fn request_chunks(
             file_attempt += 1;
             continue;
         }
-        let image_schema_mismatch = used_files.is_none()
+        let image_schema_mismatch = !messages_api
+            && used_files.is_none()
             && detail.contains("unknown variant `image_url`")
             && detail.contains("expected `text`");
         if image_schema_mismatch {
@@ -1718,7 +1881,7 @@ async fn request_chunks(
                 dsh_llm::RequestImageRepresentation::Base64,
             );
             require_durable_image_offload(&options, &exact_options)?;
-            let inline_body = serialize::serialize_request_with_prepared_images(
+            let inline_body = serialize::serialize_responses_request(
                 &exact_options,
                 &connection.defaults,
                 reasoning_wire_format,
@@ -1747,6 +1910,10 @@ async fn request_chunks(
         return Err(http_failure(status, &headers, &error_body, provider_name));
     };
 
+    if messages_api {
+        return anthropic_transport::consume_response(response, &options, &connection, sender)
+            .await;
+    }
     let mut parser = sse::SseParser::new();
     let mut translator = translate::Translator::new();
     let done_seen = false;
@@ -1938,6 +2105,9 @@ async fn request_responses_chunks(
     }
     let mut parser = sse::SseParser::new();
     let mut translator = responses::ResponsesTranslator::default();
+    if body["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["type"]=="computer")) {
+        translator.enable_native_computer();
+    }
     let outcome: Result<(), LlmFailure> = async {
     let mut progress_deadline = tokio::time::Instant::now() + connection.stream_progress_timeout;
     loop {

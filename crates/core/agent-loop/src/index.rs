@@ -10,9 +10,6 @@
 //! - `AbortSignal` collapses to [`dsh_agent::CancellationSignal`] (flag +
 //!   reason cell); `raceAbort`/`raceAbortCall` become flag checks around
 //!   each await.
-//! - The `sessionPersistence` service base has no backend contract yet, so
-//!   `resume` always reports the not-configured error until a backend
-//!   lands.
 //! - The `systemPrompt` variables read the equivalent scalar fields materialized
 //!   by `assemble_context_for` instead of retaining the live Agent in the
 //!   assembly object.
@@ -53,6 +50,9 @@ pub fn agent_loop_settings_schema() -> Schema {
 /// Reject an output-token cap that cannot be represented exactly on the
 /// request wire.
 fn assert_agent_options(options: &AgentOptions) -> Result<(), String> {
+    if options.max_steps == Some(0) || options.timeout_seconds == Some(0) {
+        return Err("agent maxSteps and timeoutSeconds must be positive when supplied".into());
+    }
     if options.max_tokens == Some(0) {
         return Err("agent maxTokens must be a positive safe integer".to_string());
     }
@@ -386,21 +386,12 @@ impl AgentLoop {
 
         // Publish the factory and own its teardown.
         let factory: Arc<dyn AgentFactory> = service.clone();
-        let factory_ctx = ctx.clone();
-        let _ = ctx.effect(
-            "agentLoop.setFactory()",
-            Box::pin(async move {
-                let agents = factory_ctx
-                    .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
-                    .map(|arc| arc.as_ref().clone());
-                Some(match agents {
-                    Some(agents) => agents.set_factory(factory),
-                    None => {
-                        return None;
-                    }
-                })
-            }),
-        );
+        // Factory availability is synchronous with install, just like the
+        // service itself. Deferring this write to an effect task lets an
+        // immediately-created parent dispatch a child before the factory exists.
+        let factory_disposer=ctx.get_typed::<Arc<dsh_agent::AgentRegistry>>("agents",false)
+            .map(|agents|agents.set_factory(factory));
+        let _=ctx.effect("agentLoop.setFactory()",Box::pin(async move {factory_disposer}));
         let ownership = Arc::clone(&service.ownership);
         let _ = ctx.effect(
             "agentLoop.transactions()",
@@ -480,7 +471,7 @@ impl AgentLoop {
         let _ = ctx.effect(
             "agentLoop.configuredCreate()",
             Box::pin(async move {
-                let prepared = (|| {
+                let result = async {
                     assert_agent_options(&options)?;
                     let sessions = service
                         .ctx
@@ -497,15 +488,10 @@ impl AgentLoop {
                             ..Default::default()
                         }),
                     )?;
-                    service.prepare(&service.ctx, &configured_id, &options, session)
-                })();
-                let result = match prepared {
-                    Ok(prepared) => prepared
-                        .publish(SessionStartSource::Startup)
-                        .await
-                        .map(|_| ()),
-                    Err(error) => Err(error),
-                };
+                    let preparation = service.prepare_new_session(session).await?;
+                    service.setup_and_publish(&service.ctx, &configured_id, preparation, &options, None, SessionStartSource::Startup)
+                        .await.map(|_| ())
+                }.await;
                 if let Err(error) = result {
                     service.report_configured_startup_failure(
                         &config_id,
@@ -553,6 +539,16 @@ impl AgentLoop {
         }
     }
 
+    async fn prepare_new_session(&self, session: Session) -> Result<SessionPreparation, String> {
+        let persistence = self.ctx.get_typed::<Arc<dyn dsh_session_persistence::SessionPersistenceApi>>(
+            "sessionPersistence", false,
+        ).map(|slot| slot.as_ref().clone());
+        match persistence {
+            Some(persistence) => persistence.prepare_new(session).await,
+            None => Ok(SessionPreparation::create(session, SessionPreparationOptions::default())),
+        }
+    }
+
     async fn setup_and_publish(
         &self,
         owner_ctx: &Context,
@@ -578,8 +574,9 @@ impl AgentLoop {
                 commit.commit();
             }
         }
+        let published = prepared.publish(source).await;
         preparation.dispose();
-        match prepared.publish(source).await {
+        match published {
             Ok(handle) => {
                 rollback.0 = None;
                 Ok(handle)
@@ -609,14 +606,7 @@ impl AgentLoop {
                 "cannot resume: session persistence is not configured (load a dsh-session-persistence backend)"
                     .to_string()
             })?;
-        let inspection = persistence.inspect(id).await?;
-        let session = Session::from_restore(
-            id.clone(),
-            inspection.events,
-            &inspection.meta,
-            inspection.inherited_event_count,
-        )?;
-        let preparation = SessionPreparation::create(session, SessionPreparationOptions::default());
+        let preparation = persistence.prepare(id).await?;
         self.setup_and_publish(
             owner_ctx,
             id,
@@ -744,7 +734,7 @@ impl AgentFactory for AgentLoop {
                 meta: Some(options.meta.clone().unwrap_or_default()),
             }),
         )?;
-        let preparation = SessionPreparation::create(session, SessionPreparationOptions::default());
+        let preparation = self.prepare_new_session(session).await?;
         self.setup_and_publish(
             owner_ctx,
             &id,

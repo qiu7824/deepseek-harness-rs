@@ -5,21 +5,49 @@ use dsh_llm::{ContentBlock, Message};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn image_count(blocks: &[ContentBlock]) -> usize {
+#[cfg(test)]
+fn image_count(blocks: &[ContentBlock]) -> usize {
     blocks
         .iter()
         .map(|b| match b {
-            ContentBlock::Image { .. } => 1,
+            ContentBlock::Image { offloaded, .. } => usize::from(*offloaded != Some(true)),
             ContentBlock::ToolResult { content, .. } => image_count(content),
             _ => 0,
         })
         .sum()
 }
-pub(crate) fn input_count(event: &SessionEvent) -> Option<usize> {
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InputImages {
+    pub count: usize,
+    pub omitted: BTreeSet<usize>,
+}
+
+pub(crate) fn input_images(event: &SessionEvent) -> Option<InputImages> {
     if !matches!(event.type_.as_str(), "user/message" | "tool/result") {
         return None;
     }
-    crate::surface::derive_event_message(event).map(|message| image_count(&message.content))
+    fn visit(blocks: &[ContentBlock], images: &mut InputImages) {
+        for block in blocks {
+            match block {
+                ContentBlock::Image { offloaded, .. } => {
+                    if *offloaded == Some(true) {
+                        images.omitted.insert(images.count);
+                    }
+                    images.count += 1;
+                }
+                ContentBlock::ToolResult { content, .. } => visit(content, images),
+                _ => {}
+            }
+        }
+    }
+    let message = crate::surface::derive_event_message(event)?;
+    let mut images = InputImages {
+        count: 0,
+        omitted: BTreeSet::new(),
+    };
+    visit(&message.content, &mut images);
+    Some(images)
 }
 pub(crate) type Targets = Vec<(u64, Vec<usize>)>;
 pub(crate) fn validate(
@@ -77,13 +105,11 @@ pub(crate) fn project(mut message: Message, selected: &BTreeSet<usize>) -> Messa
     fn visit(blocks: &mut [ContentBlock], selected: &BTreeSet<usize>, index: &mut usize) {
         for block in blocks {
             match block {
-                ContentBlock::Image { .. } => {
+                ContentBlock::Image { offloaded, .. } => {
                     let omit = selected.contains(index);
                     *index += 1;
                     if omit {
-                        *block = ContentBlock::Text {
-                            text: dsh_llm::OFFLOADED_IMAGE_TEXT.into(),
-                        };
+                        *offloaded = Some(true);
                     }
                 }
                 ContentBlock::ToolResult { content, .. } => visit(content, selected, index),
@@ -134,11 +160,14 @@ impl Session {
             let Some(event) = events.get(seq as usize) else {
                 continue;
             };
-            let Some(total) = input_count(event) else {
+            let Some(images) = input_images(event) else {
                 continue;
             };
-            let selected: Vec<_> = (0..total)
-                .filter(|index| !omitted.get(&seq).is_some_and(|set| set.contains(index)))
+            let selected: Vec<_> = (0..images.count)
+                .filter(|index| {
+                    !images.omitted.contains(index)
+                        && !omitted.get(&seq).is_some_and(|set| set.contains(index))
+                })
                 .take(remaining)
                 .collect();
             remaining -= selected.len();
@@ -166,6 +195,8 @@ mod tests {
                 json!({"attachmentId":"same-original","name":"original.png"}),
             )
             .unwrap(),
+
+            offloaded: None,
         }
     }
     fn session() -> Session {
@@ -196,9 +227,13 @@ mod tests {
         assert!(session.offload_oldest_images(1).unwrap());
         let messages = session.derive_messages().unwrap();
         assert_eq!(image_count(&messages[0].content), 1);
-        assert!(
-            matches!(&messages[0].content[0],ContentBlock::Text{text} if text==dsh_llm::OFFLOADED_IMAGE_TEXT)
-        );
+        assert!(matches!(
+            &messages[0].content[0],
+            ContentBlock::Image {
+                offloaded: Some(true),
+                ..
+            }
+        ));
         assert_eq!(session.events()[0], original[0]);
         let events = session.events().as_ref().clone();
         let restored = Session::from_restore(
@@ -219,6 +254,57 @@ mod tests {
         );
         assert!(!restored.offload_oldest_images(1).unwrap());
     }
+    #[test]
+    fn imported_offloaded_tool_images_keep_indexes_and_are_not_selected_again() {
+        let session =
+            Session::create(crate::session_id("native-images"), None, None, None).unwrap();
+        let mut omitted = image();
+        if let ContentBlock::Image { offloaded, .. } = &mut omitted {
+            *offloaded = Some(true);
+        }
+        let message = dsh_llm::create_tool_result_message(dsh_llm::ToolResultMessageInput {
+            call_id: dsh_llm::call_id("images"),
+            content: vec![omitted, image()],
+            is_error: false,
+        });
+        session
+            .append(
+                "tool/result",
+                crate::tool_result_data(1, 1, &message, None, None),
+                Some(crate::SurfaceIntent {
+                    surface_op: crate::SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
+        let duplicate = json!({"targets":[{"seq":0,"imageIndexes":[0]}]});
+        assert!(
+            session
+                .append("image/offload", duplicate.clone(), None)
+                .is_err()
+        );
+        let mut streaming = crate::surface::StreamingSurfaceFold::default();
+        streaming.push(&session.events()[0]).unwrap();
+        let invalid = serde_json::from_value(
+            json!({"type":"image/offload","seq":1,"time":1,"data":duplicate}),
+        )
+        .unwrap();
+        assert!(streaming.push(&invalid).is_err());
+        assert!(session.offload_oldest_images(1).unwrap());
+        assert_eq!(
+            session.events()[1].data["targets"][0]["imageIndexes"],
+            json!([1])
+        );
+        assert!(!dsh_llm::content_has_image(
+            &session.derive_messages().unwrap()[0].content
+        ));
+        assert!(!session.offload_oldest_images(1).unwrap());
+        assert_eq!(
+            session.events()[0].data["message"]["content"][1].get("offloaded"),
+            None
+        );
+    }
+
     #[test]
     fn invalid_or_repeated_targets_are_atomic_failures() {
         let session = session();

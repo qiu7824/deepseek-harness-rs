@@ -3,13 +3,14 @@ name = "dsh-llm-deepseek"
 version = "0.1.0-rc.8"
 edition = "2024"
 license = "MIT"
-description = "Production DeepSeek chat-completions adapter for the DeepSeek Harness"
+description = "DeepSeek Messages adapter and compatibility routes for the DeepSeek Harness"
 
 [dependencies]
 dsh-http-proxy = { path = "../../util/http-proxy" }
 async-stream = "=0.3.6"
 async-trait = { workspace = true }
 bytes = "1"
+chrono = { workspace = true }
 flate2 = "=1.1.9"
 uuid = { workspace = true }
 cordis = { path = "../../vendor/cordis" }

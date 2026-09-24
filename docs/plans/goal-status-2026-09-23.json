@@ -1,0 +1,59 @@
+{
+  "recordedAt": "2026-09-24T21:10:13.925171+08:00",
+  "phase": "all-scope-source-integration",
+  "wholeGoalComplete": false,
+  "completionPercentage": null,
+  "percentageUnavailableReason": "Requirements do not have verified weights or a closed subrequirement tally",
+  "ledger": {
+    "diagnostics": 117,
+    "experiences": 10,
+    "total": 127,
+    "independentDefectCount": null,
+    "snapshotOnly": true,
+    "snapshotAt": "2026-09-24T03:36:24.273354+08:00",
+    "evidence": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\ledger-current.json",
+      "sha256": "ab5fca29970ec74e864353418918fe32c4685eb8e2793a5d7d7f7712242a3306"
+    }
+  },
+  "wholeAcceptanceRounds": {
+    "completed": 0,
+    "required": null,
+    "policy": "concentrated real-use acceptance after all implementation and integration; no fixed round count"
+  },
+  "currentHostPeakLimitBytes": 70000000,
+  "allSupportedWorkloadsMemoryAccepted": false,
+  "finalPackagesVerified": false,
+  "pushed": false,
+  "lanzouPublishedAndRedownloadVerified": false,
+  "remainingCriticalWork": [
+    "Batch root-cause repairs and evidence-backed diagnostic closure",
+    "Installed Session V4, import/export, existing history and client integration acceptance",
+    "Native account sandbox installed startup and recovery acceptance",
+    "Real microphone streaming, cancellation and latency acceptance",
+    "Task/Goal/Todo/title edits, stop/recovery and collaboration acceptance",
+    "Context lifecycle across history, environment changes, collaboration and restart",
+    "Replay plugin workspace issue and accept plugin lifecycle and independent user terminals in installed builds",
+    "Remote Actions/SSH execution and remaining upstream capabilities",
+    "Archive/trash, log and build-cache cleanup and recovery",
+    "Full UI consistency and Flutter platform integration",
+    "Whole-load Host memory and concentrated real-use acceptance",
+    "Local replacement, final builds/installers, pushes, Lanzou and redownload hashes"
+  ],
+  "runtimeFormatVersion": 4,
+  "installedRuntimeFormatVersion": 3,
+  "nativeRuntimeEvidence": "native-runtime-integration-2026-09-24.json",
+  "terminalPluginEvidence": "user-terminal-plugin-recovery-2026-09-24.json",
+  "pluginEnablementAndResidentQuotaEvidence": "plugin-enablement-resident-quota-2026-09-24.json",
+  "headlessAndChildControlsEvidence": "headless-child-controls-2026-09-24.json",
+  "fileArchiveEvidence": "generic-file-archive-2026-09-24.json",
+  "remoteExecutionEvidence": "remote-execution-integration-2026-09-24.json",
+  "autoReviewEvidence": "auto-review-integration-2026-09-24.json",
+  "applicationPermissionsEvidence": "application-permissions-integration-2026-09-24.json",
+  "cleanupRecoveryEvidence": "cleanup-recovery-integration-2026-09-24.json",
+  "externalSubagentParallelEvidence": "external-subagent-parallel-2026-09-24.json",
+  "nativeComputerProtocolEvidence": "native-computer-protocol-2026-09-24.json",
+  "nativeComputerWireEvidence": "native-computer-wire-2026-09-24.json",
+  "nativePointerControllerEvidence": "native-pointer-controller-2026-09-24.json",
+  "nativeComputerBatchEvidence": "native-computer-batch-2026-09-24.json"
+}

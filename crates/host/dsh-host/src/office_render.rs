@@ -1,5 +1,5 @@
 //! WPS export and native PDF page rendering on authorized immutable inputs.
-use dsh_attachment::{AttachmentStore, ImageMediaType, SaveImageAttachment};
+use dsh_attachment::{AttachmentStore, ImageMediaType};
 use dsh_tools::{ToolBodyError, ToolDefinition, ToolOutputDefinition, ToolRuntime};
 use serde_json::{Value, json};
 use std::{
@@ -19,9 +19,11 @@ pub(crate) fn install(
     let office = super::office_preview::shared();
     tools.register(ctx,ToolDefinition{
   name:"office_render".into(),
-  description:"Export DOCX/XLSX/PPTX through the installed WPS host automation bridge and render actual PDF pages to image attachments. Also renders an existing PDF. Input must be inside the current workspace; original files are never edited. Does not require Python, LibreOffice or ffmpeg and does not launch WPS through the shell sandbox. Optional pages are one-based, up to 12; default first page. Inspect returned page images (or consult_model vision) and render remaining pages before claiming visual acceptance. Returns an owned candidate PDF resource; use workspace_scratch inspect/promote after validation to deliver it. An export or XML check alone is not visual verification.".into(),
+  description:"Export DOCX/XLSX/PPTX through the installed WPS host automation bridge and render actual PDF pages to image attachments. Also renders an existing PDF. Input must be inside the current workspace or an immutable file attached to this session; original files are never edited. A workspace is required for rendered output resources. Does not require Python, LibreOffice or ffmpeg and does not launch WPS through the shell sandbox. Optional pages are one-based, up to 12; default first page. Inspect returned page images (or consult_model vision) and render remaining pages before claiming visual acceptance. Returns an owned candidate PDF resource; use workspace_scratch inspect/promote after validation to deliver it. An export or XML check alone is not visual verification.".into(),
   parameters:json!({"type":"object","properties":{"path":{"type":"string","minLength":1},"pages":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"integer","minimum":1}}},"required":["path"],"additionalProperties":false}),
-  output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,v|{let mut parts=vec![dsh_llm::ContentBlock::Text{text:v.to_string()}];for page in v["pages"].as_array().into_iter().flatten(){parts.push(dsh_llm::ContentBlock::Text{text:format!("Rendered document page {} of {}",page["page"],v["pageCount"])});parts.push(dsh_llm::ContentBlock::Image{attachment:serde_json::from_value(page["attachment"].clone()).map_err(|e|e.to_string())?});}Ok(parts)}),presentation_meta:None},
+  output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,v|{let mut parts=vec![dsh_llm::ContentBlock::Text{text:v.to_string()}];for page in v["pages"].as_array().into_iter().flatten(){parts.push(dsh_llm::ContentBlock::Text{text:format!("Rendered document page {} of {}",page["page"],v["pageCount"])});parts.push(dsh_llm::ContentBlock::Image{attachment:serde_json::from_value(page["attachment"].clone()).map_err(|e|e.to_string())?,
+offloaded: None,
+});}Ok(parts)}),presentation_meta:None},
   timeout_ms:Some(240000),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:None,present_result:None,
   execute:Arc::new(move |args,run|{let args=args.clone();let context=context.clone();let resources=resources.clone();let office=office.clone();let execution=run.execution.clone();Box::pin(async move{render(&context,&resources,&office,&args,&execution).await.map_err(|e|ToolBodyError::coded(e,"OfficeRenderError","OFFICE_RENDER_FAILED"))})})
  })?;
@@ -79,11 +81,40 @@ async fn render(
             return Err("Duplicate page number".into());
         }
     }
-    let path = source_path(workspace, args["path"].as_str().ok_or("path is required")?).await?;
     let signal = execution.signal.lock().clone();
     if signal() {
         return Err("Document rendering cancelled".into());
     }
+    let raw = args["path"].as_str().ok_or("path is required")?;
+    let store = ctx
+        .get_typed::<Arc<dyn AttachmentStore>>("attachments", false)
+        .map(|service| service.as_ref().clone());
+    let reference = store.as_ref().and_then(|store| {
+        agent.session().with_events(|events| {
+            events
+                .iter()
+                .flat_map(|event| {
+                    dsh_attachment::file_references_for_event(&event.type_, &event.data)
+                })
+                .find(|reference| {
+                    store.file_host_path(reference).as_deref() == Some(Path::new(raw))
+                })
+        })
+    });
+    let attachment_lease = match (&store, &reference) {
+        (Some(store), Some(reference)) => Some(
+            store
+                .open_file(reference, Some(&signal))
+                .await
+                .map_err(|error| error.to_string())?,
+        ),
+        _ => None,
+    };
+    let path = if attachment_lease.is_some() {
+        PathBuf::from(raw)
+    } else {
+        source_path(workspace, raw).await?
+    };
     let ext = path
         .extension()
         .and_then(|v| v.to_str())
@@ -94,6 +125,7 @@ async fn render(
     } else {
         office.export(&path).await?
     };
+    drop(attachment_lease);
     if signal() {
         return Err("Document rendering cancelled".into());
     }
@@ -123,13 +155,16 @@ async fn render(
         }
         let page = item["page"].as_u64().ok_or("Invalid rendered page")?;
         let file = root.join(format!("page-{page:04}.png"));
-        let data = tokio::fs::read(&file).await.map_err(|e| e.to_string())?;
+        let file = tokio::fs::File::open(&file)
+            .await
+            .map_err(|e| e.to_string())?;
         let image = attachments
-            .save_image(&SaveImageAttachment {
-                data,
-                media_type: ImageMediaType::Png,
-                name: Some(format!("document-page-{page}.png")),
-            })
+            .save_image_stream(
+                Box::pin(file),
+                ImageMediaType::Png,
+                Some(format!("document-page-{page}.png")),
+                Some(&signal),
+            )
             .await
             .map_err(|e| e.to_string())?;
         images.push(json!({"page":page,"attachment":image}));

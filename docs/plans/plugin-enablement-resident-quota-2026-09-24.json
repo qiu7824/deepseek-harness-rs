@@ -1,0 +1,61 @@
+{
+  "recordedAt": "2026-09-24T16:31:43.497263+08:00",
+  "status": "source_verified_pending_installed_acceptance",
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "checks": {
+    "plugin-enablement-api-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-enablement-api-tests.log",
+      "sha256": "f4801b3ec277b784b6c3f414135887a8bdda9771422eee103cabf29c8d4b0923",
+      "results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.11s\r"
+      ]
+    },
+    "plugin-enablement-manager-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-enablement-manager-tests.log",
+      "sha256": "0b2e312003aff7d2bdb34180992e074fb6955c14ca1071c56701b4b8db6f8468",
+      "results": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 297 filtered out; finished in 0.27s\r"
+      ]
+    },
+    "plugin-enablement-client-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-enablement-client-tests.log",
+      "sha256": "82251b09f63b772f904cc0e0b2654e19aee22a8d7371e52fd22e1ddd86001896",
+      "results": [
+        "PASS plugin lifecycle: dependency order, persistence failure, start rollback, cold enablement, cancellation, late completion and unrelated failure isolation\r"
+      ]
+    },
+    "resident-quota-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\resident-quota-tests.log",
+      "sha256": "7a4501ad1078fb3996829636dac4ef3164ac4ee3fc449c38b9b00992a3463927",
+      "results": [
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\r",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\r"
+      ]
+    },
+    "resident-quota-runtime-test": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\resident-quota-runtime-test.log",
+      "sha256": "68bdefc405d677fdde671b1f3536e6963cf32d17f15ce18f9008b49c739892fe",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s\r"
+      ]
+    },
+    "quota-host-integration-check": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\quota-host-integration-check.log",
+      "sha256": "36001f00857fdf4424dc45a7ae1b0e5047929b56dc689aabcdc635936d40f6d7",
+      "results": [
+        "Finished `dev` profile [unoptimized] target(s) in 22.81s\r"
+      ]
+    }
+  },
+  "implemented": [
+    "Plugin enable/disable uses cancellable controller, bounded browser ACK, rollback, persistent logs and receipts including legacy RPC.",
+    "Continuable resident quota shares a lineage pool, reserves cold resumes, releases after disposal and applies live limit changes."
+  ],
+  "remaining": [
+    "Installed plugin workspace disappearance replay and full GUI lifecycle.",
+    "Subagent defaults route priority, maxTurns, timeoutSeconds and maxParallel runtime semantics.",
+    "Complete release acceptance and platform builds."
+  ]
+}

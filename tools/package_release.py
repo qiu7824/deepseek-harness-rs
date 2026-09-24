@@ -13,20 +13,13 @@ import zipfile
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from build_skin_payload import build_skin_payload
 from verify_release_version import verify as verify_release_version
-from free_model_evidence import package_defaults, validated_models
 from stage_node_runtime import stage_node_runtime
 from stage_search_runtime import stage_search_runtime
+from native_sandbox_identity import IDENTITY_FILE, verify_directory as verify_native_directory
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
-
-
-def verified_free_model(path: pathlib.Path) -> dict:
-    report = json.loads(path.read_text(encoding="utf-8"))
-    validated_models(report)
-    return report
 
 
 def validated_release_component(field: str, value: str) -> str:
@@ -43,6 +36,13 @@ def copy_tree(src: pathlib.Path, dst: pathlib.Path) -> None:
 
 def binary_name(platform: str, stem: str) -> str:
     return f"{stem}.exe" if platform == "windows" else stem
+
+
+def verify_docx_runtime(root: pathlib.Path) -> None:
+    runtime = root / "web/dist/plugins/docx-preview-runtime.js"
+    canonical = root / "release/plugins/dsh-sidebar-workbench-suite/lib/docx.js"
+    if not runtime.is_file() or not canonical.is_file() or runtime.read_bytes() != canonical.read_bytes():
+        raise ValueError("core and sidebar DOCX renderers differ or are missing; rebuild the pinned sidebar assets before packaging")
 
 
 def verify_staged_web(source: pathlib.Path, staged: pathlib.Path) -> None:
@@ -102,20 +102,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", choices=["windows", "linux", "macos"], required=True)
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--variant", choices=["core", "skin", "free"], default="core")
+    parser.add_argument("--variant", choices=["core"], default="core")
     parser.add_argument("--version", required=True)
-    parser.add_argument("--free-verification", type=pathlib.Path, default=ROOT / "target" / "free-model-verification.json")
     args = parser.parse_args()
     arch = validated_release_component("arch", args.arch)
     version = validated_release_component("version", args.version)
-    free_verification = verified_free_model(args.free_verification) if args.variant == "free" else None
 
     staged_web = ROOT / "target" / "release" / "web" / "dist"
     verify_staged_web(ROOT / "web" / "dist", staged_web)
+    verify_docx_runtime(ROOT)
     core_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh")
     verify_release_version(version, core_source)
-    if free_verification is not None and free_verification["binarySha256"] != hashlib.sha256(core_source.read_bytes()).hexdigest():
-        raise ValueError("free model verification belongs to a different runtime binary")
 
     suffix = f"deepseek-harness-rs-v{version}-{args.platform}-{arch}-{args.variant}"
     stage = ROOT / "dist" / suffix
@@ -132,6 +129,7 @@ def main() -> None:
     shutil.copy2(launcher_source, stage / launcher_output)
     if args.platform == "windows":
         native_source = ROOT / "target" / "native-windows-sandbox" / "release"
+        verify_native_directory(ROOT, native_source)
         native_stage = stage / "native-sandbox"
         native_stage.mkdir()
         for helper in ("dsh-windows-native.exe", "dsh-command-runner.exe", "dsh-windows-sandbox-setup.exe"):
@@ -141,6 +139,7 @@ def main() -> None:
         for notice in ("LICENSE", "NOTICE"):
             shutil.copy2(ROOT / "native" / "windows-sandbox" / "engine" / notice, native_stage / notice)
         shutil.copy2(ROOT / "native" / "windows-sandbox" / "UPSTREAM.json", native_stage / "UPSTREAM.json")
+        shutil.copy2(native_source / IDENTITY_FILE, native_stage / IDENTITY_FILE)
         native_hashes={name:hashlib.sha256((native_stage/name).read_bytes()).hexdigest() for name in ("dsh-windows-native.exe","dsh-command-runner.exe","dsh-windows-sandbox-setup.exe")}
         migration=(ROOT/'tools/native_install_upgrade.cjs').read_text(encoding='utf-8').replace('__DSH_NATIVE_EXPECTED_HASHES__',json.dumps(native_hashes))
         (stage/'runtime/native-install-upgrade.cjs').write_text(migration,encoding='utf-8')
@@ -154,7 +153,6 @@ def main() -> None:
         stage / "deepseek-black.ico",
     )
     shutil.copy2(ROOT / "packaging" / "windows" / "deepseek-black.png", stage / "deepseek-black.png")
-    skin_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-skin-installer")
     if args.platform != "windows":
         for executable in (stage / core_output, stage / launcher_output):
             executable.chmod(
@@ -162,8 +160,7 @@ def main() -> None:
             )
 
     copy_tree(ROOT / "release" / "plugins", stage / "plugins")
-    if args.variant != "skin":
-        shutil.rmtree(stage / "plugins" / "dsh-skin-center", ignore_errors=True)
+    shutil.rmtree(stage / "plugins" / "dsh-skin-center", ignore_errors=True)
     copy_tree(staged_web, stage / "web" / "dist")
     shutil.rmtree(stage / "web" / "dist" / "skins", ignore_errors=True)
     copy_tree(ROOT / "config" / "agent-presets", stage / "config" / "agent-presets")
@@ -192,43 +189,7 @@ def main() -> None:
         (stage / "release" / "notes").mkdir(parents=True, exist_ok=True)
         shutil.copy2(release_notes, stage / "release" / "notes" / release_notes.name)
 
-    if args.variant == "free":
-        (stage / "free-model-verification.json").write_text(json.dumps(free_verification, ensure_ascii=False, indent=2), encoding="utf-8")
-        (stage / "settings.json").write_text(
-            json.dumps(package_defaults(free_verification, hashlib.sha256(core_source.read_bytes()).hexdigest()), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
     entry = launcher_output
-    skin_payload = None
-    if args.variant == "skin":
-        skin_payload = binary_name(args.platform, "deepseek-harness-rs-skin")
-        build_skin_payload(skin_source, stage / skin_payload)
-        if args.platform != "windows":
-            (stage / skin_payload).chmod(
-                (stage / skin_payload).stat().st_mode
-                | stat.S_IXUSR
-                | stat.S_IXGRP
-                | stat.S_IXOTH
-            )
-
-    default_skin = "deepseek-official" if args.variant == "skin" else None
-    if default_skin is not None:
-        (stage / "settings.defaults.json").write_text(
-            json.dumps(
-                {"ui-theme": {"preference": default_skin}},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    elif args.variant == "free":
-        (stage / "settings.defaults.json").write_text(
-            (stage / "settings.json").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
-        (stage / "settings.json").unlink()
-
     manifest = {
         "name": suffix,
         "version": version,
@@ -237,8 +198,8 @@ def main() -> None:
         "variant": args.variant,
         "entry": entry,
         "host": core_output,
-        "skin_payload": skin_payload,
-        "default_skin": default_skin,
+        "skin_payload": None,
+        "default_skin": None,
     }
     (stage / "PACKAGE.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

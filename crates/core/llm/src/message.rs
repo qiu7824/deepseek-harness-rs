@@ -206,10 +206,20 @@ pub enum MessageSource {
         #[serde(rename = "senderSessionId")]
         sender_session_id: String,
     },
+    /// Producer-owned V4 source kinds preserve extension metadata verbatim.
+    #[serde(untagged)]
+    Producer(ProducerMessageSource),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProducerMessageSource {
+    pub kind: String,
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, JsonValue>,
 }
 
 impl MessageSource {
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &str {
         match self {
             MessageSource::User { .. } => "user",
             MessageSource::Plugin { .. } => "plugin",
@@ -222,6 +232,130 @@ impl MessageSource {
             MessageSource::TeamMessage { .. } => "team-message",
             MessageSource::AgentMessage { .. } => "agent-message",
             MessageSource::SubagentSettled { .. } => "subagent-settled",
+            MessageSource::Producer(source) => &source.kind,
+        }
+    }
+
+    /// Canonicalize a legacy producer declaration at message construction.
+    pub fn into_current(self, role: Role) -> Self {
+        let Self::Plugin {
+            plugin,
+            form,
+            sections,
+            summary,
+            compaction_id,
+            source_command_id,
+        } = self
+        else {
+            return self;
+        };
+        let kind = match plugin.as_str() {
+            "@deepseek-ai/dsh-system-prompt" if role == Role::System => "system-prompt".into(),
+            "@deepseek-ai/dsh-system-prompt" => "runtime-context".into(),
+            "compact" => "compact-checkpoint".into(),
+            "tools-code-mode" | "tools-ptc" => "ptc-mode".into(),
+            "dsh-compaction-basic" => "compact-basic".into(),
+            "agent-instructions"
+            | "session-reference"
+            | "team-message"
+            | "goal"
+            | "skill-invocation"
+            | "skill-catalog"
+            | "coordinator"
+            | "subagent-report"
+            | "subagent-settled"
+            | "webhook"
+            | "agent-message"
+            | "model-selection"
+            | "plan-mode"
+            | "time-context"
+            | "tmux-context"
+            | "user-approval"
+            | "repeat-tool-reminder"
+            | "tool-cordis"
+            | "cordis-host-runner"
+            | "tool-goal"
+            | "tool-jobs"
+            | "hooks-codex"
+            | "hooks-claude-code"
+            | "schedule"
+            | "dsh-session-title-llm" => plugin,
+            _ if plugin.starts_with("plugin:") => plugin,
+            _ => format!("plugin:{plugin}"),
+        };
+        let mut fields = serde_json::Map::new();
+        if let Some(value) = form {
+            fields.insert(
+                "form".into(),
+                serde_json::to_value(value).expect("context form"),
+            );
+        }
+        if let Some(value) = sections {
+            fields.insert(
+                "sections".into(),
+                serde_json::to_value(value).expect("context sections"),
+            );
+        }
+        if let Some(value) = summary {
+            fields.insert("summary".into(), value.into());
+        }
+        if let Some(value) = compaction_id {
+            fields.insert("compactionId".into(), value.into());
+        }
+        if let Some(value) = source_command_id {
+            fields.insert("sourceCommandId".into(), value.into());
+        }
+        Self::Producer(ProducerMessageSource { kind, fields })
+    }
+
+    /// Transitional internal producer lookup; the serialized kind remains V4.
+    pub fn plugin_name(&self) -> Option<&str> {
+        match self {
+            Self::Plugin { plugin, .. } => Some(plugin),
+            Self::Producer(source) => Some(match source.kind.as_str() {
+                "system-prompt" | "runtime-context" => "@deepseek-ai/dsh-system-prompt",
+                "compact-checkpoint" => "compact",
+                "compact-basic" => "dsh-compaction-basic",
+                "ptc-mode" => "tools-code-mode",
+                other => other.strip_prefix("plugin:").unwrap_or(other),
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn notice_summary(&self) -> Option<&str> {
+        match self {
+            Self::Plugin { summary, .. } => summary.as_deref(),
+            Self::Producer(source) => source.fields.get("summary").and_then(JsonValue::as_str),
+            _ => None,
+        }
+    }
+
+    pub fn snapshot_sections(&self) -> Box<dyn Iterator<Item = (&str, &str)> + '_> {
+        match self {
+            Self::Plugin {
+                sections: Some(sections),
+                ..
+            } => Box::new(
+                sections
+                    .iter()
+                    .map(|section| (section.name.as_str(), section.text.as_str())),
+            ),
+            Self::Producer(source) => Box::new(
+                source
+                    .fields
+                    .get("sections")
+                    .and_then(JsonValue::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|section| {
+                        Some((
+                            section.get("name")?.as_str()?,
+                            section.get("text")?.as_str()?,
+                        ))
+                    }),
+            ),
+            _ => Box::new(std::iter::empty()),
         }
     }
 }
@@ -231,16 +365,20 @@ impl MessageSource {
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
+    Developer,
     User,
     Assistant,
+    Tool,
 }
 
 impl Role {
     pub fn as_str(&self) -> &'static str {
         match self {
             Role::System => "system",
+            Role::Developer => "developer",
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::Tool => "tool",
         }
     }
 }
@@ -257,10 +395,45 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
     /// Required source fields supplied by the producer.
     pub source: MessageSource,
+    /// Correlation belongs to the tool message, outside ordinary content.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "toolCallId"
+    )]
+    pub tool_call_id: Option<CallId>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "isError")]
+    pub is_error: Option<bool>,
+}
+
+impl Message {
+    pub fn as_tool_result(&self) -> Option<(&CallId, &[ContentBlock], Option<bool>)> {
+        if self.role == Role::Tool {
+            let id = self.tool_call_id.as_ref()?;
+            let source_id = match &self.source {
+                MessageSource::Tool { call_id } => Some(call_id.as_str()),
+                MessageSource::Producer(source) if source.kind == "tool" => {
+                    source.fields.get("callId").and_then(JsonValue::as_str)
+                }
+                _ => None,
+            };
+            return (!id.as_str().is_empty() && source_id == Some(id.as_str())).then_some((
+                id,
+                self.content.as_slice(),
+                self.is_error,
+            ));
+        }
+        // Only the migration/import boundary can retain this historical shape.
+        if self.role == Role::User && self.content.len() == 1 {
+            return self.content[0].as_tool_result();
+        }
+        None
+    }
 }
 
 /// A user-role specialization of the one shared message representation.
 pub type UserMessage = Message;
+pub type DeveloperMessage = Message;
 /// A model-produced assistant specialization of the shared message
 /// representation.
 pub type AssistantMessage = Message;
@@ -296,13 +469,22 @@ pub fn create_message(role: Role, content: Vec<ContentBlock>, source: MessageSou
         id: crate::brand::message_id(uuid_v4()),
         role,
         content,
-        source,
+        source: source.into_current(role),
+        tool_call_id: None,
+        is_error: None,
     }
 }
 
 /// Create one identified user-role message.
 pub fn create_user_message(content: Vec<ContentBlock>, source: MessageSource) -> UserMessage {
     create_message(Role::User, content, source)
+}
+
+pub fn create_developer_message(
+    content: Vec<ContentBlock>,
+    source: MessageSource,
+) -> DeveloperMessage {
+    create_message(Role::Developer, content, source)
 }
 
 /// Create one identified model-produced assistant message.
@@ -331,17 +513,16 @@ pub struct ToolResultMessageInput {
 
 /// Create and freeze one identified tool-result message.
 pub fn create_tool_result_message(input: ToolResultMessageInput) -> ToolResultMessage {
-    create_message(
-        Role::User,
-        vec![ContentBlock::ToolResult {
-            tool_call_id: input.call_id.clone(),
-            content: input.content,
-            is_error: Some(input.is_error),
-        }],
+    let mut message = create_message(
+        Role::Tool,
+        input.content,
         MessageSource::Tool {
-            call_id: input.call_id,
+            call_id: input.call_id.clone(),
         },
-    )
+    );
+    message.tool_call_id = Some(input.call_id);
+    message.is_error = Some(input.is_error);
+    message
 }
 
 /// Whether a stream chunk carries visible model output (the first-token

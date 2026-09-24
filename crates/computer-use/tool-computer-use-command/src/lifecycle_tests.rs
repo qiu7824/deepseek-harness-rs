@@ -101,6 +101,7 @@ async fn reaper_retains_only_live_running_owners_without_resuming_manual_control
         adapter: Arc::new(control::ControlledAdapter::new(driver.clone())),
         timeout: Duration::from_secs(1),
         owner_agents: SyncMutex::new(HashMap::new()),
+        observation_epochs: SyncMutex::default(),
     };
     let running = remember(&runtime, "running", true);
     let idle = remember(&runtime, "idle", false);

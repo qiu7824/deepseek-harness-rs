@@ -6,6 +6,7 @@ pub mod fold;
 pub mod index;
 pub mod invariant;
 pub mod requirements;
+pub mod projection;
 pub mod runtime;
 pub mod types;
 
@@ -25,13 +26,14 @@ pub use index::{
     apply_goal_projection,
 };
 pub use runtime::GOAL_CHANGE_VERSION;
+pub use projection::{goal_projection_definition, register_goal_projection};
 pub use types::{
     CreateGoalRequest, CreateGoalResult, EditGoalRequest, GoalActivation, GoalBlockReason, GoalId,
     GoalIdTag, GoalPhase, GoalProjection, GoalRef, GoalSnapshot, GoalView, goal_id,
 };
 
 pub use requirements::{
-    GOAL_COMPLETION_GUARD_SERVICE, GoalCompletionCommitGuard, GoalCompletionError,
-    GoalCompletionGuard, GoalCompletionPermit, GoalRequirementsIdentity,
-    apply_goal_requirements_projection,
+    GOAL_COMPLETION_GUARD_SERVICE, GOAL_USER_CONTROL_SERVICE, GoalCompletionCommitGuard,
+    GoalCompletionError, GoalCompletionGuard, GoalCompletionPermit, GoalRequirementsIdentity,
+    GoalUserControl, apply_goal_requirements_projection,
 };

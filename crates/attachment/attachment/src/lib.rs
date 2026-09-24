@@ -4,7 +4,7 @@
 
 pub mod invariant;
 mod references;
-pub use references::find_image_reference;
+pub use references::{file_references_for_event, find_image_reference};
 
 use dsh_brand::Branded;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,15 @@ pub enum AttachmentIdTag {}
 
 /// Opaque content-addressed identifier for one immutable attachment object.
 pub type AttachmentId = Branded<AttachmentIdTag>;
+
+/// Verbatim bytes with an opaque content identity and a sanitized display name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAttachmentRef {
+    pub attachment_id: AttachmentId,
+    pub name: String,
+    pub bytes: u64,
+}
 
 /// The brand marker for one deterministic model-request image variant.
 #[doc(hidden)]
@@ -190,6 +199,27 @@ pub struct RequestImageAttachment {
     pub height: u64,
 }
 
+/// A bounded reader retaining the backend's immutable file lease.
+pub type AttachmentReader = std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>;
+pub type FileUploadReader<'a> = std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send + 'a>>;
+pub struct ImageAttachmentStream {
+    pub reference: ImageAttachmentRef,
+    pub reader: AttachmentReader,
+}
+pub struct FileAttachmentStream {
+    pub reference: FileAttachmentRef,
+    pub reader: AttachmentReader,
+}
+pub struct RequestImageStream {
+    pub attachment_id: AttachmentId,
+    pub variant_id: ImageVariantId,
+    pub media_type: ImageMediaType,
+    pub bytes: u64,
+    pub width: u64,
+    pub height: u64,
+    pub reader: AttachmentReader,
+}
+
 /// The cancellation seam for backend read and verification work (TS
 /// `AbortSignal`; the workspace predicate convention carries no reason, so
 /// an abort surfaces as `ATTACHMENT_ABORTED`).
@@ -201,6 +231,36 @@ use std::sync::Arc;
 /// before publishing a reference (TS `AttachmentStore`).
 #[async_trait::async_trait]
 pub trait AttachmentStore: Send + Sync + 'static {
+    /// Publish verbatim file bytes without buffering the complete input.
+    async fn save_file_stream(
+        &self,
+        _reader: FileUploadReader<'_>,
+        _name: String,
+        _signal: Option<&AttachmentAbort>,
+    ) -> Result<FileAttachmentRef, AttachmentError> {
+        Err(AttachmentError::new(
+            "FILE_ATTACHMENTS_UNAVAILABLE",
+            "This attachment backend does not store files.",
+        ))
+    }
+
+    /// Verify content identity before returning a reader with its immutable lease.
+    async fn open_file(
+        &self,
+        _reference: &FileAttachmentRef,
+        _signal: Option<&AttachmentAbort>,
+    ) -> Result<FileAttachmentStream, AttachmentError> {
+        Err(AttachmentError::new(
+            "FILE_ATTACHMENTS_UNAVAILABLE",
+            "This attachment backend does not read files.",
+        ))
+    }
+
+    /// Local read-only handle path; callers must authorize the reference first.
+    fn file_host_path(&self, _reference: &FileAttachmentRef) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Deployment-resolved image policy used by authoritative and fast-path
     /// validation.
     fn image_limits(&self) -> &ImageAttachmentLimits;
@@ -214,6 +274,50 @@ pub trait AttachmentStore: Send + Sync + 'static {
         &self,
         input: &SaveImageAttachment,
     ) -> Result<ImageAttachmentRef, AttachmentError>;
+
+    /// File/stream admission. The default compatibility implementation buffers;
+    /// first-party storage overrides it with bounded staging and worker decode.
+    async fn save_image_stream(
+        &self,
+        mut reader: AttachmentReader,
+        media_type: ImageMediaType,
+        name: Option<String>,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<ImageAttachmentRef, AttachmentError> {
+        use tokio::io::AsyncReadExt;
+        let mut data = Vec::new();
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            if signal.is_some_and(|signal| signal()) {
+                return Err(AttachmentError::new(
+                    "ATTACHMENT_ABORTED",
+                    "Image processing cancelled.",
+                ));
+            }
+            let count = reader
+                .read(&mut buffer)
+                .await
+                .map_err(|e| AttachmentError::new("ATTACHMENT_READ_FAILED", e.to_string()))?;
+            if count == 0 {
+                break;
+            }
+            if (data.len() as u64).saturating_add(count as u64)
+                > self.image_limits().image_byte_limit()
+            {
+                return Err(AttachmentError::new(
+                    "IMAGE_TOO_LARGE",
+                    "Image exceeds the configured byte limit.",
+                ));
+            }
+            data.extend_from_slice(&buffer[..count]);
+        }
+        self.save_image(&SaveImageAttachment {
+            data,
+            media_type,
+            name,
+        })
+        .await
+    }
 
     /// Validate the entire batch before publishing any object, then preserve
     /// input order in the returned references.
@@ -238,6 +342,38 @@ pub trait AttachmentStore: Send + Sync + 'static {
         reference: &ImageAttachmentRef,
         signal: Option<&AttachmentAbort>,
     ) -> Result<StoredImageAttachment, AttachmentError>;
+
+    /// Backends may override the buffering compatibility path with a verified,
+    /// immutable reader. Consumers should not collect this reader without need.
+    async fn open_image(
+        &self,
+        reference: &ImageAttachmentRef,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<ImageAttachmentStream, AttachmentError> {
+        let stored = self.read_image(reference, signal).await?;
+        Ok(ImageAttachmentStream {
+            reference: stored.reference,
+            reader: Box::pin(std::io::Cursor::new(stored.data)),
+        })
+    }
+
+    async fn open_image_request(
+        &self,
+        reference: &ImageAttachmentRef,
+        policy: &RequestImagePolicy,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<RequestImageStream, AttachmentError> {
+        let stored = self.read_image_request(reference, policy, signal).await?;
+        Ok(RequestImageStream {
+            attachment_id: stored.attachment_id,
+            variant_id: stored.variant_id,
+            media_type: stored.media_type,
+            bytes: stored.data.len() as u64,
+            width: stored.width,
+            height: stored.height,
+            reader: Box::pin(std::io::Cursor::new(stored.data)),
+        })
+    }
 
     /// Read or derive one deterministic model-request image under route budgets.
     async fn read_image_request(

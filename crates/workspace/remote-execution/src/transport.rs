@@ -256,8 +256,11 @@ impl RemoteRuntime {
         &self,
         id: &str,
         mut execution: Execution,
+        signal: Option<dsh_subprocess::SubprocessAbort>,
     ) -> Result<(String, Value), String> {
+        if signal.as_ref().is_some_and(|s|s()){return Err("[REMOTE_NOT_STARTED] remote execution cancelled before admission".into());}
         let _guard = self.dispatch_gate.lock().await;
+        if signal.as_ref().is_some_and(|s|s()){return Err("[REMOTE_NOT_STARTED] remote execution cancelled before dispatch".into());}
         let fingerprint = digest(
             &json!({"connection":id,"context":execution.context_id,"cwd":execution.cwd,"argv":execution.argv,"env":execution.env,"stdin":execution.stdin,"mode":execution.permission_mode}),
         );
@@ -265,12 +268,14 @@ impl RemoteRuntime {
             .root
             .join("executions")
             .join(format!("{fingerprint}.json"));
-        if let Some(previous) = read::<Journal>(&journal_path) {
+        if let Some(mut previous) = read::<Journal>(&journal_path) {
             if !matches!(
                 previous.state.as_str(),
                 "completed" | "failed" | "cancelled" | "timed_out"
             ) {
                 let value=self.call(id,"query",json!({}),&execution.permission_mode,Some(previous.execution.execution_id.clone()),None).await.map_err(|error|format!("[REMOTE_UNKNOWN] executionId={}; query original execution before repeating: {error}",previous.execution.execution_id))?;
+                previous.state=value["state"].as_str().unwrap_or("unknown").into();
+                persist(&journal_path,&previous).await?;
                 return Ok((previous.execution.execution_id, value));
             }
         }
@@ -285,6 +290,10 @@ impl RemoteRuntime {
             },
         )
         .await?;
+        if signal.as_ref().is_some_and(|s|s()) {
+            persist(&journal_path,&Journal {connection_id:id.into(),execution:execution.clone(),state:"cancelled".into()}).await?;
+            return Err("[REMOTE_NOT_STARTED] remote execution cancelled before transport dispatch".into());
+        }
         let result = self
             .call(
                 id,
@@ -292,7 +301,7 @@ impl RemoteRuntime {
                 serde_json::to_value(&execution).unwrap(),
                 &execution.permission_mode,
                 Some(execution_id.clone()),
-                None,
+                signal.clone(),
             )
             .await;
         match result {
@@ -309,9 +318,15 @@ impl RemoteRuntime {
                 .await?;
                 Ok((execution_id, value))
             }
-            Err(error) => Err(format!(
-                "[REMOTE_UNKNOWN] executionId={execution_id}; remote dispatch may have started; query this id without replaying: {error}"
-            )),
+            Err(error) => {
+                if signal.as_ref().is_some_and(|s|s()) {
+                    if let Ok(value)=self.call(id,"cancel",json!({}),&execution.permission_mode,Some(execution_id.clone()),None).await {
+                        persist(&journal_path,&Journal {connection_id:id.into(),execution,state:value["state"].as_str().unwrap_or("unknown").into()}).await?;
+                        return Ok((execution_id,value));
+                    }
+                }
+                Err(format!("[REMOTE_UNKNOWN] executionId={execution_id}; remote dispatch may have started; query this id without replaying: {error}"))
+            },
         }
     }
     pub async fn query(
@@ -333,6 +348,11 @@ impl RemoteRuntime {
                 None,
             )
             .await?;
+        self.update_observation(id,execution_id,&value).await?;
+        Ok(value)
+    }
+    async fn update_observation(&self,id:&str,execution_id:&str,value:&Value)->Result<(),String> {
+        let _guard=self.dispatch_gate.lock().await;
         // Update only an exact known id; the journal guards repeated model retries after disconnect.
         if let Ok(entries) = std::fs::read_dir(self.root.join("executions")) {
             for entry in entries.filter_map(Result::ok).take(512) {
@@ -345,6 +365,26 @@ impl RemoteRuntime {
                 }
             }
         }
-        Ok(value)
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn cancelled_admission_does_not_dispatch_and_old_observation_cannot_replace_new_execution() {
+        let root=std::env::temp_dir().join(format!("remote-journal-{}",uuid::Uuid::new_v4()));
+        let ctx=cordis::Context::root();let local=dsh_subprocess_local::LocalSubprocessRuntime::install(&ctx);
+        let runtime=RemoteRuntime::install(&ctx,root.clone(),local);
+        let execution=Execution {execution_id:"new".into(),context_id:"context".into(),workspace:"/work".into(),permission_mode:"read-only".into(),argv:vec!["unused".into()],cwd:"/work".into(),timeout_ms:1000,env:vec![],stdin:None};
+        assert!(runtime.submit("connection",execution.clone(),Some(Arc::new(||true))).await.unwrap_err().contains("REMOTE_NOT_STARTED"));
+        assert!(!root.exists());
+        let path=root.join("executions/fixture.json");persist(&path,&Journal {connection_id:"connection".into(),execution,state:"submitted".into()}).await.unwrap();
+        runtime.update_observation("connection","old",&json!({"state":"completed"})).await.unwrap();
+        assert_eq!(read::<Journal>(&path).unwrap().state,"submitted");
+        runtime.update_observation("connection","new",&json!({"state":"completed"})).await.unwrap();
+        assert_eq!(read::<Journal>(&path).unwrap().state,"completed");
+        drop(runtime);drop(ctx);assert!(root.canonicalize().unwrap().starts_with(std::env::temp_dir().canonicalize().unwrap()));std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -16,11 +16,21 @@ dsh-schemastery = { path = "../../vendor/schemastery" }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 image = "0.25"
+png = "0.18"
 indexmap = { workspace = true }
 parking_lot = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fs2 = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 base64 = "0.22"

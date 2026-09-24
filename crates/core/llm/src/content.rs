@@ -28,7 +28,7 @@ pub struct RequestImageOffloadPolicy<'a> {
 /// tool-result content (TS `contentHasImage`).
 pub fn content_has_image(content: &[ContentBlock]) -> bool {
     content.iter().any(|block| match block {
-        ContentBlock::Image { .. } => true,
+        ContentBlock::Image { offloaded, .. } => *offloaded != Some(true),
         ContentBlock::ToolResult { content, .. } => content_has_image(content),
         _ => false,
     })
@@ -45,7 +45,10 @@ fn collect_image_lengths(
 ) {
     for block in blocks {
         match block {
-            ContentBlock::Image { attachment } => {
+            ContentBlock::Image {
+                attachment,
+                offloaded,
+            } if *offloaded != Some(true) => {
                 let bytes = policy.byte_length.map_or_else(
                     || attachment.bytes.unwrap_or(0),
                     |length| length(attachment),
@@ -67,7 +70,7 @@ fn replace_oldest_images(blocks: &[ContentBlock], remaining: &mut usize) -> Vec<
     blocks
         .iter()
         .map(|block| match block {
-            ContentBlock::Image { .. } if *remaining > 0 => {
+            ContentBlock::Image { offloaded, .. } if *offloaded != Some(true) && *remaining > 0 => {
                 *remaining -= 1;
                 ContentBlock::Text {
                     text: OFFLOADED_IMAGE_TEXT.to_string(),
@@ -114,7 +117,7 @@ pub fn offload_request_images_with_policy(
 ) -> Vec<Message> {
     let mut lengths = Vec::new();
     for message in messages {
-        if message.role == crate::Role::User {
+        if matches!(message.role, crate::Role::User | crate::Role::Tool) {
             collect_image_lengths(&message.content, &mut lengths, policy);
         }
     }
@@ -160,7 +163,7 @@ pub fn offload_request_images_with_policy(
         .iter()
         .map(|message| {
             let mut projected = message.clone();
-            if message.role == crate::Role::User {
+            if matches!(message.role, crate::Role::User | crate::Role::Tool) {
                 projected.content = replace_oldest_images(&message.content, &mut remaining);
             }
             projected

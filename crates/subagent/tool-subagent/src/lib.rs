@@ -51,7 +51,7 @@ pub struct Config {
     pub persona: Option<String>,
     /// Tool filter applied to every child.
     pub tool_filter: Option<dsh_tools::ToolRestriction>,
-    /// Maximum child depth (default `3`), or `provider-managed`.
+    /// Maximum child depth (default `1`), or `provider-managed`.
     pub max_depth: Option<u64>,
 }
 
@@ -65,7 +65,7 @@ impl Default for Config {
             agent_options: None,
             persona: None,
             tool_filter: None,
-            max_depth: Some(3),
+            max_depth: Some(dsh_subagent::resident_quota::DEFAULT_MAX_DEPTH),
         }
     }
 }
@@ -379,7 +379,7 @@ fn mount_tool(
                     signal: signal.clone(),
                     agent_options,
                     output_schema: None,
-                    max_depth: config.max_depth,
+                    max_depth: config.max_depth.and_then(|fallback|dsh_subagent::child_agent::effective_max_depth(parent.ctx(),Some(fallback))),
                     tool_filter: config.tool_filter.clone(),
                     persona: config.persona.clone(),
                 };
@@ -592,8 +592,8 @@ impl Plugin for ToolSubagentPlugin {
                     .map(str::to_string),
                 max_depth: match value.get("maxDepth") {
                     Some(serde_json::Value::String(value)) if value == "provider-managed" => None,
-                    Some(value) => value.as_u64(),
-                    None => Some(3),
+                    Some(value) => Some(value.as_u64().or_else(||value.as_f64().filter(|number|number.is_finite()&&*number>=0.0&&number.fract()==0.0&&*number<=9_007_199_254_740_991.0).map(|number|number as u64)).ok_or_else(||PluginError::from(anyhow::anyhow!("maxDepth must be a nonnegative safe integer or provider-managed")))?),
+                    None => Some(dsh_subagent::resident_quota::DEFAULT_MAX_DEPTH),
                 },
                 ..Default::default()
             }

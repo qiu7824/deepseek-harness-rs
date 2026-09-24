@@ -25,7 +25,7 @@ use dsh_subprocess::{
     SubprocessSpawnSpec, SubprocessStdinMode, SubprocessStdio,
 };
 use dsh_terminal::{
-    TerminalReadRequest, TerminalSendRequest, TerminalSessionService, TerminalSignal,
+    TerminalReadRequest, TerminalSendRequest, TerminalSignal,
     TerminalSpawnRequest, terminal_session_id,
 };
 use dsh_workspace::WorkspaceRegistry;
@@ -313,7 +313,7 @@ struct PreviewService {
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
     api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
-    terminals: Arc<TerminalSessionService>,
+    user_terminals: Arc<crate::user_terminal::UserTerminals>,
     jobs: Arc<dyn JobRegistry>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
@@ -1368,6 +1368,43 @@ fn sanitize_file_name(name: &str) -> String {
 }
 
 impl PreviewService {
+    async fn authorized_read_path(
+        &self,
+        session: &SessionId,
+        input: &str,
+    ) -> Result<PathBuf, WebResponse> {
+        if Path::new(input).is_absolute() {
+            match self
+                .api
+                .authorized_attachment_path(session, Path::new(input), None)
+                .await
+            {
+                Ok(Some(path)) => return Ok(path),
+                Ok(None) => {}
+                Err(failure) => {
+                    return Err(error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "attachment-unreadable",
+                        failure.message,
+                    ));
+                }
+            }
+            let (_, root) = workspace_root(&self.registry, session).await?;
+            let path = tokio::fs::canonicalize(input)
+                .await
+                .map_err(|_| error(StatusCode::NOT_FOUND, "file-not-found", "文件不存在"))?;
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| error(StatusCode::FORBIDDEN, "path-escape", "文件不在当前工作区"))?;
+            return authorized_path(&self.registry, session, &relative.to_string_lossy())
+                .await
+                .map(|(_, _, path)| path);
+        }
+        authorized_path(&self.registry, session, input)
+            .await
+            .map(|(_, _, path)| path)
+    }
+
     async fn office_preview(&self, request: WebRequest) -> WebResponse {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1380,23 +1417,7 @@ impl PreviewService {
             Err(response) => return response,
         };
         let session = session_id(input.session_id);
-        let relative = if Path::new(&input.path).is_absolute() {
-            let (_, root) = match workspace_root(&self.registry, &session).await {
-                Ok(v) => v,
-                Err(e) => return e,
-            };
-            let path = match tokio::fs::canonicalize(&input.path).await {
-                Ok(v) => v,
-                Err(_) => return error(StatusCode::NOT_FOUND, "file-not-found", "文件不存在"),
-            };
-            match path.strip_prefix(&root) {
-                Ok(p) => p.to_string_lossy().into_owned(),
-                Err(_) => return error(StatusCode::FORBIDDEN, "path-escape", "文档不在当前工作区"),
-            }
-        } else {
-            input.path
-        };
-        let (_, _, target) = match authorized_path(&self.registry, &session, &relative).await {
+        let target = match self.authorized_read_path(&session, &input.path).await {
             Ok(path) => path,
             Err(response) => return response,
         };
@@ -1434,7 +1455,7 @@ impl PreviewService {
         registry: Arc<WorkspaceRegistry>,
         agents: Arc<AgentRegistry>,
         api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
-        terminals: Arc<TerminalSessionService>,
+        user_terminals: Arc<crate::user_terminal::UserTerminals>,
         jobs: Arc<dyn JobRegistry>,
         subprocess: Arc<dyn SubprocessRuntime>,
         sandbox: Arc<dyn SandboxProvider>,
@@ -1446,7 +1467,7 @@ impl PreviewService {
             registry,
             agents,
             api,
-            terminals,
+            user_terminals,
             jobs,
             subprocess,
             sandbox,
@@ -1472,7 +1493,7 @@ impl PreviewService {
             Err(response) => return response,
         };
         let session = session_id(action.session_id);
-        let (_, _, target) = match authorized_path(&self.registry, &session, &action.path).await {
+        let target = match self.authorized_read_path(&session, &action.path).await {
             Ok(value) => value,
             Err(response) => return response,
         };
@@ -1827,29 +1848,10 @@ impl PreviewService {
             Ok(value) => value,
             Err(response) => return response,
         };
-        // Opening can await workspace resolution and PTY startup while an idle
-        // owner is retiring. Use the same admission/resume boundary as session
-        // RPCs and hold it until the terminal has published its activity.
-        let owner_lease = if action.action == "open" {
-            match self.api.resolve_control_agent(&action.session_id).await {
-                Ok(lease) => Some(lease),
-                Err(failure) => {
-                    return error(StatusCode::CONFLICT, "agent-not-live", failure);
-                }
-            }
-        } else {
-            None
-        };
-        let owner = match owner_lease.as_ref() {
-            Some(lease) => lease.agent.clone(),
-            None => match self.terminal_owner(&action.session_id) {
-                Ok(owner) => owner,
-                Err(response) => return response,
-            },
-        };
+        let owner = session_id(&action.session_id);
         match action.action.as_str() {
             "open" => {
-                if self.terminals.list(&owner).len() >= 3 {
+                if self.user_terminals.list(&owner).len() >= 3 {
                     return error(
                         StatusCode::CONFLICT,
                         "terminal-limit",
@@ -1876,7 +1878,7 @@ impl PreviewService {
                         "终端名称不能为空、包含控制字符或超过80字",
                     );
                 }
-                let future = match self.terminals.spawn_limited(
+                let future = match self.user_terminals.spawn_limited(
                     owner,
                     TerminalSpawnRequest {
                         type_: "shell".to_string(),
@@ -1928,7 +1930,7 @@ impl PreviewService {
                 }
                 let future =
                     match self
-                        .terminals
+                        .user_terminals
                         .write_input(&owner, &terminal_session_id(id), &text)
                     {
                         Ok(future) => future,
@@ -1971,7 +1973,7 @@ impl PreviewService {
                 }
                 let future =
                     match self
-                        .terminals
+                        .user_terminals
                         .resize(&owner, &terminal_session_id(id), rows, cols)
                     {
                         Ok(future) => future,
@@ -2013,7 +2015,7 @@ impl PreviewService {
                     }
                 };
                 let future = match self
-                    .terminals
+                    .user_terminals
                     .signal(&owner, &terminal_session_id(id), signal)
                 {
                     Ok(future) => future,
@@ -2041,7 +2043,7 @@ impl PreviewService {
                 let Some(id) = action.terminal_id.as_deref() else {
                     return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID");
                 };
-                let operation = match self.terminals.start_send(
+                let operation = match self.user_terminals.start_send(
                     &owner,
                     &terminal_session_id(id),
                     TerminalSendRequest {
@@ -2072,7 +2074,7 @@ impl PreviewService {
                 let Some(id) = action.terminal_id.as_deref() else {
                     return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID");
                 };
-                let future = match self.terminals.kill(
+                let future = match self.user_terminals.kill(
                     &owner,
                     &terminal_session_id(id),
                     "sidebar terminal closed".to_string(),
@@ -2521,6 +2523,9 @@ impl PreviewService {
                 format!("文件超过预览上限 {limit} bytes"),
             );
         }
+        if !text_like {
+            return stream_binary_preview(target, method, site, mime.as_ref(), limit).await;
+        }
         let mut bytes = if method == Method::HEAD {
             Vec::new()
         } else {
@@ -2658,6 +2663,57 @@ impl PreviewService {
             Ok(value) => value.unwrap_or_default(),
             Err(()) => return error(StatusCode::BAD_REQUEST, "invalid-query", "查询参数编码无效"),
         };
+        if Path::new(&relative).is_absolute()
+            && matches!(operation, "file" | "source" | "file-resolve")
+        {
+            match self
+                .api
+                .authorized_attachment_path(&session, Path::new(&relative), None)
+                .await
+            {
+                Ok(Some(target)) => {
+                    if operation == "file" {
+                        let mut response = self.serve_file(request.method(), &target, false).await;
+                        response
+                            .headers_mut()
+                            .insert("x-dsh-read-only", header::HeaderValue::from_static("true"));
+                        return response;
+                    }
+                    if operation == "file-resolve" {
+                        return json_response(
+                            StatusCode::OK,
+                            &serde_json::json!({"path":relative,"absolutePath":execution_path(&target),"kind":"file","size":target.metadata().map(|m|m.len()).unwrap_or(0),"readOnly":true}),
+                        );
+                    }
+                    if target.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > MAX_TEXT_BYTES {
+                        return error(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "file-too-large",
+                            "文本超过预览上限",
+                        );
+                    }
+                    return match tokio::fs::read_to_string(&target).await {
+                        Ok(text) => json_response(
+                            StatusCode::OK,
+                            &serde_json::json!({"path":relative,"text":text,"readOnly":true}),
+                        ),
+                        Err(_) => error(
+                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                            "not-utf8",
+                            "该附件无法作为 UTF-8 文本预览",
+                        ),
+                    };
+                }
+                Ok(None) => {}
+                Err(failure) => {
+                    return error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "attachment-unreadable",
+                        failure.message,
+                    );
+                }
+            }
+        }
         if operation == "turn-changes" {
             if let Err(response) = workspace_root(&self.registry, &session).await {
                 return response;
@@ -2944,12 +3000,9 @@ impl PreviewService {
             };
         }
         if operation == "terminal-list" {
-            let owner = match self.terminal_owner(session.as_str()) {
-                Ok(owner) => owner,
-                Err(response) => return response,
-            };
+            let owner = session.clone();
             let entries: Vec<_> = self
-                .terminals
+                .user_terminals
                 .list(&owner)
                 .into_iter()
                 .map(|entry| {
@@ -2973,15 +3026,12 @@ impl PreviewService {
             return json_response(StatusCode::OK, &serde_json::json!({ "entries": entries }));
         }
         if operation == "terminal-read" {
-            let owner = match self.terminal_owner(session.as_str()) {
-                Ok(owner) => owner,
-                Err(response) => return response,
-            };
+            let owner = session.clone();
             let id = match query_value(query, "terminalId") {
                 Ok(Some(value)) if !value.is_empty() => terminal_session_id(value),
                 _ => return error(StatusCode::BAD_REQUEST, "terminal-required", "缺少终端ID"),
             };
-            return match self.terminals.read(
+            return match self.user_terminals.read(
                 &owner,
                 &id,
                 TerminalReadRequest {
@@ -3136,12 +3186,85 @@ impl PreviewService {
     }
 }
 
+async fn stream_binary_preview(
+    target: &Path,
+    method: &Method,
+    site: bool,
+    mime: &str,
+    limit: u64,
+) -> WebResponse {
+    let file = match tokio::fs::File::open(target).await {
+        Ok(file) => file,
+        Err(_) => return error(StatusCode::FORBIDDEN, "file-unreadable", "文件不可读取"),
+    };
+    let metadata = match file.metadata().await {
+        Ok(metadata) if metadata.is_file() && metadata.len() <= limit => metadata,
+        _ => {
+            return error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "file-too-large",
+                "文件超过预览上限或已发生变化",
+            );
+        }
+    };
+    let length = metadata.len();
+    let version = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CONTENT_LENGTH, length)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            "cross-origin-resource-policy",
+            if site { "cross-origin" } else { "same-origin" },
+        )
+        .header("referrer-policy", "no-referrer")
+        // Informational source-change detection; binary files are never edited
+        // through the text editor's strong content-hash CAS endpoint.
+        .header(header::ETAG, format!("W/\"{length}-{version}\""));
+    if site {
+        builder = builder.header("access-control-allow-origin", "*");
+    }
+    let body = if method == Method::HEAD {
+        Body::empty()
+    } else {
+        bounded_binary_body(file, length)
+    };
+    builder.body(body).expect("binary preview response")
+}
+
+fn bounded_binary_body(file: tokio::fs::File, length: u64) -> Body {
+    use tokio::io::AsyncReadExt;
+    let chunks = futures::stream::try_unfold((file, length), |(mut file, remaining)| async move {
+        if remaining == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        let mut bytes = vec![0u8; remaining.min(32 * 1024) as usize];
+        let count = file.read(&mut bytes).await?;
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Preview file changed while streaming",
+            ));
+        }
+        bytes.truncate(count);
+        Ok(Some((bytes, (file, remaining - count as u64))))
+    });
+    Body::from_stream(chunks)
+}
+
 pub fn register(
     web_server: &Arc<WebServer>,
     registry: Arc<WorkspaceRegistry>,
     agents: Arc<AgentRegistry>,
     api: Arc<dsh_host_apiproxy::proxy::ApiProxyService>,
-    terminals: Arc<TerminalSessionService>,
+    user_terminals: Arc<crate::user_terminal::UserTerminals>,
     jobs: Arc<dyn JobRegistry>,
     subprocess: Arc<dyn SubprocessRuntime>,
     sandbox: Arc<dyn SandboxProvider>,
@@ -3150,7 +3273,7 @@ pub fn register(
     allow_remote_host: bool,
 ) -> RouteDisposer {
     let mut service = PreviewService::new(
-        registry, agents, api, terminals, jobs, subprocess, sandbox, code_index,
+        registry, agents, api, user_terminals, jobs, subprocess, sandbox, code_index,
     );
     Arc::get_mut(&mut service)
         .expect("new preview service")
@@ -3170,6 +3293,57 @@ pub fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn binary_preview_streams_bounded_chunks_and_head_does_not_read_the_body() {
+        use futures::StreamExt;
+        let root =
+            std::env::temp_dir().join(format!("dsh-binary-preview-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("document.docx");
+        let file = std::fs::File::create(&path).unwrap();
+        let length = 32 * 1024 * 1024;
+        file.set_len(length).unwrap();
+        drop(file);
+        let response = stream_binary_preview(
+            &path,
+            &Method::GET,
+            false,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            64 * 1024 * 1024,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            length.to_string()
+        );
+        let mut stream = response.into_body().into_data_stream();
+        let mut total = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            assert!(chunk.len() <= 32 * 1024);
+            total += chunk.len() as u64;
+        }
+        assert_eq!(total, length);
+        let response = stream_binary_preview(
+            &path,
+            &Method::HEAD,
+            false,
+            "application/octet-stream",
+            length,
+        )
+        .await;
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            length.to_string()
+        );
+        assert!(to_bytes(response.into_body(), 1).await.unwrap().is_empty());
+        let response =
+            stream_binary_preview(&path, &Method::GET, false, "application/octet-stream", 1).await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn fixture_git(root: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")

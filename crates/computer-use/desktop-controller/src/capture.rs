@@ -71,7 +71,7 @@ impl Capture {
                 size,
             )?;
             let session = pool.CreateCaptureSession(&item)?;
-            let _ = session.SetIsCursorCaptureEnabled(false);
+            let _ = session.SetIsCursorCaptureEnabled(true);
             session.StartCapture()?;
             Ok(Self {
                 pool,
@@ -186,7 +186,7 @@ impl Capture {
                     .pool
                     .CreateCaptureSession(&self.item)
                     .map_err(|e| format!("无法恢复捕获会话：{e}"))?;
-                let _ = self.session.SetIsCursorCaptureEnabled(false);
+                let _ = self.session.SetIsCursorCaptureEnabled(true);
                 self.session
                     .StartCapture()
                     .map_err(|e| format!("无法启动捕获会话：{e}"))?;

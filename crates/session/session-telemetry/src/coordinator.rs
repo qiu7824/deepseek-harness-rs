@@ -420,9 +420,11 @@ fn severity_of(event: &SessionEvent) -> SessionTelemetrySeverity {
             let is_error = event
                 .data
                 .get("message")
-                .and_then(|message| message.get("content"))
-                .and_then(|content| content.get(0))
-                .and_then(|block| block.get("isError"))
+                .and_then(|message| {
+                    message
+                        .get("isError")
+                        .or_else(|| message.pointer("/content/0/isError"))
+                })
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
             if is_error {

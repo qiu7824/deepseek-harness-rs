@@ -168,3 +168,51 @@ async fn failure_preserves_execution_receipt_without_becoming_success() {
         101
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_blocking_worker_cannot_start_effects_after_no_effect_result() {
+    let ctx = Context::root();
+    dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+    let tools = ToolRuntime::install(&ctx, Config::default()).unwrap();
+    let ready = Arc::new(tokio::sync::Notify::new());
+    let finished = Arc::new(tokio::sync::Notify::new());
+    let (release, receive) = std::sync::mpsc::channel();
+    let receive = Arc::new(Mutex::new(receive));
+    let writes = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::new(Mutex::new(None));
+    let observed_result = observed.clone();
+    ctx.on("tools/result", Arc::new(move |_, args| {
+        let effects = *downcast_arc::<Option<bool>>(&args[3]).unwrap();
+        *observed_result.lock() = Some(effects);
+        Box::pin(async { None })
+    }), cordis::EventOptions::default().global(true)).await;
+    let (worker_ready, worker_finished, worker_release, worker_writes) = (ready.clone(), finished.clone(), receive, writes.clone());
+    tools.register(&ctx, ToolDefinition {
+        name: "bounded-operation".into(), description: "owned blocking effect fixture".into(),
+        parameters: serde_json::json!({"type":"object"}), output: ToolOutputDefinition { schema: serde_json::json!({"type":"boolean"}), render: Arc::new(|_,_| Ok(vec![])), presentation_meta: None },
+        timeout_ms: None, is_concurrency_safe: None, finalize_content: None, present_call: None, present_result: None,
+        execute: Arc::new(move |_, run| {
+            let marker = run.track_cancellable_effects();
+            let (ready, finished, release, writes) = (worker_ready.clone(), worker_finished.clone(), worker_release.clone(), worker_writes.clone());
+            Box::pin(async move {
+                let _worker = tokio::task::spawn_blocking(move || {
+                    ready.notify_one(); let _ = release.lock().recv_timeout(std::time::Duration::from_secs(3));
+                    if marker().is_ok() { writes.fetch_add(1, Ordering::SeqCst); }
+                    finished.notify_one();
+                });
+                // Match a timeout wrapper that has stopped awaiting blocking work.
+                Err(ToolBodyError::plain("adapter wait timed out"))
+            })
+        }),
+    }).unwrap();
+    let call = input(serde_json::json!({"effectsStarted":true}));
+    let task = tokio::spawn(async move { tools.execute(call).await });
+    ready.notified().await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), task).await.unwrap().unwrap();
+    assert!(result.is_error);
+    assert_eq!(*observed.lock(), Some(Some(false)));
+    release.send(()).unwrap();
+    finished.notified().await;
+    assert_eq!(writes.load(Ordering::SeqCst), 0, "late blocking work wrote after a no-effects result");
+    ctx.fiber.dispose().await;
+}

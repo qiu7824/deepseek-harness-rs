@@ -1,0 +1,82 @@
+{
+  "recordedAt": "2026-09-24T10:18:10.200360+08:00",
+  "status": "source_integrated_pending_full_acceptance",
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "sessionRuntimeFormatVersion": 3,
+  "implemented": [
+    "按原始字节 SHA-256 保存不可变文件，使用有界流读写；重复保存校验既有对象，损坏不覆盖，取消清理未发布数据。",
+    "上传保存结构化 file 引用并保留输入顺序；提供方请求只接收验证后的只读文件句柄，原会话数据不改写。",
+    "新增 session.fileAttachment；文件查询和工作区外预览必须匹配当前会话的已接收文件，工具参数中的伪造引用不获得权限。",
+    "沙箱仅增加当前会话具体附件的只读路径；文档渲染工具支持同会话附件并在导出期间持有读取句柄。",
+    "Web 与 Flutter 将结构化附件显示为文件卡片，打开前解析授权路径；过期 Flutter 回执不切换其他会话预览。",
+    "消息文件弹窗默认使用 docx-preview，支持翻页、缩放、WPS 打印版式、取消和资源释放；其他 Office 文件使用 WPS 打印预览。",
+    "附件文本预览发布只读标记，代码、Markdown 和结构化数据编辑器禁止写入和 Ctrl+S 提交。",
+    "核心弹窗与侧栏 DOCX 包摘要一致，打包入口拒绝缺失或混用的渲染组件。"
+  ],
+  "checks": {
+    "file_store": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-file-store-tests.log"
+    },
+    "file_rpc_model_and_sandbox": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-file-api-tests.log"
+    },
+    "flutter_files": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-file-flutter-tests.log"
+    },
+    "flutter_analysis": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-file-flutter-analyze.log"
+    },
+    "sidebar_readonly": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-readonly-sidebar-tests.log"
+    },
+    "host_and_api_compile": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-file-final-check.log"
+    }
+  },
+  "browserComponentChecks": {
+    "file_actions_docx_harness.cjs": {
+      "passed": true,
+      "scope": "弹窗路由与生命周期；渲染器为受控替身，不代表实际文档视觉验收。"
+    },
+    "file_attachment_wire_harness.cjs": {
+      "passed": true,
+      "scope": "完整浏览器 RPC 客户端、方法路由和响应结构。"
+    },
+    "test_docx_runtime_integrity.py": {
+      "passed": true,
+      "scope": "缺失、混用及一致资源的打包门槛。"
+    }
+  },
+  "docxRendererSha256": "9151f3203fa3ccc05479754ffd68719d1a9e8e1390af43c13897bcd8735ec206",
+  "sourceSha256": {
+    "crates/attachment/attachment-local/src/file_store.rs": "67c481542dcfae1adf65be73736e4934853d3508f5973e93e3aae5d7d80d044e",
+    "crates/attachment/attachment/src/references.rs": "1995c27dc5c35fda0a17e89dbc48cfc9082b77fe1941cd8f3e4d9b2b9a8f0d74",
+    "crates/core/llm/src/file_projection.rs": "3736d133bbbc7a16f429e06cf04742fe524a4ec46bf731701409da141ed05df8",
+    "crates/host/apiproxy/src/file_attachments.rs": "2aea9f7605214583756de50b1f1745a8e1431135631aae756aee4ff577e214b9",
+    "crates/host/apiproxy/src/prompt_files.rs": "e96b433adeae0e102dfd96bc7805aef0812bfd87c17d03e1c6e0b65ff04d01c4",
+    "crates/host/apiproxy/src/proxy.rs": "8e70c85a380c3f8054041400e245b5b97353ada2ad4a8ca7bf1d0ab34360056b",
+    "crates/sandbox/sandbox-policy/src/index.rs": "2eb90a54fbbe9cd631dda0d105e9d2590ff6ae6823799ced52917d7bbd4d88ab",
+    "crates/host/dsh-host/src/web_preview.rs": "7773fb9fd5439bebbae7e7d094058ff1cd72146b368cde187b97c674a48aedd8",
+    "crates/host/dsh-host/src/office_render.rs": "97c84b5d0bbc2f3b40154f437ca23c867d34f442fe1a556e5f161fbc99b5f9f5",
+    "web/src/runtime-plugins/ui-file-actions.js": "a2acdc6ee6af517ae24ca0ecf101cfa0020671590608b2f84de43f07821b68c6",
+    "web/src/runtime-plugins/connection.js": "c558ca0f09d6dcb8075027e348ac32a7ee857a074837b6a8ba2d0941ef9e6fda",
+    "web/src/runtime-plugins/client-runtime.js": "9a4b2ba3cca86b9647377ea0c8425782ceb871a10debe7d97befeed54db186bc",
+    "web/src/runtime-plugins/ui-conversation.js": "a9b8f98c4e4eb5eb6e36876d1faa5a4e98a8652e3858d6978169b1f07806d9ce",
+    "release/plugins/dsh-sidebar-workbench-suite/lib/client.js": "c86195432300fb82499f1bbae567cdc6e476ef945885e8361a773c417d4d30c2",
+    "packages/dsh_client_dart/lib/src/transcript.dart": "a0b2b1559c80aa3e882496087e033709975c4c150ffdb6080b3d5654a5130c17",
+    "apps/desktop_flutter/lib/features/shell.dart": "f6c279763d640a449e09bf270a4ebfbc070fac44371b617499bf600351a5b920"
+  },
+  "remaining": [
+    "安装版真实附件、WPS 导出、文档逐页视觉检查与完整取消重开验收。",
+    "Session V4 原生持久化、代际迁移、恢复与完整上游兼容；当前写入版本仍为 3。",
+    "全部目标的其余功能、全 UI、连续运行、70 MB Host 门槛、多平台包与 GitHub/蓝奏发布核验。"
+  ]
+}

@@ -26,7 +26,10 @@ pub struct SurfaceTokenFold {
 fn collect_images(blocks: &[ContentBlock], images: &mut Vec<ImageAttachmentRef>) {
     for block in blocks {
         match block {
-            ContentBlock::Image { attachment } => images.push(attachment.clone()),
+            ContentBlock::Image {
+                attachment,
+                offloaded,
+            } if *offloaded != Some(true) => images.push(attachment.clone()),
             ContentBlock::ToolResult { content, .. } => collect_images(content, images),
             _ => {}
         }
@@ -37,7 +40,7 @@ fn without_images(blocks: &[ContentBlock]) -> Vec<ContentBlock> {
     blocks
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Image { .. } => None,
+            ContentBlock::Image { offloaded, .. } if *offloaded != Some(true) => None,
             ContentBlock::ToolResult {
                 tool_call_id,
                 content,

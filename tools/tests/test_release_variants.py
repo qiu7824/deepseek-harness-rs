@@ -10,94 +10,56 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release_variants as variants
-from tools.tests.test_free_model_evidence import attested, report
 
 
 class ReleaseVariantsTests(unittest.TestCase):
-    def test_cli_preserves_denial_diagnostics_with_legacy_console_encoding(self):
+    def test_cli_selects_only_core_and_binds_the_actual_host(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             binary = root / "dsh"
             binary.write_bytes(b"fixture binary")
-            evidence = root / "free.json"
-            reason = "供应商仅限OpenCode，Rust匿名不可用"
-            evidence.write_text(json.dumps(report([{
-                **attested(), "status": "unavailable", "available": False, "reason": reason,
-            }]), ensure_ascii=False), encoding="utf-8")
-            selection = root / "selection.json"
-            output = root / "github-output.txt"
-            summary = root / "summary.md"
-            environment = dict(os.environ, PYTHONIOENCODING="cp1252:strict")
-            completed = subprocess.run([
-                sys.executable, str(Path(variants.__file__).resolve()), "select",
-                "--report", str(evidence), "--binary", str(binary),
-                "--probe-outcome", "failure", "--selection-report", str(selection),
-                "--github-output", str(output), "--summary", str(summary),
-            ], env=environment, capture_output=True, check=False)
-            self.assertEqual(completed.returncode, 0, completed.stderr.decode("cp1252"))
-            selected = json.loads(completed.stdout.decode("ascii"))
-            self.assertEqual(selected["variants"], ["core", "skin"])
-            self.assertEqual(selected["free"]["status"], "unavailable")
-            self.assertEqual(selected["free"]["reason"], reason)
-            saved = selection.read_text(encoding="utf-8")
-            self.assertIn(reason, saved)
-            self.assertEqual(json.loads(saved), selected)
-            self.assertIn(reason, summary.read_text(encoding="utf-8"))
-            self.assertEqual(output.read_text(encoding="utf-8"),
-                             'variants=core skin\nvariants_json=["core","skin"]\n')
+            output, summary, selection = root / "output.txt", root / "summary.md", root / "selection.json"
+            completed = subprocess.run([sys.executable, str(Path(variants.__file__)), "select",
+                "--binary", str(binary), "--selection-report", str(selection),
+                "--github-output", str(output), "--summary", str(summary)],
+                env=dict(os.environ, PYTHONIOENCODING="cp1252"), capture_output=True)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            selected = json.loads(completed.stdout)
+            self.assertEqual(selected["variants"], ["core"])
+            self.assertEqual(selected["binarySha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+            self.assertEqual(json.loads(selection.read_text(encoding="utf-8")), selected)
+            self.assertEqual(output.read_text(), 'variants=core\nvariants_json=["core"]\n')
 
-    def test_core_skin_are_independent_of_missing_failed_or_stale_free_evidence(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); binary=root/"dsh";binary.write_bytes(b"fixture binary")
-            path=root/"free.json"
-            self.assertEqual(variants.select_variants(path,binary,"failure")["variants"],["core","skin"])
-            payload=report([{**attested(),"status":"unavailable","available":False,"reason":"供应商仅限OpenCode，Rust匿名不可用"}])
-            path.write_text(json.dumps(payload),encoding="utf-8")
-            selected=variants.select_variants(path,binary,"failure")
-            self.assertEqual(selected["variants"],["core","skin"])
-            self.assertIn("供应商仅限OpenCode",selected["free"]["reason"])
-            self.assertEqual(variants.select_variants(path,binary,"success")["variants"],["core","skin"])
+    def test_only_complete_core_platform_payloads_can_be_published(self):
+        for platform, arch in [("windows", "x86_64"), ("linux", "x86_64"), ("macos", "x86_64"), ("macos", "aarch64")]:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); prefix = f"deepseek-harness-rs-v0.1.3-test-{platform}-{arch}"
+                expected = variants.expected_artifacts(prefix, platform, ["core"])
+                self.assertEqual(len(expected), 2)
+                for name in expected: (root / name).write_bytes(b"artifact")
+                checksums = root / "SHA256SUMS.txt"
+                variants.write_checksums(root, prefix, platform, ["core"], checksums)
+                self.assertEqual(len(checksums.read_text().splitlines()), 2)
+                retired = root / f"{prefix}-skin-portable.zip"; retired.write_bytes(b"old artifact")
+                with self.assertRaisesRegex(ValueError, "extra="):
+                    variants.write_checksums(root, prefix, platform, ["core"], checksums)
+                retired.unlink(); (root / next(iter(expected))).unlink()
+                with self.assertRaisesRegex(ValueError, "missing="):
+                    variants.write_checksums(root, prefix, platform, ["core"], checksums)
 
-    def test_free_requires_successful_probe_and_current_binary_attestation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);binary=root/"dsh";binary.write_bytes(b"fixture binary");path=root/"free.json"
-            digest=hashlib.sha256(binary.read_bytes()).hexdigest()
-            payload=report([{**attested(),"binarySha256":digest}]);payload["binarySha256"]=digest
-            path.write_text(json.dumps(payload),encoding="utf-8")
-            self.assertEqual(variants.select_variants(path,binary,"success")["variants"],["core","skin","free"])
-            self.assertEqual(variants.select_variants(path,binary,"failure")["variants"],["core","skin"])
-            binary.write_bytes(b"other candidate")
-            self.assertEqual(variants.select_variants(path,binary,"success")["variants"],["core","skin"])
+    def test_retired_and_unknown_distributions_are_rejected(self):
+        for selected in [[], ["skin"], ["free"], ["core", "skin"], ["core", "free"], ["core", "core"]]:
+            with self.assertRaises(ValueError):
+                variants.expected_artifacts("valid-prefix", "windows", selected)
 
-    def test_each_platform_checksum_set_matches_only_selected_variants(self):
-        for platform,arch in [("windows","x86_64"),("linux","x86_64"),("macos","x86_64"),("macos","aarch64")]:
-            for selected in [["core","skin"],["core","skin","free"]]:
-                with tempfile.TemporaryDirectory() as directory:
-                    root=Path(directory);prefix=f"deepseek-harness-rs-v0.1.3-test-{platform}-{arch}"
-                    expected=variants.expected_artifacts(prefix,platform,selected)
-                    for name in expected:(root/name).write_bytes(b"artifact")
-                    checksums=root/"SHA256SUMS.txt"
-                    variants.write_checksums(root,prefix,platform,selected,checksums)
-                    self.assertEqual(len(checksums.read_text().splitlines()),2*len(selected))
-                    (root/f"{prefix}-unexpected.zip").write_bytes(b"unverified")
-                    with self.assertRaisesRegex(ValueError,"extra="):
-                        variants.write_checksums(root,prefix,platform,selected,checksums)
-
-    def test_unknown_variant_cannot_enter_artifact_set(self):
-        for selected in [[],["free"],["core","skin","unverified"]]:
-            with self.assertRaises(ValueError):variants.expected_artifacts("valid-prefix","windows",selected)
-
-    def test_workflow_keeps_live_free_failure_optional_but_retains_evidence(self):
-        workflow=(Path(__file__).resolve().parents[2]/".github/workflows/release.yml").read_text(encoding="utf-8")
-        from tools.tests.test_release_product_contract import workflow_step
-        probe=workflow_step(workflow,"验证免费模型完整运行链路")
-        self.assertIn("continue-on-error: true",probe)
-        self.assertIn("--binary target/release/",probe)
-        self.assertNotIn("verify_free_model_catalog.py",workflow_step(workflow,"版本与产品门禁"))
-        self.assertIn("if: always()",workflow_step(workflow,"保留免费模型验收证据"))
-        self.assertIn('pattern: "deepseek-harness-rs-*"',workflow)
-        self.assertIn("steps.variants.outputs.variants_json",workflow_step(workflow,"生成校验和"))
-        self.assertIn("-p dsh-desktop-controller -p dsh-uu-controller",workflow)
+    def test_workflow_has_no_model_specific_or_skin_publication_path(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        for retired in ("verify_free_model_catalog.py", "--variant skin", "--variant free", "--bin dsh-skin-installer", "steps.free_probe"):
+            self.assertNotIn(retired, workflow)
+        self.assertIn("tools/release_variants.py checksums", workflow)
+        self.assertIn("--variant core", workflow)
+        self.assertIn("tools/build_native_sandbox.py", workflow)
 
 
-if __name__=="__main__":unittest.main()
+if __name__ == "__main__":
+    unittest.main()

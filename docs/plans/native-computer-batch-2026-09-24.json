@@ -1,0 +1,56 @@
+{
+  "recordedAt": "2026-09-24T21:10:13.925171+08:00",
+  "status": "native_batch_runtime_and_registration_verified_full_protocol_acceptance_pending",
+  "installed": false,
+  "published": false,
+  "checks": {
+    "native-computer-batch-final": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\native-computer-batch-final.log",
+      "sha256": "2505e2bf60dfb845ee2edce9b7d4a0c4ec04bc6236f5d76166c7f929781556ad",
+      "results": [
+        "test result: ok. 302 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 20.50s",
+        "test result: ok. 105 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s",
+        "test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s"
+      ]
+    },
+    "native-computer-settings-dom": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\native-computer-settings-dom.log",
+      "sha256": "d09dd59ee758325a12860d9ad21e0fc6f50609879b6f8d85842c4777ce34ed45",
+      "results": [
+        "PASS companion suite: external registration, Markdown outline/Mermaid, structured data, devices, jobs and disposal"
+      ]
+    },
+    "native-computer-target-final": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\native-computer-target-final.log",
+      "sha256": "67b7ed0791fc0c79fd9a495889640b281c88ccb9b5f9fc4f4ffaf3156b22fd93",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 0.01s"
+      ]
+    }
+  },
+  "files": {
+    "crates/computer-use/tool-computer-use-command/src/native_protocol.rs": "29c76609bddbe5ee54396381a950993f3cba683ca17d2965d972f9c88293a6a8",
+    "crates/computer-use/tool-computer-use-command/src/native_protocol_tests.rs": "6c872eb147aa9845f94b99e832894cb02d092718ea74d0859df1364277370f75",
+    "crates/computer-use/tool-computer-use-command/src/lib.rs": "2e469b80f891362a5ddfbaf0b35b06e2fe2d76f79f49145fb7157b3145a5173c",
+    "crates/computer-use/tool-computer-use-command/src/permissions.rs": "b495b90c8f22f602eaf728392b4dc2b30298a9c54144f398b3926bccb4216ba9",
+    "crates/computer-use/tool-computer-use-command/src/control.rs": "9ed4107728f8574aaa225384c9e776375605e6b78878937fe21d267b2e425a7a",
+    "crates/host/dsh-host/src/lib.rs": "0f119960b96fe43d1c755f7d8b416dd2e3a62f3c88e9c25836a24993073a082f",
+    "crates/host/dsh-host/src/computer_use_http.rs": "a8f21bc9bf75281c11bc8b89e7908e9c69e3ddd1e42764f3be529a7015c31496",
+    "crates/llm/llm-deepseek/src/responses.rs": "263ed474218d53acd56b1074cfbc15ea3f744e5c6167c8e5614c03e6e3135e76",
+    "release/plugins/dsh-sidebar-workbench-suite/lib/client.js": "ae2d43814ef72252b335749a2e2e065689722248148fbfd17320978c5ce767ea"
+  },
+  "implemented": [
+    "Optional restart-applied nativeProtocol/nativeTarget settings register computer_native through the normal ToolRuntime and require the application permission service.",
+    "Native calls begin from a screenshot and retain target identity, observed viewport, control generation and an owner observation revision; intervening input invalidates prior frames.",
+    "Actions validate before execution, run serially per owner, stop on first error/cancellation and return a call-scoped screenshot through attachment storage.",
+    "Application identity and control-generation checks are enforced at dispatch; the control adapter forwards identity attestations instead of returning the default unsupported result.",
+    "Unsupported optional native configuration reports unavailable status through metadata without preventing Host startup.",
+    "The tool schema uses the supported title annotation dsh-native-computer-v1; the initial unsupported extension keyword was removed rather than relaxing schema validation.",
+    "Source tests cover real AgentLoop ownership, stale frames, invalid coordinates, target change, takeover, early cancellation, failed batch settlement, actual ToolRuntime registration and rendered image output; DOM verifies settings writes."
+  ],
+  "remaining": [
+    "Native result error/cancellation recovery and historical screenshot offload, without fabricated screenshots or successful outcomes.",
+    "Explicit provider safety-check acknowledgement; pending checks currently stop execution and are never automatically acknowledged.",
+    "Real provider-to-controller-to-provider protocol acceptance, installed GUI, native OS matrix and all original release gates."
+  ]
+}

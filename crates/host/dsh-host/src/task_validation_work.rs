@@ -71,12 +71,16 @@ impl Work {
     /// A cancelled request remains active until all blocking workers release
     /// their signal. Hold admission during the short synchronous contract commit.
     pub fn with_idle<T>(&self, owner: &str, operation: impl FnOnce() -> T) -> Option<T> {
+        self.with_owners_idle(&[owner], operation)
+    }
+
+    pub fn with_owners_idle<T>(&self, owners: &[&str], operation: impl FnOnce() -> T) -> Option<T> {
         let _commit = self.0.commit.lock();
         let mut active = self.0.active.lock();
         prune(&mut active);
         if active
             .keys()
-            .any(|(registered_owner, _)| registered_owner == owner)
+            .any(|(registered_owner, _)| owners.contains(&registered_owner.as_str()))
         {
             return None;
         }
@@ -108,6 +112,17 @@ pub(super) async fn until_cancelled<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn requirement_changes_wait_for_cancelled_descendant_validation_workers_to_release() {
+        let work = Work::default();
+        let child = work.begin("child", "task", Arc::new(|| false));
+        assert!(work.with_owners_idle(&["parent", "child"], || ()).is_none());
+        work.cancel("child", "task");
+        assert!(work.with_owners_idle(&["parent", "child"], || ()).is_none());
+        assert_eq!(work.with_owners_idle(&["unrelated"], || 42), Some(42));
+        drop(child);
+        assert_eq!(work.with_owners_idle(&["parent", "child"], || 42), Some(42));
+    }
     #[test]
     fn stop_between_verification_and_commit_keeps_the_same_cancelled_guard() {
         use std::sync::{Barrier, mpsc};

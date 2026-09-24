@@ -20,6 +20,42 @@ pub(crate) struct PreparedFile<'a> {
     object_hash: String,
 }
 
+struct DecodedFile<'a>(
+    base64::read::DecoderReader<'static, base64::engine::GeneralPurpose, &'a [u8]>,
+);
+impl tokio::io::AsyncRead for DecodedFile<'_> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let count = self.0.read(buffer.initialize_unfilled())?;
+        buffer.advance(count);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+pub(crate) async fn save_reference(
+    file: &PreparedFile<'_>,
+    store: &dyn dsh_attachment::AttachmentStore,
+    signal: Option<&dsh_attachment::AttachmentAbort>,
+) -> Result<dsh_attachment::FileAttachmentRef, dsh_attachment::AttachmentError> {
+    let reader = DecodedFile(base64::read::DecoderReader::new(
+        file.data.as_bytes(),
+        &base64::engine::general_purpose::STANDARD,
+    ));
+    let reference = store
+        .save_file_stream(Box::pin(reader), file.name.into(), signal)
+        .await?;
+    if reference.bytes != file.bytes {
+        return Err(dsh_attachment::AttachmentError::new(
+            "ATTACHMENT_CORRUPT",
+            "Published file size differs from the validated upload.",
+        ));
+    }
+    Ok(reference)
+}
+
 /// Validate the complete file batch before creating any workspace entries.
 pub(crate) fn prepare(parts: &[PromptContentPart]) -> Result<Vec<PreparedFile<'_>>, String> {
     let mut files = Vec::new();

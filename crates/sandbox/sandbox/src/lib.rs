@@ -14,6 +14,6 @@ pub use escalation::{
 pub use index::{
     ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SANDBOX_UNAVAILABLE, SandboxEnforcement,
     SandboxExecutionPolicy, SandboxMode, SandboxPolicy, SandboxProvider, SandboxProviderRef,
-    SandboxStartup, SandboxUnavailableError,
+    SandboxStartup, SandboxUnavailableError, native_startup_failure_code,
 };
 pub use roots::{canonical_path, writable_roots};

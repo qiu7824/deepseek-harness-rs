@@ -152,13 +152,7 @@ pub(crate) fn prepare_replay(chat: &mut Value, options: &GenerateOptions, scope:
         let results = options
             .messages
             .iter()
-            .filter(|message| message.role == Role::User)
-            .flat_map(|message| {
-                message
-                    .content
-                    .iter()
-                    .filter_map(dsh_llm::ContentBlock::as_tool_result)
-            });
+            .filter_map(dsh_llm::Message::as_tool_result);
         for (wire, (id, _, error)) in messages
             .iter_mut()
             .filter(|message| message["role"] == "tool")

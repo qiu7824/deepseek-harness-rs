@@ -291,40 +291,98 @@ fn parse_web_port(args: &[String]) -> Result<u16, String> {
 async fn run_headless(
     args: Vec<String>,
     home: PathBuf,
-    interrupt: Option<ProfileInterrupt>,
+    mut interrupt: Option<ProfileInterrupt>,
 ) -> Result<RunProfileHandle, String> {
-    let [task] = args.as_slice() else {
-        return Err("dsh: headless requires exactly one non-empty task argument".to_string());
+    use dsh_session_persistence::SessionPersistenceApi;
+    use std::io::IsTerminal;
+    use tokio::io::AsyncReadExt;
+    let options = crate::headless::parse(&args, std::io::stdin().is_terminal())?;
+    if options.help {
+        return Ok(RunProfileHandle {
+            surface: ProfileSurface::Headless,
+            host: None,
+            output: Some(crate::headless::HELP.into()),
+        });
+    }
+    let task = match options.task {
+        Some(task) => task,
+        None => {
+            let read = async {
+                let mut task = String::new();
+                tokio::io::stdin()
+                    .read_to_string(&mut task)
+                    .await
+                    .map_err(|e| format!("dsh: stdin: {e}"))?;
+                Ok::<_, String>(task)
+            };
+            match &mut interrupt {
+                Some(interrupt) => tokio::select! {
+                    result=interrupt=>return Err(match result {Ok(())=>"dsh: headless interrupted".into(),Err(e)=>e}),
+                    result=read=>result?,
+                },
+                None => read.await?,
+            }
+        }
     };
     if task.trim().is_empty() {
-        return Err("dsh: headless requires exactly one non-empty task argument".to_string());
+        return Err("dsh: a headless task is required".into());
     }
-
+    let cwd = std::env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .map_err(|e| format!("dsh: headless cwd: {e}"))?;
     let ctx = Context::root();
     let host = dsh_host::compose_persistent_host_at(&ctx, home, Some("headless"))?;
     let companions = dsh_host::mount_companions(&host);
     let (host, ()) = own_host_result(host, companions).await?;
-
+    let session_id = options.session_id.map(dsh_session::session_id);
     let configuration = async {
         host.agent_presets.ready().await?;
+        let mut preset_id = host.agent_presets.default_id();
+        if let Some(id) = &session_id {
+            if host.agents.get(id).is_some() {
+                return Err("dsh: headless session is already active".into());
+            }
+            let inspection = host.persistence.inspect(id).await?;
+            validate_headless_resume(&inspection.meta, &cwd)?;
+            if inspection
+                .events
+                .iter()
+                .skip(inspection.inherited_event_count.get() as usize)
+                .any(|e| e.type_ == "subagent/descriptor")
+            {
+                return Err("dsh: headless cannot resume a subagent session".into());
+            }
+            if let Some(saved) = inspection.meta.agent_preset {
+                preset_id = saved;
+            }
+        }
         let selection = headless_selection(
             &host.ctx,
             std::env::var("DSH_DEEPSEEK_MODEL").ok().as_deref(),
         )
         .await?;
-        Ok((selection, host.agent_presets.default_id()))
+        Ok((selection, preset_id))
     }
     .await;
     let (host, (selection, preset_id)) = own_host_result(host, configuration).await?;
     let presets = host.agent_presets.clone();
     let setup_selection = selection.clone();
     let setup_preset = preset_id.clone();
-    let setup: dsh_agent::AgentSetup = Arc::new(move |agent_ctx, _agent| {
+    let resume = session_id.is_some();
+    let setup_cwd = cwd.clone();
+    let setup: dsh_agent::AgentSetup = Arc::new(move |agent_ctx, agent| {
         let ctx = agent_ctx.clone();
         let selected = setup_selection.clone();
         let presets = presets.clone();
         let preset_id = setup_preset.clone();
+        let cwd = setup_cwd.clone();
         Box::pin(async move {
+            if resume {
+                validate_headless_resume(agent.session().header(), &cwd)?;
+                if agent.inbox().has_pending() {
+                    return Err("dsh: resumed session has pending input; finish or cancel it before headless adoption".into());
+                }
+            }
             let mut state = dsh_agent::ModelSelectionRef::default();
             state.current = Some(selected);
             let _ =
@@ -333,115 +391,167 @@ async fn run_headless(
             presets
                 .mount(&ctx, Some(&preset_id))
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|e| e.to_string())?;
             Ok(None)
         })
     });
-    let create_result = host
-        .agent_loop
-        .create_agent(
-            &host.ctx,
-            dsh_agent::CreateAgentOptions {
-                meta: Some(dsh_session::CreateSessionMeta {
-                    agent_preset: Some(preset_id),
-                    cwd: Some(
-                        std::env::current_dir()
-                            .map_err(|error| format!("dsh: headless cwd: {error}"))?
-                            .to_string_lossy()
-                            .into_owned(),
-                    ),
-                    ..Default::default()
-                }),
-                agent_options: Some(dsh_agent::AgentOptions {
-                    execution_mode: selection.execution_mode,
-                    provider: Some(selection.provider),
-                    model: Some(selection.model),
-                    reasoning_effort: selection.reasoning_effort,
-                    ..Default::default()
-                }),
-                setup: Some(setup),
-                ..Default::default()
-            },
+    let agent_options = Some(dsh_agent::AgentOptions {
+        execution_mode: selection.execution_mode,
+        provider: Some(selection.provider),
+        model: Some(selection.model),
+        reasoning_effort: selection.reasoning_effort,
+        ..Default::default()
+    });
+    let created = match session_id {
+        Some(id) => {
+            host.agent_loop
+                .resume(
+                    &host.ctx,
+                    dsh_agent::ResumeAgentOptions {
+                        resume_session_id: Some(id),
+                        agent_options,
+                        setup: Some(setup),
+                    },
+                )
+                .await
+        }
+        None => {
+            host.agent_loop
+                .create_agent(
+                    &host.ctx,
+                    dsh_agent::CreateAgentOptions {
+                        meta: Some(dsh_session::CreateSessionMeta {
+                            agent_preset: Some(preset_id),
+                            cwd: Some(cwd.to_string_lossy().into_owned()),
+                            ..Default::default()
+                        }),
+                        agent_options,
+                        setup: Some(setup),
+                        ..Default::default()
+                    },
+                )
+                .await
+        }
+    }
+    .map_err(|e| format!("dsh: headless agent: {e}"));
+    let (host, handle) = own_host_result(host, created).await?;
+    let session = handle.agent.session().clone();
+    let start = session.with_events(|events| events.last().map(|e| e.seq.get() + 1).unwrap_or(0));
+    let mut cursor = start;
+    let mut projection = crate::headless::Projection::default();
+    let opening = if options.json {
+        crate::headless::write_event(
+            &serde_json::json!({"type":"session","sessionId":handle.agent.id(),"cwd":cwd}),
+            false,
         )
-        .await
-        .map_err(|error| format!("dsh: headless agent: {error}"));
-    let (host, handle) = own_host_result(host, create_result).await?;
+    } else {
+        Ok(())
+    };
+    if let Err(error) = opening {
+        handle.dispose.await;
+        return own_host_result(host, Err::<RunProfileHandle, _>(error))
+            .await
+            .map(|(_, h)| h);
+    }
     handle.agent.followup(dsh_llm::create_user_message(
-        vec![dsh_llm::ContentBlock::Text { text: task.clone() }],
+        vec![dsh_llm::ContentBlock::Text { text: task }],
         dsh_llm::MessageSource::User {
             rpc_id: None,
             client_time_zone: None,
         },
     ));
-    let interrupt_result = match interrupt {
-        Some(mut interrupt) => {
-            tokio::select! {
-                biased;
-                result = &mut interrupt => Some(result),
-                _ = handle.agent.when_idle() => None,
+    let mut interrupt = interrupt.unwrap_or_else(|| Box::pin(std::future::pending()));
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let run_error = loop {
+        tokio::select! {
+            biased;
+            result=&mut interrupt=>break Some(match result {Ok(())=>"dsh: headless interrupted".into(),Err(e)=>format!("dsh: headless interrupt failed: {e}")}),
+            _=handle.agent.when_idle()=>break None,
+            _=tick.tick(),if options.json=>{
+                if let Err(error)=flush_headless_projection(&host,&session,&mut cursor,&mut projection).await {break Some(error);}
             }
         }
-        None => {
-            handle.agent.when_idle().await;
-            None
-        }
     };
-
-    let session = handle.agent.session().clone();
-    if let Some(interrupt_result) = interrupt_result {
-        handle.agent.cancel(
-            dsh_agent::AgentCancelCause::User,
-            Some(&dsh_agent::CancelOptions { keep_inbox: false }),
-        );
+    if run_error.is_some() {
+        handle.agent.cancel(dsh_agent::AgentCancelCause::User, None);
         handle.agent.when_idle().await;
-        let flush_error = host
-            .sessions
-            .flush(&session)
-            .await
-            .err()
-            .map(|error| format!("session flush failed: {error}"));
-        handle.dispose.await;
-        let shutdown_error = host.shutdown().await.err();
-        let mut error = match interrupt_result {
-            Ok(()) => "dsh: headless interrupted".to_string(),
-            Err(error) => format!("dsh: headless interrupt failed: {error}"),
-        };
-        if let Some(flush_error) = flush_error {
-            error.push_str(&format!("; {flush_error}"));
-        }
-        if let Some(shutdown_error) = shutdown_error {
-            error.push_str(&format!("; shutdown failed: {shutdown_error}"));
-        }
-        return Err(error);
     }
-
-    let events = session.events();
-    let outcome = headless_outcome(&events);
-    let flush_result = host
-        .sessions
-        .flush(&session)
-        .await
-        .map_err(|error| format!("dsh: headless session flush failed: {error}"));
+    let outcome = match run_error {
+        Some(error) => Err(error),
+        None => session.with_events(|events| {
+            let first = events.partition_point(|e| e.seq.get() < start);
+            headless_outcome(&events[first..])
+        }),
+    };
+    let flushed = if options.json {
+        flush_headless_projection(&host, &session, &mut cursor, &mut projection).await
+    } else {
+        host.sessions.flush(&session).await.map(|_| ())
+    };
     handle.dispose.await;
-
-    match (outcome, flush_result) {
-        (Ok(output), Ok(_)) => Ok(RunProfileHandle {
+    let outcome = outcome.and_then(|output| flushed.map(|_| output));
+    let (host, output) = own_host_result(host, outcome).await?;
+    if options.json {
+        let written =
+            crate::headless::write_event(&serde_json::json!({"type":"final","text":output}), true);
+        let (host, ()) = own_host_result(host, written).await?;
+        Ok(RunProfileHandle {
+            surface: ProfileSurface::Headless,
+            host: Some(host),
+            output: None,
+        })
+    } else {
+        Ok(RunProfileHandle {
             surface: ProfileSurface::Headless,
             host: Some(host),
             output: Some(output),
-        }),
-        (outcome, flush_result) => {
-            let error = outcome
-                .err()
-                .or_else(|| flush_result.err())
-                .expect("failed outcome");
-            let shutdown = host.shutdown().await;
-            match shutdown {
-                Ok(()) => Err(error),
-                Err(shutdown) => Err(format!("{error}; shutdown failed: {shutdown}")),
-            }
-        }
+        })
     }
+}
+
+fn validate_headless_resume(
+    meta: &dsh_session::SessionHeader,
+    cwd: &std::path::Path,
+) -> Result<(), String> {
+    if meta.origin.as_deref() == Some("subagent") || meta.parent_session.is_some() {
+        return Err("dsh: headless cannot resume a child session".into());
+    }
+    let saved = meta
+        .cwd
+        .as_ref()
+        .ok_or("dsh: resumed session has no working directory")?;
+    let saved = std::path::Path::new(saved)
+        .canonicalize()
+        .map_err(|e| format!("dsh: resumed working directory unavailable: {e}"))?;
+    if saved != cwd {
+        return Err("dsh: resumed working directory does not match current directory".into());
+    }
+    Ok(())
+}
+async fn flush_headless_projection(
+    host: &dsh_host::HostSpine,
+    session: &dsh_session::Session,
+    cursor: &mut u64,
+    projection: &mut crate::headless::Projection,
+) -> Result<(), String> {
+    // Snapshot before the flush: no event admitted after this durability barrier
+    // may be projected merely because it arrived during the flush.
+    let events = session.with_events(|events| {
+        events
+            .iter()
+            .filter(|e| e.seq.get() >= *cursor)
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    host.sessions.flush(session).await?;
+    for event in events {
+        for value in projection.project(&event) {
+            crate::headless::write_event(&value, false)?;
+        }
+        *cursor = event.seq.get() + 1;
+    }
+    Ok(())
 }
 
 /// Direct factory callers must explicitly select their model; the default

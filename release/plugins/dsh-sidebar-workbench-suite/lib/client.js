@@ -137,9 +137,10 @@ window.__ModuleLoader__.load({
     }
     function PdfViewer(props) {
       const positionKey=fileDraftKey("pdf-position",props.scope.sessionId,props.path),stored=readingPositions.get(positionKey);
-      const savedPage=Number.isInteger(stored?.page)&&stored.page>0?stored.page:1,savedZoom=[0.5,0.75,1,1.25,1.5,2].includes(stored?.zoom)?stored.zoom:1;
+      const savedPage=Number.isInteger(stored?.page)&&stored.page>0?stored.page:1,savedZoom=stored?.zoom==="fit"||[0.5,0.75,1,1.25,1.5,2].includes(stored?.zoom)?stored.zoom:"fit";
       const [document,setDocument]=React.useState(null),[page,setPage]=React.useState(savedPage),[zoom,setZoom]=React.useState(savedZoom),[error,setError]=React.useState(""),[rendering,setRendering]=React.useState(true);
-      const canvas=React.useRef(null);
+      const canvas=React.useRef(null),viewportHost=React.useRef(null),[viewportWidth,setViewportWidth]=React.useState(0);
+      React.useEffect(()=>{const node=viewportHost.current;if(!node)return;const update=()=>setViewportWidth(node.clientWidth);update();if(typeof ResizeObserver==="undefined")return;const observer=new ResizeObserver(update);observer.observe(node);return()=>observer.disconnect()},[]);
       React.useEffect(()=>{
         const controller=new AbortController();let opened;
         setDocument(null);setPage(savedPage);setZoom(savedZoom);setError("");setRendering(true);
@@ -157,22 +158,22 @@ window.__ModuleLoader__.load({
         setRendering(true);setError("");
         document.getPage(page).then(async current=>{
           if(!active)return;
-          const base=current.getViewport({scale:1}),scale=Math.min(zoom*Math.min(window.devicePixelRatio||1,2),Math.sqrt(16000000/Math.max(1,base.width*base.height))),viewport=current.getViewport({scale});
-          const target=canvas.current;target.width=Math.ceil(viewport.width);target.height=Math.ceil(viewport.height);target.style.width=Math.ceil(base.width*zoom)+"px";target.style.height=Math.ceil(base.height*zoom)+"px";
+          const base=current.getViewport({scale:1}),displayZoom=zoom==="fit"?Math.min(1,Math.max(.1,((viewportWidth||base.width+32)-32)/base.width)):zoom,scale=Math.min(displayZoom*Math.min(window.devicePixelRatio||1,2),Math.sqrt(16000000/Math.max(1,base.width*base.height))),viewport=current.getViewport({scale});
+          const target=canvas.current;target.width=Math.ceil(viewport.width);target.height=Math.ceil(viewport.height);target.style.width=Math.ceil(base.width*displayZoom)+"px";target.style.height=Math.ceil(base.height*displayZoom)+"px";
           task=current.render({canvasContext:target.getContext("2d"),viewport});await task.promise;
           if(active)setRendering(false);
         }).catch(reason=>{if(active&&reason?.name!=="RenderingCancelledException"){setError(reason.message||String(reason));setRendering(false)}});
         return()=>{active=false;task?.cancel()};
-      },[document,page,zoom]);
+      },[document,page,zoom,viewportWidth]);
       React.useEffect(()=>{if(document)rememberReading(positionKey,{page,zoom})},[document,page,zoom,positionKey]);
       return h("section",{className:"dswSuite","data-preview-kind":"pdf"},
-        h("div",{className:"dswSuiteBar"},h("strong",{className:"dswSuiteTitle",title:props.path},props.title),
-          h(Button,{variant:"outline",size:"sm",disabled:!document||page<=1,onClick:()=>setPage(value=>value-1)},"上一页"),
-          h("input",{type:"number",min:1,max:document?.numPages||1,value:page,"aria-label":"PDF 页码",style:{width:65},disabled:!document,onChange:event=>{const value=Number(event.target.value);if(Number.isInteger(value)&&value>=1&&value<=document.numPages)setPage(value)}}),h("span",null,"/ "+(document?.numPages||"—")),
-          h(Button,{variant:"outline",size:"sm",disabled:!document||page>=document.numPages,onClick:()=>setPage(value=>value+1)},"下一页"),
-          h("select",{value:zoom,"aria-label":"PDF 缩放",onChange:event=>setZoom(Number(event.target.value))},...[0.5,0.75,1,1.25,1.5,2].map(value=>h("option",{key:value,value},Math.round(value*100)+"%")))),
+        h("div",{className:"dswSuiteBar dswSuitePdfBar"},h("strong",{className:"dswSuiteTitle",title:props.path},props.title),
+          h("div",{className:"dswSuiteDocxPages",role:"group","aria-label":"PDF 翻页"},h(Button,{variant:"outline",size:"sm",disabled:!document||page<=1,onClick:()=>setPage(value=>value-1)},"上一页"),
+          h("input",{type:"number",min:1,max:document?.numPages||1,value:page,"aria-label":"PDF 页码",style:{width:65,flex:"0 0 65px"},disabled:!document,onChange:event=>{const value=Number(event.target.value);if(Number.isInteger(value)&&value>=1&&value<=document.numPages)setPage(value)}}),h("span",null,"/ "+(document?.numPages||"—")),
+          h(Button,{variant:"outline",size:"sm",disabled:!document||page>=document.numPages,onClick:()=>setPage(value=>value+1)},"下一页")),
+          h("select",{value:zoom,"aria-label":"PDF 缩放",onChange:event=>setZoom(event.target.value==="fit"?"fit":Number(event.target.value))},h("option",{value:"fit"},"适合宽度"),...[0.5,0.75,1,1.25,1.5,2].map(value=>h("option",{key:value,value},Math.round(value*100)+"%")))),
         error&&h("div",{className:"dswSuiteStatus dswSuiteError",role:"alert"},error),rendering&&!error&&h("div",{className:"dswSuiteStatus",role:"status"},"正在渲染 PDF…"),
-        h("div",{style:{minHeight:0,flex:1,overflow:"auto",padding:16,background:"var(--dsw-alias-bg-layer-1)"}},h("canvas",{ref:canvas,role:"img","aria-label":`${props.title} · 第 ${page} 页`,style:{display:error?"none":"block",margin:"auto",background:"white"}})));
+        h("div",{ref:viewportHost,style:{minHeight:0,flex:1,overflow:"auto",padding:16,background:"var(--dsw-alias-bg-layer-1)"}},h("canvas",{ref:canvas,role:"img","aria-label":`${props.title} · 第 ${page} 页`,style:{display:error?"none":"block",margin:"auto",background:"white"}})));
     }
     function ImageViewer(props) {
       const [zoom,setZoom]=React.useState(1),[error,setError]=React.useState(false);
@@ -211,6 +212,7 @@ window.__ModuleLoader__.load({
       style.textContent = ".dswSuite{box-sizing:border-box;min-width:0;min-height:0;height:100%;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}.dswSuite *{box-sizing:border-box}.dswSuiteBar{min-height:42px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-wrap:wrap}.dswSuiteTitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:auto}.dswSuiteEditor{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dswSuiteSource{min-width:0;min-height:0;display:flex;border-right:1px solid var(--dsw-alias-border-l2)}.dswSuiteSource textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:14px;font:12.5px/1.65 var(--ds-font-family-code);tab-size:2}.dswSuitePreview{min-width:0;min-height:0;overflow:auto;padding:16px 20px;line-height:1.7;overflow-wrap:anywhere}.dswSuitePreview pre{overflow:auto;padding:12px;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:12px/1.6 var(--ds-font-family-code)}.dswSuiteHtml{display:block;width:100%;height:100%;min-height:0;border:0;background:white}.dswSuiteOutline{max-width:240px;max-height:160px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px}.dswSuiteOutline button{width:100%;display:block;text-align:left;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dswSuiteDiagram{width:100%;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px;margin:10px 0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDiagram svg{display:block;min-width:420px;max-width:100%;height:auto}.dswSuiteStatus{padding:8px 12px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteError{color:var(--dsw-alias-state-error-primary)}.dswSuiteList{min-height:0;flex:1;overflow:auto;padding:8px}.dswSuiteRow{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;border:1px solid transparent;border-radius:8px;background:none;color:inherit;padding:9px;cursor:pointer}.dswSuiteRow:hover,.dswSuiteRow[data-active=true]{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l2)}.dswSuiteDot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-label-caption)}.dswSuiteDot[data-live=true]{background:var(--dsw-alias-state-business-primary)}.dswSuiteDot[data-error=true]{background:var(--dsw-alias-state-error-primary)}.dswSuiteMeta{font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswSuiteSplit{min-height:0;flex:1;display:grid;grid-template-columns:240px minmax(0,1fr)}.dswSuiteDetail{min-width:0;min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--dsw-alias-border-l2);white-space:pre-wrap}.dswSuiteTableWrap{min-height:0;flex:1;overflow:auto}.dswSuiteTable{border-collapse:collapse;width:max-content;min-width:100%;font:12px/1.5 var(--ds-font-family-code)}.dswSuiteTable th,.dswSuiteTable td{padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);text-align:left;max-width:420px;overflow-wrap:anywhere}.dswSuiteTable th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1)}.dswSuiteDownload{margin:auto;max-width:420px;text-align:center;padding:24px}.dswSuiteDownload a{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-link)}.dswSuiteBrowser{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;background:#111}.dswSuiteBrowser img{display:block;max-width:100%;max-height:100%;cursor:crosshair;user-select:none}.dswDesktopVideo{position:relative;min-height:0;flex:1;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}.dswDesktopCanvas{min-height:0;flex:1;display:grid;place-items:center;overflow:hidden;position:relative;background:#111}.dswDesktopCanvas canvas{display:block;max-width:100%;max-height:100%;outline:none;touch-action:none;cursor:default}.dswDesktopCanvas[data-actual-size=true]{display:block;overflow:auto}.dswDesktopCanvas[data-actual-size=true] canvas{max-width:none;max-height:none;margin:auto}.dswDesktopCanvas:focus-within{outline:1px solid var(--dsw-alias-border-l2);outline-offset:-1px}.dswDesktopWaiting{position:absolute;color:#aaa;font-size:12px}.dswDesktopKeyboard{position:absolute;opacity:0;width:1px;height:1px;padding:0;border:0;resize:none;pointer-events:none;left:50%;top:50%}.dswDesktopStatus{min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l2);font-size:11px;color:var(--dsw-alias-label-tertiary)}.dswDesktopVideo:fullscreen{width:100vw;height:100vh}.dswDesktopVideo:fullscreen .dswDesktopCanvas{width:100%;height:100%}.dswSuiteBrowserEmpty{color:#ccc;text-align:center;padding:24px}@media(max-width:768px){.dswSuiteEditor,.dswSuiteSplit{grid-template-columns:minmax(0,1fr)}.dswSuiteSource{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);min-height:240px}.dswSuitePreview{min-height:240px}.dswSuiteSplit>.dswSuiteList{max-height:180px}.dswSuiteDetail{border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteBar input{min-width:0;flex:1}.dswSuiteOutline{max-width:100%;width:100%}}";
       style.textContent += ".dswSuiteSettings{border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:16px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}.dswSuiteSettings h3{margin:0 0 6px;font-size:14px}.dswSuiteSettings>p{margin:0 0 10px;color:var(--dsw-alias-label-tertiary);font-size:12px}.dswSuiteSetting{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,220px);gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--dsw-alias-border-l2)}.dswSuiteSetting span{font-size:13px}.dswSuiteSetting input,.dswSuiteSetting select{font:inherit;min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;color:inherit;background:var(--dsw-alias-bg-base);padding:4px 8px}.dswSuiteSettingControl{display:flex;gap:6px;justify-content:flex-end}.dswSuiteSettingControl input{min-width:0;width:100%}@media(max-width:520px){.dswSuiteSetting{grid-template-columns:minmax(0,1fr)}.dswSuiteSettingControl{justify-content:stretch}}";
       style.textContent += ".dswSuiteDiagnostics{margin:0 10px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}.dswSuiteDiagnostics>summary{cursor:pointer;padding:8px 10px;font-size:12px;font-weight:600;list-style:none}.dswSuiteDiagnostics>summary::-webkit-details-marker{display:none}.dswSuiteDiagnostics>summary:before{content:'›';display:inline-block;margin-right:6px;transition:transform .15s}.dswSuiteDiagnostics[open]>summary:before{transform:rotate(90deg)}.dswSuiteDiagnosticBody{padding:0 10px 10px}.dswSuiteDiagnosticGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px;margin:0 0 8px}.dswSuiteDiagnosticCard{min-width:0;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base)}.dswSuiteDiagnosticCard small{display:block;color:var(--dsw-alias-label-tertiary);font-size:10px;margin-bottom:3px}.dswSuiteDiagnosticCard strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.dswSuiteDiagnosticCard[data-state=ok]{border-color:var(--dsw-alias-state-business-primary)}.dswSuiteDiagnosticCard[data-state=error]{border-color:var(--dsw-alias-state-error-primary)}.dswSuiteDiagnosticDetails{display:grid;grid-template-columns:minmax(90px,150px) minmax(0,1fr);gap:4px 10px;margin:0;font-size:11px}.dswSuiteDiagnosticDetails dt{color:var(--dsw-alias-label-tertiary)}.dswSuiteDiagnosticDetails dd{margin:0;overflow-wrap:anywhere}.dswSuiteDiagnosticRaw{max-height:140px;overflow:auto;margin:8px 0 0;padding:7px;border-radius:6px;background:var(--dsw-alias-markdown-code-block);font:10px/1.45 var(--ds-font-family-code);white-space:pre-wrap}.dswSuiteAnnotationToolbar{position:absolute;top:8px;right:8px;z-index:4;display:flex;gap:4px}.dswSuiteAnnotationToolbar input{width:150px;min-width:0;padding:3px 6px;border:1px solid rgba(255,255,255,.35);border-radius:6px;background:rgba(20,20,20,.78);color:#fff;font-size:11px}.dswSuiteAnnotationToolbar input::placeholder{color:#ccc}.dswSuiteAnnotationToolbar button{font-size:11px;padding:3px 7px;border:1px solid rgba(255,255,255,.35);border-radius:6px;background:rgba(20,20,20,.78);color:#fff;cursor:pointer}.dswSuiteAnnotationToolbar button:disabled{opacity:.5;cursor:default}@media(max-width:520px){.dswSuiteDiagnosticDetails{grid-template-columns:1fr}.dswSuiteDiagnosticDetails dd{margin-bottom:3px}}";
+      style.textContent += ".dswSuiteDocxBar,.dswSuitePdfBar{container-type:inline-size}.dswSuiteDocxPages{display:flex;align-items:center;gap:6px;flex-shrink:0}.dswSuiteDocxBar button,.dswSuiteDocxBar select,.dswSuitePdfBar button,.dswSuitePdfBar select{flex-shrink:0}.dswSuiteDocxBar select{font:inherit;min-height:30px;padding:4px 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;color:inherit;background:var(--dsw-alias-bg-base)}.dswSuiteDocxBar .dswSuiteTitle,.dswSuitePdfBar .dswSuiteTitle{flex:1 1 180px}@container(max-width:520px){.dswSuiteDocxBar .dswSuiteTitle,.dswSuitePdfBar .dswSuiteTitle{flex:1 0 100%}}@media(max-width:520px){.dswSuiteDocxBar .dswSuiteTitle,.dswSuitePdfBar .dswSuiteTitle{flex:1 0 100%}}";
       document.head.appendChild(style);
     }
     function inlineNodes(text, key) {
@@ -270,7 +272,7 @@ window.__ModuleLoader__.load({
     const READING_STORAGE="dsh.documentReading.v1",readingPositions=new Map();
     try{for(const [key,value] of JSON.parse(window.sessionStorage?.getItem(READING_STORAGE)||"[]").slice(-128)){if(typeof key==="string"&&value&&typeof value==="object")readingPositions.set(key,value)}}catch{}
     function rememberReading(key,value){readingPositions.delete(key);readingPositions.set(key,value);while(readingPositions.size>128)readingPositions.delete(readingPositions.keys().next().value);try{window.sessionStorage?.setItem(READING_STORAGE,JSON.stringify([...readingPositions]))}catch{}}
-    function CodeEditor({ value, path, stateKey=path, ready=true, onChange, onSave }) {
+    function CodeEditor({ value, path, stateKey=path, ready=true, readOnly=false, onChange, onSave }) {
       const host = React.useRef(null), controller = React.useRef(null);
       const latest = React.useRef(value);
       const changeHandler=React.useRef(onChange);changeHandler.current=onChange;
@@ -282,15 +284,15 @@ window.__ModuleLoader__.load({
         let active = true;
         loadAsset("editor.js", "__DSH_SIDEBAR_EDITOR__").then(runtime => {
           if (!active || !host.current) return;
-          controller.current = runtime.mount({ parent: host.current, value: latest.current, path, onChange:next=>changeHandler.current(next),position:readingPositions.get(stateKey),onViewportChange:position=>rememberReading(stateKey,position) });
+          controller.current = runtime.mount({ parent: host.current, value: latest.current, path, readOnly, onChange:next=>changeHandler.current(next),position:readingPositions.get(stateKey),onViewportChange:position=>rememberReading(stateKey,position) });
           setFallback(false);
         }).catch(() => { if (active) setFallback(true); });
         const save=()=>{const position=controller.current?.getPosition?.();if(position)rememberReading(stateKey,position)};
         window.addEventListener("pagehide",save);
         return () => { active = false;save();window.removeEventListener("pagehide",save);controller.current?.destroy(); controller.current = null; };
-      }, [path,stateKey,ready]);
+      }, [path,stateKey,ready,readOnly]);
       React.useEffect(() => { controller.current?.setValue(value); }, [value]);
-      return h("div", { className: "dswSuiteSource",style:{flexDirection:"column"}, onKeyDown: event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); onSave(); } } },h("div",{className:"dswSuiteBar"},h("input",{type:"number",min:1,value:line,placeholder:"行号","aria-label":"跳转行号",style:{width:82},onChange:event=>setLine(event.target.value),onKeyDown:event=>{if(event.key==="Enter"){event.preventDefault();controller.current?.revealLine?.(line)}}}),h(Button,{variant:"outline",size:"sm",disabled:fallback||!line,onClick:()=>controller.current?.revealLine?.(line)},"跳转"),h(Button,{variant:"outline",size:"sm",disabled:fallback,"aria-pressed":wrap,onClick:()=>{setWrap(!wrap);controller.current?.setWrap?.(!wrap)}},"自动换行")), h("div", { ref: host, style: { minWidth: 0, minHeight: 0, flex: 1 }, "aria-label": "CodeMirror 编辑器 " + path }), fallback && h("textarea", { value, spellCheck: false, "aria-label": "编辑 " + path, onChange: event => onChange(event.target.value) }));
+      return h("div", { className: "dswSuiteSource",style:{flexDirection:"column"}, onKeyDown: event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); onSave(); } } },h("div",{className:"dswSuiteBar"},h("input",{type:"number",min:1,value:line,placeholder:"行号","aria-label":"跳转行号",style:{width:82},onChange:event=>setLine(event.target.value),onKeyDown:event=>{if(event.key==="Enter"){event.preventDefault();controller.current?.revealLine?.(line)}}}),h(Button,{variant:"outline",size:"sm",disabled:fallback||!line,onClick:()=>controller.current?.revealLine?.(line)},"跳转"),h(Button,{variant:"outline",size:"sm",disabled:fallback,"aria-pressed":wrap,onClick:()=>{setWrap(!wrap);controller.current?.setWrap?.(!wrap)}},"自动换行")), h("div", { ref: host, style: { minWidth: 0, minHeight: 0, flex: 1 }, "aria-label": "CodeMirror 编辑器 " + path }), fallback && h("textarea", { value, readOnly, spellCheck: false, "aria-label": "编辑 " + path, onChange: event => onChange(event.target.value) }));
     }
     function MarkdownPreview({ source, outline, mermaidEnabled, fallback, stateKey }) {
       const host = React.useRef(null);
@@ -360,24 +362,26 @@ window.__ModuleLoader__.load({
       return { content, outline: outlineEnabled ? outline : [] };
     }
     function MarkdownWorkbenchSession(props) {
+      const [readOnly,setReadOnly] = React.useState(props.readOnly === true);
       const [fileLoaded,setFileLoaded]=React.useState(false);
       const pluginSettings = props.pluginSettings || {};
       const draftKey = fileDraftKey("markdown", props.scope.sessionId, props.path), initialDraft = fileDrafts.get(draftKey);
       const [source, setSource] = React.useState(initialDraft?.source ?? props.content ?? ""), [saved, setSaved] = React.useState(initialDraft?.saved ?? props.content ?? ""), [etag, setEtag] = React.useState(initialDraft?.etag || "");
       const [mode, setMode] = React.useState("split"), [query, setQuery] = React.useState(""), [replacement, setReplacement] = React.useState(""), [status, setStatus] = React.useState(""), [error, setError] = React.useState("");
-      const editSource = next => { setSource(next); const cached = rememberFileDraft(draftKey, next, saved, etag); setError(current => next !== saved && !cached ? FILE_DRAFT_WARNING : current === FILE_DRAFT_WARNING ? "" : current); };
+      const editSource = next => { if (readOnly) return; setSource(next); const cached = rememberFileDraft(draftKey, next, saved, etag); setError(current => next !== saved && !cached ? FILE_DRAFT_WARNING : current === FILE_DRAFT_WARNING ? "" : current); };
       React.useEffect(() => {
         let active = true;
         fetch(endpoint("file", props.scope.sessionId, props.path)).then(async response => {
           if (!response.ok) throw new Error("HTTP " + response.status);
           const text = await response.text();
-          if (active) applyFetchedFile(draftKey, text, response.headers.get("etag") || "", { source: setSource, saved: setSaved, etag: setEtag, error: setError });
+          if (active) { setReadOnly(props.readOnly === true || response.headers.get("x-dsh-read-only") === "true"); applyFetchedFile(draftKey, text, response.headers.get("etag") || "", { source: setSource, saved: setSaved, etag: setEtag, error: setError }); }
         }).catch(reason => { if (active) setError(reason.message || String(reason)); }).finally(()=>{if(active)setFileLoaded(true)});
         return () => { active = false; };
       }, [draftKey]);
       const rendered = React.useMemo(() => renderMarkdown(source, pluginSettings.outline !== false, pluginSettings.mermaid !== false), [source, pluginSettings.outline, pluginSettings.mermaid]);
       const matches = query ? source.toLocaleLowerCase().split(query.toLocaleLowerCase()).length - 1 : 0;
       const save = async () => {
+        if (readOnly) return;
         try {
           setStatus("保存中"); setError("");
           const response = await fetch(endpoint("file-save", props.scope.sessionId, props.path), { method: "POST", headers: { "Content-Type": "text/plain; charset=utf-8", "If-Match": etag }, body: source });
@@ -394,12 +398,12 @@ window.__ModuleLoader__.load({
           h("input", { value: query, placeholder: "查找", "aria-label": "在文档中查找", onChange: event => setQuery(event.target.value) }),
           h("span", { className: "dswSuiteMeta" }, matches + " 处"),
           h("input", { value: replacement, placeholder: "替换为", "aria-label": "替换文本", onChange: event => setReplacement(event.target.value) }),
-          h(Button, { variant: "outline", size: "sm", disabled: !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"),
-          h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, status || "保存")),
+          h(Button, { variant: "outline", size: "sm", disabled: readOnly || !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"),
+          h(Button, { variant: "outline", size: "sm", disabled: readOnly || source === saved || !etag, onClick: save }, status || "保存")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error),
         rendered.outline.length > 0 && h("nav", { className: "dswSuiteOutline", "aria-label": "Markdown 大纲" }, rendered.outline.map(row => h(Button, { variant: "outline", size: "sm", key: row.id, style: { paddingLeft: 6 + row.level * 8 }, onClick: () => document.getElementById(row.id)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, row.text))),
         h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } },
-          showSource && h(CodeEditor, { ready:fileLoaded,value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: editSource, onSave: save }),
+          showSource && h(CodeEditor, { readOnly,ready:fileLoaded,value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: editSource, onSave: save }),
           showPreview && h(MarkdownPreview, { source,stateKey:fileDraftKey("markdown-position",props.scope.sessionId,props.path), outline: rendered.outline, mermaidEnabled: pluginSettings.mermaid !== false, fallback: rendered.content })));
     }
     function MarkdownWorkbench(props) {
@@ -421,24 +425,26 @@ window.__ModuleLoader__.load({
       return rows.filter(cells => cells.some(cell => cell !== ""));
     }
     function CodeWorkbenchSession(props) {
+      const [readOnly,setReadOnly] = React.useState(props.readOnly === true);
       const [fileLoaded,setFileLoaded]=React.useState(false);
       const draftKey = fileDraftKey("code", props.scope.sessionId, props.path), initialDraft = fileDrafts.get(draftKey);
       const [source, setSource] = React.useState(initialDraft?.source ?? props.content ?? ""), [saved, setSaved] = React.useState(initialDraft?.saved ?? props.content ?? ""), [etag, setEtag] = React.useState(initialDraft?.etag || "");
       const [query, setQuery] = React.useState(""), [replacement, setReplacement] = React.useState(""), [error, setError] = React.useState(""), [status, setStatus] = React.useState("");
       const previewable = /\.(?:html?|svg)$/i.test(props.path);
       const [mode, setMode] = React.useState(previewable ? "split" : "source");
-      const editSource = next => { setSource(next); const cached = rememberFileDraft(draftKey, next, saved, etag); setError(current => next !== saved && !cached ? FILE_DRAFT_WARNING : current === FILE_DRAFT_WARNING ? "" : current); };
+      const editSource = next => { if (readOnly) return; setSource(next); const cached = rememberFileDraft(draftKey, next, saved, etag); setError(current => next !== saved && !cached ? FILE_DRAFT_WARNING : current === FILE_DRAFT_WARNING ? "" : current); };
       React.useEffect(() => setMode(previewable ? "split" : "source"), [props.path, previewable]);
       React.useEffect(() => {
         let active = true;
         fetch(endpoint("file", props.scope.sessionId, props.path)).then(async response => {
           if (!response.ok) throw new Error("HTTP " + response.status);
           const text = await response.text();
-          if (active) applyFetchedFile(draftKey, text, response.headers.get("etag") || "", { source: setSource, saved: setSaved, etag: setEtag, error: setError });
+          if (active) { setReadOnly(props.readOnly === true || response.headers.get("x-dsh-read-only") === "true"); applyFetchedFile(draftKey, text, response.headers.get("etag") || "", { source: setSource, saved: setSaved, etag: setEtag, error: setError }); }
         }).catch(reason => { if (active) setError(reason.message || String(reason)); }).finally(()=>{if(active)setFileLoaded(true)});
         return () => { active = false; };
       }, [draftKey]);
       const save = async () => {
+        if (readOnly) return;
         try {
           setStatus("保存中"); setError("");
           const response = await fetch(endpoint("file-save", props.scope.sessionId, props.path), { method: "POST", headers: { "Content-Type": "text/plain; charset=utf-8", "If-Match": etag }, body: source });
@@ -449,25 +455,27 @@ window.__ModuleLoader__.load({
       };
       const matches = query ? source.toLocaleLowerCase().split(query.toLocaleLowerCase()).length - 1 : 0;
       return h("section", { className: "dswSuite", "data-viewer": "code-workbench" },
-        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle", title: props.path }, props.title), previewable && [["source", "源码"], ["preview", "预览"], ["split", "分栏"]].map(row => h(Button, { variant: "outline", size: "sm", key: row[0], onClick: () => setMode(row[0]) }, row[1])), h("input", { value: query, placeholder: "查找", onChange: event => setQuery(event.target.value) }), h("span", { className: "dswSuiteMeta" }, matches + " 处"), h("input", { value: replacement, placeholder: "替换为", onChange: event => setReplacement(event.target.value) }), h(Button, { variant: "outline", size: "sm", disabled: !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"), h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, status || "保存")),
+        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle", title: props.path }, props.title), previewable && [["source", "源码"], ["preview", "预览"], ["split", "分栏"]].map(row => h(Button, { variant: "outline", size: "sm", key: row[0], onClick: () => setMode(row[0]) }, row[1])), h("input", { value: query, placeholder: "查找", onChange: event => setQuery(event.target.value) }), h("span", { className: "dswSuiteMeta" }, matches + " 处"), h("input", { value: replacement, placeholder: "替换为", onChange: event => setReplacement(event.target.value) }), h(Button, { variant: "outline", size: "sm", disabled: readOnly || !query, onClick: () => editSource(source.split(query).join(replacement)) }, "全部替换"), h(Button, { variant: "outline", size: "sm", disabled: readOnly || source === saved || !etag, onClick: save }, status || "保存")),
         error && h("div", { className: "dswSuiteStatus dswSuiteError" }, error),
-        h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } }, mode !== "preview" && h(CodeEditor, { ready:fileLoaded,value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: editSource, onSave: save }), previewable && mode !== "source" && h(HtmlPreview,{source,path:props.path,sessionId:props.scope.sessionId})));
+        h("div", { className: "dswSuiteEditor", style: mode === "split" ? undefined : { gridTemplateColumns: "minmax(0,1fr)" } }, mode !== "preview" && h(CodeEditor, { readOnly,ready:fileLoaded,value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: editSource, onSave: save }), previewable && mode !== "source" && h(HtmlPreview,{source,path:props.path,sessionId:props.scope.sessionId})));
     }
     function CodeWorkbench(props) {
       return h(CodeWorkbenchSession, { ...props, key: props.scope.sessionId + "\u0000" + props.path });
     }
     function StructuredViewer(props) {
+      const [readOnly,setReadOnly] = React.useState(props.readOnly === true);
       const [source, setSource] = React.useState(props.content || ""), [saved, setSaved] = React.useState(props.content || ""), [etag, setEtag] = React.useState(""), [mode, setMode] = React.useState("table"), [saveError, setSaveError] = React.useState("");
       React.useEffect(() => {
         let active = true;
         fetch(endpoint("file", props.scope.sessionId, props.path)).then(async response => {
           if (!response.ok) throw new Error("HTTP " + response.status);
           const text = await response.text();
-          if (active) { setSource(text); setSaved(text); setEtag(response.headers.get("etag") || ""); }
+          if (active) { setReadOnly(props.readOnly === true || response.headers.get("x-dsh-read-only") === "true"); setSource(text); setSaved(text); setEtag(response.headers.get("etag") || ""); }
         }).catch(reason => { if (active) setSaveError(reason.message || String(reason)); });
         return () => { active = false; };
       }, [props.scope.sessionId, props.path]);
       const save = async () => {
+        if (readOnly) return;
         try {
           setSaveError("");
           const response = await fetch(endpoint("file-save", props.scope.sessionId, props.path), { method: "POST", headers: { "Content-Type": "text/plain; charset=utf-8", "If-Match": etag }, body: source });
@@ -489,9 +497,9 @@ window.__ModuleLoader__.load({
       } catch (reason) { error = reason.message || String(reason); }
       const headers = rows[0] || [], body = rows.slice(1);
       return h("section", { className: "dswSuite", "data-viewer": "structured-data" },
-        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, props.title), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("table") }, "表格"), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("source") }, "源码"), h("span", { className: "dswSuiteMeta" }, body.length + " 行 · " + headers.length + " 列"), h(Button, { variant: "outline", size: "sm", disabled: source === saved || !etag, onClick: save }, "保存")),
+        h("div", { className: "dswSuiteBar" }, h("strong", { className: "dswSuiteTitle" }, props.title), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("table") }, "表格"), h(Button, { variant: "outline", size: "sm", onClick: () => setMode("source") }, "源码"), h("span", { className: "dswSuiteMeta" }, body.length + " 行 · " + headers.length + " 列"), h(Button, { variant: "outline", size: "sm", disabled: readOnly || source === saved || !etag, onClick: save }, "保存")),
         (error || saveError) && h("div", { className: "dswSuiteStatus dswSuiteError" }, error || saveError),
-        mode === "source" ? h("div", { className: "dswSuiteEditor", style: { gridTemplateColumns: "minmax(0,1fr)" } }, h(CodeEditor, { value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: setSource, onSave: save })) : !error && h("div", { className: "dswSuiteTableWrap" }, h("table", { className: "dswSuiteTable" },
+        mode === "source" ? h("div", { className: "dswSuiteEditor", style: { gridTemplateColumns: "minmax(0,1fr)" } }, h(CodeEditor, { readOnly,value: source, path: props.path,stateKey:fileDraftKey("editor",props.scope.sessionId,props.path), onChange: setSource, onSave: save })) : !error && h("div", { className: "dswSuiteTableWrap" }, h("table", { className: "dswSuiteTable" },
           h("thead", null, h("tr", null, headers.map((cell, index) => h("th", { key: index }, cell)))),
           h("tbody", null, body.map((row, rowIndex) => h("tr", { key: rowIndex }, headers.map((_, index) => h("td", { key: index }, row[index] || ""))))))));
     }
@@ -518,6 +526,76 @@ window.__ModuleLoader__.load({
         changed&&h("p",{role:"status"},"源文件已更新，当前显示新版本。"),
         error?h("div",{role:"alert"},error,h(DownloadViewer,props)):pdf?h(PdfViewer,{...props,customData:pdf}):h("p",{role:"status"},"正在通过 WPS 转换文档…"));
     }
+
+    async function loadDocxBytes(path, scope, signal) {
+      const response = await fetch(endpoint("file", scope.sessionId, path), { signal, cache: "no-store" });
+      if (!response.ok) throw new Error(`文档读取失败（HTTP ${response.status}）`);
+      const limit = 64 * 1024 * 1024;
+      if (Number(response.headers.get("content-length")) > limit) throw new Error("DOCX 超过 64 MiB 预览上限");
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("浏览器未提供文档数据流");
+      let length = 0; const chunks = [];
+      try {
+        for (;;) {
+          if (signal.aborted) throw Object.assign(new Error("文档预览已取消"), { name: "AbortError" });
+          const { done, value } = await reader.read(); if (done) break;
+          length += value.byteLength;
+          if (length > limit) throw new Error("DOCX 超过 64 MiB 预览上限");
+          chunks.push(value);
+        }
+      } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+      finally { reader.releaseLock(); }
+      const data = new Uint8Array(length); let offset = 0;
+      for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.byteLength; }
+      return { data, identity: response.headers.get("etag") || "" };
+    }
+    function DocxBrowserViewer(props) {
+      const key = fileDraftKey("docx-position", props.scope.sessionId, props.path);
+      const stored = readingPositions.get(key), initialZoom = stored?.zoom === "fit" || [.5,.75,1,1.25,1.5,2].includes(stored?.zoom) ? stored.zoom : "fit";
+      const [revision,setRevision] = React.useState(0), [zoom,setZoom] = React.useState(initialZoom), [page,setPage] = React.useState(1), [pages,setPages] = React.useState(0), [error,setError] = React.useState(""), [loading,setLoading] = React.useState(true), [changed,setChanged] = React.useState(false);
+      const frame = React.useRef(null), view = React.useRef(null), previous = React.useRef({ key, identity: "" }), positionRef = React.useRef({ key, zoom: initialZoom, page: 1 });
+      React.useEffect(() => {
+        const controller = new AbortController(); let opened;
+        view.current = null; setPages(0); setError(""); setLoading(true); setChanged(false);
+        const position = readingPositions.get(key), nextZoom = position?.zoom === "fit" || [.5,.75,1,1.25,1.5,2].includes(position?.zoom) ? position.zoom : "fit";
+        setZoom(nextZoom); setPage(1); positionRef.current = { key, zoom: nextZoom, page: 1 };
+        Promise.all([loadAsset("docx.js", "__DSH_SIDEBAR_DOCX__"), loadDocxBytes(props.path, props.scope, controller.signal)]).then(async ([runtime, source]) => {
+          if (controller.signal.aborted) return;
+          opened = runtime.open(source.data, frame.current, controller.signal, { onPageChange: page => { if (!controller.signal.aborted) { setPage(page); positionRef.current.page = page; rememberReading(key, { page, zoom: positionRef.current.zoom }); } } });
+          const ready = await opened.ready;
+          if (controller.signal.aborted) return;
+          view.current = ready; ready.setZoom(nextZoom);
+          const nextPage = Math.min(ready.numPages, Math.max(1, Number(position?.page) || 1));
+          ready.goToPage(nextPage); positionRef.current.page = nextPage; setPage(nextPage); setPages(ready.numPages); setLoading(false);
+          setChanged(previous.current.key === key && !!previous.current.identity && !!source.identity && previous.current.identity !== source.identity);
+          previous.current = { key, identity: source.identity };
+        }).catch(reason => { if (!controller.signal.aborted) { setLoading(false); setError(reason.message || "文档无法预览"); } });
+        return () => { controller.abort(); opened?.dispose(); view.current = null; };
+      }, [key, revision]);
+      const go = value => { if (!view.current) return; const next = Math.max(1, Math.min(pages, value)); setPage(next); positionRef.current.page = next; view.current.goToPage(next); rememberReading(key, { page: next, zoom }); };
+      const scale = value => { const next = value === "fit" ? value : Number(value); setZoom(next); positionRef.current.zoom = next; view.current?.setZoom(next); rememberReading(key, { page: positionRef.current.page, zoom: next }); };
+      return h("section", { className: "dswSuite", "data-preview-kind": "docx" },
+        h("div", { className: "dswSuiteBar dswSuiteDocxBar" }, h("strong", { className: "dswSuiteTitle", title: props.path }, props.title),
+          h("div", { className: "dswSuiteDocxPages", role: "group", "aria-label": "文档翻页" }, h(Button, { variant: "outline", size: "sm", disabled: !pages || page <= 1, onClick: () => go(page - 1) }, "上一页"),
+          h("input", { type: "number", "aria-label": "DOCX 页码", min: 1, max: pages || 1, value: page, disabled: !pages, style: { width: 60, flex: "0 0 60px" }, onChange: event => { const value = Number(event.target.value); if (Number.isInteger(value)) go(value); } }),
+          h("span", null, "/ " + (pages || "—")),
+          h(Button, { variant: "outline", size: "sm", disabled: !pages || page >= pages, onClick: () => go(page + 1) }, "下一页")),
+          h("select", { "aria-label": "DOCX 缩放", value: zoom, onChange: event => scale(event.target.value) }, h("option", { value: "fit" }, "适合宽度"), ...[.5,.75,1,1.25,1.5,2].map(value => h("option", { key: value, value }, Math.round(value * 100) + "%"))),
+          h(Button, { variant: "outline", size: "sm", onClick: () => setRevision(value => value + 1) }, "刷新"),
+          h(Button, { variant: "outline", size: "sm", onClick: props.onPrintPreview }, "打印版式")),
+        h("p", { className: "dswSuiteMeta", style: { margin: "0 12px 8px" } }, "文档预览 · 打印分页可切换至 WPS 打印版式。"),
+        changed && h("div", { className: "dswSuiteStatus", role: "status" }, "源文件已更新，当前显示新版本。"),
+        loading && h("div", { className: "dswSuiteStatus", role: "status" }, "正在加载文档…"),
+        error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error, h("a", { href: endpoint("file", props.scope.sessionId, props.path), download: props.title, style: { marginLeft: 12 } }, "下载原文件")),
+        h("iframe", { key: key + ":" + revision, ref: frame, title: props.title + " · DOCX 预览", sandbox: "allow-same-origin", referrerPolicy: "no-referrer", style: { display: error ? "none" : "block", visibility: loading ? "hidden" : "visible", width: "100%", minHeight: 0, flex: 1, border: 0, background: "#eef0f3" } }));
+    }
+    function DocxViewer(props) {
+      const key = fileDraftKey("docx-mode", props.scope.sessionId, props.path), [selected,setSelected] = React.useState(null);
+      if (selected === key) return h("section", { className: "dswSuite", "data-preview-kind": "docx-print" },
+        h("div", { className: "dswSuiteBar" }, h(Button, { variant: "outline", size: "sm", onClick: () => setSelected(null) }, "返回文档预览")), h(OfficeViewer, props));
+      return h(DocxBrowserViewer, { ...props, key, onPrintPreview: () => setSelected(key) });
+    }
+
     function visiblePoll(run, initialDelay=1500) {
       let live=true,timer=0,inflight=false,controller=null,delay=initialDelay;
       const tick=async()=>{
@@ -628,7 +706,7 @@ window.__ModuleLoader__.load({
       const activating = React.useRef(false);
       const keys = React.useRef(new Set()), buttons = React.useRef(new Set()), queue = React.useRef([]), pumping = React.useRef(false), drain = React.useRef([]);
       const lastMove = React.useRef(0), pendingMove = React.useRef(null), moveTimer = React.useRef(null);
-      const [hasFrame, setHasFrame] = React.useState(false), [fps, setFps] = React.useState(0), [focused, setFocused] = React.useState(false), [actualSize, setActualSize] = React.useState(false), [pointer, setPointer] = React.useState(null);
+      const [hasFrame, setHasFrame] = React.useState(false), [fps, setFps] = React.useState(0), [focused, setFocused] = React.useState(false), [actualSize, setActualSize] = React.useState(false);
       const [activation,setActivation]=React.useState("");
       const connected = state?.connected === true;
       const updateMode = value => current.current.updateControl(previous => !previous || (value.generation ?? 0) >= (previous.generation ?? 0) ? value : previous);
@@ -784,7 +862,6 @@ window.__ModuleLoader__.load({
       const flushMove = () => { if (pendingMove.current) { enqueue("mouse_move", pendingMove.current); pendingMove.current = null; } lastMove.current = window.performance.now(); moveTimer.current = null; };
       const move = event => {
         const position = point(event);
-        if (position) setPointer(position);
         if (!ready.current || needsActivation() || activating.current || (current.current.control?.mode !== "manual" && !buttons.current.size && !focused)) return;
         pendingMove.current = position;
         if (!moveTimer.current) { const delay = Math.max(0, 16 - (window.performance.now() - lastMove.current)); moveTimer.current = setTimeout(flushMove, delay); }
@@ -843,7 +920,7 @@ window.__ModuleLoader__.load({
       }, []);
       const fullscreen = async () => { try { if (document.fullscreenElement) { window.navigator.keyboard?.unlock?.(); await document.exitFullscreen(); return; } await root.current.requestFullscreen?.(); if (document.fullscreenElement && window.navigator.keyboard?.lock) await window.navigator.keyboard.lock(); keyboard.current.focus({ preventScroll: true }); setFocused(true); } catch { current.current.reportError("浏览器未开启全屏键盘捕获"); } };
       return h("div", { className: "dswDesktopVideo", ref: root, "data-video-ready": hasFrame || undefined },
-        h("div", { className: "dswDesktopCanvas", "data-actual-size": actualSize || undefined }, h("canvas", { ref: canvas, width: 1920, height: 1080, tabIndex: 0, role: "application", "aria-label": (video ? "远程桌面" : "本机窗口") + "：点击后直接使用键盘和鼠标", style: { visibility: hasFrame ? "visible" : "hidden" }, onFocus: focusKeyboard, onPointerDown: down, onPointerUp: up, onPointerMove: move, onPointerCancel: release, onLostPointerCapture: () => { if (buttons.current.size) release(); }, onContextMenu: event => event.preventDefault() }), pointer && hasFrame && state?.viewport && h("span", { "aria-hidden": true, style: { position: "absolute", left: `${pointer.x / Math.max(1, state.viewport.width) * 100}%`, top: `${pointer.y / Math.max(1, state.viewport.height) * 100}%`, width: 14, height: 14, border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 0 0 1px #111,0 1px 5px #0008", transform: "translate(-50%,-50%)", pointerEvents: "none", zIndex: 2 } }), !hasFrame && h("div", { className: "dswDesktopWaiting", role: "status" }, connected ? video ? "正在连接实时视频…" : "正在获取桌面画面…" : "连接桌面后显示画面"), h(ScreenAnnotation, { enabled: annotate && hasFrame, frameRef: canvas, onSubmit: annotations => { if (!hasFrame || !connected || !visible) throw new Error("当前桌面画面不可用，请重新连接后提交批注"); return onSubmit(annotations, annotationFrame(canvas.current)); }, storageKey: annotationStorageKey(ownerId, sessionId) })),
+        h("div", { className: "dswDesktopCanvas", "data-actual-size": actualSize || undefined }, h("canvas", { ref: canvas, width: 1920, height: 1080, tabIndex: 0, role: "application", "aria-label": (video ? "远程桌面" : "本机窗口") + "：点击后直接使用键盘和鼠标", style: { visibility: hasFrame ? "visible" : "hidden" }, onFocus: focusKeyboard, onPointerDown: down, onPointerUp: up, onPointerMove: move, onPointerCancel: release, onLostPointerCapture: () => { if (buttons.current.size) release(); }, onContextMenu: event => event.preventDefault() }), !hasFrame && h("div", { className: "dswDesktopWaiting", role: "status" }, connected ? video ? "正在连接实时视频…" : "正在获取桌面画面…" : "连接桌面后显示画面"), h(ScreenAnnotation, { enabled: annotate && hasFrame, frameRef: canvas, onSubmit: annotations => { if (!hasFrame || !connected || !visible) throw new Error("当前桌面画面不可用，请重新连接后提交批注"); return onSubmit(annotations, annotationFrame(canvas.current)); }, storageKey: annotationStorageKey(ownerId, sessionId) })),
         h("textarea", { ref: keyboard, tabIndex: -1, "aria-label": "桌面键盘输入", className: "dswDesktopKeyboard", autoComplete: "off", spellCheck: false, onKeyDown: keyDown, onKeyUp: keyUp, onBlur: release, onPaste: paste, onCompositionStart: compositionStart, onCompositionEnd: compositionEnd }),
         h("div", { className: "dswDesktopStatus" }, h("span", null, !playing?"画面已暂停，恢复后可操作":activation==="pending"?"正在激活目标窗口…":needsActivation()?"目标窗口在后台，点击画面激活":activation==="ready"?"目标窗口已激活，请继续操作":focused ? "正在操作桌面 · Esc 释放键鼠" : "点击画面后直接使用键盘和鼠标"), h("span", null, hasFrame ? `${state?.viewport?.width || 0}×${state?.viewport?.height || 0}` + (video ? ` · ${fps} 帧/秒` : "") : ""), h(Button, { variant: "ghost", size: "sm", "aria-pressed": actualSize, onClick: () => setActualSize(value => !value) }, actualSize ? "适应窗口" : "100%"), h(Button, { variant: "ghost", size: "sm", onClick: fullscreen }, "全屏")));
     }
@@ -959,7 +1036,8 @@ window.__ModuleLoader__.load({
           // Restarting the SDK here races the previous socket's asynchronous
           // input release and can cancel a healthy connection's new handshake.
           const reuseDesktop=["native-desktop","uu-desktop"].includes(value.adapter)&&state?.connected===true;
-          const started=reuseDesktop?{state}:await action("start", {includeScreenshot:value.adapter!=="uu-desktop",...(props.tab.path && /^https?:/i.test(props.tab.path) ? { url: props.tab.path } : {})}, { signal: controller.signal, desktopStart:["native-desktop","uu-desktop"].includes(value.adapter) });
+          const attachOnly=props.tab.meta?.attachOnly===true;
+          const started=reuseDesktop?{state}:await action(attachOnly?"capture":"start", {includeScreenshot:value.adapter!=="uu-desktop",...(!attachOnly&&props.tab.path && /^https?:/i.test(props.tab.path) ? { url: props.tab.path } : {})}, { signal: controller.signal, desktopStart:!attachOnly&&["native-desktop","uu-desktop"].includes(value.adapter) });
           if(active&&started&&autoRefresh&&!["native-desktop","uu-desktop"].includes(value.adapter))stop=visiblePoll(async signal=>{if(closed.current)return null;await action("capture",null,{quiet:true,signal});return 3000},3000);
         }).catch(reason => { if (active && reason?.name !== "AbortError") setError(reason.message || String(reason)); });
         return () => { active = false; controller.abort(); stop?.(); };
@@ -1014,6 +1092,7 @@ window.__ModuleLoader__.load({
       const explicit=props.tab.meta?.browserSessionId;
       React.useEffect(()=>{
         if(!props.visible)return;
+        if(explicit&&props.tab.meta?.target&&props.tab.meta?.attachOnly){setBinding({sessionId:explicit,target:props.tab.meta.target,existing:true});setAvailable([]);setError("");return;}
         const controller=new AbortController();let active=true;
         (async()=>{
           // Discover the model's existing browser before creating a blank default session.
@@ -1025,15 +1104,15 @@ window.__ModuleLoader__.load({
           setBinding(previous=>previous&&(!explicit||explicit===previous.sessionId)?previous:{sessionId:selected,target:props.tab.meta?.target||(names.length?"browser":undefined),existing:names.includes(selected)});
         })().catch(reason=>{if(active&&reason?.name!=="AbortError"){setError(reason.message||String(reason));setBinding(previous=>previous||{sessionId:explicit||"default",target:props.tab.meta?.target})}});
         return()=>{active=false;controller.abort()};
-      },[props.visible,props.scope.sessionId,explicit,refresh]);
+      },[props.visible,props.scope.sessionId,explicit,props.tab.meta?.target,props.tab.meta?.attachOnly,refresh]);
       if(!binding)return h("div",{role:"status"},"正在查找控制会话…");
       const browserSessionId=binding.sessionId;
-      const tab={...props.tab,path:binding.existing?undefined:props.tab.path,meta:{...props.tab.meta,browserSessionId,target:binding.target}};
+      const tab={...props.tab,path:binding.existing?undefined:props.tab.path,meta:{...props.tab.meta,browserSessionId,target:binding.target,attachOnly:props.tab.meta?.attachOnly===true||binding.existing===true}};
       return h(React.Fragment,null,
         h(Button,{variant:"outline",size:"sm",onClick:()=>setRefresh(value=>value+1)},"刷新浏览器会话"),
         available.length>0&&h("label",{className:"dswSuiteBar"},"浏览器会话",h("select",{"aria-label":"浏览器会话",value:browserSessionId,onChange:event=>setBinding({sessionId:event.target.value,target:"browser",existing:true})},[...new Set([browserSessionId,...available])].map(name=>h("option",{key:name,value:name},name)))),
         error&&h("div",{role:"status"},error),
-        h(ControlledBrowserSession, { ...props, tab, browserSessionId, key: props.scope.sessionId + "\u0000" + props.tab.id + "\u0000" + browserSessionId }));
+        h(ControlledBrowserSession, { ...props, tab, browserSessionId, key: props.scope.sessionId + "\u0000" + props.tab.id + "\u0000" + browserSessionId + "\u0000" + binding.target }));
     }
     function SettingRow({ scope, snapshot, field, error }) {
       const value = snapshot.value?.[field.key] ?? field.defaultValue;
@@ -1071,6 +1150,8 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState("");
       const fields = [
         { key: "enabled", label: "启用 Computer Use", type: "switch", defaultValue: false },
+        { key: "nativeProtocol", label: "原生 Computer 协议（重启生效）", type: "switch", defaultValue: false },
+        { key: "nativeTarget", label: "原生协议控制目标", type: "select", defaultValue: "local", options: [{ value: "local", label: "本机桌面" }, { value: "browser", label: "隔离浏览器" }] },
         { key: "adapter", label: "执行适配器", type: "select", defaultValue: "auto", options: [{ value: "auto", label: "自动" }, { value: "native-browser", label: "内置浏览器" }, { value: "uu-desktop", label: "UU 远程桌面" }, { value: "native-desktop", label: "本机桌面（Rust 原生）" }, { value: "command", label: "外部命令" }] },
         { key: "browserExecutable", label: "浏览器可执行文件", type: "text", defaultValue: "" },
         { key: "browserHeadless", label: "后台运行浏览器", type: "switch", defaultValue: true },
@@ -1080,35 +1161,56 @@ window.__ModuleLoader__.load({
       ];
       return h("section", { className: "dswSuiteSettings", "data-settings": "computer-use" }, h(DeviceSettings, {}), h("h3", null, "控制环境"), h("p", null, "模型与工作台共用控制环境。Windows 原生桌面和 UU 自连本机均共享这台电脑的桌面；需要同时使用本机其他软件时，可选择另一台 UU 设备或隔离浏览器。更换执行适配器后重启生效。"), snapshot.status !== "ready" ? h("div", { className: "dswSuiteStatus" }, snapshot.status === "error" ? (snapshot.error || "设置读取失败") : "正在读取设置…") : fields.map(field => h(SettingRow, { key: field.key, scope, snapshot, field, error: setError })), error && h("div", { className: "dswSuiteStatus dswSuiteError", role: "alert" }, error));
     }
+    function observeComputerActivity(ctx, sidebar) {
+      const sequence = new Map(), opened = new Map();
+      const remember = (map, key, value) => { map.delete(key); map.set(key, value); while (map.size > 256) map.delete(map.keys().next().value); };
+      const unsubscribe = ctx.on?.("connection/mux-envelope", envelope => {
+        const frame = envelope?.payload, owner = frame?.sessionId;
+        if (typeof owner !== "string" || !owner) return;
+        if (frame.type === "session/subscribed" && Number.isSafeInteger(frame.lastSeq)) {
+          remember(sequence, owner, Math.max(sequence.get(owner) ?? -1, frame.lastSeq)); return;
+        }
+        if (frame.type !== "session/event" || !Number.isSafeInteger(frame.event?.seq)) return;
+        const event = frame.event, previous = sequence.get(owner) ?? -1;
+        if (event.seq <= previous) return;
+        remember(sequence, owner, event.seq);
+        if (event.type !== "computer-use/activity") return;
+        const binding = event.data;
+        if (binding?.ownerSessionId !== owner || !["local", "remote", "browser"].includes(binding.target) || typeof binding.browserSessionId !== "string" || !binding.browserSessionId) return;
+        const key = JSON.stringify([owner, binding.target, binding.browserSessionId, binding.controlId ?? null]);
+        if (opened.has(key) && binding.action !== "start") return;
+        remember(opened, key, true);
+        const tab={type:"suite:controlled-browser",id:"suite:controlled-browser",title:"Computer Use",meta:{browserSessionId:binding.browserSessionId,target:binding.target,attachOnly:true}}, scope={sessionId:owner};
+        sidebar.openTab(tab, scope);
+        sidebar.updateTab?.(tab.id, {title:tab.title,meta:tab.meta}, scope);
+      });
+      return () => { unsubscribe?.(); sequence.clear(); opened.clear(); };
+    }
     function apply(ctx) {
       installStyle();
       SettingsSwitch=ctx.settingsScope.controls.Switch;
       const sidebar = ctx.betterSidebar || ctx.get("betterSidebar");
       if (!sidebar) throw new Error("dsh-sidebar-workbench-suite requires betterSidebar");
-      const openComputerUse = event => {
-        const sessionId = event?.detail?.sessionId || globalThis.__DSH_BETTER_SIDEBAR_SESSION__;
-        if (!sessionId) return;
-        sidebar.openTab({ type: "suite:controlled-browser", id: "suite:controlled-browser", title: "Computer Use", path: "about:blank", meta: { browserSessionId: "default", target: "browser" } }, { sessionId });
-      };
-      globalThis.addEventListener?.("dsh:computer-use-start", openComputerUse);
+      const stopActivity = observeComputerActivity(ctx, sidebar);
       const computerUseScope = ctx.settingsScope.bind({ namespace: "computer-use", decode: value => value && typeof value === "object" && !Array.isArray(value) ? value : undefined });
       const disposers = [
         sidebar.registerFileViewer({ id: "suite:markdown", title: "Markdown 工作台", exts: ["md", "mdx", "markdown"], priority: 120, fetchStrategy: "fsRead", settings: { pluginToggles: [{ key: "outline", title: "显示 Markdown 大纲", type: "switch", defaultValue: true }, { key: "mermaid", title: "渲染 Mermaid 图表", type: "switch", defaultValue: true }] }, component: MarkdownWorkbench }),
         sidebar.registerFileViewer({ id: "suite:structured", title: "结构化数据表", exts: ["json", "csv", "tsv"], priority: 110, fetchStrategy: "fsRead", component: StructuredViewer }),
-        sidebar.registerFileViewer({ id: "suite:office", title: "Office 预览", exts: ["docx", "xlsx", "pptx"], priority: 100, fetchStrategy: "binary-download", component: OfficeViewer }),
+        sidebar.registerFileViewer({ id: "suite:docx", title: "Word 文档", exts: ["docx"], priority: 110, fetchStrategy: "binary-download", component: DocxViewer }),
+        sidebar.registerFileViewer({ id: "suite:office", title: "Office 预览", exts: ["xlsx", "pptx"], priority: 100, fetchStrategy: "binary-download", component: OfficeViewer }),
         sidebar.registerFileViewer({ id: "suite:download", title: "本地文档", exts: ["doc", "xls", "ppt", "odt", "ods", "odp", "zip", "7z", "rar"], priority: 100, fetchStrategy: "binary-download", component: DownloadViewer }),
         sidebar.registerFileViewer({ id: "suite:code", title: "CodeMirror 文本编辑器", exts: ["", "txt", "log", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "rs", "py", "go", "java", "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "sh", "bash", "zsh", "ps1", "sql", "yaml", "yml", "toml", "ini", "conf", "env", "xml", "css", "scss", "less", "html", "htm", "svg", "dockerfile", "makefile"], priority: 90, fetchStrategy: "fsRead", component: CodeWorkbench }),
         sidebar.registerFileViewer({id:"suite:pdf",title:"PDF 预览",exts:["pdf"],priority:130,fetchStrategy:"custom",load:loadPdfBytes,component:PdfViewer}),
         sidebar.registerFileViewer({id:"suite:image",title:"图片预览",exts:["png","jpg","jpeg","webp","gif","bmp","avif","ico"],priority:130,fetchStrategy:"mediaUrl",component:ImageViewer}),
         sidebar.registerTab({ id: "suite:jobs", title: "后台任务", order: 80, single: true, component: JobsTab }),
-        sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar,key:props.scope.sessionId+"\u0000"+props.tab.id}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { void desktopClose(scope.sessionId,tab.meta?.browserSessionId||"default",{ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", target: tab.meta?.target || (/^https?:/i.test(tab.path||"")?"browser":"local"), action: "close", includeScreenshot: false }) }).catch(() => {}); } })
+        sidebar.registerTab({ id: "suite:controlled-browser", title: "Computer Use", order: 100, single: true, component: props=>h(ControlledBrowserTab,{...props,sidebar,key:props.scope.sessionId+"\u0000"+props.tab.id}), settings: { pluginToggles: [{ key: "autoRefresh", title: "自动刷新浏览器画面", type: "switch", defaultValue: false }] }, onClose: (tab, scope) => { if(tab.meta?.attachOnly)return; void desktopClose(scope.sessionId,tab.meta?.browserSessionId||"default",{ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerSessionId: scope.sessionId, browserSessionId: tab.meta?.browserSessionId || "default", target: tab.meta?.target || (/^https?:/i.test(tab.path||"")?"browser":"local"), action: "close", includeScreenshot: false }) }).catch(() => {}); } })
       ];
       ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({ name: "settings.plugin.item", id: "computer-use", order: 40, label: "Computer Use" }, () => h("details", {className:"dshSettingsDisclosure"},h("summary",null,"Computer Use 与远程设备"),h(ComputerUseSettings, { scope: computerUseScope }))));
-      ctx.effect?.(() => () => { globalThis.removeEventListener?.("dsh:computer-use-start", openComputerUse); clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");
+      ctx.effect?.(() => () => { stopActivity(); clearFileDrafts(); for (const dispose of disposers.reverse()) dispose(); }, "sidebar-workbench-suite: registrations");
     }
     exports.apply = apply;
     exports.inject = inject;
-    exports.test = { PdfViewer, ImageViewer, HtmlPreview, isolatedHtml, loadPdfBytes, parseCsv, renderMarkdown, visiblePoll, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, JobsTab, ControlledBrowserTab, RuntimeDiagnostics, ScreenAnnotation, ComputerUseSettings, DeviceSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
+    exports.test = { DocxViewer, PdfViewer, ImageViewer, HtmlPreview, isolatedHtml, loadPdfBytes, parseCsv, renderMarkdown, visiblePoll, MermaidDiagram, MarkdownWorkbench, CodeWorkbench, StructuredViewer, JobsTab, ControlledBrowserTab, RuntimeDiagnostics, ScreenAnnotation, ComputerUseSettings, DeviceSettings, rememberFileDraft, fileDraftCacheSnapshot: () => ({ keys: [...fileDrafts.keys()], bytes: fileDraftBytes }), clearFileDrafts };
     return module.exports;
   }
 });

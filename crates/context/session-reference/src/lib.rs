@@ -22,10 +22,7 @@ use std::sync::Arc;
 use base64::Engine;
 use cordis::{ArcValue, Context, Plugin, PluginError};
 use dsh_agent::Agent;
-use dsh_llm::{
-    ContentBlock, ContextForm, ContextSnapshotSection, MessageSource, UserMessage,
-    create_user_message,
-};
+use dsh_llm::{ContentBlock, ContextForm, MessageSource, UserMessage, create_user_message};
 use dsh_output_retention::{Omitted, TextRetainer, TextRetentionStrategy};
 use dsh_session::SessionId;
 use dsh_session_query::{
@@ -383,10 +380,7 @@ fn project_session_conversation(snapshot: &SessionSurfaceSnapshot) -> Vec<Projec
             "user/message" => {
                 let message: UserMessage =
                     serde_json::from_value(surface.event.data.clone()).expect("user/message data");
-                let checkpoint = matches!(
-                    &message.source,
-                    MessageSource::Plugin { plugin, .. } if plugin == "compact"
-                );
+                let checkpoint = message.source.plugin_name() == Some("compact");
                 if !checkpoint && !matches!(message.source, MessageSource::User { .. }) {
                     continue;
                 }

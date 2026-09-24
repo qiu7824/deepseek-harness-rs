@@ -92,7 +92,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", choices=["windows", "linux", "macos"], required=True)
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--variant", choices=["core", "skin", "free"], required=True)
+    parser.add_argument("--variant", choices=["core"], required=True)
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
     arch = safe("arch", args.arch)

@@ -7,6 +7,10 @@ use serde_json::Value as JsonValue;
 
 use crate::{PreToolDecision, ToolExecution};
 
+#[cfg(test)]
+#[path = "security_policy_modes_tests.rs"]
+mod mode_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SecurityDecision {
     Allow,
@@ -23,6 +27,7 @@ pub(crate) enum SecurityDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RiskToolPolicy {
     #[default]
+    FollowAccess,
     Ask,
     Deny,
 }
@@ -30,6 +35,7 @@ pub enum RiskToolPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutsideWritePolicy {
     #[default]
+    FollowAccess,
     AskDirectory,
     AskEveryTime,
     Deny,
@@ -225,11 +231,16 @@ fn contains_network_exfiltration(command: &str) -> bool {
 
 fn destructive_shell(command: &str) -> bool {
     let lower = command.to_ascii_lowercase();
+    let destructive_alias = lower
+        .split(|ch: char| {
+            ch.is_whitespace() || matches!(ch, ';' | '|' | '&' | '(' | ')' | '{' | '}')
+        })
+        .any(|word| matches!(word.trim_matches(['\'', '"']), "rm" | "rmdir" | "del"));
+    if destructive_alias {
+        return true;
+    }
     [
         "remove-item",
-        " rmdir ",
-        " rm ",
-        "del ",
         "format-volume",
         "clear-disk",
         "stop-process",
@@ -260,6 +271,7 @@ fn classify_tool_security(
     )
 }
 
+#[cfg(test)]
 fn classify_tool_security_for_actor(
     tool: &str,
     arguments: &JsonValue,
@@ -275,11 +287,30 @@ fn classify_tool_security_for_actor(
     )
 }
 
+#[cfg(test)]
 fn classify_tool_security_with_config(
     tool: &str,
     arguments: &JsonValue,
     workspace: Option<&str>,
     is_subagent: bool,
+    config: &SecurityPolicyConfig,
+) -> SecurityDecision {
+    classify_tool_security_in_mode(
+        tool,
+        arguments,
+        workspace,
+        is_subagent,
+        dsh_sandbox::SandboxMode::WorkspaceWrite,
+        config,
+    )
+}
+
+fn classify_tool_security_in_mode(
+    tool: &str,
+    arguments: &JsonValue,
+    workspace: Option<&str>,
+    is_subagent: bool,
+    mode: dsh_sandbox::SandboxMode,
     config: &SecurityPolicyConfig,
 ) -> SecurityDecision {
     match tool {
@@ -294,11 +325,12 @@ fn classify_tool_security_with_config(
             } else {
                 "read"
             };
-            classify_tool_security_with_config(
+            classify_tool_security_in_mode(
                 operation,
                 &serde_json::json!({"path":arguments.get("target")}),
                 workspace,
                 is_subagent,
+                mode,
                 config,
             )
         }
@@ -357,8 +389,19 @@ fn classify_tool_security_with_config(
             {
                 return SecurityDecision::Allow;
             }
-            if config.outside_write_policy == OutsideWritePolicy::Allow {
+            let full_access = mode == dsh_sandbox::SandboxMode::DangerFullAccess;
+            if full_access
+                && matches!(
+                    config.outside_write_policy,
+                    OutsideWritePolicy::FollowAccess | OutsideWritePolicy::Allow
+                )
+            {
                 return SecurityDecision::Allow;
+            }
+            if config.outside_write_policy == OutsideWritePolicy::Allow {
+                return SecurityDecision::Deny {
+                    reason: "工作区外写入的允许策略仅适用于实际完全访问模式".into(),
+                };
             }
             if config.outside_write_policy == OutsideWritePolicy::Deny {
                 return SecurityDecision::Deny {
@@ -368,9 +411,15 @@ fn classify_tool_security_with_config(
             let directory = path.parent().unwrap_or(&path);
             SecurityDecision::Ask {
                 reason: "写入工作区外路径需要用户确认".to_string(),
-                grant_key: (config.outside_write_policy == OutsideWritePolicy::AskDirectory)
-                    .then(|| format!("write-dir:{}", normalized_key(directory))),
-                rememberable: config.outside_write_policy == OutsideWritePolicy::AskDirectory,
+                grant_key: matches!(
+                    config.outside_write_policy,
+                    OutsideWritePolicy::FollowAccess | OutsideWritePolicy::AskDirectory
+                )
+                .then(|| format!("write-dir:{}", normalized_key(directory))),
+                rememberable: matches!(
+                    config.outside_write_policy,
+                    OutsideWritePolicy::FollowAccess | OutsideWritePolicy::AskDirectory
+                ),
             }
         }
         "pwsh" | "bash" | "terminal" => {
@@ -396,6 +445,11 @@ fn classify_tool_security_with_config(
                         reason: "安全盾策略禁止执行破坏性命令".to_string(),
                     };
                 }
+                if config.risk_tool_policy == RiskToolPolicy::FollowAccess
+                    && mode == dsh_sandbox::SandboxMode::DangerFullAccess
+                {
+                    return SecurityDecision::Allow;
+                }
                 return SecurityDecision::Ask {
                     reason: "破坏性命令需要用户确认".to_string(),
                     grant_key: Some(format!("shell:{tool}:{}", command.trim())),
@@ -409,13 +463,30 @@ fn classify_tool_security_with_config(
 }
 
 pub(crate) fn install(ctx: &Context, config: SecurityPolicyState) {
-    let listener: Arc<Listener> = Arc::new(move |_ctx, args| {
+    let listener: Arc<Listener> = Arc::new(move |dispatch_ctx, args| {
         let execution = args
             .first()
             .and_then(|value| downcast_arc::<Arc<ToolExecution>>(value))
             .map(|slot| slot.as_ref().clone());
         let next = args.last().and_then(|value| downcast_arc::<NextFn>(value));
         let config = config.read().clone();
+        // Resolve only trusted session/deployment policy. Tool arguments never
+        // confer full access, and no Context is retained by this listener.
+        let scope = execution
+            .as_ref()
+            .and_then(|run| run.agent.as_ref())
+            .map(|agent| agent.ctx())
+            .unwrap_or(dispatch_ctx);
+        let mode = scope
+            .get_typed::<Arc<dsh_sandbox_policy::SandboxPolicyService>>("sandboxPolicy", false)
+            .map(|service| {
+                execution
+                    .as_ref()
+                    .and_then(|run| run.agent.as_ref())
+                    .and_then(|agent| service.override_of(agent.session()))
+                    .unwrap_or(service.default_mode)
+            })
+            .unwrap_or(dsh_sandbox::SandboxMode::ReadOnly);
         Box::pin(async move {
             let Some(execution) = execution else {
                 return Some(arc(PreToolDecision::Deny {
@@ -430,11 +501,12 @@ pub(crate) fn install(ctx: &Context, config: SecurityPolicyState) {
                 agent.options().subagent_depth.unwrap_or(0) > 0
                     || agent.session().header().origin.as_deref() == Some("subagent")
             });
-            match classify_tool_security_with_config(
+            match classify_tool_security_in_mode(
                 &execution.name,
                 &execution.arguments,
                 workspace,
                 is_subagent,
+                mode,
                 &config,
             ) {
                 SecurityDecision::Allow => match next {
@@ -647,11 +719,12 @@ mod tests {
 
     #[test]
     fn explicit_full_access_policy_allows_cross_workspace_write() {
-        let decision = classify_tool_security_with_config(
+        let decision = super::classify_tool_security_in_mode(
             "write",
             &json!({"file_path": "../other-workspace/report.txt", "content": "x"}),
             Some("D:/workspace"),
             false,
+            dsh_sandbox::SandboxMode::DangerFullAccess,
             &SecurityPolicyConfig {
                 outside_write_policy: OutsideWritePolicy::Allow,
                 ..SecurityPolicyConfig::default()

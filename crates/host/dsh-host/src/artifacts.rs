@@ -112,6 +112,35 @@ fn scan(root: &Path) -> Result<(BTreeMap<String, Stamp>, bool), String> {
 }
 
 impl Artifacts {
+    /// User-owned recovery remains possible after the original session was deleted.
+    fn restore_original(
+        &self,
+        id: &str,
+        location: Option<&str>,
+        resources: &Resources,
+    ) -> Result<Value, String> {
+        let store = resources.locate_at(id, location)?;
+        let row = store.get(id)?;
+        if row.kind != "trash" {
+            return Err("资源不是已移除产物".into());
+        }
+        let root = row
+            .origin
+            .as_ref()
+            .and_then(|value| value["root"].as_str())
+            .ok_or("恢复记录缺少工作区")?;
+        let root = Path::new(root);
+        if !root.is_absolute() {
+            return Err("恢复工作区不是绝对路径".into());
+        }
+        checked_path(root)?;
+        self.file_action(
+            &row.owner,
+            root,
+            &json!({"action":"restore","id":id,"locationId":location}),
+            resources,
+        )
+    }
     pub fn new(data: &Path) -> Arc<Self> {
         Arc::new(Self {
             root: data.join("artifact-index"),
@@ -342,7 +371,10 @@ impl Artifacts {
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or("缺少资源 ID")?;
-            let store = resources.assert_owner(owner, id)?;
+            let store = resources.locate_at(id, args.get("locationId").and_then(Value::as_str))?;
+            if store.get(id)?.owner != owner {
+                return Err("不能操作其他任务的资源".into());
+            }
             let resource = store.get(id)?;
             if resource.kind != "trash" {
                 return Err("资源不是已移除产物".into());
@@ -362,10 +394,29 @@ impl Artifacts {
             if file_digest(&source)? != origin.get("sha256").and_then(Value::as_str).unwrap_or("") {
                 return Err("恢复材料校验失败".into());
             }
+            let expected = origin["sha256"].as_str().ok_or("恢复记录缺少摘要")?;
+            if target.exists() {
+                if (origin["restoreStarted"] == true || origin["restored"] == true)
+                    && target.is_file()
+                    && file_digest(&target)? == expected
+                {
+                    store.set_origin(id,json!({"restored":true,"root":root,"path":origin["path"],"sha256":expected}))?;
+                    return Ok(json!({"restored":true,"alreadyPresent":true}));
+                }
+                return Err("目标已存在，不能覆盖恢复".into());
+            }
+            let mut prepared = origin.clone();
+            prepared["restoreStarted"] = json!(true);
+            store.set_origin(id, prepared)?;
+            if let Some(parent) = target.parent() {
+                checked_path(parent)?;
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                checked_path(parent)?;
+            }
             copy_new(&source, &target)?;
             store.set_origin(
                 id,
-                json!({"restored":true,"root":root,"path":origin["path"]}),
+                json!({"restored":true,"root":root,"path":origin["path"],"sha256":expected}),
             )?;
             return Ok(json!({"restored":true}));
         }
@@ -405,7 +456,7 @@ impl Artifacts {
                 Ok(json!({"renamed":true}))
             }
             "trash" => {
-                let store = resources.current()?;
+                let store = resources.current_for(&root.to_string_lossy())?;
                 let mut lease = store.allocate(
                     owner,
                     &root.to_string_lossy(),
@@ -537,15 +588,15 @@ async fn handle(
         || operation == "resource-files"
         || operation == "resource-read"
     {
-        let result=tokio::task::spawn_blocking(move || -> Result<Value,String> {match operation.as_str(){
-            "resources"=>Ok(json!({"entries":resources.list(args.get("sessionId").and_then(Value::as_str))?,"policy":resources.policy(),"warning":resources.location_error()})),
-            "collect"=>Ok(json!({"collected":resources.collect(true)?})),
-            "resource-files"=>{let id=args.get("id").and_then(Value::as_str).ok_or("缺少资源 ID")?;resources.locate(id)?.files(id,args.get("path").and_then(Value::as_str).unwrap_or_default())},
-            "resource-read"=>{let id=args.get("id").and_then(Value::as_str).ok_or("缺少资源 ID")?;let path=args.get("path").and_then(Value::as_str).ok_or("缺少路径")?;Ok(json!({"text":resources.locate(id)?.read_text(id,path,args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize,12000)?}))},
+        let result=tokio::task::spawn_blocking(move || -> Result<Value,String> {let location=match args.get("locationId"){None|Some(Value::Null)=>None,Some(Value::String(value)) if !value.is_empty()=>Some(value.as_str()),_=>return Err("存储位置标识无效".into())};match operation.as_str(){
+            "resources"=>{let owner=match args.get("sessionId"){None=>None,Some(Value::String(value)) if !value.is_empty()=>Some(value.as_str()),_=>return Err("任务范围无效".into())};Ok(json!({"entries":resources.list(owner)?,"policy":resources.policy(),"warning":resources.location_error()}))},
+            "collect"=>{let owner=match args.get("sessionId"){None=>None,Some(Value::String(value)) if !value.is_empty()=>Some(value.as_str()),_=>return Err("清理任务范围无效".into())};Ok(json!({"collected":resources.collect_for(owner,true)?}))},
+            "resource-files"=>{let id=args.get("id").and_then(Value::as_str).ok_or("缺少资源 ID")?;resources.locate_at(id,location)?.files(id,args.get("path").and_then(Value::as_str).unwrap_or_default())},
+            "resource-read"=>{let id=args.get("id").and_then(Value::as_str).ok_or("缺少资源 ID")?;let path=args.get("path").and_then(Value::as_str).ok_or("缺少路径")?;Ok(json!({"text":resources.locate_at(id,location)?.read_text(id,path,args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize,12000)?}))},
             _=>{
                 let id=args.get("id").and_then(Value::as_str).ok_or("缺少资源 ID")?;
-                let store=resources.locate(id)?;
-                match args.get("action").and_then(Value::as_str){Some("pin")=>{let row=store.get(id)?;store.retain(id,args.get("pinned").and_then(Value::as_bool).unwrap_or(true),row.state=="candidate")?;},Some("release")=>store.retain(id,store.get(id)?.pinned,false)?,Some("trash")=>resources.quarantine(id)?,Some("restore")=>store.restore(id)?,_=>return Err("未知资源操作".into())};Ok(json!({"ok":true}))
+                let store=resources.locate_at(id,location)?;
+                match args.get("action").and_then(Value::as_str){Some("pin")=>{let row=store.get(id)?;store.retain(id,args.get("pinned").and_then(Value::as_bool).unwrap_or(true),row.state=="candidate")?;},Some("release")=>store.retain(id,store.get(id)?.pinned,false)?,Some("trash")=>resources.quarantine_at(id,location)?,Some("restore")=>store.restore(id)?,Some("restore-original")=>{artifacts.restore_original(id,location,&resources)?;},_=>return Err("未知资源操作".into())};Ok(json!({"ok":true}))
             }
         }}).await;
         return match result {
@@ -625,3 +676,6 @@ pub(crate) fn register(
         }),
     );
 }
+#[cfg(test)]
+#[path = "cleanup_recovery_tests.rs"]
+mod cleanup_recovery_tests;

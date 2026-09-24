@@ -210,6 +210,7 @@ fn goal_slash_requirement_commands_share_the_admission_fence() {
         "/goal New objective",
         "/goal edit New objective",
         "/goal EDIT\nAnother objective",
+        "/goal clear",
     ] {
         assert!(goal_requirements_command(line), "{line}");
     }
@@ -217,7 +218,6 @@ fn goal_slash_requirement_commands_share_the_admission_fence() {
         "/goal",
         "/goal pause",
         "/goal RESUME",
-        "/goal clear",
         "/goal edit",
         "/goals New",
         "not a command",

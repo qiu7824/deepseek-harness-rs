@@ -33,6 +33,52 @@ fn flatten_text(blocks: &[ContentBlock]) -> String {
 const TOOL_RESULT_IMAGE_TEXT: &str =
     "The following image(s) are from the preceding tool result(s).";
 
+/// Reserved vocabulary must never silently vanish on a provider route.
+pub(crate) fn validate_projected_content(options: &GenerateOptions) -> Result<(), LlmFailure> {
+    fn content(blocks: &[ContentBlock]) -> Result<(), LlmFailure> {
+        for block in blocks {
+            match block {
+                ContentBlock::File { .. } => {
+                    return Err(failure(
+                        "File attachment must be resolved to an authorized handle before provider serialization",
+                        "UNSUPPORTED_CONTENT",
+                    ));
+                }
+                ContentBlock::ToolAddition { .. }
+                | ContentBlock::ToolRemoval { .. }
+                | ContentBlock::Extension(_) => {
+                    return Err(failure(
+                        format!(
+                            "This provider route does not support {} content",
+                            block.type_tag()
+                        ),
+                        "UNSUPPORTED_CONTENT",
+                    ));
+                }
+                ContentBlock::ToolResult {
+                    content: nested, ..
+                } => content(nested)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    if options
+        .tools
+        .as_ref()
+        .is_some_and(|tools| tools.iter().any(|tool| tool.defer_loading.is_some()))
+    {
+        return Err(failure(
+            "This provider route does not support deferred tool loading",
+            "UNSUPPORTED_CONTENT",
+        ));
+    }
+    for message in &options.messages {
+        content(&message.content)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedImageMeta {
     pub attachment_id: String,
@@ -57,10 +103,16 @@ fn content_parts(
     let mut parts = Vec::new();
     for block in blocks {
         match block {
+            ContentBlock::Image {
+                offloaded: Some(true),
+                ..
+            } => {
+                parts.push(json!({"type":"text","text":dsh_llm::OFFLOADED_IMAGE_TEXT}));
+            }
             ContentBlock::Text { text } if !text.is_empty() => {
                 parts.push(json!({"type": "text", "text": text}));
             }
-            ContentBlock::Image { attachment } => {
+            ContentBlock::Image { attachment, .. } => {
                 if let Some(meta) =
                     image_meta.and_then(|items| items.get(&attachment.attachment_id))
                 {
@@ -115,15 +167,42 @@ fn serialize_messages(
     image_urls: Option<&HashMap<String, String>>,
     image_file_ids: Option<&HashMap<String, String>>,
     image_meta: Option<&HashMap<String, PreparedImageMeta>>,
+    native_computer: bool,
 ) -> Result<Vec<Value>, LlmFailure> {
     let mut messages = Vec::new();
     let mut pending_tool_images = Vec::new();
+    let mut native_calls = std::collections::HashSet::new();
+    if native_computer {
+        let mut calls = HashMap::new();
+        for message in &options.messages {
+            if message.role != Role::Assistant {
+                continue;
+            }
+            for block in &message.content {
+                if let ContentBlock::ToolCall { id, name, .. } = block {
+                    let native = name == dsh_llm::computer_protocol::TOOL_NAME;
+                    if calls
+                        .insert(id.as_str(), native)
+                        .is_some_and(|old| old || native)
+                    {
+                        return Err(failure(
+                            "Duplicate native computer call ID",
+                            "INVALID_REQUEST",
+                        ));
+                    }
+                    if native {
+                        native_calls.insert(id.as_str());
+                    }
+                }
+            }
+        }
+    }
     if let Some(system) = &options.system {
         messages.push(json!({"role": "system", "content": system}));
     }
 
     for message in &options.messages {
-        if message.role != Role::User && content_has_image(&message.content) {
+        if !matches!(message.role, Role::User | Role::Tool) && content_has_image(&message.content) {
             return Err(failure(
                 format!(
                     "The DeepSeek chat-completions adapter cannot represent image content in a {} message.",
@@ -133,6 +212,41 @@ fn serialize_messages(
             ));
         }
         match message.role {
+            Role::Developer => {
+                return Err(failure(
+                    "This route does not support developer history",
+                    "UNSUPPORTED_CONTENT",
+                ));
+            }
+            Role::Tool => {
+                let (id, content, is_error) = message.as_tool_result().ok_or_else(|| {
+                    failure("Tool message is missing its call id", "INVALID_REQUEST")
+                })?;
+                if content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                {
+                    return Err(failure(
+                        "Tool message content cannot contain result wrappers",
+                        "INVALID_REQUEST",
+                    ));
+                }
+                let parts = content_parts(content, image_urls, image_file_ids, image_meta)?;
+                if native_calls.contains(id.as_str()) {
+                    messages.push(json!({"role":"tool","tool_call_id":id.as_str(),"_dsh_native_output":parts,"_dsh_native_error":is_error,"_dsh_native_image_offloaded":content.iter().any(|part|matches!(part,ContentBlock::Image{offloaded:Some(true),..}))}));
+                    continue;
+                }
+                let output: String = parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect();
+                messages.push(json!({"role":"tool","tool_call_id":id.as_str(),"content":if output.is_empty(){"(no output)"}else{output.as_str()}}));
+                pending_tool_images.extend(
+                    parts
+                        .into_iter()
+                        .filter(|part| part["type"] == "image_url" || part["type"] == "file"),
+                );
+            }
             Role::System => {
                 flush_tool_images(&mut messages, &mut pending_tool_images);
                 messages.push(json!({
@@ -208,9 +322,13 @@ fn serialize_messages(
                     };
                     messages.push(json!({"role": "user", "content": content}));
                 }
-                for (id, content, _) in tool_results {
+                for (id, content, is_error) in tool_results {
                     let result_parts =
                         content_parts(content, image_urls, image_file_ids, image_meta)?;
+                    if native_calls.contains(id.as_str()) {
+                        messages.push(json!({"role":"tool","tool_call_id":id.as_str(),"_dsh_native_output":result_parts,"_dsh_native_error":is_error,"_dsh_native_image_offloaded":content.iter().any(|part|matches!(part,ContentBlock::Image{offloaded:Some(true),..}))}));
+                        continue;
+                    }
                     let output: String = result_parts
                         .iter()
                         .filter(|part| part["type"] == "text")
@@ -302,6 +420,46 @@ pub(crate) fn serialize_request_with_prepared_images(
     image_file_ids: Option<&HashMap<String, String>>,
     image_meta: Option<&HashMap<String, PreparedImageMeta>>,
 ) -> Result<Value, LlmFailure> {
+    serialize_request_mode(
+        options,
+        defaults,
+        reasoning_wire_format,
+        image_urls,
+        image_file_ids,
+        image_meta,
+        false,
+    )
+}
+
+pub(crate) fn serialize_responses_request(
+    options: &GenerateOptions,
+    defaults: &RequestDefaults,
+    reasoning_wire_format: crate::ReasoningWireFormat,
+    image_urls: Option<&HashMap<String, String>>,
+    image_file_ids: Option<&HashMap<String, String>>,
+    image_meta: Option<&HashMap<String, PreparedImageMeta>>,
+) -> Result<Value, LlmFailure> {
+    serialize_request_mode(
+        options,
+        defaults,
+        reasoning_wire_format,
+        image_urls,
+        image_file_ids,
+        image_meta,
+        true,
+    )
+}
+
+fn serialize_request_mode(
+    options: &GenerateOptions,
+    defaults: &RequestDefaults,
+    reasoning_wire_format: crate::ReasoningWireFormat,
+    image_urls: Option<&HashMap<String, String>>,
+    image_file_ids: Option<&HashMap<String, String>>,
+    image_meta: Option<&HashMap<String, PreparedImageMeta>>,
+    native_computer: bool,
+) -> Result<Value, LlmFailure> {
+    validate_projected_content(options)?;
     let mut body = Map::new();
     body.insert("model".to_string(), json!(options.model));
     body.insert(
@@ -311,6 +469,7 @@ pub(crate) fn serialize_request_with_prepared_images(
             image_urls,
             image_file_ids,
             image_meta,
+            native_computer,
         )?),
     );
     body.insert("stream".to_string(), json!(true));

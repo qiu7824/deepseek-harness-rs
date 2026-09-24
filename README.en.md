@@ -72,9 +72,9 @@ See the [alpha.21 release notes](release/notes/v0.1.3-alpha.22.md) and [rc.1 cap
 
 Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
 
-- `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.22-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-core-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-core-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.22-macos-{x86_64,aarch64}-core-portable.tar.gz`
 - matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
 
 A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
@@ -99,11 +99,7 @@ http://127.0.0.1:58080/
 
 The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShell, WebView, or extra runtime. It starts, stops, and restarts the real `deepseek-harness-rs web` process and opens the Web UI or log directory. The Windows installer and launcher automatically use Simplified Chinese or English from the operating-system UI language.
 
-For extension skins, download the separate `skin` package and run `deepseek-harness-rs-skin` (`.exe` on Windows). It installs only the skin payload into the adjacent `web/dist/skins`; the default `core` archive never bundles skin assets.
-
-The `free` package uses the same Rust runtime and Web UI as `core`, with only the anonymous models that passed release verification. Exact IDs in the [official model directory](https://opencode.ai/zen/v1/models) and official input/output/cache-read prices are checked before streaming inference and a tool-result round trip. Evidence in `free-model-verification.json` is less than 24 hours old and tied to the packaged binary hash. Settings provide the current free catalog, verification results, and controls to test and add eligible models; no credentials or skin payload are bundled.
-
-The optional `free` edition is verified separately for each platform and build, and is published only when anonymous model verification passes. Availability is determined by the assets in that GitHub Release and the packaged `free-model-verification.json`; `core` and `skin` remain independently verified.
+Distribution consists of the **Web core and Flutter desktop client**, sharing the Rust Host and HTTP/WebSocket protocol. The Web package is `core`; model catalog and connection management remain available in Settings. Flutter source lives in [`apps/desktop_flutter`](apps/desktop_flutter); platform build and acceptance status is tracked in the [desktop platform matrix](docs/desktop-platforms.zh.md).
 
 ## Data, profiles, and workspaces
 

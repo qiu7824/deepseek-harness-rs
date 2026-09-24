@@ -5,10 +5,8 @@
 //!
 //! # Deviations
 //!
-//! - The continuation manager, activation setup registry, child/descendant
-//!   listing, and session projections are not ported yet: continuable
-//!   operations reject with `CONTINUATION_UNAVAILABLE` and listings with
-//!   `UNSUPPORTED_CAPABILITY`.
+//! - Continuable children share residency limits through uninterrupted
+//!   continuation links; one-shot/external runs keep their provider lifecycle.
 //! - Provider registration is effect-scoped via the caller context; the
 //!   registry service itself is a plain installable struct.
 //! - `assertObjectJsonSchema` validation on `outputSchema` is enforced by
@@ -34,6 +32,7 @@ use crate::types::{
 #[derive(Clone)]
 pub struct SubagentRuntime {
     pub ctx: Context,
+    parallel_quota: Arc<crate::parallel_quota::ParallelQuota>,
     providers: Arc<parking_lot::Mutex<HashMap<String, Arc<dyn SubagentProvider>>>>,
     continuations:
         Arc<std::sync::OnceLock<std::sync::Weak<crate::continuation::SubagentContinuationManager>>>,
@@ -76,11 +75,14 @@ impl crate::continuation::ContinuationHost for RuntimeContinuationHost {
 }
 
 impl SubagentRuntime {
+    pub fn set_max_parallel(&self, value:u64)->Result<(),String> {self.parallel_quota.set_limit(value)}
+    pub fn set_max_active_subagents(&self,value:u64)->Result<(),SubagentError> {self.manager().set_max_active_subagents(value)}
     /// Register the `subagents` service.
     pub fn install(ctx: &Context) -> Arc<Self> {
         crate::ultra::UltraControl::install(ctx);
         let runtime = Arc::new(Self {
             ctx: ctx.clone(),
+            parallel_quota: crate::parallel_quota::ParallelQuota::install(ctx),
             providers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             continuations: Arc::new(std::sync::OnceLock::new()),
             adjacent_send_message_tools: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -311,11 +313,24 @@ impl SubagentRuntime {
             None
         };
         let parent = request.parent.clone();
+        if (request.signal)() {
+            return Err(SubagentError::new("CANCELLED", "subagent request was aborted before startup"));
+        }
+        let parallel_permit = if provider.uses_agent_run_admission() {
+            None
+        } else {
+            Some(self.parallel_quota.reserve_external(&parent)
+                .map_err(|message| SubagentError::new("PARALLEL_LIMIT_REACHED", message))?)
+        };
         let resolved = ResolvedSubagentStartRequest {
             request,
             descriptor,
         };
         let run = provider.start(resolved).await?;
+        let run = match parallel_permit {
+            Some(permit) => crate::parallel_quota::ExternalRun::wrap(run, permit),
+            None => run,
+        };
         if let Some(permit) = permit {
             permit.watch_run(run.clone());
         }
@@ -534,8 +549,10 @@ impl Plugin for SubagentPlugin {
         InjectSpec::new(["agents", "sessions", "tools"])
     }
 
-    async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
-        SubagentRuntime::install(ctx);
+    async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
+        let capacity=crate::resident_quota::parse_capacity(config.downcast_ref::<serde_json::Value>().and_then(|value|value.get("maxActiveSubagents")))
+            .map_err(|error|PluginError::from(anyhow::anyhow!(error.to_string())))?;
+        SubagentRuntime::install(ctx).set_max_active_subagents(capacity).map_err(|error|PluginError::from(anyhow::anyhow!(error.to_string())))?;
         Ok(())
     }
 }

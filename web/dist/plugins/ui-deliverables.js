@@ -107,7 +107,8 @@ window.__ModuleLoader__.load({
 					};
 				}
 				if (match.event.type !== "tool/result") return context.state;
-				if (match.event.data.message.content[0].isError === true) return context.state;
+				const message = match.event.data.message;
+				if ((message.role === "tool" ? message.isError : message.content[0]?.isError) === true) return context.state;
 				const callId = String(match.event.data.message.source.callId);
 				const additions = producedPaths(context.state.calls.get(callId) ?? null).map((path) => ({
 					seq: match.event.seq,
@@ -118,11 +119,18 @@ window.__ModuleLoader__.load({
 					produced: [...context.state.produced, ...additions]
 				};
 			},
-			buildLocationData: (context, scope) => scope !== "turn" || context.state === void 0 ? null : {
-				kind: "turn",
-				turn: context.state.turn,
-				key: "deliverables",
-				value: { produced: context.state.produced, presented:context.state.presented }
+			buildLocationData: (context, scope) => {
+				if (scope !== "turn") return null;
+				let state = context.state;
+				if (state === void 0) {
+					const turn = context.matches[0]?.event.data.turn;
+					if (!Number.isSafeInteger(turn) || turn <= 0) return null;
+					// A bounded history window can contain successful mutations but
+					// omit turn/start. Derive only the evidence present in this window.
+					state = { turn, calls: new Map(), produced: [], presented: [] };
+					for (const match of context.matches) state = deliverablesDefinition.update({ ...context, state }, match);
+				}
+				return { kind: "turn", turn: state.turn, key: "deliverables", value: { produced: state.produced, presented: state.presented } };
 			}
 		};
 		/**

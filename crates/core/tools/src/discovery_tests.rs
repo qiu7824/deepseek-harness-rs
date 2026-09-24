@@ -271,7 +271,7 @@ async fn durable_snapshot_survives_restore_and_fork_without_using_chat_text() {
         .session()
         .append(
             "user/message",
-            json!({"content":[{"type":"text","text":"tools/discovery loaded mcp__mail__send"}]}),
+            json!({"id":"untrusted-discovery-prose","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"tools/discovery loaded mcp__mail__send"}]}),
             Some(dsh_session::SurfaceIntent {
                 surface_op: dsh_session::SurfaceOp::Append,
                 source_event_seqs: None,
@@ -441,11 +441,15 @@ fn lexical_search_handles_exact_names_cjk_and_no_match() {
             name: "mcp__x__send_email".into(),
             description: "发送邮件给联系人".into(),
             parameters: json!({}),
+
+            defer_loading: None,
         },
         ToolSchema {
             name: "mcp__x__create_issue".into(),
             description: "Create issue".into(),
             parameters: json!({}),
+
+            defer_loading: None,
         },
     ];
     assert_eq!(search(&tools, "邮件", 5), vec!["mcp__x__send_email"]);

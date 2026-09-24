@@ -106,11 +106,24 @@ pub struct AgentOptions {
     pub model: Option<String>,
     /// Maximum output tokens for each conversation-model request.
     pub max_tokens: Option<u64>,
+    /// Maximum model/tool steps per turn; None leaves the turn uncapped.
+    pub max_steps: Option<u64>,
+    /// Wall-clock limit per turn, including model waits and tool execution.
+    pub timeout_seconds: Option<u64>,
     /// Adapter-owned reasoning effort applied to this Agent's requests.
     pub reasoning_effort: Option<dsh_llm::ReasoningEffortId>,
     /// Delegation depth: zero for a top-level agent and parent depth + 1 for
     /// a child (the TS module augmentation on `AgentOptions`).
     pub subagent_depth: Option<u64>,
+}
+
+/// A host-composed run gate. The returned guard owns admission until the
+/// turn has settled; dropping the future or a panic also releases the guard.
+pub struct AgentRunAdmission {
+    pub admit: Arc<dyn Fn(&dyn Agent) -> Result<Box<dyn Send>, String> + Send + Sync>,
+}
+impl cordis::Service for AgentRunAdmission {
+    fn service_name(&self) -> &'static str { "agentRunAdmission" }
 }
 
 /// Options for [`Agent::cancel`].

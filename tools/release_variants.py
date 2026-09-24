@@ -1,4 +1,4 @@
-"""Select attested release variants and enforce each platform's artifact set."""
+"""Bind Web core publication to the built Host and platform artifact set."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 from datetime import datetime, timezone
 
-from free_model_evidence import validated_models
 
 
 def digest(path: Path) -> str:
@@ -18,35 +17,14 @@ def digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def select_variants(report_path: Path, binary: Path, outcome: str) -> dict:
-    result = {"variants": ["core", "skin"], "verifiedAt": datetime.now(timezone.utc).isoformat(),
-              "free": {"status": "unavailable", "probeOutcome": outcome}}
-    report = {}
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        if outcome != "success":
-            raise ValueError("免费模型完整运行链路校验未通过")
-        binary_hash = digest(binary)
-        rows = validated_models(report, binary_hash)
-    except Exception as error:
-        reasons = []
-        if isinstance(report, dict):
-            rows = report.get("models")
-            reasons = [row["reason"] for row in rows if isinstance(row, dict) and isinstance(row.get("reason"), str)] if isinstance(rows, list) else []
-            failure = report.get("verificationError")
-            if isinstance(failure, dict) and isinstance(failure.get("reason"), str):
-                reasons.append(failure["reason"])
-        result["free"]["reason"] = "；".join(dict.fromkeys(reasons))[:1800] or str(error)[:1800]
-    else:
-        result["variants"].append("free")
-        result["binarySha256"] = binary_hash
-        result["free"].update(status="verified", includedModels=[{"provider": row["provider"], "model": row["model"]} for row in rows])
-    return result
+def select_variants(binary: Path) -> dict:
+    return {"variants": ["core"], "verifiedAt": datetime.now(timezone.utc).isoformat(),
+            "binarySha256": digest(binary)}
 
 
 def checked_variants(variants: object) -> list[str]:
-    if variants not in (["core", "skin"], ["core", "skin", "free"]):
-        raise ValueError("release variants must contain core/skin and optionally attested free")
+    if variants != ["core"]:
+        raise ValueError("Web publication supports only the core distribution")
     return list(variants)
 
 
@@ -74,9 +52,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
     select = subparsers.add_parser("select")
-    select.add_argument("--report", type=Path, required=True)
     select.add_argument("--binary", type=Path, required=True)
-    select.add_argument("--probe-outcome", choices=["success", "failure", "cancelled", "skipped"], required=True)
     select.add_argument("--selection-report", type=Path, required=True)
     select.add_argument("--github-output", type=Path)
     select.add_argument("--summary", type=Path)
@@ -90,7 +66,7 @@ def main() -> None:
     if args.command == "checksums":
         write_checksums(args.directory, args.prefix, args.platform, json.loads(args.variants_json), args.output)
         return
-    result = select_variants(args.report, args.binary, args.probe_outcome)
+    result = select_variants(args.binary)
     args.selection_report.parent.mkdir(parents=True, exist_ok=True)
     args.selection_report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.github_output:
@@ -98,9 +74,8 @@ def main() -> None:
             stream.write("variants=" + " ".join(result["variants"]) + "\n")
             stream.write("variants_json=" + json.dumps(result["variants"], separators=(",", ":")) + "\n")
     if args.summary:
-        reason = result["free"].get("reason", "匿名流式、工具往返和当前正式二进制校验通过")
         with args.summary.open("a", encoding="utf-8") as stream:
-            stream.write(f"\n发布版本：{', '.join(result['variants'])}。\n\n免费版：{result['free']['status']}；{reason}\n")
+            stream.write(f"\nWeb 核心版；Host SHA-256：{result['binarySha256']}\n")
     print(json.dumps(result, ensure_ascii=True))
 
 

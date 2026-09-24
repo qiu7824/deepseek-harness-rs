@@ -1,0 +1,120 @@
+{
+  "recordedAt": "2026-09-24T17:34:10.630457+08:00",
+  "installed": false,
+  "published": false,
+  "status": "source_and_isolated_ssh_verified_pending_full_workflow",
+  "checks": {
+    "remote-boundary-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\remote-boundary-tests.log",
+      "sha256": "18776f4f539e5003ab172d0b7b7bc8f9cb95c8257caa1892999afd7e0abdf070",
+      "results": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s\r"
+      ]
+    },
+    "remote-host-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\remote-host-tests.log",
+      "sha256": "3a5ba265add0e5b60885f72aeda89b881e9f9e66f987d07d2fd06fd9ec5b55bb",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.18s\r"
+      ]
+    },
+    "remote-host-check": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\remote-host-check.log",
+      "sha256": "729d5632f4b4b776a8e8eddb8e7e89ce40c000176d7c945920f763fa5f665c3e",
+      "results": [
+        "Finished `dev` profile [unoptimized] target(s) in 1m 09s\r"
+      ]
+    },
+    "remote-ssh-acceptance": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\remote-ssh-acceptance.log",
+      "sha256": "515c8b67d0fe2c161285065379b8e03b098da163936e35cd4ba4599e01b03b14",
+      "results": [
+        "SSH_ACCEPTANCE_OK: unknown dispatch recovered once, subsequent command is fresh, readonly and cancellation enforced\r",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.38s\r"
+      ]
+    }
+  },
+  "sshFixture": {
+    "passed": true,
+    "workdir": "D:\\codex操作目录\\learning-repair-20260922\\remote-ssh-acceptance-1c586b66",
+    "transport": "real OpenSSH client to isolated Paramiko SSH server; helper executes on the same Windows machine in isolated home/workspace",
+    "droppedFirstExecuteReply": true,
+    "calls": [
+      {
+        "action": "handshake",
+        "executionId": null
+      },
+      {
+        "action": "file",
+        "executionId": null
+      },
+      {
+        "action": "file",
+        "executionId": null
+      },
+      {
+        "action": "execute",
+        "executionId": "a2f93f1c-128f-4cdf-9529-4abdfd879bcc"
+      },
+      {
+        "action": "query",
+        "executionId": "a2f93f1c-128f-4cdf-9529-4abdfd879bcc"
+      },
+      {
+        "action": "query",
+        "executionId": "a2f93f1c-128f-4cdf-9529-4abdfd879bcc"
+      },
+      {
+        "action": "file",
+        "executionId": null
+      },
+      {
+        "action": "execute",
+        "executionId": "15ba4d44-e7fb-469a-842a-eb0cf88e5ca0"
+      },
+      {
+        "action": "query",
+        "executionId": "15ba4d44-e7fb-469a-842a-eb0cf88e5ca0"
+      },
+      {
+        "action": "file",
+        "executionId": null
+      },
+      {
+        "action": "execute",
+        "executionId": "a3e9123e-456b-494d-8dc2-f45165b867ee"
+      },
+      {
+        "action": "cancel",
+        "executionId": "a3e9123e-456b-494d-8dc2-f45165b867ee"
+      },
+      {
+        "action": "cancel",
+        "executionId": "a3e9123e-456b-494d-8dc2-f45165b867ee"
+      },
+      {
+        "action": "file",
+        "executionId": null
+      }
+    ],
+    "exitCode": 0
+  },
+  "webChecks": {
+    "remoteConnectionDom": "passed: normal connection, duplicate submit, denied handshake, detached late result",
+    "workspaceEnvironmentDom": "passed",
+    "sourceAndDistEqual": true,
+    "sha256": "5940cf2c94d32151cdb8308dce0031f149a086010115ec9041cd0a9314289a47"
+  },
+  "implemented": [
+    "Host mounts remote filesystem, shell and execution profiles before task/tool consumers; missing remote connections cannot fall back to local execution.",
+    "Dedicated local-agent SSH execution workspace entry with live handshake; existing remote Harness tunnel remains available.",
+    "Cancelled admission cannot dispatch; uncertain dispatch retains its exact execution ID and queries instead of replaying.",
+    "Late observations cannot overwrite a new execution journal; recovered completion updates allow a later deliberate command to execute afresh.",
+    "Windows detached worker uses CreateProcessW without handle inheritance, preventing long tasks from retaining SSH control pipe EOF."
+  ],
+  "remaining": [
+    "Real separate-host and Unix/macOS SSH workflows, installed UI, PTC and remote artifact integration.",
+    "Remote helper release packaging and all platform deployment.",
+    "Actions workflows, Auto Review, cleanup/recovery and all other goal-status gates."
+  ]
+}

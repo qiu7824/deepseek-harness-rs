@@ -95,8 +95,9 @@ fn is_plugin_message(event: &SessionEvent, plugin: &str) -> bool {
     let Some(source) = event.data.get("source") else {
         return false;
     };
-    source.get("kind").and_then(|kind| kind.as_str()) == Some("plugin")
-        && source.get("plugin").and_then(|name| name.as_str()) == Some(plugin)
+    source.get("kind").and_then(|kind| kind.as_str()) == Some(plugin)
+        || source.get("kind").and_then(|kind| kind.as_str()) == Some("plugin")
+            && source.get("plugin").and_then(|name| name.as_str()) == Some(plugin)
 }
 
 /// Find the latest model-visible event, excluding this plugin's pending
@@ -104,7 +105,7 @@ fn is_plugin_message(event: &SessionEvent, plugin: &str) -> bool {
 pub fn preceding_message_time(agent: &dyn Agent) -> Option<i64> {
     for event in agent.session().events().iter().rev() {
         match event.type_.as_str() {
-            "user/message" | "assistant/message" | "tool/result" => return Some(event.time),
+            "developer/message" | "user/message" | "assistant/message" | "tool/result" => return Some(event.time),
             _ => {}
         }
     }

@@ -8,6 +8,7 @@ description = "User-facing permission presets over the sandbox-mode and approval
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-agent = { path = "../../core/agent" }
+dsh-tools = { path = "../../core/tools" }
 dsh-commands = { path = "../commands" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-sandbox = { path = "../../sandbox/sandbox" }

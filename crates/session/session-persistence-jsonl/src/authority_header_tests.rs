@@ -100,11 +100,11 @@ fn streaming_writer_window_is_accepted_and_a_larger_valid_window_is_rejected() {
     let root = TestRoot::new();
     let path = root.0.join("header.zstd");
     let plaintext = header_bytes(&header());
-    let frame = compress_zstd_frame(&plaintext).unwrap();
+    let frame = crate::zstd::legacy_streaming_fixture(&plaintext, MAX_AUTHORITY_WINDOW_LOG);
     assert_eq!(
         frame[4] & 0x20,
         0,
-        "the repository writer uses an explicit streaming window"
+        "the legacy fixture uses an explicit streaming window"
     );
     assert_eq!(
         frame[5], 0x58,
@@ -115,6 +115,10 @@ fn streaming_writer_window_is_accepted_and_a_larger_valid_window_is_rejected() {
         .unwrap()
         .unwrap();
     assert_eq!(parse_header_meta(&actual), Some(header()));
+
+    std::fs::write(&path, compress_zstd_frame(&plaintext).unwrap()).unwrap();
+    let actual = read_authority_header(&path, JsonlCompression::Zstd).unwrap().unwrap();
+    assert_eq!(parse_header_meta(&actual), Some(header()), "current source-sized frames must remain readable");
 
     let mut oversized_window = frame;
     oversized_window[5] = ((MAX_AUTHORITY_WINDOW_LOG + 1 - 10) << 3) as u8;

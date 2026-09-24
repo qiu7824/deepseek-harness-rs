@@ -14,13 +14,14 @@ const spec={objective:'Complete report',goalId:'goal-1',constraints:['Keep origi
  {id:'office',description:'Office structure',checker:{kind:'office_package',path:'report.docx',format:'docx'}},
  {id:'result',description:'Tool assertion',checker:{kind:'tool_result',step_id:'tool:build',assertions:{'/ok':true}}}
 ]};
-let task={taskId:'task-a',revision:7,requirementsRevision:1,state:'planned',spec:copy(spec),steps:[],acceptanceResults:[],outputIdentities:{}};
+let task={taskId:'task-a',revision:7,requirementsRevision:1,state:'planned',spec:copy(spec),goalBinding:{goalId:'goal-1',objectiveRevision:1},goalBindingStatus:'current',steps:[],acceptanceResults:[],outputIdentities:{}};
+let currentGoalRequirements={goalId:'goal-1',objectiveRevision:1,objective:'Complete report'};
 const response=(value,code)=>({ok:!code,status:code?409:200,text:async()=>JSON.stringify(code?{error:value,code}:value)});
 function plugin(){let exported;window.__ModuleLoader__={load:value=>{exported=value.factory(()=>React);}};vm.runInNewContext(source,{window,document,AbortController,TextEncoder,crypto:require('node:crypto').webcrypto,setInterval,clearInterval,
  fetch:async(_,options)=>{const input=JSON.parse(options.body);requests.push(input);if(input.action==='revise')return new Promise((resolve,reject)=>pending.push({input,resolve,reject}));if(input.action==='requirements_history')return response({history:[{idempotencyKey:'old-key',sourceRevision:4,targetRevision:5,targetTaskId:'task-a'}]});if(input.action==='requirements_snapshot')return response({snapshot:{...task,revision:4,spec:{...spec,objective:'Historical goal'}}});throw Error('Unexpected request '+input.action);}});return exported.test;}
 let api=plugin();
 const act=fn=>React.act(async()=>{fn?.();await new Promise(resolve=>setImmediate(resolve));});
-const render=props=>act(()=>root.render(React.createElement(api.TaskRequirementsEditor,{sessionId:'session-a',task,onSaved:id=>saved.push(id),onClose:()=>{},onReload:()=>reloads.push(true),...props})));
+const render=props=>act(()=>root.render(React.createElement(api.TaskRequirementsEditor,{sessionId:'session-a',task,currentGoalRequirements,onSaved:id=>saved.push(id),onClose:()=>{},onReload:()=>reloads.push(true),...props})));
 const button=text=>{const item=[...document.querySelectorAll('button')].find(node=>node.textContent===text);assert.ok(item,'button '+text);return item;};
 const input=label=>{const item=[...document.querySelectorAll('label')].find(node=>node.querySelector('span')?.textContent===label);assert.ok(item,'field '+label);return item.querySelector('input,textarea');};
 const edit=(label,value)=>act(()=>{const node=input(label),prototype=node.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(prototype,'value').set.call(node,value);node.dispatchEvent(new window.Event('input',{bubbles:true}));});
@@ -93,6 +94,39 @@ const click=text=>act(()=>button(text).click());
  await act(()=>root.render(null));window.localStorage.clear();api=plugin();task={...task,revision:35};await render();await edit('任务目标','Identical content');await click('保存任务要求');const firstPending=pending.at(-1),firstRecord=api.draftRecords('session-a','task-a')[0];
  const independent={...copy(firstRecord.value),writer:'independent-writer',token:'independent-token',writerSequence:1,pendingSave:{...copy(firstPending.input),idempotencyKey:'independent-submit'}};const independentKey=firstRecord.key.slice(0,firstRecord.key.indexOf('draft:'))+'draft:independent-writer:independent-token';window.localStorage.setItem(independentKey,JSON.stringify(independent));
  await act(()=>firstPending.resolve(response({task:{...task,revision:36}})));assert.ok(api.draftRecords('session-a','task-a').some(row=>row.value.pendingSave?.idempotencyKey==='independent-submit'),'independent in-flight request remains unresolved even when content matches');
+
+ // Adopting a changed goal must unlock a fresh revision, never the old acceptance.
+ await act(()=>root.render(null));window.localStorage.clear();api=plugin();
+ task={...task,revision:40,state:'completed',goalBindingStatus:'stale'};
+ currentGoalRequirements={goalId:'goal-1',objectiveRevision:2,objective:'Changed report objective'};
+ await render();assert.equal(button('保存为后续任务').disabled,true);
+ await click('核对并采用当前目标');assert.equal(button('保存为后续任务').disabled,false,'explicit adoption must unlock save despite the old task remaining stale');
+ await edit('任务目标','Changed report objective');await click('保存为后续任务');
+ assert.deepEqual(pending.at(-1).input.expectedGoalBinding,{goalId:'goal-1',objectiveRevision:2});
+ const beforeReload=reloads.length;
+ await act(()=>pending.at(-1).resolve(response('Goal changed again','TASK_GOAL_REQUIREMENTS_CHANGED')));
+ assert.equal(reloads.length,beforeReload+1,'a rejected goal binding reloads the latest goal while retaining the draft');
+ currentGoalRequirements={...currentGoalRequirements,objectiveRevision:3};await render();
+ assert.equal(input('任务目标').value,'Changed report objective');assert.equal(button('保存为后续任务').disabled,true);
+ await click('核对并采用当前目标');await click('保存为后续任务');
+ assert.equal(pending.at(-1).input.expectedGoalBinding.objectiveRevision,3);
+ await act(()=>pending.at(-1).resolve(response({task:{...task,taskId:'new-goal-successor',revision:1}})));
+
+ // Legacy linked contracts have no trusted binding and require explicit adoption.
+ await act(()=>root.render(null));window.localStorage.clear();api=plugin();
+ task={...task,revision:45,state:'planned',goalBinding:null,goalBindingStatus:'missing'};
+ await render();assert.equal(button('保存任务要求').disabled,true);
+ await click('核对并采用当前目标');assert.equal(button('保存任务要求').disabled,false);
+ // Replacing the entire goal must update the requested goal as well as its binding.
+ currentGoalRequirements={goalId:'goal-2',objectiveRevision:1,objective:'Replacement goal'};await render();
+ assert.equal(button('保存任务要求').disabled,true);await click('核对并采用当前目标');await click('保存任务要求');
+ assert.equal(pending.at(-1).input.contract.goalId,'goal-2');
+ assert.deepEqual(pending.at(-1).input.expectedGoalBinding,{goalId:'goal-2',objectiveRevision:1});
+ await act(()=>pending.at(-1).resolve(response({task:{...task,revision:46}})));
+
+ await act(()=>root.render(null));window.localStorage.clear();api=plugin();
+ task={...task,goalBindingStatus:'unavailable'};currentGoalRequirements=null;await render();
+ assert.equal(button('保存任务要求').disabled,true);assert.equal(button('核对并采用当前目标').disabled,true);
 
  await act(()=>root.render(React.createElement(api.RequirementsHistory,{sessionId:'session-a',taskId:'task-a'})));await click('查看原版本 4');
  assert.equal(input('任务目标').value,'Historical goal');assert.equal(input('任务目标').disabled,true,'historical requirements are readonly');

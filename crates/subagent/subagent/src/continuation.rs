@@ -231,6 +231,7 @@ impl ParentWake {
 
 /// One residency epoch for a reconstructed continuable child Agent.
 struct Activation {
+    resident_permit:Option<crate::resident_quota::ResidentPermit>,
     ultra_permit: Option<crate::ultra::UltraPermit>,
     child_id: SessionId,
     parent_session: SessionId,
@@ -315,6 +316,7 @@ mod control_pending_descendants_tests;
 
 /// The continuable-subagent orchestration service behind `ctx.subagents`.
 pub struct SubagentContinuationManager {
+    resident_quota:Arc<crate::resident_quota::ResidentQuota<dyn Agent>>,
     pub ctx: Context,
     self_arc: std::sync::OnceLock<std::sync::Weak<Self>>,
     activations: parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<Activation>>>>,
@@ -343,6 +345,7 @@ impl Drop for MaterializationGuard {
 }
 
 impl SubagentContinuationManager {
+    pub fn set_max_active_subagents(&self,value:u64)->Result<(),SubagentError> {self.resident_quota.set_limit(value)}
     fn begin_materialization(
         &self,
         parent: &Arc<dyn Agent>,
@@ -385,6 +388,7 @@ impl SubagentContinuationManager {
     /// Build the manager (TS constructor).
     pub fn new(ctx: &Context, host: Arc<dyn ContinuationHost>) -> Arc<Self> {
         let manager = Arc::new(Self {
+            resident_quota:Arc::new(Default::default()),
             ctx: ctx.clone(),
             self_arc: std::sync::OnceLock::new(),
             activations: parking_lot::Mutex::new(HashMap::new()),
@@ -580,13 +584,11 @@ impl SubagentContinuationManager {
         let agent_provider = request
             .agent_options
             .as_ref()
-            .and_then(|options| options.provider.clone())
-            .or_else(|| parent.options().provider.clone());
+            .and_then(|options| options.provider.clone());
         let agent_model = request
             .agent_options
             .as_ref()
-            .and_then(|options| options.model.clone())
-            .or_else(|| parent.options().model.clone());
+            .and_then(|options| options.model.clone());
         let descriptor = snapshot_subagent_descriptor(&SubagentDescriptorData::Continuable {
             version: crate::descriptor::SUBAGENT_DESCRIPTOR_VERSION,
             provider: spec.provider.clone(),
@@ -602,6 +604,8 @@ impl SubagentContinuationManager {
                 .agent_options
                 .as_ref()
                 .and_then(|options| options.max_tokens),
+            agent_max_steps: request.agent_options.as_ref().and_then(|o| o.max_steps),
+            agent_timeout_seconds: request.agent_options.as_ref().and_then(|o| o.timeout_seconds),
             persona: request.persona.clone(),
             tool_filter: request.tool_filter.clone(),
         })
@@ -652,6 +656,8 @@ impl SubagentContinuationManager {
                         })
                         .await?;
                     let child = activation.lock().handle().agent.clone();
+                    crate::descriptor::record_child_catalog(parent.session(), child.session(), &descriptor)
+                        .map_err(|error| SubagentError::new("CHILD_CATALOG_FAILED", error))?;
                     let initial_prompt = if manager.host.has_adjacent_send_message_tool(&child) {
                         Self::continuable_initial_prompt(parent.id(), &spec.request.prompt)
                     } else {
@@ -1075,6 +1081,8 @@ impl SubagentContinuationManager {
             agent_model,
             agent_reasoning_effort,
             agent_max_tokens,
+            agent_max_steps,
+            agent_timeout_seconds,
             persona,
             tool_filter,
             ..
@@ -1096,6 +1104,8 @@ impl SubagentContinuationManager {
                 model: agent_model,
                 reasoning_effort: agent_reasoning_effort.map(dsh_llm::reasoning_effort_id),
                 max_tokens: agent_max_tokens,
+                max_steps: agent_max_steps,
+                timeout_seconds: agent_timeout_seconds,
                 ..Default::default()
             }),
             output_schema: None,
@@ -1315,6 +1325,7 @@ impl SubagentContinuationManager {
         } = input;
         let parent_wake = ParentWake::capture(&parent);
         let _materialization = self.begin_materialization(&parent)?;
+        let resident_permit=self.resident_quota.reserve(&parent)?;
         let mut ultra_permit = if let Some(control) = crate::ultra::UltraControl::get(&self.ctx) {
             control
                 .admit_wait(&parent, child_id.as_str(), signal)
@@ -1332,6 +1343,8 @@ impl SubagentContinuationManager {
         // TS creation-window setup deviation, shared with the one-shot
         // driver).
         let handle = {
+            let quota=self.resident_quota.clone();let pool=resident_permit.pool.clone();
+            let quota_setup:dsh_agent::AgentSetup=Arc::new(move |_,agent| {quota.bind(&agent,&pool);Box::pin(async {Ok(None)})});
             let registry = self.agents();
             let parent_for_setup = parent.clone();
             let delegated = delegated_policies.clone();
@@ -1339,11 +1352,12 @@ impl SubagentContinuationManager {
                 persona: request.persona.clone(),
                 tool_filter: request.tool_filter.clone(),
             };
-            let child_options = resolve_child_agent_options(
-                parent.as_ref(),
-                request.agent_options.as_ref(),
-                child_depth,
-            );
+            // Creation already froze defaults; cold resume carries the durable
+            // route and limits. Re-resolving would import later parent/settings
+            // changes, including turning an unlimited saved run into a capped one.
+            let mut child_options = request.agent_options.clone().unwrap_or_else(||
+                resolve_child_agent_options(parent.as_ref(), None, child_depth));
+            child_options.subagent_depth = Some(child_depth);
             let handle = if let Some(seed) = seed {
                 registry
                     .create_with_context(
@@ -1363,7 +1377,7 @@ impl SubagentContinuationManager {
                                     })?,
                             ),
                             agent_options: Some(child_options),
-                            setup: None,
+                            setup: Some(quota_setup.clone()),
                         },
                     )
                     .await
@@ -1375,7 +1389,7 @@ impl SubagentContinuationManager {
                         dsh_agent::ResumeAgentOptions {
                             resume_session_id: Some(child_id.clone()),
                             agent_options: Some(child_options),
-                            setup: None,
+                            setup: Some(quota_setup.clone()),
                         },
                     )
                     .await
@@ -1412,6 +1426,7 @@ impl SubagentContinuationManager {
         ancestry.insert(Arc::as_ptr(&handle.agent).cast::<()>() as usize);
         let observer = self.host.observe_activation(provider, child_id, &parent);
         let activation = Arc::new(parking_lot::Mutex::new(Activation {
+            resident_permit:Some(resident_permit),
             ultra_permit,
             child_id: child_id.clone(),
             parent_session: parent.id().clone(),
@@ -1982,6 +1997,7 @@ impl SubagentContinuationManager {
         };
         handle.dispose.await;
         activation.lock().ultra_permit.take();
+        activation.lock().resident_permit.take();
         let terminal_failure = if failures.is_empty() {
             None
         } else {

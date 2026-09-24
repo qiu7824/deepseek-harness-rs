@@ -138,27 +138,7 @@ impl GoalFacts {
 }
 
 pub(super) fn projection_definition() -> dsh_session_projection::ProjectionDefinition {
-    dsh_session_projection::ProjectionDefinition {
-        key: "goal".into(),
-        state_version: 1,
-        init: Arc::new(|_| cordis::arc(Value::Null)),
-        apply: Arc::new(|previous, event| {
-            let value = cordis::downcast::<Value>(previous).expect("goal projection JSON state");
-            dsh_goal::apply_goal_requirements_projection(value, event)
-                .map_or_else(|| previous.clone(), cordis::arc)
-        }),
-        view: Arc::new(Clone::clone),
-        schema: Arc::new(|value| {
-            let value = cordis::downcast::<Value>(value).ok_or("Goal projection must be JSON")?;
-            let goal = &value["goal"];
-            if !value.is_null()
-                && !matches!((goal["id"].as_str(),goal["objectiveRevision"].as_u64(),goal["objective"].as_str()),(Some(id),Some(revision),Some(_)) if !id.is_empty() && revision>0)
-            {
-                return Err("Invalid goal requirements projection".into());
-            }
-            Ok(value.clone())
-        }),
-    }
+    dsh_goal::goal_projection_definition()
 }
 
 pub(super) fn install(service: &Arc<TaskExecution>) -> Result<()> {
@@ -169,7 +149,9 @@ pub(super) fn install(service: &Arc<TaskExecution>) -> Result<()> {
             false,
         )
         .ok_or("Session projections unavailable")?;
-    registry.register(&service.context, projection_definition())?;
+    if !registry.keys().iter().any(|key| key == "goal") {
+        registry.register(&service.context, projection_definition())?;
+    }
     let guard: Arc<dyn GoalCompletionGuard> = Arc::new(CompletionGuard {
         tasks: Arc::downgrade(service),
     });
@@ -177,7 +159,33 @@ pub(super) fn install(service: &Arc<TaskExecution>) -> Result<()> {
         dsh_goal::GOAL_COMPLETION_GUARD_SERVICE,
         Some(cordis::arc(guard)),
     );
+    let user_control: Arc<dyn dsh_goal::GoalUserControl> = Arc::new(UserRequirementsControl {
+        tasks: Arc::downgrade(service),
+    });
+    service.context.provide(
+        dsh_goal::GOAL_USER_CONTROL_SERVICE,
+        Some(cordis::arc(user_control)),
+    );
     Ok(())
+}
+
+struct UserRequirementsControl {
+    tasks: Weak<TaskExecution>,
+}
+impl dsh_goal::GoalUserControl for UserRequirementsControl {
+    fn with_idle(
+        &self,
+        agent: &Arc<dyn dsh_agent::Agent>,
+        operation: &mut dyn FnMut() -> std::result::Result<(), dsh_goal::GoalError>,
+    ) -> std::result::Result<(), dsh_goal::GoalError> {
+        let busy = |message| dsh_goal::GoalError::new(message, dsh_goal::GoalErrorCode::AgentBusy);
+        let tasks = self
+            .tasks
+            .upgrade()
+            .ok_or_else(|| busy("Goal execution controls are unavailable".to_owned()))?;
+        tasks.with_idle_requirements(agent, operation)
+            .map_err(|error| busy(format!("Stop current work, descendants and pending validation before changing goal requirements: {error}")))?
+    }
 }
 
 impl TaskExecution {

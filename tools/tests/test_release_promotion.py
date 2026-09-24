@@ -24,7 +24,7 @@ class ReleasePromotionTests(unittest.TestCase):
             root = Path(temporary)
             expected = {}
             for platform in PLATFORMS:
-                names = expected_artifacts("deepseek-harness-rs-v0.1.3-test-" + platform, platform.split("-")[0], ["core", "skin", "free"])
+                names = expected_artifacts("deepseek-harness-rs-v0.1.3-test-" + platform, platform.split("-")[0], ["core"])
                 rows = []
                 for name in sorted(names):
                     data = name.encode()
@@ -35,7 +35,7 @@ class ReleasePromotionTests(unittest.TestCase):
                 (root / f"SHA256SUMS-{platform}.txt").write_text("".join(rows), encoding="utf-8")
             self.assertEqual(validate_payload(root, "v0.1.3-test"), expected)
             self.assertEqual(validate_payload(root, "v0.1.3-test-r4"), expected)
-            self.assertEqual(len(expected), 24)
+            self.assertEqual(len(expected), 8)
             checksums = (root / "SHA256SUMS.txt").read_bytes()
             self.assertNotIn(b"\r", checksums, "release checksums must have identical bytes on Windows and Unix")
             self.assertEqual(checksums.count(b"\n"), len(expected))

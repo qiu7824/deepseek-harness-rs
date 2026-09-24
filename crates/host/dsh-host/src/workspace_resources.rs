@@ -28,7 +28,7 @@ fn scratch_parameters() -> Value {
             "limit":{"type":"integer","minimum":1,"maximum":32000,"description":"1 to 32000 characters"},
             "pinned":{"type":"boolean"},
             "target":{"type":"string","minLength":1},
-            "expectedSha256":{"oneOf":[{"type":"string"},{"type":"null"}],"description":"Required for promote: use inspect's sha256, or null only when the target does not exist."},
+            "expectedSha256":{"oneOf":[{"type":"string","minLength":64,"maxLength":64},{"type":"null"}],"description":"Required for promote: copy inspect's exact lowercase SHA-256, or use JSON null for an absent target. Never quote null as a string."},
             "files":{"type":"array","items":{"type":"string"}}
         },
         "required":["action"],"additionalProperties":false
@@ -80,6 +80,10 @@ fn validate_location(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) struct Resources {
+    ctx: Context,
+    ledger_path: PathBuf,
+    known_roots: parking_lot::Mutex<BTreeSet<String>>,
+    offline_roots: parking_lot::Mutex<BTreeSet<String>>,
     settings: Arc<SettingsProvider>,
     default_root: PathBuf,
     roots_file: PathBuf,
@@ -199,6 +203,18 @@ impl Resources {
             .to_string_lossy()
             .into_owned();
         let mut stores = self.stores.lock();
+        let normalized = dsh_tool_memory_local::learning::workspace_key(&root.to_string_lossy());
+        let registered = self
+            .known_roots
+            .lock()
+            .iter()
+            .any(|path| dsh_tool_memory_local::learning::workspace_key(path) == normalized);
+        if registered && !root.join(".dsh-resources").is_file() {
+            return Err(format!(
+                "已登记存储位置暂不可用，未新建替代目录：{}",
+                root.display()
+            ));
+        }
         if let Some(store) = stores.get(&key) {
             return Ok(store.clone());
         }
@@ -210,38 +226,150 @@ impl Resources {
         if let Some(existing) = stores.get(&key) {
             return Ok(existing.clone());
         }
-        let mut locations = stores.keys().cloned().collect::<Vec<_>>();
-        locations.push(key.clone());
+        let mut locations = self.known_roots.lock().clone();
+        locations.insert(key.clone());
+        if serde_json::to_vec(&locations)
+            .map_err(|e| e.to_string())?
+            .len()
+            > 65536
+        {
+            return Err("垃圾槽位置索引超过大小限制".into());
+        }
         persist_json(&self.roots_file, &locations)?;
+        *self.known_roots.lock() = locations;
         stores.insert(key, store.clone());
         Ok(store)
     }
     pub fn stores(&self) -> Result<Vec<Arc<Store>>, String> {
         let current = self.current();
-        let stores = self.stores.lock().values().cloned().collect::<Vec<_>>();
+        let roots = self.known_roots.lock().clone();
+        let mut offline = BTreeSet::new();
+        for root in roots {
+            if !Path::new(&root).is_absolute() || !Path::new(&root).join(".dsh-resources").is_file()
+            {
+                offline.insert(root);
+                continue;
+            }
+            if self.open_store(PathBuf::from(&root)).is_err() {
+                offline.insert(root);
+            }
+        }
+        *self.offline_roots.lock() = offline;
+        let stores = self
+            .stores
+            .lock()
+            .values()
+            .filter(|store| store.root().join(".dsh-resources").is_file())
+            .cloned()
+            .collect::<Vec<_>>();
         if stores.is_empty() {
             current?;
         }
         Ok(stores)
     }
     pub fn location_error(&self) -> Option<String> {
-        self.current().err()
+        let mut errors = self.current().err().into_iter().collect::<Vec<_>>();
+        let offline = self.offline_roots.lock();
+        if !offline.is_empty() {
+            errors.push(format!(
+                "部分存储位置暂不可用，材料未被移除：{}",
+                offline.iter().cloned().collect::<Vec<_>>().join("；")
+            ));
+        }
+        (!errors.is_empty()).then(|| errors.join("；"))
     }
     pub fn locate(&self, id: &str) -> Result<Arc<Store>, String> {
+        self.locate_at(id, None)
+    }
+    pub fn locate_at(&self, id: &str, location: Option<&str>) -> Result<Arc<Store>, String> {
+        if location.is_none()
+            && id.len() == 64
+            && self
+                .known_roots
+                .lock()
+                .iter()
+                .map(|root| dsh_tool_memory_local::learning::workspace_key(root))
+                .collect::<BTreeSet<_>>()
+                .len()
+                > 1
+        {
+            return Err("构建缓存需要明确的存储位置".into());
+        }
         let matches = self
             .stores()?
             .into_iter()
-            .filter(|store| store.get(id).is_ok())
+            .filter(|store| {
+                location.is_none_or(|expected| {
+                    expected == digest(store.root().to_string_lossy().as_bytes())
+                }) && store.get(id).is_ok()
+            })
             .collect::<Vec<_>>();
         if matches.len() != 1 {
-            return Err("资源不存在或标识不唯一".into());
+            return Err("资源不存在或标识不唯一，请在垃圾槽中选择对应存储位置".into());
         }
         Ok(matches[0].clone())
+    }
+    fn evidence_scope(&self) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
+        if let Some(store) = self
+            .ctx
+            .get_typed::<Arc<dsh_tool_memory_local::learning::LearningStore>>(
+                "learningStore",
+                false,
+            )
+        {
+            return store.pending_evidence().ok();
+        }
+        match std::fs::symlink_metadata(&self.ledger_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Some((BTreeSet::new(), BTreeSet::new()))
+            }
+            _ => None,
+        }
+    }
+    fn evidence_reason(
+        row: &Resource,
+        scope: &Option<(BTreeSet<String>, BTreeSet<String>)>,
+    ) -> Option<String> {
+        if row.kind == "cache" {
+            if let Some(path) = std::env::var_os("CARGO_TARGET_DIR") {
+                let path = PathBuf::from(path);
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    PathBuf::from(&row.project).join(path)
+                };
+                if let (Ok(explicit), Ok(managed)) = (
+                    std::fs::canonicalize(path),
+                    std::fs::canonicalize(&row.path),
+                ) {
+                    if explicit.starts_with(&managed) || managed.starts_with(&explicit) {
+                        return Some("用户指定的构建缓存路径".into());
+                    }
+                }
+            }
+            return None;
+        }
+        match scope {
+            None => Some("诊断账本不可用，证据暂不清理".into()),
+            Some((owners, workspaces))
+                if owners.contains(&row.owner)
+                    || workspaces.contains(&dsh_tool_memory_local::learning::workspace_key(
+                        &row.project,
+                    )) =>
+            {
+                Some("仍被待核对诊断或经验引用".into())
+            }
+            _ => None,
+        }
     }
     pub fn list(&self, owner: Option<&str>) -> Result<Vec<Resource>, String> {
         let mut rows = Vec::new();
         for store in self.stores()? {
-            rows.extend(store.list_brief()?);
+            let location = digest(store.root().to_string_lossy().as_bytes());
+            rows.extend(store.list_brief()?.into_iter().map(|mut row| {
+                row.location_id = Some(location.clone());
+                row
+            }));
             let key = store.root().to_string_lossy().into_owned();
             let now = dsh_workspace_resources::now();
             let mut jobs = self.size_jobs.lock();
@@ -264,35 +392,87 @@ impl Resources {
             let projects = rows
                 .iter()
                 .filter(|row| row.owner == owner)
-                .map(|row| row.project.clone())
+                .map(|row| dsh_tool_memory_local::learning::workspace_key(&row.project))
                 .collect::<BTreeSet<_>>();
             rows.retain(|row| {
-                row.owner == owner || row.owner == "shared" && projects.contains(&row.project)
+                row.owner == owner
+                    || row.owner == "shared"
+                        && projects.contains(&dsh_tool_memory_local::learning::workspace_key(
+                            &row.project,
+                        ))
             });
+        }
+        let evidence = self.evidence_scope();
+        for row in &mut rows {
+            row.protection_reason = Self::evidence_reason(row, &evidence);
         }
         rows.retain(|row| row.state != "reclaimed");
         rows.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
         Ok(rows)
     }
     pub fn collect(&self, manual: bool) -> Result<Vec<String>, String> {
+        self.collect_for(None, manual)
+    }
+    pub fn collect_for(&self, owner: Option<&str>, manual: bool) -> Result<Vec<String>, String> {
         let policy = self.policy();
-        if !manual && !policy.auto_clean {
+        if !manual && (!policy.enabled || !policy.auto_clean) {
             return Ok(Vec::new());
         }
-        // Session scopes, background jobs and subagents keep their owner registered.
-        let active = self
-            .agents
-            .list()
-            .into_iter()
-            .map(|agent| agent.id().as_str().to_string())
+        let agents = self.agents.list();
+        let active = agents
+            .iter()
+            .map(|a| a.id().to_string())
             .collect::<BTreeSet<_>>();
+        let rows = self.list(None)?;
+        let projects = rows
+            .iter()
+            .filter(|row| owner.is_some_and(|owner| row.owner == owner))
+            .map(|row| dsh_tool_memory_local::learning::workspace_key(&row.project))
+            .collect::<BTreeSet<_>>();
+        let mut busy_projects = rows
+            .iter()
+            .filter(|row| row.kind == "run" && row.busy)
+            .map(|row| dsh_tool_memory_local::learning::workspace_key(&row.project))
+            .collect::<BTreeSet<_>>();
+        busy_projects.extend(agents.iter().filter_map(|agent| {
+            agent
+                .session()
+                .header()
+                .cwd
+                .as_deref()
+                .map(dsh_tool_memory_local::learning::workspace_key)
+        }));
+        let evidence = self.evidence_scope();
         let mut cleaned = Vec::new();
         for store in self.stores()? {
-            cleaned.extend(store.collect_protected(
+            let location = digest(store.root().to_string_lossy().as_bytes());
+            let protected = rows
+                .iter()
+                .filter(|row| row.location_id.as_deref() == Some(location.as_str()))
+                .filter(|row| {
+                    Self::evidence_reason(row, &evidence).is_some()
+                        || owner.is_some_and(|owner| {
+                            row.owner != owner
+                                && !(row.owner == "shared"
+                                    && projects.contains(
+                                        &dsh_tool_memory_local::learning::workspace_key(
+                                            &row.project,
+                                        ),
+                                    ))
+                        })
+                        || row.kind == "cache"
+                            && busy_projects.contains(
+                                &dsh_tool_memory_local::learning::workspace_key(&row.project),
+                            )
+                })
+                .map(|row| row.id.clone())
+                .collect();
+            cleaned.extend(store.collect_protected_ids(
                 &policy,
                 dsh_workspace_resources::now(),
                 manual,
                 &active,
+                &protected,
             )?);
         }
         Ok(cleaned)
@@ -305,8 +485,14 @@ impl Resources {
         Ok(store)
     }
     pub fn quarantine(&self, id: &str) -> Result<(), String> {
-        let store = self.locate(id)?;
+        self.quarantine_at(id, None)
+    }
+    pub fn quarantine_at(&self, id: &str, location: Option<&str>) -> Result<(), String> {
+        let store = self.locate_at(id, location)?;
         let row = store.get(id)?;
+        if let Some(reason) = Self::evidence_reason(&row, &self.evidence_scope()) {
+            return Err(reason);
+        }
         if row.kind == "cache"
             && self
                 .list(None)?
@@ -417,6 +603,10 @@ impl Resources {
             Err(e) => return Err(e.to_string()),
         };
         let manager = Arc::new(Self {
+            ctx: ctx.clone(),
+            ledger_path: data_root.join("memory/learning.json"),
+            known_roots: parking_lot::Mutex::new(known.iter().cloned().collect()),
+            offline_roots: Default::default(),
             settings,
             default_root: data_root.join("scratch"),
             roots_file,
@@ -427,10 +617,12 @@ impl Resources {
         });
         for root in known {
             if Path::new(&root).join(".dsh-resources").is_file() {
+                let store = Store::open(&root)?;
                 manager
                     .stores
                     .lock()
-                    .insert(root.clone(), Store::open(&root)?);
+                    .entry(store.root().to_string_lossy().into_owned())
+                    .or_insert(store);
             }
         }
         // Keep settings and recovery UI available when a storage volume is offline.
@@ -504,10 +696,10 @@ impl Resources {
             output:dsh_tools::ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
             timeout_ms:Some(30000),is_concurrency_safe:None,finalize_content:None,present_call:None,present_result:None,
             execute:Arc::new(move |args,run| {
-                let args=args.clone();let manager=manager.clone();let signal=run.signal.lock().clone();let token=run.token;let owner=run.agent.as_ref().map(|agent|(agent.id().as_str().to_string(),agent.session().header().cwd.clone().unwrap_or_default()));
+                let args=args.clone();let manager=manager.clone();let signal=run.signal.lock().clone();let mark_effects=run.track_cancellable_effects();let token=run.token;let owner=run.agent.as_ref().map(|agent|(agent.id().as_str().to_string(),agent.session().header().cwd.clone().unwrap_or_default()));
                 Box::pin(async move {let (owner,project)=owner.ok_or_else(||dsh_tools::ToolBodyError::plain("临时资源必须归属于任务"))?;
                     let validated_source=manager.take_promotion(token,&owner,&args).map_err(dsh_tools::ToolBodyError::plain)?;
-                    tokio::task::spawn_blocking(move ||manager.tool_action(&owner,&project,&args,validated_source.as_deref(),signal)).await.map_err(|e|dsh_tools::ToolBodyError::plain(e.to_string()))?.map_err(dsh_tools::ToolBodyError::plain)
+                    tokio::task::spawn_blocking(move ||manager.tool_action(&owner,&project,&args,validated_source.as_deref(),signal,mark_effects)).await.map_err(|e|dsh_tools::ToolBodyError::plain(e.to_string()))?.map_err(dsh_tools::ToolBodyError::plain)
                 })
             }),
         }).map(|_|())?;
@@ -532,6 +724,7 @@ impl Resources {
         args: &Value,
         validated_source: Option<&str>,
         signal: Arc<dyn Fn() -> bool + Send + Sync>,
+        mark_effects: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Result<Value, String> {
         if args
             .get("offset")
@@ -554,6 +747,7 @@ impl Resources {
                 if !self.policy().enabled {
                     return Err("垃圾槽已关闭".into());
                 }
+                mark_effects()?;
                 super::workspace_copy::prepare(
                     &self.current_for(project)?,
                     owner,
@@ -566,7 +760,7 @@ impl Resources {
             "promote" => {
                 let id = string("id")?;
                 let store = self.assert_owner(owner, id)?;
-                super::workspace_copy::promote_validated(
+                super::workspace_copy::promote_validated_tracked(
                     &store,
                     id,
                     string("path")?,
@@ -576,12 +770,14 @@ impl Resources {
                         .ok_or("交付前请 inspect 目标并提供 expectedSha256")?,
                     validated_source,
                     signal,
+                    mark_effects,
                 )
             }
             "allocate" => {
                 if !self.policy().enabled {
                     return Err("垃圾槽已关闭".into());
                 }
+                mark_effects()?;
                 let store = self.current_for(project)?;
                 let kind = args.get("kind").and_then(Value::as_str).unwrap_or("script");
                 let mut lease = store.allocate(
@@ -604,6 +800,7 @@ impl Resources {
                 let store = self.assert_owner(owner, id)?;
                 match action {
                     "write" => {
+                        mark_effects()?;
                         let path = store.write_text(id, string("path")?, string("content")?)?;
                         let saved = std::fs::read(&path).map_err(|error| error.to_string())?;
                         Ok(json!({"id":id,"path":path,"bytes":saved.len(),"sha256":digest(&saved)}))
@@ -613,6 +810,7 @@ impl Resources {
                     ),
                     "pin" => {
                         let row = store.get(id)?;
+                        mark_effects()?;
                         store.retain(
                             id,
                             args.get("pinned").and_then(Value::as_bool).unwrap_or(true),
@@ -621,6 +819,7 @@ impl Resources {
                         Ok(json!({"id":id}))
                     }
                     "release" => {
+                        mark_effects()?;
                         store.retain(id, store.get(id)?.pinned, false)?;
                         Ok(json!({"id":id,"state":"retained"}))
                     }

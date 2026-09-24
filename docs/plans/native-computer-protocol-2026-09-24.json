@@ -1,0 +1,37 @@
+{
+  "recordedAt": "2026-09-24T20:31:04.984235+08:00",
+  "status": "protocol_validation_implemented_execution_integration_pending",
+  "installed": false,
+  "published": false,
+  "references": [
+    "https://developers.openai.com/api/docs/guides/tools-computer-use",
+    "https://developers.openai.com/api/docs/guides/tools-computer-use-integration"
+  ],
+  "checks": {
+    "path": "D:\\codex操作目录\\learning-repair-20260922\\native-computer-protocol-tests.log",
+    "sha256": "c86e345eb63d06de09a4397d2964d9a9600b356e0fdc0038f56ab1b2a2f87351",
+    "results": [
+      "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 103 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s"
+    ]
+  },
+  "files": {
+    "crates/core/llm/src/computer_protocol.rs": "020ceced6628fcccc1d5fbda2430b54750fc96a9f8f9d16ad527e5b8ea021b66",
+    "crates/core/llm/src/lib.rs": "1df874bd8a631dbd656a6927b2fa988f46a1f77e22645b61ea004a1ba6aa1a01",
+    "crates/llm/llm-deepseek/src/responses_stream.rs": "18e6740200a878c5ebe768314927022e242ac2b638adab30680a569ddd78077d",
+    "crates/llm/llm-deepseek/src/responses_stream_tests.rs": "0be20a9ddf333876d9b237e4e6d90df63cb64c019c48a1a4778fed8d1d819416"
+  },
+  "implemented": [
+    "Shared bounded native computer action parser retains action order, modifier keys, drag paths, call IDs and unacknowledged safety checks.",
+    "Responses streaming supports completed native calls when the integration is explicitly enabled; disabled integration fails explicitly instead of silently reporting successful completion.",
+    "Completed action changes, repeated call IDs, unfinished responses and invalid actions cannot emit executable tool calls.",
+    "Action arrays use atomic snapshots, avoiding stale partial actions and drag-path suffixes."
+  ],
+  "remaining": [
+    "Production enablement remains disabled until native tool registration and execution are wired.",
+    "Implement native tool advertisement, exact replay matching and call-scoped screenshot result serialization without borrowing another tool image.",
+    "Connect all native actions to controller identity/permission/viewport/cancellation gates, including modifier keys and full drag paths.",
+    "Complete protocol errors, target generation changes, partial batch failures, safety-check confirmation, GUI and real-provider acceptance.",
+    "All original installation, platform, diagnostic closure and release gates remain outstanding."
+  ]
+}

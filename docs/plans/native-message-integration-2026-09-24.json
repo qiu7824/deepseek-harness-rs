@@ -1,0 +1,117 @@
+{
+  "recordedAt": "2026-09-24T09:28:27.065714+08:00",
+  "status": "source_integration_in_progress",
+  "installed": false,
+  "published": false,
+  "scope": "全部未完成项及已有修复的统一集成；诊断分组和历史候选仅供追溯。",
+  "sourceRoot": "D:\\codex操作目录\\learning-repair-20260922\\cold-history-memory-source",
+  "sourceHead": "8ac58ecd1488ea6018b6d058a39b3f0b659e69ab",
+  "sessionRuntimeFormatVersion": 3,
+  "implemented": [
+    "原生 tool 角色、消息级调用关联与失败标记；原始包装结果兼容读取。",
+    "追加与恢复统一验证调用关联；内容裁剪保持身份、来源及错误元数据。",
+    "生产者来源贯穿上下文、压缩、模型切换、Web 与 Flutter 展示。",
+    "工具图片计入请求限额，卸载标记保留原附件且禁止重新读取、上传或重复选择。",
+    "文件引用、工具变更及插件扩展的持久消息类型；尚未投影的文件和未启用的保留块显式拒绝进入提供方请求。",
+    "会话、轨迹与产物视图同时识别历史和原生工具结果，空成功结果与失败结果分别处理。"
+  ],
+  "checks": {
+    "llm_and_session": {
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-native-provider-tests.log",
+      "results": [
+        {
+          "passed": 5,
+          "ignored": 0
+        },
+        {
+          "passed": 100,
+          "ignored": 0
+        },
+        {
+          "passed": 70,
+          "ignored": 2
+        }
+      ]
+    },
+    "native_session_flow": {
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-native-session-tests.log",
+      "results": [
+        {
+          "passed": 70,
+          "ignored": 2
+        },
+        {
+          "passed": 2,
+          "ignored": 0
+        }
+      ]
+    },
+    "agent_lifecycle": {
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-agent-lifecycle-tests.log",
+      "results": [
+        {
+          "passed": 2,
+          "ignored": 0
+        },
+        {
+          "passed": 43,
+          "ignored": 0
+        }
+      ]
+    },
+    "image_projection": {
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-image-projection-tests.log",
+      "results": [
+        {
+          "passed": 3,
+          "ignored": 0
+        }
+      ]
+    },
+    "host_and_api_compile": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-schema-final-check.log"
+    },
+    "flutter_analysis": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-flutter-analyze.log"
+    },
+    "flutter_native_messages": {
+      "passed": true,
+      "log": "D:\\codex操作目录\\learning-repair-20260922\\v4-flutter-message-tests.log"
+    }
+  },
+  "webChecks": {
+    "passed": [
+      "native_message_format_harness.cjs",
+      "partial_deliverables_harness.cjs",
+      "compaction_lifecycle_dom_harness.cjs"
+    ],
+    "sourceAndDistSynced": true,
+    "manifestEntries": 45
+  },
+  "sourceSha256": {
+    "crates/core/llm/src/message.rs": "19cbc63cd60132a3d5ee5f1bb454515a54606bfc27beb6c6a2b029ea49bc9ca1",
+    "crates/core/llm/src/types.rs": "c591b681859b737f57cac89c06ff407dd26b1986145f5c21f9ce18c2aebf4050",
+    "crates/core/llm/src/content.rs": "b4d1c041be9f781dee6640f9fc3c9762a3983cea47b384249b0b15d3343dcd7a",
+    "crates/core/session/src/store.rs": "447fa49923802e5170ceaf1720820a01c00fab16ea3d5658b254c04356d4bae5",
+    "crates/core/session/src/surface.rs": "ad523b0a7665fb1caf592d128d9030a5ec78659ad7314738a9caa6f913f99f4c",
+    "crates/core/session/src/image_offload.rs": "6e494c66a2955ea55fd57664af3357063d233d2fafe85951b39718ee16c238e4",
+    "crates/llm/llm-deepseek/src/serialize.rs": "fdb1f0712c5a8a9ccb3ba37cb8b8bf01cac5b3af1235d6d198f710e08c02e716",
+    "crates/llm/llm-deepseek/src/messages.rs": "99953f9b3dbfa46516164061a3bfaf4c5ac06aeb0e7d0747bf584ca58863c3a0",
+    "web/src/runtime-plugins/connection.js": "302e0d4bce34f6f1136f199f78e6e0065fac703f7365fb94dcc9d36de0fe40e4",
+    "web/src/runtime-plugins/ui-conversation.js": "19d6c24f735a07d877034d1aecef044f773c73111291ac1513cd276e17c50281",
+    "web/src/runtime-plugins/ui-trajectory.js": "f603087e40f90fd0ba55616cddf0bf02c053cc963ee7759801650e5f481c7de8",
+    "web/src/runtime-plugins/ui-deliverables.js": "38c1288c961de93bb8db2470427c6e413c51e9563395cd4902b04085d7769209",
+    "packages/dsh_client_dart/lib/src/transcript.dart": "1be6dfb05f8f19f8177fc834a68c13de0192fd9c45da2726344929482bf769b6"
+  },
+  "remaining": [
+    "Session V4 原生持久化读写、自动代际迁移、继承边界及残尾恢复的实际后端接入；当前格式常量仍为 3。",
+    "结构化文件附件的存储、授权句柄投影和完整客户端接入。",
+    "完整目标其余功能、安装版验收、Host 全生命周期峰值门槛、多平台打包和 GitHub/蓝奏发布核验。"
+  ],
+  "diagnosticClosure": {
+    "deleted": 0,
+    "reason": "尚未部署或原案闭环的修复不删除诊断。"
+  }
+}

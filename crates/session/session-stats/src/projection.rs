@@ -8,8 +8,10 @@
 //! entered step, in a `finally`, so completed, failed, cancelled, and
 //! max-tokens steps all land one.
 //!
-//! The wall-time folds mirror the client window fold field by field: model
-//! time is `step/start` → `assistant/message`, first token is the first
+//! Model time sums monotonic network durations from terminal request phases,
+//! including failed, cancelled and superseded attempts. Legacy records without
+//! request timing fall back to step start → message or the closing boundary.
+//! First token is the first
 //! non-empty delta chunk and survives an in-step `llm/retry`, decode spans
 //! first token → assembled message on steps that also report output tokens,
 //! and tool time pairs `tool/call` → `tool/result` by callId.
@@ -75,6 +77,36 @@ fn number(state: &serde_json::Value, key: &str) -> u64 {
         .expect("sessionStats state field")
 }
 
+fn measured_attempt(data: &serde_json::Value) -> Option<serde_json::Value> {
+    if data["measurement"] != "request-average" {
+        return None;
+    }
+    let instance = data["executionInstanceId"]
+        .as_str()
+        .filter(|v| !v.is_empty())?;
+    let attempt = data["attemptId"].as_str().filter(|v| !v.is_empty())?;
+    let duration = data.get("networkElapsedMs")?;
+    if !duration.is_null() && duration.as_u64().is_none() {
+        return None;
+    }
+    Some(serde_json::json!([
+        instance,
+        attempt,
+        data["turn"],
+        data["step"]
+    ]))
+}
+
+fn legacy_model_elapsed(open: &serde_json::Value, end: i64) -> u64 {
+    if open["hasRequestTiming"] == true {
+        return 0;
+    }
+    open["startTime"]
+        .as_i64()
+        .map(|start| end.saturating_sub(start).max(0) as u64)
+        .unwrap_or(0)
+}
+
 /// The `sessionStats` unit registered on `ctx.sessionProjections`
 /// (exported for the unit spec).
 pub fn session_stats_projection_definition() -> ProjectionDefinition {
@@ -83,7 +115,7 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
             "turns": 0, "steps": 0,
             "llmMs": 0, "toolMs": 0, "ttftMs": 0, "ttftSteps": 0,
             "decodeMs": 0, "decodeTokens": 0,
-            "requestMs":0,"requestOutputTokens":0,"requestSamples":0,"requestSources":{},"requestPhase":null,"lastMeasuredAttempt":null,
+            "requestMs":0,"requestOutputTokens":0,"requestSamples":0,"requestSources":{},"requestPhase":null,"lastMeasuredAttempt":null,"lastTimedAttempt":null,
             "lastTurn": serde_json::Value::Null,
             "openStep": serde_json::Value::Null,
             "pendingCalls": {},
@@ -98,6 +130,26 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                 "request/phase" => {
                     let mut next = state.clone();
                     next["requestPhase"] = data.clone();
+                    if let Some(identity) = measured_attempt(data) {
+                        let open = &state["openStep"];
+                        if !open.is_null()
+                            && open.get("turn") == data.get("turn")
+                            && open.get("step") == data.get("step")
+                        {
+                            next["openStep"]["hasRequestTiming"] = serde_json::json!(true);
+                        }
+                        if matches!(
+                            data["phase"].as_str(),
+                            Some("completed" | "failed" | "cancelled" | "superseded")
+                        ) && state["lastTimedAttempt"] != identity
+                        {
+                            next["lastTimedAttempt"] = identity;
+                            next["llmMs"] = serde_json::json!(
+                                number(state, "llmMs")
+                                    .saturating_add(data["networkElapsedMs"].as_u64().unwrap_or(0))
+                            );
+                        }
+                    }
                     if data["phase"] == "completed" && data["measurement"] == "request-average" {
                         if let (
                             Some(duration),
@@ -205,7 +257,8 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                     let start_time = open.get("startTime").and_then(|t| t.as_i64()).unwrap_or(0);
                     let mut next = state.clone();
                     next["llmMs"] = serde_json::json!(
-                        number(state, "llmMs") + (event.time - start_time).max(0) as u64
+                        number(state, "llmMs")
+                            .saturating_add(legacy_model_elapsed(open, event.time))
                     );
                     next["openStep"] = serde_json::Value::Null;
                     let first_token = open.get("firstTokenTime").and_then(|t| t.as_i64());
@@ -264,6 +317,16 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                 "step/end" => {
                     let turn = data.get("turn");
                     let mut next = state.clone();
+                    let open = &state["openStep"];
+                    if !open.is_null()
+                        && open.get("turn") == turn
+                        && open.get("step") == data.get("step")
+                    {
+                        next["llmMs"] = serde_json::json!(
+                            number(state, "llmMs")
+                                .saturating_add(legacy_model_elapsed(open, event.time))
+                        );
+                    }
                     if state.get("lastTurn") == turn {
                         // same turn: turns unchanged
                     } else {
@@ -279,10 +342,19 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
                         .get("pendingCalls")
                         .and_then(|calls| calls.as_object())
                         .expect("pendingCalls object");
-                    if pending.is_empty() && state["requestPhase"].is_null() {
+                    let open = &state["openStep"];
+                    let closes_step = !open.is_null() && open.get("turn") == data.get("turn");
+                    if pending.is_empty() && state["requestPhase"].is_null() && !closes_step {
                         Arc::clone(state_value)
                     } else {
                         let mut next = state.clone();
+                        if closes_step {
+                            next["llmMs"] = serde_json::json!(
+                                number(state, "llmMs")
+                                    .saturating_add(legacy_model_elapsed(open, event.time))
+                            );
+                            next["openStep"] = serde_json::Value::Null;
+                        }
                         next["requestPhase"] = serde_json::Value::Null;
                         next["pendingCalls"] = serde_json::json!({});
                         cordis::arc(next)
@@ -360,6 +432,6 @@ pub fn session_stats_projection_definition() -> ProjectionDefinition {
         init,
         apply,
         view,
-        state_version: 2,
+        state_version: 3,
     }
 }

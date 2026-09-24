@@ -16,6 +16,15 @@ mod native;
 mod output;
 
 fn shell_runtime_failure(message: String) -> ToolBodyError {
+    for code in ["SANDBOX_BUSY", "SANDBOX_QUARANTINED"] {
+        if message.starts_with(&format!("[{code}]")) {
+            return ToolBodyError::coded(message, "ShellRuntimeError", code).with_receipt(serde_json::json!({
+                "kind":"foreground", "phase":"startup", "processState":"not_started", "commandStarted":false,
+                "completion":"failed", "effects":"none", "exitCode":null, "failureStage":"slot-admission",
+                "retryAdvice":if code == "SANDBOX_BUSY" {"wait-for-slot"} else {"inspect-quarantine"}
+            }));
+        }
+    }
     for code in [
         "SANDBOX_UNAVAILABLE",
         "SANDBOX_SETUP_FAILED",
@@ -674,17 +683,17 @@ impl ToolPwshService {
                         receipt["retryContext"] = retry_context;
                         let output = output::render_result(&receipt);
                         if result.aborted {
-                            return Err(ToolBodyError::coded(format!("PowerShell command cancelled\n{output}"), "AbortError", "SHELL_ABORTED"));
+                            return Err(ToolBodyError::coded(format!("PowerShell command cancelled\n{output}"), "AbortError", "SHELL_ABORTED").with_receipt(receipt));
                         }
                         if result.timed_out {
-                            return Err(ToolBodyError::coded(format!("PowerShell command timed out after {} ms\n{output}", result.timeout_ms), "ShellError", "SHELL_TIMEOUT"));
+                            return Err(ToolBodyError::coded(format!("PowerShell command timed out after {} ms\n{output}", result.timeout_ms), "ShellError", "SHELL_TIMEOUT").with_receipt(receipt));
                         }
                         if let Some(sandbox) = &result.sandbox {
                             if sandbox.runner_failed == Some(true) {
-                                return Err(ToolBodyError::coded(format!("Sandbox startup or cleanup failed; inspect the runtime before retrying the command.\n{output}"), "SandboxError", "SANDBOX_RUNNER_FAILED"));
+                                return Err(ToolBodyError::coded(format!("Sandbox startup or cleanup failed; inspect the runtime before retrying the command.\n{output}"), "SandboxError", "SANDBOX_RUNNER_FAILED").with_receipt(receipt));
                             }
                             if sandbox.denied {
-                                return Err(ToolBodyError::coded(format!("The execution policy denied an operation. Diagnose the specific target and authorized scope before requesting any additional permission.\n{output}"), "SandboxError", "SANDBOX_DENIED"));
+                                return Err(ToolBodyError::coded(format!("The execution policy denied an operation. Diagnose the specific target and authorized scope before requesting any additional permission.\n{output}"), "SandboxError", "SANDBOX_DENIED").with_receipt(receipt));
                             }
                         }
                         if (result.exit_code != Some(0) || result.signal.is_some()) && !allow_nonzero {

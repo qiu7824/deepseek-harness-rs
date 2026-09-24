@@ -22,6 +22,29 @@ window.__ModuleLoader__.load({
       return value;
     }
     const checkerNames={manual:"人工验收",text:"文本内容",json:"JSON 内容",image:"图片尺寸与通道",office_package:"Office 文件结构",tool_result:"执行结果"};
+    function blockerText(message,task){
+      const known={
+        "Current goal requirements are unavailable; acceptance reuse is blocked until they can be read":"暂时无法读取当前目标，恢复读取后才能核对验收证据。",
+        "Linked task has no trusted goal requirements binding; explicitly revise or create a successor before reuse":"任务尚未绑定可信的目标版本，请编辑要求或创建后续任务，核对并采用当前目标。",
+        "Linked task has no trusted goal requirements binding":"任务尚未绑定可信的目标版本，请核对并采用当前目标。",
+        "Goal requirements changed or the linked goal is no longer current; old acceptance does not satisfy the current goal":"目标已变化，旧验收不再适用；请编辑要求或创建后续任务，并重新验收。",
+        "Task was cancelled; only an explicit user continuation may resume it.":"任务已取消，需要明确继续此任务后才能恢复。",
+        "Current inputs have not been validated":"当前文件与输入尚未验收。",
+        "Refreshed evidence does not match the completed input identities":"复核证据与原完成版本不一致，请检查文件版本后重新验收。",
+        "The tested skill revision was not loaded by a recorded skill_candidate read":"缺少待验收技能版本的加载记录，请加载该版本后重新验证。"
+      };
+      if(known[message])return known[message];
+      const checkName=id=>task?.spec.acceptanceChecks.find(check=>check.id===id)?.description||id;
+      let match=/^Acceptance (.+) has not passed$/.exec(message);
+      if(match)return `验收项“${checkName(match[1])}”尚未通过。`;
+      match=/^Acceptance (.+) uses an obsolete checker; revalidate with (.+) before reusing this evidence$/.exec(message);
+      if(match)return `验收项“${checkName(match[1])}”使用了旧检查规则，需要重新验收。`;
+      match=/^Output (.+) has no verified identity$/.exec(message);
+      if(match)return `产物“${match[1]}”尚无已核验版本。`;
+      match=/^Step (.+) is (Prepared|Dispatched|Running|EffectObserved|Failed|Unknown)$/.exec(message);
+      if(match){const state={Prepared:"prepared",Dispatched:"dispatched",Running:"running",EffectObserved:"effect_observed",Failed:"failed",Unknown:"unknown"}[match[2]];return `步骤“${match[1]}”：${labels[state]}，请核对执行与恢复记录。`;}
+      return message;
+    }
     const draftPrefix="dsh:task-requirements:v2:",volatileDrafts=new Map();
     let draftSequence=0;
     const clone=value=>JSON.parse(JSON.stringify(value));
@@ -172,7 +195,7 @@ window.__ModuleLoader__.load({
       const conflict=task.revision!==draft.baseRevision,waiting=!!draft.pendingSave;
       const currentBinding=currentGoalRequirements&&currentGoalRequirements.goalId?{goalId:currentGoalRequirements.goalId,objectiveRevision:currentGoalRequirements.objectiveRevision}:null;
       const goalStatus=task.goalBindingStatus??(task.goalBinding?"current":"unlinked");
-      const goalConflict=!!task.goalBinding&&(goalStatus!=="current"||JSON.stringify(draft.expectedGoalBinding??null)!==JSON.stringify(task.goalBinding));
+      const goalConflict=!!draft.contract.goalId&&(!currentBinding||goalStatus==="unavailable"||draft.contract.goalId!==currentBinding.goalId||draft.expectedGoalBinding?.goalId!==currentBinding.goalId||draft.expectedGoalBinding?.objectiveRevision!==currentBinding.objectiveRevision);
       const save=async()=>{
         if(inFlight.current)return;
         let payload=draft.pendingSave;
@@ -183,7 +206,7 @@ window.__ModuleLoader__.load({
           if(!result.task?.taskId)throw new Error("保存回执缺少任务标识，请使用相同标识重试核实。");
           const warning=completeDraft(sending,result.task.taskId);
           if(active.current)await onSaved(result.task.taskId,warning);
-        }catch(error){if(active.current){setError(revisionError(error));if(["TASK_REVISION_CONFLICT","TASK_ENVIRONMENT_CHANGED","TASK_SUCCESSOR_REQUIRED","TASK_INVALID_REVISION_MODE","TASK_ACTIVE_CONTRACT","TASK_INVALID_CONTRACT","TASK_GOAL_REQUIREMENTS_CHANGED","TASK_GOAL_DETACH_REQUIRES_SUCCESSOR"].includes(error.code)&&rejectDraft(sending,error.code)){const next=freshDraft({...latest.current,pendingSave:null},writer.current);store(next);setDraft(next);if(error.code==="TASK_REVISION_CONFLICT")void onReload();}}}
+        }catch(error){if(active.current){setError(revisionError(error));if(["TASK_REVISION_CONFLICT","TASK_ENVIRONMENT_CHANGED","TASK_SUCCESSOR_REQUIRED","TASK_INVALID_REVISION_MODE","TASK_ACTIVE_CONTRACT","TASK_INVALID_CONTRACT","TASK_GOAL_REQUIREMENTS_CHANGED","TASK_GOAL_DETACH_REQUIRES_SUCCESSOR"].includes(error.code)&&rejectDraft(sending,error.code)){const next=freshDraft({...latest.current,pendingSave:null},writer.current);store(next);setDraft(next);if(["TASK_REVISION_CONFLICT","TASK_GOAL_REQUIREMENTS_CHANGED"].includes(error.code))void onReload();}}}
         finally{inFlight.current=false;if(active.current)setSaving(false);}
       };
       const preserveCurrent=()=>{const copy=freshDraft({...latest.current},crypto.randomUUID());persistDraft(copy);setCopies(draftRecords(sessionId,task.taskId));};
@@ -191,7 +214,7 @@ window.__ModuleLoader__.load({
       return h("article",{className:"requirement-editor","aria-label":"编辑任务要求"},h("h3",null,"编辑任务要求"),h("p",null,"要求变更后需要重新验收；执行记录、未知效果和历史版本会保留。保存不会自动启动任务。"),error&&h("p",{role:"alert"},error),storageError&&h("p",{role:"alert"},storageError),
         copies.filter(row=>row.key!==key&&row.key!==origin.current?.key).length>0&&h("details",null,h("summary",null,"其他窗口或先前保留的草稿"),...copies.filter(row=>row.key!==key).map(row=>h("div",{className:"actions",key:row.key},h("span",null,`${new Date(row.value.savedAt).toLocaleString()} · ${row.value.contract.objective||"未填写目标"}`),h("button",{type:"button",disabled:saving||waiting,onClick:()=>restore(row)},"载入此草稿")))),
         conflict&&!waiting&&h("fieldset",null,h("legend",null,"版本已变化"),h("p",null,`草稿基于版本 ${draft.baseRevision}，当前为版本 ${task.revision}。`),h("details",null,h("summary",null,"查看当前已保存要求"),h(ContractRequirementsForm,{contract:editorContract(task.spec),disabled:true})),h("div",{className:"actions"},h("button",{type:"button",disabled:saving,onClick:()=>update({baseRevision:task.revision})},"保留我的内容并使用当前版本"),h("button",{type:"button",disabled:saving,onClick:()=>{preserveCurrent();origin.current=null;update({baseRevision:task.revision,contract:editorContract(task.spec),mode:task.state==="completed"?"successor":"in_place"});}},"使用当前已保存要求"))),
-        goalConflict&&!waiting&&h("fieldset",null,h("legend",null,"目标要求已变化"),h("p",null,goalStatus==="unavailable"?"当前目标要求暂时不可用，不能复用旧验收。":"任务绑定的目标版本已变化；请明确采用当前目标后再保存。"),currentGoalRequirements&&h("details",null,h("summary",null,"查看当前目标"),h("p",null,currentGoalRequirements.objective||"（目标内容不可用）")),h("div",{className:"actions"},h("button",{type:"button",disabled:saving||!currentBinding,onClick:()=>update({expectedGoalBinding:currentBinding})},"核对并采用当前目标"))),
+        goalConflict&&!waiting&&h("fieldset",null,h("legend",null,"目标要求已变化"),h("p",null,goalStatus==="unavailable"?"当前目标要求暂时不可用，不能复用旧验收。":"任务尚未绑定当前目标版本；请核对任务要求并明确采用当前目标后再保存。"),currentGoalRequirements&&h("details",null,h("summary",null,"查看当前目标"),h("p",null,currentGoalRequirements.objective||"（目标内容不可用）")),h("div",{className:"actions"},h("button",{type:"button",disabled:saving||!currentBinding||goalStatus==="unavailable",onClick:()=>update({expectedGoalBinding:currentBinding,contract:{...latest.current.contract,goalId:currentBinding.goalId}})},"核对并采用当前目标"))),
         h("label",null,"保存方式",h("select",{value:draft.mode,disabled:saving||waiting,onChange:e=>update({mode:e.target.value})},h("option",{value:"in_place",disabled:task.state==="completed"},task.state==="cancelled"?"更新此任务，保持已取消":"更新此任务"),h("option",{value:"successor",disabled:!["completed","cancelled"].includes(task.state)},"创建后续任务，保留原任务"))),
         task.state==="completed"&&h("p",null,"原任务保持已完成；保存将创建关联原版本的新任务。"),h(ContractRequirementsForm,{contract:draft.contract,disabled:saving||waiting,onChange:contract=>update({contract})}),
         waiting&&h("p",{role:"status"},saving?"正在保存要求…":"上次保存结果尚未确认；草稿及保存标识已保留，重试不会重复创建任务。"),h("div",{className:"actions"},h("button",{type:"button",disabled:saving||(!waiting&&(conflict||goalConflict))||(!waiting&&task.state==="completed"&&draft.mode!=="successor"),onClick:save},waiting?"重试保存并核实":draft.mode==="successor"?"保存为后续任务":"保存任务要求"),h("button",{type:"button",onClick:()=>{store(latest.current);onClose();}},"收起并保留草稿")));
@@ -268,7 +291,7 @@ window.__ModuleLoader__.load({
             confirmation?.action==="cancel"&&h("div",{className:"actions"},h("span",null,"取消后保留执行与副作用记录。已经发生的操作不会回滚。"),h("button",{disabled:locked,onClick:()=>act("cancel")},"确认取消"),h("button",{disabled:locked,onClick:()=>setConfirmation(null)},"保留任务"))),
           editing&&h(TaskRequirementsEditor,{key:sessionId+":"+task.taskId,sessionId,task,currentGoalRequirements:detail.currentGoalRequirements,onSaved:edited,onClose:()=>setEditing(false),onReload:()=>load(task.taskId).catch(e=>setError(e.message))}),
           historyOpen&&h(RequirementsHistory,{key:sessionId+":"+task.taskId,sessionId,taskId:task.taskId}),
-          detail.blockers.length>0&&h("article",null,h("h3",null,"尚未满足的完成条件"),h("ul",null,...detail.blockers.map((message,index)=>h("li",{key:index},message)))),
+          detail.blockers.length>0&&h("article",null,h("h3",null,"尚未满足的完成条件"),h("ul",null,...detail.blockers.map((message,index)=>h("li",{key:index,title:message},blockerText(message,task))))),
           task.acceptanceRefresh&&h("p",null,"以下展示当前复核结果；原完成记录和原人工确认保持不变。"),
           h("article",null,h("h3",null,"验收要求"),...task.spec.acceptanceChecks.map(check=>{
             const result=currentResults.find(result=>result.checkId===check.id);
@@ -311,7 +334,7 @@ window.__ModuleLoader__.load({
       const style=document.createElement("style");
       const editorCss=".dshTaskExecution .requirement-form,.dshTaskExecution .requirement-value{display:grid;gap:12px;min-width:0}.dshTaskExecution input:not([type=checkbox]),.dshTaskExecution textarea{box-sizing:border-box;width:100%;min-width:0;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-specific-input-major);color:inherit;font:inherit;line-height:1.6}.dshTaskExecution textarea{resize:vertical;min-height:76px}.dshTaskExecution input:disabled,.dshTaskExecution textarea:disabled{opacity:.75}.dshTaskExecution .requirement-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}.dshTaskExecution .requirement-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.dshTaskExecution .requirement-checkbox{display:flex;align-items:center;gap:8px}.dshTaskExecution .requirement-checkbox input{width:16px;height:16px;accent-color:var(--dsw-alias-state-business-primary)}.dshTaskExecution .requirement-editor legend{padding:0 5px;font-weight:600}.dshTaskExecution .requirement-editor details>div{margin-top:10px}.dshTaskExecution .requirement-value{border-left:2px solid var(--dsw-alias-border-l2);padding-left:12px}";
       style.textContent=css+".dshTaskExecutionTrigger,.dshTaskExecutionClose{font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;cursor:pointer}.dshTaskExecutionDialog{box-sizing:border-box;width:min(1080px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:12px 0;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);overflow:auto}.dshTaskExecutionDialog::backdrop{background:rgba(0,0,0,.4)}.dshTaskExecutionClose{display:block;margin:0 16px 0 auto}.dshTaskExecutionTrigger:focus-visible,.dshTaskExecutionClose:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}";
-      style.textContent+=editorCss;document.head.appendChild(style);ctx.effect(()=>()=>style.remove(),"task execution appearance");
+      style.textContent+=editorCss+".dshTaskExecution{grid-template-columns:minmax(0,1fr)}.dshTaskExecution>*,.dshTaskExecution select{min-width:0}.dshTaskExecution select{width:100%}.dshTaskExecution h2,.dshTaskExecution h3,.dshTaskExecution li{overflow-wrap:anywhere}";document.head.appendChild(style);ctx.effect(()=>()=>style.remove(),"task execution appearance");
       ctx.slots.inject("conversation.session.header.actions",()=>ctx.slots.register({name:"conversation.session.header.actions",id:"task-execution",order:12,inject:sessionId=>({sessionId})},TaskExecutionAction));
     }
     return {apply,inject:["slots"],test:{TaskExecutionView,TaskExecutionAction,TaskRequirementsEditor,RequirementsHistory,editorContract,savedContract,draftRecords,outcomeLabels:labels,request}};

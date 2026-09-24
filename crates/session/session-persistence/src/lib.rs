@@ -13,8 +13,8 @@ pub mod write_behind;
 pub use coordinator::{
     DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS,
     MAX_WRITE_BATCH_DELAY_MS, PersistenceBackend, PersistenceCoordinator,
-    PersistenceCoordinatorOptions, SessionFormatUnsupportedError,
-    SessionPersistenceCorruptionError, StoredPrefix, StoredSuffix, session_format_version_refusal,
+    PersistenceCoordinatorOptions, SessionFormatUnsupportedError, SessionWriterLease,
+    SessionPersistenceCorruptionError, StoredPrefix, StoredSuffix, StoredEventNormalizer, session_format_version_refusal,
 };
 pub use history_window::{HistoryWindowSelection, HistoryWindowTooLarge, select_history_window};
 pub use index::{

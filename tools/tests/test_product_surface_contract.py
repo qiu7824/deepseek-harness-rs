@@ -61,29 +61,29 @@ class ProductSurfaceContractTests(unittest.TestCase):
         conversation = CONVERSATION.read_text(encoding="utf-8")
         runtime = RUNTIME.read_text(encoding="utf-8")
         self.assertIn('type: "button"', conversation[conversation.index("interruptible &&"):conversation.index("primaryLabel", conversation.index("interruptible &&"))])
-        self.assertIn("let stopPending = false", conversation)
         self.assertIn("await scopedConversation(sessions, sessionId).cancel()", conversation)
-        self.assertIn("stopPending = false", conversation)
+        self.assertIn("this.input.shells.get(session.sessionId)?.cancelPending()", conversation)
+        self.assertIn("stopPromptRequests(scope, ids, batch => this.cancelRequests(batch))", runtime)
         self.assertNotIn("scopedConversation(sessions, sessionId).cancel().catch(() => {})", conversation)
         self.assertIn('op: "stop"', runtime)
 
     def test_prompt_acceptance_cannot_be_overwritten_by_a_late_idle_frame(self):
         runtime = RUNTIME.read_text(encoding="utf-8")
-        prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
+        prompt = runtime[runtime.index("async sendPrompt("):runtime.index("async readAttachment", runtime.index("async sendPrompt("))]
         self.assertRegex(prompt, r"(?:const|let) runningRevisionAtStart = this\.runningRevision")
         self.assertIn("if (result.value.accepted && this.runningRevision === runningRevisionAtStart) this.handleRunning(result.value.running ?? true)", prompt)
         self.assertNotIn("this.running = true", prompt)
 
     def test_prompt_marks_send_attempt_before_returning_from_history_browse(self):
         runtime = RUNTIME.read_text(encoding="utf-8")
-        prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
+        prompt = runtime[runtime.index("async sendPrompt("):runtime.index("async readAttachment", runtime.index("async sendPrompt("))]
         attempted = prompt.index("this.promptAttempted = true")
         return_latest = prompt.index("await this.returnLatest()")
         self.assertLess(attempted, return_latest)
 
     def test_prompt_rebases_running_revision_after_returning_from_history_browse(self):
         runtime = RUNTIME.read_text(encoding="utf-8")
-        prompt = runtime[runtime.index("async sendPrompt(content, mode, requestId)"):runtime.index("async readAttachment", runtime.index("async sendPrompt(content, mode, requestId)"))]
+        prompt = runtime[runtime.index("async sendPrompt("):runtime.index("async readAttachment", runtime.index("async sendPrompt("))]
         return_latest = prompt.index("await this.returnLatest()")
         revision = prompt.index("runningRevisionAtStart = this.runningRevision", return_latest)
         self.assertLess(return_latest, revision)
@@ -93,8 +93,8 @@ class ProductSurfaceContractTests(unittest.TestCase):
         start = conversation.index("\n\t\t\tasync sink(session, text, imageIds, mode, sourceDraft) {")
         end = conversation.index("\n\t\t\tasync steerQueue(session, shell)", start)
         sink = conversation[start:end]
-        self.assertIn("await this.conversation().sendSession(session, text, imageIds, mode)", sink)
-        accepted = sink.index("await this.conversation().sendSession(session, text, imageIds, mode)")
+        self.assertIn("await this.conversation().sendSession(session, text, imageIds, mode, sourceDraft?.requestId)", sink)
+        accepted = sink.index("await this.conversation().sendSession(")
         committed = sink.index("shell?.commitAcceptedSend(text, imageIds, sourceDraft)")
         self.assertLess(accepted, committed)
         self.assertNotIn(".catch(() =>", sink)
@@ -137,7 +137,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
             subagent_prompt.index("STANDARD.decode(data)"),
         )
         self.assertIn("max_images_per_message", subagent_prompt)
-        self.assertIn("max_message_image_bytes", subagent_prompt)
+        self.assertIn(".message_byte_limit()", subagent_prompt)
+        self.assertIn(".saturating_sub(message_image_bytes)", subagent_prompt)
+        self.assertIn("message_image_bytes.checked_add(decoded_bytes)", subagent_prompt)
         self.assertIn(".admit_followup(parent", subagent_prompt)
         self.assertIn("store.save_images(&pending_images)", subagent_prompt)
         self.assertLess(
@@ -171,7 +173,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertNotIn("submit_admitted(", submit_followup)
         self.assertIn("self.commit_admitted(", submit_followup)
         self.assertIn("fn commit_admitted(", continuation)
-        self.assertIn("let message_id = runtime.submit_followup_with_context(", subagent_prompt)
+        self.assertIn("let message_id = match request_lease.publish(|_| {", subagent_prompt)
         self.assertIn("match store.save_images(&pending_images).await", subagent_prompt)
         self.assertIn("runtime.abort_followup(admission).await", subagent_prompt)
         self.assertIn("QueueImageThumb", conversation)
@@ -229,7 +231,8 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn('expectedRevision: state.namespace.revision', ui)
         self.assertIn('["allow-safe-only", "仅允许安全操作"]', ui)
         self.assertIn('["ask-every-time", "每次询问"]', ui)
-        self.assertIn("硬阻断始终生效", ui)
+        self.assertIn('["follow-access", "跟随访问模式（默认）"]', ui)
+        self.assertIn("敏感与凭据规则不会被完全访问自动跳过", ui)
 
     def test_security_settings_does_not_fan_out_session_history(self):
         ui = (ROOT / "web" / "dist" / "plugins" / "ui-settings-general.js").read_text(encoding="utf-8")
@@ -276,7 +279,8 @@ class ProductSurfaceContractTests(unittest.TestCase):
         source = (ROOT / "web" / "dist" / "plugins" / "ui-goal.js").read_text(encoding="utf-8")
         self.assertIn("try {", source)
         self.assertIn("finally {", source)
-        self.assertIn("pendingRef.current = false", source)
+        self.assertIn("current(token) && pendingRef.current === token", source)
+        self.assertIn("pendingRef.current = null", source)
         self.assertIn("setPending(false)", source)
         self.assertIn("actionError", source)
         host = (ROOT / "crates" / "host" / "apiproxy" / "src" / "proxy.rs").read_text(encoding="utf-8")
@@ -376,7 +380,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("dsh-better-sidebar", package["dsh"]["client"]["inject"])
         self.assertEqual(
             set(package["dsh"]["client"]["assets"]),
-            {"editor.js", "markdown.js", "mermaid.js", "pdf.js"},
+            {"editor.js", "markdown.js", "mermaid.js", "pdf.js", "docx.js"},
         )
         for marker in (
             "registerTab",
@@ -390,7 +394,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
             "__DSH_SIDEBAR_MERMAID__",
         ):
             self.assertIn(marker, client)
-        for name in ("editor.js", "markdown.js", "mermaid.js", "pdf.js"):
+        for name in ("editor.js", "markdown.js", "mermaid.js", "pdf.js", "docx.js"):
             asset = ROOT / "release/plugins/dsh-sidebar-workbench-suite/lib" / name
             self.assertTrue(asset.is_file())
             self.assertGreater(asset.stat().st_size, 50_000)
@@ -421,7 +425,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("$version = python tools/verify_release_version.py --print-version", workflow)
         self.assertNotIn("TrimStart('v')", workflow)
 
-    def test_release_workflow_gates_and_verifies_core_skin_executables(self):
+    def test_release_workflow_gates_and_verifies_core_executables(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         verifier = (ROOT / "tools" / "verify_release_package.py").read_text(encoding="utf-8")
         package = (ROOT / "tools" / "package_release.py").read_text(encoding="utf-8")
@@ -431,10 +435,10 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("tools.tests.test_rust_ui_contract", workflow)
         self.assertIn("python tools/verify_release_package.py", workflow)
         self.assertIn("--variant core", workflow)
-        self.assertIn("--variant skin", workflow)
+        self.assertNotIn("--variant skin", workflow)
         self.assertNotIn("--variant no-skin", workflow)
         self.assertIn("dsh-launcher", workflow)
-        self.assertIn("dsh-skin-installer", workflow)
+        self.assertNotIn("--bin dsh-skin-installer", workflow)
         self.assertIn("dsh-launcher", launcher_cargo)
         self.assertIn("zsui", launcher_cargo)
         self.assertIn("winresource", launcher_cargo)
@@ -481,7 +485,7 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn('Name: "chinesesimp"; MessagesFile: "{#ChineseMessages}"', installer)
         self.assertIn("ShowLanguageDialog=auto", installer)
         self.assertIn("LanguageDetectionMethod=uilanguage", installer)
-        self.assertIn('#if Variant == "core"', installer)
+        self.assertIn('#if Variant != "core"', installer)
         self.assertIn(r'DefaultDirName=D:\Program Files (x86)\DeepSeek Harness-rs\{#Variant}', installer)
         self.assertIn('UsePreviousAppDir=yes', installer)
         self.assertIn('DisableDirPage=no', installer)
@@ -495,16 +499,15 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("skin executable leaks bundled skin assets", verifier)
         self.assertIn("core archive leaks bundled skin assets", verifier)
         self.assertIn("skin_payload", package)
-        self.assertIn("deepseek-harness-rs-skin", package)
+        self.assertNotIn("build_skin_payload", package)
         skin_cargo = (ROOT / "crates" / "host" / "dsh-skin-installer" / "Cargo.toml").read_text(encoding="utf-8")
         skin_main = (ROOT / "crates" / "host" / "dsh-skin-installer" / "src" / "main.rs").read_text(encoding="utf-8")
         self.assertIn("dsh-skin-installer", skin_cargo)
         self.assertIn("PAYLOAD_MARKER", skin_main)
         self.assertIn("zip::ZipArchive", skin_main)
-        self.assertIn("skin_source = ROOT / \"target\" / \"release\"", package)
-        self.assertIn("build_skin_payload(skin_source", package)
+        self.assertNotIn("skin_source = ", package)
         self.assertIn("sys.path.insert", package)
-        self.assertIn("PE executable", verifier)
+        self.assertIn("core archive includes a retired skin payload", verifier)
         self.assertIn("ZipArchive", skin_installer)
         self.assertIn("PAYLOAD_MARKER", skin_installer)
         host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")

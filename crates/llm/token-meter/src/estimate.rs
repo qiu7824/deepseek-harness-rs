@@ -20,6 +20,15 @@ pub fn estimate_content(blocks: &[ContentBlock]) -> u64 {
     let mut tokens = 0u64;
     for block in blocks {
         match block {
+            ContentBlock::Image {
+                offloaded: Some(true),
+                ..
+            } => {
+                tokens += ceil_div(
+                    dsh_llm::OFFLOADED_IMAGE_TEXT.chars().count(),
+                    CHARS_PER_TOKEN,
+                ) + BLOCK_OVERHEAD;
+            }
             ContentBlock::Text { text } | ContentBlock::Reasoning { text } => {
                 tokens += ceil_div(text.chars().count(), CHARS_PER_TOKEN) + BLOCK_OVERHEAD
             }
@@ -33,12 +42,16 @@ pub fn estimate_content(blocks: &[ContentBlock]) -> u64 {
             ContentBlock::ToolResult { content, .. } => {
                 tokens += estimate_content(content) + BLOCK_OVERHEAD
             }
-            ContentBlock::Image { attachment } => {
+            ContentBlock::Image { attachment, .. } => {
                 // Provider-neutral folds retain structural pricing. The
                 // routed token meter replaces this with visual pricing only
                 // when the selected adapter declares one.
                 let json = serde_json::to_string(attachment).unwrap_or_default();
                 tokens += BLOCK_OVERHEAD + ceil_div(json.chars().count(), CHARS_PER_TOKEN)
+            }
+            other => {
+                let json = serde_json::to_string(other).unwrap_or_default();
+                tokens += BLOCK_OVERHEAD + ceil_div(json.chars().count(), CHARS_PER_TOKEN);
             }
         }
     }

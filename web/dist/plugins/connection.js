@@ -396,20 +396,18 @@ window.__ModuleLoader__.load({
 		/**
 		* Create and freeze one identified tool-result message.
 		* @param input - call identity, raw result blocks, and outcome.
-		* @returns an immutable user-role tool-result message.
+		* @returns an immutable tool message with flat content and call correlation.
 		*/
 		function createToolResultMessage(input) {
-			return createUserMessage({
+			return createMessage({
+				role: "tool",
+				toolCallId: input.callId,
+				isError: input.isError,
 				source: {
 					kind: "tool",
 					callId: input.callId
 				},
-				content: [{
-					type: "tool-result",
-					toolCallId: input.callId,
-					content: input.content,
-					isError: input.isError
-				}]
+				content: input.content
 			});
 		}
 		/**
@@ -442,6 +440,7 @@ window.__ModuleLoader__.load({
 		/** Runtime counterpart of the message-producing event union. */
 		const SURFACE_EVENT_TYPES = new Set([
 			"system/message",
+			"developer/message",
 			"user/message",
 			"assistant/message",
 			"tool/result"
@@ -469,7 +468,8 @@ window.__ModuleLoader__.load({
 		*/
 		function deriveEventMessage(event) {
 			switch (event.type) {
-				case "system/message": return event.data.message;
+				case "system/message":
+				case "developer/message": return event.data.message;
 				case "user/message": return event.data;
 				case "assistant/message":
 					if (event.data.message.content.length === 0) return null;
@@ -492,7 +492,7 @@ window.__ModuleLoader__.load({
 		/** Whether a runtime value is the exact positional-replacement shape. */
 		function isReplaceOp(value) {
 			const op = value;
-			return Object.keys(op).length === 3 && Object.hasOwn(op, "op") && Object.hasOwn(op, "start") && Object.hasOwn(op, "end") && op["op"] === "replace" && isEventSeq(op["start"]) && isEventSeq(op["end"]);
+			return Object.keys(op).length === 3 && op.op === "replace" && (Object.hasOwn(op,"startSeq") && Object.hasOwn(op,"endSeq") && isEventSeq(op.startSeq) && isEventSeq(op.endSeq) || Object.hasOwn(op,"start") && Object.hasOwn(op,"end") && isEventSeq(op.start) && isEventSeq(op.end));
 		}
 		/** Validate event-local surface eligibility and return its operation. */
 		function surfaceOpOf(event) {
@@ -507,7 +507,7 @@ window.__ModuleLoader__.load({
 			if (op === "append") return op;
 			if (op === null || typeof op !== "object" || Array.isArray(op)) throw new Error(`session event "${event.type}" carries an invalid surfaceOp`);
 			if (!isReplaceOp(op)) throw new Error(`session event "${event.type}" carries an invalid replace surfaceOp`);
-			return op;
+			return Object.hasOwn(op, "startSeq") ? {op:"replace",start:op.startSeq,end:op.endSeq} : op;
 		}
 		/** Validate cited source-event seqs against prior log entries and the replacement range. */
 		function assertProvenance(event, shadowedSeqs) {
@@ -567,22 +567,13 @@ window.__ModuleLoader__.load({
 				if (original?.type !== "tool/result") throw new Error("tool/result surface replacement must target a current tool/result");
 				const originalRest = { ...original.data };
 				const replacementRest = { ...event.data };
-				const originalResult = original.data.message.content[0];
-				const replacementResult = event.data.message.content[0];
-				originalRest["message"] = {
-					...original.data.message,
-					content: [{
-						...originalResult,
-						content: null
-					}]
+				const metadata = (message) => {
+					if (message.role === "tool" && Array.isArray(message.content)) return {...message, content: null};
+					if (message.role !== "user" || message.content?.length !== 1 || message.content[0]?.type !== "tool-result" || !Array.isArray(message.content[0].content)) throw new Error("invalid tool/result message");
+					return {...message, content: [{...message.content[0], content: null}]};
 				};
-				replacementRest["message"] = {
-					...event.data.message,
-					content: [{
-						...replacementResult,
-						content: null
-					}]
-				};
+				originalRest.message = metadata(original.data.message);
+				replacementRest.message = metadata(event.data.message);
 				if (!isDeepEqualJson(originalRest, replacementRest)) throw new Error("tool/result surface replacement may change only content");
 			}
 		}
@@ -5477,10 +5468,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			})]).optional()
 		});
 		/** Unified message envelope carried by transient queue frames. */
-		const messageSchema = object({
+		const messageSchema = looseObject({
 			id: string().min(1),
 			role: union([
 				literal("system"),
+				literal("developer"),
+				literal("tool"),
 				literal("user"),
 				literal("assistant")
 			]),
@@ -6039,6 +6032,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		* mirror of the handler's request table; key coverage compiler-enforced against RpcMethodMap).
 		*/
 		const UNARY_VALUE_SCHEMAS = {
+			"commands.activity": object({ active: boolean() }),
 			"session.list": sessionListValueSchema,
 			"session.search": sessionSearchValueSchema,
 			"session.create": sessionCreateValueSchema,
@@ -6049,6 +6043,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"session.fork": sessionForkValueSchema,
 			"session.prompt": sessionPromptValueSchema,
 			"session.attachment": sessionAttachmentValueSchema,
+			"session.fileAttachment": object({attachment:object({attachmentId:attachmentIdSchema,name:string(),bytes:number().int().nonnegative()}),path:string()}),
 			"session.updateQueue": sessionUpdateQueueValueSchema,
 			"session.cancel": sessionCancelValueSchema,
 			"subagent.list": subagentListValueSchema,
@@ -6214,6 +6209,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					}
 				};
 			}
+			commandActivity(sessionId, signal) {
+				return this.callUnary("commands.activity", { sessionId }, signal);
+			}
 			invalidateSettingsDescription() {
 				this.settingsDescriptionEpoch += 1;
 				this.settingsDescription = null;
@@ -6305,6 +6303,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				fork: (payload, signal) => this.callUnary("session.fork", payload, signal),
 				prompt: (payload, signal) => this.callUnary("session.prompt", payload, signal),
 				attachment: (payload, signal) => this.callUnary("session.attachment", payload, signal),
+				fileAttachment: (payload, signal) => this.callUnary("session.fileAttachment", payload, signal),
 				updateQueue: (payload, signal) => this.callUnary("session.updateQueue", payload, signal),
 				cancel: (payload, signal) => this.callUnary("session.cancel", payload, signal)
 			};
@@ -7378,7 +7377,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					/* v8 ignore next -- dense-array guard: i stays within [0, log.length),
 					so the undefined arm needs a sparse log no code path builds. */
 					if (candidate !== void 0 && candidate.type === "tool/call" && String(candidate.data.callId) === callId) {
-						const resultText = event.data.message.content[0].content.map((b) => b.type === "text" ? b.text : "").join("");
+						const resultMessage = event.data.message;
+						const resultText = (resultMessage.role === "tool" ? resultMessage.content : resultMessage.content[0].content).map((b) => b.type === "text" ? b.text : "").join("");
 						const view = presentResult(candidate.data.name, candidate.data.arguments, resultText);
 						return view === void 0 ? void 0 : {
 							for: "result",
@@ -7533,12 +7533,19 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			};
 			let lastTurn = null;
 			let openStep = null;
-            let lastMeasured=null;const sources=new Map();
+            let lastMeasured=null,lastTimed=null;const sources=new Map();
 			const pendingCalls = /* @__PURE__ */ new Map();
 			for (const event of log) switch (event.type) {
                 case "request/phase": {
                     const m=event.data;value.requestPhase=m;
                     const identity=JSON.stringify([m.executionInstanceId,m.attemptId,m.turn,m.step]);
+                    const measured=m.measurement==="request-average"&&typeof m.attemptId==="string"&&m.attemptId.length>0&&typeof m.executionInstanceId==="string"&&m.executionInstanceId.length>0&&Object.hasOwn(m,"networkElapsedMs")&&(m.networkElapsedMs===null||Number.isSafeInteger(m.networkElapsedMs)&&m.networkElapsedMs>=0);
+                    if(measured){
+                        if(openStep!==null&&openStep.turn===m.turn&&openStep.step===m.step)openStep.hasRequestTiming=true;
+                        if(["completed","failed","cancelled","superseded"].includes(m.phase)&&identity!==lastTimed){
+                            lastTimed=identity;value.llmMs+=m.networkElapsedMs??0;
+                        }
+                    }
                     if(m.phase==="completed"&&m.measurement==="request-average"&&m.attemptId&&m.executionInstanceId&&Number.isSafeInteger(m.networkElapsedMs)&&m.networkElapsedMs>0&&Number.isSafeInteger(m.outputTokens)&&m.outputTokens>=0&&identity!==lastMeasured){
                         lastMeasured=identity;value.requestMs+=m.networkElapsedMs;value.requestOutputTokens+=m.outputTokens;value.requestSamples++;
                         const key=JSON.stringify([m.executionInstanceId,m.provider,m.model]),source=sources.get(key)||{executionInstanceId:m.executionInstanceId,provider:m.provider,model:m.model,durationMs:0,outputTokens:0,samples:0};
@@ -7560,7 +7567,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					break;
 				case "assistant/message":
 					if (openStep === null || openStep.turn !== event.data.turn || openStep.step !== event.data.step) break;
-					value.llmMs += Math.max(0, event.time - openStep.startTime);
+					if(!openStep.hasRequestTiming)value.llmMs += Math.max(0, event.time - openStep.startTime);
 					if (openStep.firstTokenTime !== null) {
 						value.ttftMs += Math.max(0, openStep.firstTokenTime - openStep.startTime);
 						value.ttftSteps += 1;
@@ -7584,6 +7591,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					break;
 				}
 				case "step/end":
+					if(openStep!==null&&openStep.turn===event.data.turn&&openStep.step===event.data.step&&!openStep.hasRequestTiming)value.llmMs+=Math.max(0,event.time-openStep.startTime);
 					if (event.data.turn !== lastTurn) {
 						value.turns += 1;
 						lastTurn = event.data.turn;
@@ -7592,6 +7600,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					openStep = null;
 					break;
 				case "turn/end":
+                    if(openStep!==null&&openStep.turn===event.data.turn){if(!openStep.hasRequestTiming)value.llmMs+=Math.max(0,event.time-openStep.startTime);openStep=null;}
                     value.requestPhase=null;
 					pendingCalls.clear();
 					break;

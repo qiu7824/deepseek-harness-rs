@@ -253,10 +253,7 @@ fn validate_event(
                 let synthetic_not_started = event
                     .data
                     .get("message")
-                    .and_then(|value| value.get("content"))
-                    .and_then(|value| value.as_array())
-                    .and_then(|content| content.first())
-                    .and_then(|block| block.get("isError"))
+                    .and_then(|value| value.get("isError").or_else(|| value.get("content")?.as_array()?.first()?.get("isError")))
                     .and_then(|value| value.as_bool())
                     == Some(true)
                     && event
@@ -275,7 +272,27 @@ fn validate_event(
             }
         }
         "user/message" | "session/end-seed" => {}
-        "todo/write" | "request/header" | "request/context" if trace.open_turn.is_none() => {
+        // Task snapshots are shared state: session.updateTodos can commit a
+        // human edit while idle. They do not open a model-execution turn.
+        "todo/write" if trace.open_turn.is_none() => {
+            let valid = event
+                .data
+                .get("todos")
+                .cloned()
+                .and_then(|value| serde_json::from_value::<Vec<crate::TodoItem>>(value).ok())
+                .is_some_and(|items| {
+                    items.iter().all(|item| {
+                        !item.content.trim().is_empty() && item.content.trim() == item.content
+                    })
+                });
+            if !valid {
+                invariant_fail(
+                    fail,
+                    "idle todo/write requires a valid task snapshot".to_string(),
+                );
+            }
+        }
+        "request/header" | "request/context" if trace.open_turn.is_none() => {
             invariant_fail(
                 fail,
                 format!(
@@ -574,5 +591,79 @@ mod retirement_tests {
             "precommit bookkeeping must not retain historical payloads"
         );
         ctx.fiber.dispose().await;
+    }
+}
+
+#[cfg(test)]
+mod idle_todo_tests {
+    use super::*;
+    use serde_json::json;
+    use std::cell::RefCell;
+
+    fn event(seq: u64, kind: &str, data: serde_json::Value) -> SessionEvent {
+        serde_json::from_value(json!({"seq":seq,"time":seq,"type":kind,"data":data})).unwrap()
+    }
+
+    #[test]
+    fn human_todo_snapshots_replay_between_turns_without_opening_a_turn() {
+        let issues = RefCell::new(Vec::<String>::new());
+        let fail = |message: &str| issues.borrow_mut().push(message.to_string());
+        let mut trace = fresh_trace();
+        for e in [
+            event(0, "turn/start", json!({"turn":1})),
+            event(
+                1,
+                "turn/end",
+                json!({"turn":1,"reason":{"kind":"completed"}}),
+            ),
+            event(
+                2,
+                "todo/write",
+                json!({"todos":[{"content":"Human edit","status":"pending"}]}),
+            ),
+            event(3, "todo/write", json!({"todos":[]})),
+        ] {
+            let transition = validate_event(&trace, &e, &fail);
+            apply_transition(&mut trace, transition);
+        }
+        assert!(issues.borrow().is_empty(), "{:?}", issues.borrow());
+        assert!(trace.open_turn.is_none());
+        for kind in ["request/header", "request/context"] {
+            issues.borrow_mut().clear();
+            let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                validate_event(&trace, &event(4, kind, json!({})), &fail)
+            }));
+            assert!(rejected.is_err());
+            assert!(
+                issues
+                    .borrow()
+                    .iter()
+                    .any(|issue| issue.contains("turn-enclosed"))
+            );
+        }
+    }
+
+    #[test]
+    fn idle_todo_exception_rejects_malformed_snapshot_values() {
+        for data in [
+            json!({}),
+            json!({"todos":false}),
+            json!({"todos":[{"content":"","status":"pending"}]}),
+            json!({"todos":[{"content":"Task","status":"unknown"}]}),
+        ] {
+            let issues = RefCell::new(Vec::<String>::new());
+            let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                validate_event(&fresh_trace(), &event(0, "todo/write", data), &|message| {
+                    issues.borrow_mut().push(message.into())
+                })
+            }));
+            assert!(rejected.is_err());
+            assert!(
+                issues
+                    .borrow()
+                    .iter()
+                    .any(|issue| issue.contains("valid task snapshot"))
+            );
+        }
     }
 }

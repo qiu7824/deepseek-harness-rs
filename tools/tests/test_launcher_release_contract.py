@@ -119,14 +119,14 @@ class LauncherReleaseContractTests(unittest.TestCase):
         for removed in ("whale-song", "dragon-heir"):
             self.assertNotIn(f'id: "{removed}"', catalog)
 
-    def test_official_skin_is_the_default_of_the_skin_variant(self):
+    def test_core_has_no_packaged_default_skin(self):
         official = json.loads(
             (SKINS / "deepseek-official" / "skin.json").read_text(encoding="utf-8")
         )
         self.assertEqual(official["source"], "https://www.deepseek.com/harness/")
         package = PACKAGE.read_text(encoding="utf-8")
         verifier = VERIFIER.read_text(encoding="utf-8")
-        self.assertIn('default_skin = "deepseek-official"', package)
+        self.assertIn('"default_skin": None', package)
         self.assertIn('manifest.get("default_skin")', verifier)
 
     def test_package_defaults_use_the_real_host_schema_and_preserve_user_settings(self):
@@ -135,9 +135,7 @@ class LauncherReleaseContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         verifier = VERIFIER.read_text(encoding="utf-8")
-        self.assertIn("settings.defaults.json", package)
-        self.assertIn('{"ui-theme": {"preference": default_skin}}', package)
-        self.assertNotIn('{"ui-theme": {"skin": default_skin}}', package)
+        self.assertNotIn("settings.defaults.json", package)
         self.assertIn('packaged_resource("settings.defaults.json")', host)
         self.assertIn("merge_package_defaults", host)
         self.assertIn("settings.defaults.json", verifier)
@@ -145,23 +143,24 @@ class LauncherReleaseContractTests(unittest.TestCase):
     def test_windows_variants_have_distinct_installer_and_shortcut_identity(self):
         installer = INSTALLER.read_text(encoding="utf-8")
         app_ids = re.findall(r'#define MyAppId "([^"]+)"', installer)
-        self.assertEqual(len(app_ids), 3)
-        self.assertEqual(len(set(app_ids)), 3)
+        self.assertEqual(len(app_ids), 1)
+        self.assertEqual(app_ids[0], "{{A6F42843-79DD-4FA1-91D2-0B71F8974B78}")
         self.assertIn('#define MyAppName "DeepSeek Harness-rs (" + MyVariantDisplay + ")"', installer)
         self.assertIn("DefaultGroupName={#MyAppName}", installer)
         self.assertIn('Name: "{group}\\{#MyAppName}"', installer)
         self.assertIn('Name: "{autodesktop}\\{#MyAppName}"', installer)
 
-    def test_release_pipeline_builds_core_skin_and_free_variants(self):
+    def test_release_pipeline_builds_only_web_core(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         installer = INSTALLER.read_text(encoding="utf-8")
-        for variant in ("core", "skin", "free"):
+        for variant in ("core",):
             self.assertIn(f"--variant {variant}", workflow)
-            self.assertIn(f'Variant == "{variant}"', installer)
+            self.assertIn(f'Variant != "{variant}"', installer)
             self.assertIn(f'linux-x86_64-${{variant}}', workflow)
             self.assertIn(f'macos-${{{{ matrix.arch }}}}-${{variant}}', workflow)
-        self.assertIn("package_defaults", PACKAGE.read_text(encoding="utf-8"))
-        self.assertIn("package_defaults", VERIFIER.read_text(encoding="utf-8"))
+        self.assertNotIn("--variant skin", workflow)
+        self.assertNotIn("--variant free", workflow)
+        self.assertNotIn("package_defaults", PACKAGE.read_text(encoding="utf-8"))
         self.assertIn('stage / "deepseek-black.ico"', PACKAGE.read_text(encoding="utf-8"))
         self.assertIn('prefix + "deepseek-black.ico"', VERIFIER.read_text(encoding="utf-8"))
         gate = workflow_step(workflow, "Host 与启动器回归")

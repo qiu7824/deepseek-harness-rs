@@ -155,7 +155,7 @@ pub fn compact_checkpoint_source(
 /// Test whether a persisted message source identifies a compaction
 /// checkpoint (TS `isCompactCheckpointSource`).
 pub fn is_compact_checkpoint_source(source: &MessageSource) -> bool {
-    matches!(source, MessageSource::Plugin { plugin, .. } if plugin == "compact")
+    source.plugin_name() == Some("compact")
 }
 
 /// Abstract compaction service (TS `CompactionEngine`).

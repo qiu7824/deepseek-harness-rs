@@ -85,6 +85,8 @@ fn image(index: usize, bytes: u64) -> dsh_llm::ContentBlock {
             height: Some(100),
             name: None,
         },
+
+        offloaded: None,
     }
 }
 

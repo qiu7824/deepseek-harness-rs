@@ -16,7 +16,9 @@ vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, "../../release/plugin
 const registrations = { tabs: [], viewers: [] }, disposed = [];
 let updatedTab = null;
 const updatedTabs = [];
+const openedTabs=[],listeners=new Map();
 const sidebar = {
+  openTab(tab,scope) { openedTabs.push({tab,scope}); },
   registerTab(descriptor) { registrations.tabs.push(descriptor); return () => disposed.push("tab:" + descriptor.id); },
   registerFileViewer(descriptor) { registrations.viewers.push(descriptor); return () => disposed.push("viewer:" + descriptor.id); },
   updateTab(id, patch, scope) { updatedTab = { id, patch, scope }; updatedTabs.push(updatedTab); },
@@ -33,6 +35,7 @@ const computerScope = { getSnapshot: () => computerSnapshot, subscribe: () => ()
 const settingsScope = { controls:{Switch:({checked,onChange,label,id,disabled})=>React.createElement('button',{id,disabled,role:'switch','aria-label':label,'aria-checked':checked,onClick:()=>onChange(!checked)})}, bind: ({ namespace }) => { assert.equal(namespace, "computer-use"); return computerScope; } };
 const slots = { inject: (_name, factory) => factory(), register: (descriptor, component) => { slotEntries.push({ descriptor, component }); return () => {}; } };
 const context = {
+  on(name,listener) { const bucket=listeners.get(name)||new Set();listeners.set(name,bucket);bucket.add(listener);return()=>bucket.delete(listener); },
   betterSidebar: sidebar,
   settingsScope,
   slots,
@@ -42,8 +45,18 @@ const context = {
 (async () => {
 const plugin = definitions["dsh-sidebar-workbench-suite"].factory(id => id === "react" ? React : id === "@deepseek-ai/dsh-client-ui-primitives" ? {Button:({variant,size,children,...props})=>React.createElement('button',props,children),Menu:({anchor,open,items,onSelect})=>React.createElement('div',null,anchor,open&&React.createElement('div',{role:'menu'},items.map(item=>React.createElement('button',{key:item.id,role:'menuitem',disabled:item.disabled,onClick:()=>onSelect(item.id)},item.label))))} : {});
 plugin.apply(context);
+const emitFrame=payload=>{for(const listener of listeners.get('connection/mux-envelope')||[])listener({rpcId:'fixture',payload})};
+const activity=(owner,seq,target='local',session='model-window',extra={})=>({type:'session/event',sessionId:owner,event:{type:'computer-use/activity',seq,data:{ownerSessionId:owner,browserSessionId:session,target,controlId:owner+'-control',action:'capture',...extra}}});
+window.__DSH_BETTER_SIDEBAR_SESSION__='unrelated-active-task';
+emitFrame({type:'session/subscribed',sessionId:'owner-a',lastSeq:10});emitFrame(activity('owner-a',9));assert.equal(openedTabs.length,0,'subscription replay cannot reopen a historical controller');
+emitFrame(activity('owner-a',11));assert.equal(openedTabs[0].scope.sessionId,'owner-a');assert.equal(openedTabs[0].tab.meta.target,'local');assert.equal(openedTabs[0].tab.meta.browserSessionId,'model-window');assert.equal(openedTabs[0].tab.meta.attachOnly,true);
+emitFrame(activity('owner-a',11));emitFrame(activity('owner-a',12));assert.equal(openedTabs.length,1,'repeated frames and observations do not steal panel focus');
+emitFrame(activity('owner-b',0,'remote','remote-window'));assert.equal(openedTabs[1].scope.sessionId,'owner-b');assert.equal(openedTabs[1].tab.meta.target,'remote');
+emitFrame(activity('owner-b',1,'browser','browser-window',{ownerSessionId:'wrong-owner'}));assert.equal(openedTabs.length,2,'mismatched ownership is rejected');
+emitFrame({type:'session/event',sessionId:'owner-c',event:{type:'tool/call',seq:0,data:{name:'computer_use_js',arguments:'{}'}}});assert.equal(openedTabs.length,2,'unexecuted or rejected code does not open a controller');
+emitFrame(activity('owner-c',1,'browser','js-browser'));assert.equal(openedTabs[2].tab.meta.browserSessionId,'js-browser','successful nested JS actions use their actual runtime binding');
 assert.deepEqual(registrations.tabs.map(row => row.id), ["suite:jobs", "suite:controlled-browser"]);
-assert.deepEqual(registrations.viewers.map(row => row.id), ["suite:markdown", "suite:structured", "suite:office", "suite:download", "suite:code", "suite:pdf", "suite:image"]);
+assert.deepEqual(registrations.viewers.map(row => row.id), ["suite:markdown", "suite:structured", "suite:docx", "suite:office", "suite:download", "suite:code", "suite:pdf", "suite:image"]);
 const viewers = Object.fromEntries(registrations.viewers.map(row => [row.id, row]));
 assert.equal(viewers["suite:markdown"].priority > viewers["suite:structured"].priority, true);
 assert.equal(viewers["suite:markdown"].settings.pluginToggles.length, 2);
@@ -57,6 +70,7 @@ const sourceText = "# Overview\n\n- first\n\nText content.\n";
 const fetchRecords = [];
 const jobEntries = { parent: [{ id: "job-1", kind: "bash", label: "compile", status: "running", startedAt: 1 }], other: [{ id: "job-1", kind: "bash", label: "other compile", status: "running", startedAt: 2 }] };
 const fileBodies = new Map([["README.md", sourceText], ["data.json", '[{"name":"alpha","count":2}]'], ["preview.html", "<button>Preview</button>"], ["main.rs", "fn main() {}"]]);
+const readOnlyFiles = new Set();
 let fileRevision = 1;const controlModes=new Map(),nativeTargets=new Map(),delayedStarts=new Map(),delayedCloses=new Map();
 let computerAdapter="native",captureFailure=false,typeFailure=false,captureInterrupted=false,nativeForeground=true,focusFailure=false,resumeFailure=false,annotationFailure=false,annotationPending=null;
 window.HTMLCanvasElement.prototype.getContext=function(){return {drawImage:source=>{this.annotationFrame=source.src||'frame'}}};
@@ -85,14 +99,18 @@ global.fetch = async (url, options = {}) => {
   if (String(url).includes("job-action")) return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { "Content-Type": "application/json" } });
   const parsed = new URL(String(url), dom.window.location.href), filePath = parsed.searchParams.get("path") || "README.md";
   if (options.method === "POST") { fileBodies.set(filePath, String(options.body)); fileRevision += 1; return new Response(JSON.stringify({ etag: '"file-' + fileRevision + '"', size: options.body.length }), { status: 200, headers: { "Content-Type": "application/json" } }); }
-  return new Response(fileBodies.get(filePath) || "", { status: 200, headers: { etag: '"file-' + fileRevision + '"' } });
+  return new Response(fileBodies.get(filePath) || "", { status: 200, headers: { etag: '"file-' + fileRevision + '"', 'x-dsh-read-only':readOnlyFiles.has(filePath)?'true':'false' } });
 };
 dom.window.fetch = global.fetch;
 const viewerProps = { ctx: context, scope: { sessionId: "parent" }, path: "README.md", title: "README.md", content: sourceText };
 await render(h(slotEntries[0].component));
-assert.equal(document.querySelectorAll(".dswSuiteSetting").length, 7);
+assert.equal(document.querySelectorAll(".dswSuiteSetting").length, 9);
 await click(document.querySelector('.dswSuiteSetting [role="switch"]'));
 assert.deepEqual(settingWrites[0], ["enabled", true]);
+await click(document.querySelector('[role="switch"][aria-label="原生 Computer 协议（重启生效）"]'));
+assert.deepEqual(settingWrites[1], ["nativeProtocol", true]);
+await input(document.querySelector('select[aria-label="原生协议控制目标"]'),"browser");
+assert.deepEqual(settingWrites[2], ["nativeTarget", "browser"]);
 await render(h(viewers["suite:markdown"].component, viewerProps));
 assert.ok(document.querySelector('[aria-label="Markdown 大纲"]'));
 assert.equal(document.querySelectorAll(".dswSuiteEditor textarea").length, 1);
@@ -135,20 +153,31 @@ await click(document.querySelector(".dswSuiteRow"));
 await new Promise(resolve => setTimeout(resolve, 30));
 assert.match(document.body.textContent, /other job output/);
 browserSessions.set('model-browser-owner',['default','river-demo','second-demo']);
+const autoBefore=fetchRecords.length,autoBinding=openedTabs.find(row=>row.scope.sessionId==='owner-c');
+await render(h(registrations.tabs[1].component,{ctx:context,scope:autoBinding.scope,tab:autoBinding.tab,visible:true}));
+let autoRequests=fetchRecords.slice(autoBefore).filter(row=>row[2]?.ownerSessionId==='owner-c');
+assert.ok(autoRequests.some(row=>row[2]?.action==='capture'&&row[2]?.browserSessionId==='js-browser'&&row[2]?.target==='browser'));
+assert.ok(!autoRequests.some(row=>['start','list_sessions','takeover','close'].includes(row[2]?.action)),'automatic attach observes the exact binding without starting, discovering another target or taking control');
+await render(h(registrations.tabs[1].component,{ctx:context,scope:autoBinding.scope,tab:{...autoBinding.tab,meta:{...autoBinding.tab.meta,target:'remote',browserSessionId:'remote-bound'}},visible:true}));
+autoRequests=fetchRecords.slice(autoBefore).filter(row=>row[2]?.ownerSessionId==='owner-c');
+assert.ok(autoRequests.some(row=>row[2]?.action==='capture'&&row[2]?.target==='remote'&&row[2]?.browserSessionId==='remote-bound'),'reusing the panel updates its target and control-session identity');
+await registrations.tabs[1].onClose(autoBinding.tab,autoBinding.scope);
+assert.ok(!fetchRecords.slice(autoBefore).some(row=>row[2]?.ownerSessionId==='owner-c'&&row[2]?.action==='close'));
 const modelBrowserProps={ctx:context,scope:{sessionId:'model-browser-owner'},tab:{id:'model-browser',path:'http://old.example.test/',meta:{}},visible:true};
 const beforeModelBrowser=fetchRecords.length;
 await render(h(registrations.tabs[1].component,modelBrowserProps));
 assert.equal(document.querySelector('[data-browser-session]').dataset.browserSession,'river-demo','attach to the model session instead of opening a blank default');
-let attachedStart=fetchRecords.slice(beforeModelBrowser).find(row=>row[2]?.action==='start')[2];
+let attachedStart=fetchRecords.slice(beforeModelBrowser).find(row=>row[2]?.action==='capture')[2];
 assert.equal(attachedStart.target,'browser');assert.equal(attachedStart.browserSessionId,'river-demo');assert.equal(attachedStart.url,undefined,'viewing an existing model session must not navigate back to a stale sidebar URL');
+assert.ok(!fetchRecords.slice(beforeModelBrowser).some(row=>row[2]?.action==='start'),'attaching a viewer must not restart or pause the model controller');
 await input(document.querySelector('select[aria-label="浏览器会话"]'),'second-demo');
 assert.equal(document.querySelector('[data-browser-session]').dataset.browserSession,'second-demo');
 assert.ok(!fetchRecords.slice(beforeModelBrowser).some(row=>row[2]?.action==='close'),'switching viewed browser sessions preserves model work');
 const bindingPatch=updatedTabs.filter(row=>row.scope.sessionId==='model-browser-owner').at(-1).patch;
 assert.equal(bindingPatch.meta.target,'browser');assert.equal(bindingPatch.meta.browserSessionId,'second-demo');
 await registrations.tabs[1].onClose({...modelBrowserProps.tab,...bindingPatch},modelBrowserProps.scope);
-const modelClose=fetchRecords.filter(row=>row[2]?.ownerSessionId==='model-browser-owner'&&row[2]?.action==='close').at(-1)[2];
-assert.equal(modelClose.target,'browser');assert.equal(modelClose.browserSessionId,'second-demo','closing the sidebar closes only the selected browser');
+const modelClose=fetchRecords.filter(row=>row[2]?.ownerSessionId==='model-browser-owner'&&row[2]?.action==='close').at(-1);
+assert.equal(modelClose,undefined,'closing an attached viewer preserves the model-owned browser session');
 await render(h(registrations.tabs[1].component, { ctx: context, scope: { sessionId: "parent" }, tab: { id: "browser", meta: {} }, visible: true, pluginSettings: { autoRefresh: false } }));
 assert.ok(fetchRecords.some(row => row[0].includes("__dsh-computer-use/action") && row[1] === "POST"));
 assert.equal(document.querySelector('[data-tab="controlled-browser"]').dataset.browserSession, "default");
@@ -511,7 +540,18 @@ const hiddenPolls=polls;await new Promise(resolve=>setTimeout(resolve,75));asser
 pageHidden=false;document.dispatchEvent(new dom.window.Event("visibilitychange"));
 await new Promise(resolve=>setTimeout(resolve,25));assert.ok(polls>hiddenPolls,"visible pages resume promptly");
 stopPolling();const stoppedPolls=polls;await new Promise(resolve=>setTimeout(resolve,75));assert.equal(polls,stoppedPolls);assert.equal(peakConcurrent,1,"poll requests never overlap");
+for (const [viewer, name, content] of [['suite:code','locked.rs','fn main() {}'], ['suite:markdown','locked.md','# Input'], ['suite:structured','locked.json','[{"value":1}]']]) {
+  fileBodies.set(name,content);readOnlyFiles.add(name);
+  await render(h(viewers[viewer].component,{...viewerProps,path:name,title:name,content}));
+  if(viewer==='suite:structured')await click([...document.querySelectorAll('button')].find(button=>button.textContent==='源码'));
+  const editor=document.querySelector('textarea');assert.ok(editor,name);assert.equal(editor.readOnly,true,name);
+  const before=fetchRecords.filter(row=>row[0].includes('file-save')).length;
+  await React.act(async()=>editor.dispatchEvent(new window.KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true})));
+  assert.equal(fetchRecords.filter(row=>row[0].includes('file-save')).length,before,'read-only Ctrl+S cannot dispatch a write');
+  assert.ok([...document.querySelectorAll('button')].filter(button=>['保存','全部替换'].includes(button.textContent)).every(button=>button.disabled));
+}
 cleanup();
+assert.equal(listeners.get('connection/mux-envelope').size,0,'plugin disposal removes its activity observer');
 assert.deepEqual(disposed.slice().sort(), [...registrations.viewers.map(row => "viewer:" + row.id), ...registrations.tabs.map(row => "tab:" + row.id)].sort(), "every registered viewer and tab is disposed");
 assert.deepEqual(runtimeErrors,[],"sidebar interactions must not raise browser runtime errors");
 await React.act(async () => root.unmount());

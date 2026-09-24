@@ -1,0 +1,149 @@
+{
+  "recordedAt": "2026-09-24T16:31:43.497263+08:00",
+  "status": "source_integrated_pending_installed_acceptance",
+  "sourceRoot": "D:\\codex操作目录\\learning-repair-20260922\\cold-history-memory-source",
+  "sourceHead": "8ac58ecd1488ea6018b6d058a39b3f0b659e69ab",
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "implemented": [
+    "用户终端使用独立会话登记及启动入口，不依赖运行中的 Agent，不改变模型沙箱策略。",
+    "用户终端包含启动占位限制、跨会话拒绝、取消后迟到启动清理、所属进程关闭及 Host 退出清理。",
+    "插件包、依赖清单和启用配置使用同一跨进程写锁及恢复记录；未提交操作可恢复旧文件，已提交回执可跨重启核验。",
+    "配置解析失败保留原始文件，运行时使用已验证快照；外部修改拒绝覆盖，显式恢复保留被替换配置。",
+    "安装、移除及配置恢复具有后台操作状态、日志、取消及进程退出后的恢复检查。",
+    "插件启停 RPC 使用配置事务，失败恢复运行时状态；升级保留停用和自定义配置，自定义包不被内置包刷新覆盖。",
+    "可选前端插件在核心界面就绪后独立加载，失败和未结束初始化不阻断核心界面；核心模块同名覆盖被拒绝。",
+    "插件启停已接通统一后台取消、浏览器确认超时、失败回滚及持久操作日志；遗留 RPC 使用同一控制器。"
+  ],
+  "checks": {
+    "human_terminal_including_real_pty": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\user-terminal-tests.log",
+      "sha256": "f0cc035bf2ddfda90ac8b2fc618d07c870c8080fc07070eb2a8c1a377f9d0e21",
+      "results": [
+        {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "profile_transactions_and_process_exit": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-profile-final.log",
+      "sha256": "68e1731330d8a82d5edd08a8370cc5286072dec4f600c0f70dc69ed52186762c",
+      "results": [
+        {
+          "passed": 8,
+          "failed": 0,
+          "ignored": 1
+        }
+      ]
+    },
+    "operation_cancel_and_committed_receipt": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-operation-tests.log",
+      "sha256": "880ff3aa1484afa7a6c67f09c3681cd43c037beebf19547cd52dd11dd7330186",
+      "results": [
+        {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "real_cli_remove_and_recover": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-cli-recovery-test.log",
+      "sha256": "92819daa17742258d3ffbbe7bb8c5dc349af6cd9163ef708fcd8f6b8c429eef4",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "host_cli_boot_regression": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\user-terminal-plugin-regression.log",
+      "sha256": "6323c75399aef19247dd07053914461cf18e1645fa95b52a6220a94f17b6bff2",
+      "results": [
+        {
+          "passed": 8,
+          "failed": 0,
+          "ignored": 1
+        },
+        {
+          "passed": 292,
+          "failed": 0,
+          "ignored": 6
+        },
+        {
+          "passed": 10,
+          "failed": 0,
+          "ignored": 1
+        }
+      ]
+    },
+    "api_enablement_transaction": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-api-tests.log",
+      "sha256": "18bee00afa723b8ffa2b8e7f8dff0feea7bbfa1acc9050c4b2956ba566728943",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "client_packages_and_user_override": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-client-host-tests.log",
+      "sha256": "1ed7d4c9a8d79f99fcf53143e3c91b46f9b5491648a42145ef88c4a0d7d9598a",
+      "results": [
+        {
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    }
+  },
+  "webChecks": {
+    "optional_plugin_boot": "failed and stalled optional plugins isolated; mandatory failures remain fatal",
+    "plugin_operations_dom": "status recovery, cancellation, restore, commit notices and StrictMode polling cleanup passed",
+    "terminal_dom": "Git and interactive pinned terminal DOM/input queue checks passed",
+    "shipped_shell": "native response/Markdown/attachment DOM checks passed after startup adapter integration",
+    "release_integrity": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\plugin-web-release-checks.log",
+      "sha256": "69534430af34e03310761f592fc6fa4c4340a315c3bf3876380047b44494fa85",
+      "passed": 14
+    }
+  },
+  "limits": [
+    "源码和专项验证不等于安装版整体验收；当前安装仍是 local.20260923.3。",
+    "原“插件设置后工作区消失”案例的准确触发链仍需安装版重放；已修正一个可以阻断整个前端启动的可选插件失败路径。",
+    "GitHub 插件下载、完整 GUI 安装/启停/移除/重启及各平台终端仍需集中实测。",
+    "整体内存、多平台打包、正式推送及蓝奏回下载验收未完成。"
+  ],
+  "files": {
+    "crates/terminal/terminal-bash/src/user.rs": "b1cedfe3a3ebd2ee814896c2f142f8ccaa237f51ddeb82707348cfe41d4dc193",
+    "crates/host/dsh-host/src/user_terminal.rs": "01dac220361c9de14051b5f7214d3948f8d1985e5391d4faada31d028420e64f",
+    "crates/host/dsh-host/src/user_terminal_tests.rs": "ea70416d31dc0d46803101336b5ee396c5c032809069f10f3508388c035f6721",
+    "crates/host/dsh-host/src/web_preview.rs": "09ee0d1dbb0825258961a27366c9fe76eec2c662a2027987cbfab39c07acb255",
+    "crates/host/dsh-host/src/client_plugins.rs": "8ecbff54c5b1918d8564cc162ec57c0d1143795c182e2b3e7c57b048d964e6d2",
+    "crates/host/dsh-host/src/plugin_manager.rs": "36394686cea973dac45a4bcb9dee968850e95ffda3f10553a414a1d0ab40cbab",
+    "crates/host/dsh-host/src/plugin_manager/operations.rs": "c291c21c20046c198bd60b424450a90fc02ef854bb0e459d0277799c299e37ce",
+    "crates/boot/app-boot/src/plugin_profile.rs": "198d79e1ad57f6748581c87749254d7970622143a10a15d5962fb9cd284ea38a",
+    "crates/boot/app-boot/src/plugin_profile_tests.rs": "34a5fc98c3e8b880f4ff7fa69b901a6d955f657309263968200e44a9c987cf0e",
+    "crates/host/dsh-cli/src/native_plugin.rs": "b270309612a2f399c3b60153a9dacb1a20cb1530af12b95577b1aba0c1d03625",
+    "crates/host/dsh-cli/tests/plugin_recovery_cli.rs": "c71354cf1ab65cedf8990aaac24d632fe30c9eb6f6636f2937bb622d1b8b210b",
+    "crates/host/apiproxy/src/plugin_profile_tests.rs": "fdbaa3a76fbb3a50d1cb3a59f66a7570af1bb03eb9502bad87b1a372be61bf51",
+    "crates/host/apiproxy/src/proxy.rs": "32876ec2516b6da6314806e887192969f9e4c5c5842142dc6c6db107e651c015",
+    "web/src/optional-plugin-boot.js": "a5d4f9b96c566f8b6eb00a8c40ce6e701ea70135f60683593122ef27e99538f0",
+    "web/src/runtime-plugins/ui-settings-plugins.js": "0bfbf77922f6a92650b49b27907c171eaff92e715e57512b157158889da17be9",
+    "web/dist/assets/index-Dqw48FrP.js": "d3e66f96689ffcda8e02c0b2dabbeeff66a0713ab32c9df9cec6a72abf2235e3",
+    "web/dist/index.html": "525b3a7c0ae0f44e43f2ca48717b6249f8724949164c7762b617fe4c24a175ae",
+    "tools/patch_optional_plugin_boot.py": "b07833831e6e2162312156992404c41e979d014d3c5ff60372d682aa6dfa9a4c",
+    "tools/stage_release_web.py": "03f9a559e7c8ec07fc4c0579e2d531ba6e5878dff904b8e4a2273e7014916c47",
+    "tools/tests/optional_plugin_boot_harness.cjs": "eb78369494baf8207e3e271b8fb49604ac59b406d3d982d053ed435911f5be52",
+    "tools/tests/plugin_operations_dom_harness.cjs": "24476ce3dfbae07494da970d167a6993a4039a992b489d120ea07914cf4e8f9a"
+  },
+  "latestEnablementEvidence": "plugin-enablement-resident-quota-2026-09-24.json"
+}

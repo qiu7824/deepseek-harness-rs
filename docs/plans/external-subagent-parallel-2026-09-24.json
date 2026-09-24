@@ -1,0 +1,40 @@
+{
+  "recordedAt": "2026-09-24T20:22:54.997834+08:00",
+  "status": "source_and_composed_host_verified_pending_installed_acceptance",
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "checks": {
+    "cleanup-permissions-parallel-final": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\cleanup-permissions-parallel-final.log",
+      "sha256": "fdfb9af0d729317f5ec67918d1117c1baad78fd57bdb62890e9512aba98cffac",
+      "results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s",
+        "test result: ok. 302 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 20.43s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s"
+      ]
+    }
+  },
+  "files": {
+    "crates/subagent/subagent/src/parallel_quota.rs": "ca07148a975754621df3a0337b8da63fc3bd5501a903d1d3edf2597b6dcf693d",
+    "crates/subagent/subagent/src/index.rs": "d6bc2d9ecd16bf23927ad69cf97c8db2e30773b3cf2941b1a535872970ba77f1",
+    "crates/subagent/subagent/src/types.rs": "8e4365b6fe1b66d9d07762dcc49f6d952c3b14a1b1b19d9350a44719a21e8dc0",
+    "crates/subagent/subagent-spawn/src/lib.rs": "52e0ae7439cd0be82aadf2deb7f0c5eca8e30aa13a48ab9abc23718d13ce0833",
+    "crates/subagent/subagent-fork/src/lib.rs": "faaed806d59740eeef75650409a423639f7146c8515ee389eba2f90db281a9da",
+    "crates/core/agent-loop/tests/external_parallel_quota.rs": "99ae67aabb7c5a0020f1a6cdec1fa30f0d2f27f6c4de924dcd72cf3f92d28b38",
+    "crates/memory/tool-memory-local/src/learning.rs": "ecfa48d083bd4091224fa0a272b9567d5f160f393f4fa58585a7dc5748664d2e"
+  },
+  "implemented": [
+    "External providers reserve maxParallel capacity before startup and share the root task quota with local AgentLoop turns.",
+    "Startup failure returns its reservation; terminal results are shared and successful process disposal releases capacity exactly once.",
+    "Dropped business handles still settle through the lifecycle observer; lowering the limit leaves existing work running.",
+    "Unconfirmed external process disposal keeps capacity occupied until Host restart; quota denials are expected control outcomes."
+  ],
+  "remainingAcceptance": [
+    "Installed external Codex/Claude provider runs and final packaging.",
+    "External protocol step-count support and native model computer protocol remain separate requirements."
+  ]
+}

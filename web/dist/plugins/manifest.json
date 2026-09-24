@@ -1,10 +1,10 @@
 {
-  "rev": "rust-v0.1.3-alpha.34",
+  "rev": "rust-v0.1.3-alpha.34+local.20260923.3",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-client-ui-file-actions",
       "url": "/plugins/ui-file-actions.js",
-      "rev": "0d360cbda453d2d3",
+      "rev": "a2acdc6ee6af517a",
       "inject": [],
       "immediately": true
     },
@@ -40,7 +40,7 @@
     {
       "id": "@deepseek-ai/dsh-client-connection",
       "url": "/plugins/connection.js",
-      "rev": "58935202e25f2d92",
+      "rev": "10b544c71334051f",
       "inject": [],
       "immediately": true
     },
@@ -56,7 +56,7 @@
     {
       "id": "@deepseek-ai/dsh-client-runtime",
       "url": "/plugins/client-runtime.js",
-      "rev": "ed63f4bbf67502d0",
+      "rev": "789084abf725ee16",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-typert-registry",
@@ -113,7 +113,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings",
       "url": "/plugins/ui-settings.js",
-      "rev": "b502d3210bfb4257",
+      "rev": "ea15a724d6ae53e7",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-runtime",
@@ -124,7 +124,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-general",
       "url": "/plugins/ui-settings-general.js",
-      "rev": "5323d9cd15be9812",
+      "rev": "38700e787dc714ce",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -150,7 +150,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-plugin-inventory",
       "url": "/plugins/ui-settings-plugin-inventory.js",
-      "rev": "f0e909b08180fd6e",
+      "rev": "3130dfb95a2a8334",
       "inject": [
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-runtime",
@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "7d2f9944acf20525",
+      "rev": "c98ba71131215dd2",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -187,7 +187,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-tool",
       "url": "/plugins/ui-tool.js",
-      "rev": "00b0d3adff8d0f2c",
+      "rev": "3800c2905bf0d0d2",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
@@ -209,7 +209,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-deliverables",
       "url": "/plugins/ui-deliverables.js",
-      "rev": "41335366111625fc",
+      "rev": "38c1288c961de93b",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -222,7 +222,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-workspace",
       "url": "/plugins/ui-workspace.js",
-      "rev": "2b2d7123eec2651f",
+      "rev": "5940cf2c94d32151",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -322,7 +322,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-permission-presets",
       "url": "/plugins/ui-permission.js",
-      "rev": "9447e24df8dd64d8",
+      "rev": "24497b878cae0cae",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -350,7 +350,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-plugins",
       "url": "/plugins/ui-settings-plugins.js",
-      "rev": "3c2048e5a5454496",
+      "rev": "ca4523adfafce43d",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -396,7 +396,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-trajectory",
       "url": "/plugins/ui-trajectory.js",
-      "rev": "37c67c4a99eb4351",
+      "rev": "c29b664c8d2952ee",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
@@ -485,7 +485,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-task-execution",
       "url": "/plugins/ui-task-execution.js",
-      "rev": "044aaf0f359b63b3",
+      "rev": "8625bb48345d6927",
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation"
       ],

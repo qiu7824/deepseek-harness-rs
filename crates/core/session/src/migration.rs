@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionSeq,
+    LEGACY_SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionSeq,
     SurfaceOp,
 };
 
@@ -247,10 +247,10 @@ pub fn migrate_v0_to_v3(
     }
     offsets.push(migrated.len());
     source_cuts.push(migrated.len());
-    header.version = SESSION_FORMAT_VERSION;
+    header.version = 3;
     Ok(SessionMigrationReport {
         from_version: LEGACY_SESSION_FORMAT_VERSION,
-        to_version: SESSION_FORMAT_VERSION,
+        to_version: 3,
         inserted_system_event: head.is_some(),
         events: migrated,
         header,

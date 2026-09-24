@@ -125,7 +125,7 @@ session_position!(
 
 /// The on-disk session format version, stamped into every newly-written
 /// [`SessionHeader`] and enforced by every persistence backend on load.
-pub const SESSION_FORMAT_VERSION: u64 = 3;
+pub const SESSION_FORMAT_VERSION: u64 = 4;
 /// The Rust alpha.10 layout. It is accepted only by the explicit migration
 /// entry point; new logs are always stamped V3.
 pub const LEGACY_SESSION_FORMAT_VERSION: u64 = 0;
@@ -367,8 +367,8 @@ impl Serialize for SurfaceOp {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(3))?;
                 map.serialize_entry("op", "replace")?;
-                map.serialize_entry("start", start)?;
-                map.serialize_entry("end", end)?;
+                map.serialize_entry("startSeq", start)?;
+                map.serialize_entry("endSeq", end)?;
                 map.end()
             }
         }
@@ -416,8 +416,14 @@ impl<'de> Deserialize<'de> for SurfaceOp {
                                 .map(|s| s.to_string())
                                 .or_else(|| Some(value.to_string()));
                         }
-                        "start" => start = value.as_u64(),
-                        "end" => end = value.as_u64(),
+                        "start" | "startSeq" => {
+                            if start.is_some() { return Err(A::Error::custom("duplicate replacement start")); }
+                            start = value.as_u64();
+                        }
+                        "end" | "endSeq" => {
+                            if end.is_some() { return Err(A::Error::custom("duplicate replacement end")); }
+                            end = value.as_u64();
+                        }
                         _ => {}
                     }
                 }
@@ -653,9 +659,7 @@ pub fn validate_session_header(id: &SessionId, input: &JsonValue) -> Result<Sess
         origin: record
             .get("origin")
             .and_then(|value| value.as_str().map(str::to_string)),
-        delegation_depth: record
-            .get("delegationDepth")
-            .and_then(|value| value.as_u64()),
+        delegation_depth: Some(record.get("delegationDepth").and_then(|value| value.as_u64()).unwrap_or(0)),
         agent_preset: record
             .get("agentPreset")
             .and_then(|value| value.as_str().map(str::to_string)),

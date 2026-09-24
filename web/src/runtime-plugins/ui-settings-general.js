@@ -431,41 +431,47 @@ window.__ModuleLoader__.load({
 		}
 		function SecuritySection({ api }) {
 			const [state, setState] = (0, react.useState)({ loading: true, error: null, namespace: null, timeout: 300, preset: "workspace-write" });
+			const [saving,setSaving]=react.useState(false),savingNow=react.useRef(false);
 			const load = (0, react.useCallback)(async () => {
+				setState(previous=>({...previous,loading:true}));
 				try {
 					const settingsReply = await api.settings.describe({});
 					if (!settingsReply.result.ok) throw new Error(settingsReply.result.error.message);
 					const namespaces = settingsReply.result.value.namespaces ?? [];
 					const securityNamespace = namespaces.find((entry) => entry.ns === "security") ?? null;
+					if(!securityNamespace)throw new Error("当前 Host 没有提供安全盾配置");
 					const security = securityNamespace?.value ?? {};
 					const permission = namespaces.find((entry) => entry.ns === "permission")?.value ?? {};
 					setState({ loading: false, error: null, namespace: securityNamespace, timeout: security.approvalTimeoutSeconds ?? 300, preset: permission.defaultPreset ?? "workspace-write" });
+					return true;
 				} catch (error) {
-					setState((previous) => ({ ...previous, loading: false, error: error instanceof Error ? error.message : String(error) }));
+					setState((previous) => ({ ...previous, namespace:null, loading: false, error: error instanceof Error ? error.message : String(error) }));
+					return false;
 				}
 			}, [api]);
 			(0, react.useEffect)(() => { load(); }, [load]);
 			const setField = async (field, value) => {
-				if (!state.namespace) return;
-				const reply = await api.settings.mutate({ ns: "security", ops: [{ op: "set", path: [field], value }], expectedRevision: state.namespace.revision });
-				if (!reply.result.ok) {
-					setState((previous) => ({ ...previous, error: reply.result.error.message }));
-					await load();
-					return;
-				}
-				setState((previous) => ({ ...previous, namespace: reply.result.value, timeout: reply.result.value.value?.approvalTimeoutSeconds ?? previous.timeout, error: null }));
+				if (!state.namespace||savingNow.current||state.loading) return;
+				savingNow.current=true;setSaving(true);
+				try{
+					const reply = await api.settings.mutate({ ns: "security", ops: [{ op: "set", path: [field], value }], expectedRevision: state.namespace.revision });
+					if(!reply.result.ok)throw new Error(reply.result.error.message);
+					setState((previous) => ({ ...previous, namespace: reply.result.value, timeout: reply.result.value.value?.approvalTimeoutSeconds ?? previous.timeout, error: null }));
+				}catch(error){const message=error instanceof Error?error.message:String(error),restored=await load();setState(previous=>({...previous,error:restored?`${message}；已重新读取当前设置。`:`${message}；${previous.error||"重新读取配置失败"}`}));}
+				finally{savingNow.current=false;setSaving(false);}
 			};
 			const securityValue = (field, fallback) => state.namespace?.value?.[field] ?? fallback;
 			const row = (id, label, hint, control) => (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityRow", children: [(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityRowText", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityRowLabel", children: label }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityRowHint", children: hint })] }), control] }, id);
-			const select = (id, field, fallback, options) => (0, react_jsx_runtime.jsx)("select", { id, value: securityValue(field, fallback), onChange: (event) => setField(field, event.target.value), children: options.map(([value, label]) => (0, react_jsx_runtime.jsx)("option", { value, children: label }, value)) });
+			const select = (id, field, fallback, options) => (0, react_jsx_runtime.jsx)("select", { id, disabled:saving||state.loading, value: securityValue(field, fallback), onChange: (event) => setField(field, event.target.value), children: options.map(([value, label]) => (0, react_jsx_runtime.jsx)("option", { value, children: label }, value)) });
 			return (0, react_jsx_runtime.jsxs)("section", { className: "dshSecurity", children: [
 				(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityHeader", children: [(0, react_jsx_runtime.jsx)("h2", { children: "安全盾" }), (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityIntro", children: "控制工具在执行前如何审批。修改会立即保存并应用到当前 Host。" })] }),
 				state.namespace && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityGroup", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityGroupTitle", children: "审批行为" }), row("timeout", "审批超时", "等待对话中确认的最长时间。超时后按无人确认策略处理。", (0, react_jsx_runtime.jsx)("input", { id: "security-timeout", type: "number", min: 5, max: 300, step: 1, value: securityValue("approvalTimeoutSeconds", 300), onChange: (event) => setField("approvalTimeoutSeconds", Number(event.target.value)) })), row("unattended", "无人确认", "没有可用浏览器、断线或超时后的默认处理。", select("security-unattended", "unattendedPolicy", "deny", [["deny", "拒绝（推荐）"], ["allow-safe-only", "仅允许安全操作"], ["allow-all", "允许可审批操作"]]))] }),
-                    (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityGroup", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityGroupTitle", children: "工具与路径" }), row("risk", "破坏性命令", "删除、重置、终止进程等高风险命令。", select("security-risk", "riskToolPolicy", "ask", [["ask", "对话中询问"], ["deny", "直接拒绝"]])), row("outside", "工作区外写入", "完全访问执行配置可显式允许跨工作区写入；敏感路径和凭据外传规则仍然有效。", select("security-outside-write", "outsideWritePolicy", "ask-directory", [["ask-directory", "按目录询问，可记忆"], ["ask-every-time", "每次询问"], ["deny", "直接拒绝"], ["allow", "完全访问时允许"]])), row("sensitive", "敏感路径读取", ".env、SSH、云凭据等敏感位置；授权不会被记忆。", select("security-sensitive-read", "sensitiveReadPolicy", "ask", [["ask", "对话中询问"], ["deny", "直接拒绝"]])), row("credential", "凭据 Shell", "凭据提取并外传始终硬阻断；此项控制其他可疑 Shell 操作。", select("security-credential-shell", "credentialShellPolicy", "strict", [["strict", "严格阻断"], ["ask", "对话中询问"]]))] })
+					(0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityGroup", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityGroupTitle", children: "审批行为" }), row("timeout", "审批超时", "等待对话中确认的最长时间。超时后按无人确认策略处理。", (0, react_jsx_runtime.jsx)("input", { id: "security-timeout", disabled:saving||state.loading, type: "number", min: 5, max: 300, step: 1, value: securityValue("approvalTimeoutSeconds", 300), onChange: (event) => setField("approvalTimeoutSeconds", Number(event.target.value)) })), row("unattended", "无人确认", "没有可用浏览器、断线或超时后的默认处理。", select("security-unattended", "unattendedPolicy", "deny", [["deny", "拒绝（推荐）"], ["allow-safe-only", "仅允许安全操作"], ["allow-all", "允许可审批操作"]]))] }),
+                    (0, react_jsx_runtime.jsxs)("div", { className: "dshSecurityGroup", children: [(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityGroupTitle", children: "工具与路径" }), row("risk", "破坏性命令", "跟随访问模式时，完全访问允许普通删除、重置等命令；也可单独指定始终询问或拒绝。", select("security-risk", "riskToolPolicy", "follow-access", [["follow-access", "跟随访问模式（默认）"], ["ask", "始终询问"], ["deny", "直接拒绝"]])), row("outside", "工作区外写入", "默认跟随真实会话权限：完全访问允许普通跨目录写入，受限模式按目录确认；独立拒绝与敏感路径规则继续生效。", select("security-outside-write", "outsideWritePolicy", "follow-access", [["follow-access", "跟随访问模式（默认）"], ["ask-directory", "始终按目录询问，可记忆"], ["ask-every-time", "每次询问"], ["deny", "直接拒绝"], ["allow", "完全访问时允许"]])), row("sensitive", "敏感路径读取", ".env、SSH、云凭据等敏感位置；授权不会被记忆。", select("security-sensitive-read", "sensitiveReadPolicy", "ask", [["ask", "对话中询问"], ["deny", "直接拒绝"]])), row("credential", "凭据 Shell", "同时涉及凭据与网络传输的可疑命令按本项处理；完全访问不绕过此策略，询问授权不会记忆。", select("security-credential-shell", "credentialShellPolicy", "strict", [["strict", "严格阻断"], ["ask", "对话中询问"]]))] })
 				] }),
-				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityNotice", children: "固定保护：凭据外传、子代理访问敏感路径等硬阻断始终生效，不会被宽松设置覆盖。审批卡片会显示在当前对话输入区上方。" }),
+				(0, react_jsx_runtime.jsx)("div", { className: "dshSecurityNotice", children: "子代理敏感路径保护始终生效。安全盾对已识别的操作执行上述策略；敏感与凭据规则不会被完全访问自动跳过。审批卡片显示在当前对话输入区上方。" }),
 				state.error && (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityError", role: "alert", children: state.error }),
+				state.error && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",size:"sm",disabled:saving||state.loading,onClick:load,children:"重新读取安全设置"}),
 				state.loading && (0, react_jsx_runtime.jsx)("div", { className: "dshSecurityEmpty", children: "正在读取安全设置…" })
 			] });
 		}
@@ -620,13 +626,14 @@ window.__ModuleLoader__.load({
 		const subagentCss = ".dshSub{display:flex;flex-direction:column;gap:18px;width:100%;max-width:720px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary)}.dshSub h2{margin:0;font-size:18px;font-weight:600;line-height:26px}.dshSub h3{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-tertiary);text-transform:uppercase;letter-spacing:.04em}.dshSubHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}.dshSubGroup{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}.dshSubGrid{display:grid;grid-template-columns:160px minmax(0,1fr);gap:12px 16px;align-items:center}.dshSubGrid>label{font-size:13px;color:var(--dsw-alias-label-secondary);text-align:right;line-height:20px}.dshSubGrid small{display:block;font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:3px;font-weight:400}.dshSub input,.dshSub select{box-sizing:border-box;width:100%;max-width:320px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:7px 10px;font:inherit;font-size:13px;line-height:20px;transition:border-color .15s}.dshSub input:focus,.dshSub select:focus{outline:none;border-color:var(--dsw-alias-border-l3)}.dshSub input[type=checkbox]{width:16px;height:16px;max-width:none;justify-self:start;cursor:pointer}.dshSub input[type=number]{max-width:160px}.dshSubError{color:var(--dsw-alias-state-error-primary);font-size:13px;padding:8px 12px;border-radius:8px;background:var(--dsw-alias-state-error-bg,rgba(255,80,80,.08))}.dshSubRow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dshSubBadge{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}";
 		if (typeof document !== "undefined" && !document.querySelector("style[data-plugin-css='dsh-subagent-settings']")) { const tag = document.createElement("style"); tag.dataset.pluginCss = "dsh-subagent-settings"; tag.textContent = subagentCss; document.head.appendChild(tag); }
 		const subagentFields = [
-			{ field: "defaultProvider", label: "子智能体提供方", type: "text", placeholder: "留空继承当前会话", hint: "例如 spawn、fork；留空则使用当前会话路由" },
+			{ field: "defaultProvider", label: "子智能体提供方", type: "text", placeholder: "留空继承当前会话", hint: "填写已配置的模型提供方 ID；切换提供方时请同时指定匹配的模型" },
 			{ field: "defaultModel", label: "子智能体模型", type: "text", placeholder: "留空继承父会话", hint: "独立模型 ID；覆盖父会话模型选择" },
 			{ field: "defaultReasoningEffort", label: "子智能体推理强度", type: "select", options: [["", "（继承/未设置）"], ["off", "关闭"], ["minimal", "极简"], ["low", "低"], ["medium", "中"], ["high", "高"], ["max", "最高（xhigh）"]], hint: "应用于所有子智能体的 LLM 请求；单工具调用仍可覆盖" },
 			{ field: "defaultMaxTokens", label: "子智能体输出上限", type: "number", placeholder: "0 = 不限制", hint: "每个子智能体单次模型响应的最大 token 数" },
 			{ field: "maxTurns", label: "子智能体轮次上限", type: "number", hint: "单次子智能体运行最多多少轮工具调用" },
-			{ field: "maxParallel", label: "并行子智能体", type: "number", hint: "单个工作流中允许并行运行的子智能体数" },
-			{ field: "maxDepth", label: "子智能体嵌套深度", type: "number", placeholder: "0 = 不限制", hint: "子智能体可以继续派生的最大深度（0 表示不限制）" },
+			{ field: "maxParallel", label: "并行子智能体", type: "number", hint: "同一根任务允许同时运行的本地子智能体数；驻留空闲子任务不占用" },
+			{ field: "maxActiveSubagents", label: "驻留子智能体上限", type: "number", placeholder: "默认 8", hint: "连续可续接的父子链共享名额；等待、收件箱未处理和停止清理中的子智能体仍占名额" },
+			{ field: "maxDepth", label: "子智能体嵌套深度", type: "number", placeholder: "默认 1；0 = 不限制", hint: "新配置默认只允许一层委派；0 表示不限制，明确由提供方管理的工具使用其自身规则" },
 			{ field: "timeoutSeconds", label: "子智能体超时（秒）", type: "number", placeholder: "0 = 不限制", hint: "单次子智能体运行的总时长上限；0 表示不限制" },
 			{ field: "toolCallMode", label: "工具调用呈现", type: "select", options: [["auto", "自动"], ["code", "代码块"], ["native", "原生"]], hint: "子智能体工具调用在轨迹中的呈现方式" },
 			{ field: "serviceTier", label: "服务等级", type: "text", placeholder: "（无）", hint: "透传给支持 service_tier 的 Provider（OpenAI/Anthropic）" },
@@ -872,6 +879,26 @@ window.__ModuleLoader__.load({
 		* section, each once its slot declaration is on the ledger.
 		* @param ctx - client root context.
 		*/
+        function ComputerPermissionsSection() {
+            const h=react.createElement;
+            const [data,setData]=react.useState(null),[error,setError]=react.useState(null),[busy,setBusy]=react.useState(false),[selection,setSelection]=react.useState(null),[scope,setScope]=react.useState("session"),[scopes,setScopes]=react.useState(["screen_read"]);
+            const active=react.useRef(true),version=react.useRef(0),working=react.useRef(false);
+            const request=async(payload)=>{const response=await fetch("/__dsh-computer-permissions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});let value;try{value=await response.json()}catch{throw new Error(`应用权限请求失败（HTTP ${response.status}）`)}if(!response.ok)throw new Error(value.error||"应用权限操作失败");return value};
+            const load=async()=>{if(working.current)return;const token=++version.current;try{const value=await request({action:"list"});if(active.current&&token===version.current){setData(value);setError(null)}}catch(e){if(active.current&&token===version.current)setError(e.message)}};
+            react.useEffect(()=>{active.current=true;load();const timer=setInterval(load,3000);return()=>{active.current=false;version.current++;clearInterval(timer)}},[]);
+            const mutate=async(payload)=>{if(working.current||!data)return;working.current=true;version.current++;setBusy(true);setError(null);try{const value=await request({...payload,expectedRevision:data.revision});if(active.current){setData(value);if(["recover","reload"].includes(payload.action))setSelection(null)}}catch(e){if(active.current)setError(e.message)}finally{working.current=false;if(active.current)setBusy(false)}};
+            const labels={screen_read:"画面读取",input:"输入操作",clipboard_read:"剪贴板读取",clipboard_write:"剪贴板写入",file_upload:"文件上传",external_actions:"外部提交",launch:"启动应用"};
+            const grant=()=>mutate({action:"grant",targetId:selection.id,ownerSessionId:selection.ownerSessionId,scope,scopes});
+            return h("section",{className:"dshSecurity",style:{minWidth:0}},h("h2",null,"应用权限"),h("p",{className:"dshSecurityIntro"},"按控制器核验的应用、网页来源或远端设备授权。文件访问权限不代替应用授权；撤销会阻止后续动作，已经发生的输入不会回滚。"),
+                !data&&!error&&h("p",{role:"status"},"正在读取应用权限…"),error&&h("p",{role:"alert"},error),
+                data?.storageError&&h("div",{className:"dshSecurityGroup"},h("p",{role:"alert"},`授权配置不可用，自动控制保持拒绝状态：${data.storageError}`),h("button",{type:"button",disabled:busy,onClick:()=>mutate({action:"reload"})},"重新读取配置"),h("button",{type:"button",disabled:busy||!data.canRestore,onClick:()=>mutate({action:"recover",strategy:"last-good"})},"恢复有效备份"),h("button",{type:"button",disabled:busy,onClick:()=>mutate({action:"recover",strategy:"reset"})},"清空授权并保留异常配置")),
+                data&&!data.storageError&&h(react.Fragment,null,
+                    h("h3",null,"已观察目标"),data.targets.length===0&&h("p",null,"控制器尚未报告目标。电脑工具首次定位目标后，可在这里选择已核验的应用与授权范围。"),
+                    ...data.targets.map(target=>h("section",{key:target.id,className:"dshSecurityGroup",style:{minWidth:0,overflowWrap:"anywhere"}},h("label",null,h("input",{type:"radio",name:"computer-permission-target",checked:selection?.id===target.id&&selection?.ownerSessionId===target.ownerSessionId,disabled:busy,onChange:()=>setSelection({id:target.id,ownerSessionId:target.ownerSessionId})}),target.identity.label),h("p",null,target.identity.origin||target.identity.deviceId),h("details",null,h("summary",null,"身份与范围"),h("p",null,`应用标识：${target.identity.applicationId}`),h("p",null,`版本摘要：${target.identity.applicationRevision}`),h("p",null,`所属任务：${target.ownerSessionId}`)))),
+                    selection&&h("div",{className:"dshSecurityGroup"},h("label",null,"授权期限",h("select",{"aria-label":"应用授权期限",disabled:busy,value:scope,onChange:e=>setScope(e.target.value)},h("option",{value:"once"},"允许一次"),h("option",{value:"session"},"仅此任务"),h("option",{value:"persistent"},"长期（此目标，所有任务）"))),h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:8}},...(data.scopes||[]).map(key=>h("label",{key},h("input",{type:"checkbox",disabled:busy,checked:scopes.includes(key),onChange:e=>setScopes(previous=>e.target.checked?[...previous,key]:previous.filter(item=>item!==key))}),labels[key]||key))),h("p",null,"输入与上传可能触发对外提交，对应动作同时核验“外部提交”权限。"),h("button",{type:"button",disabled:busy||scopes.length===0,onClick:grant},"授权所选目标")),
+                    h("h3",null,"授权记录"),data.grants.length===0&&h("p",null,"暂无授权记录。"),...data.grants.slice().reverse().map(record=>h("section",{key:record.id,className:"dshSecurityGroup",style:{overflowWrap:"anywhere"}},h("strong",null,record.identity.label),h("p",null,record.scopes.map(key=>labels[key]||key).join("、")),h("p",null,`${({once:"允许一次",session:"仅此任务",persistent:"长期"})[record.scope]} · ${record.revoked?"已撤销":record.remaining===0?"已使用":"有效"}`),!record.revoked&&h("button",{type:"button",disabled:busy,onClick:()=>mutate({action:"revoke",grantId:record.id})},"撤销")))),
+                h("button",{type:"button",disabled:busy,onClick:load},"刷新目标与授权"));
+        }
 		function apply(ctx) {
 			if(typeof document!=="undefined"&&!document.querySelector("style[data-dsh-unsaved-dialog]")){const style=document.createElement("style");style.dataset.dshUnsavedDialog="";style.textContent=".dshUnsavedDialog{position:absolute;z-index:5;right:24px;bottom:24px;width:min(380px,calc(100% - 48px));box-sizing:border-box;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary)}.dshUnsavedDialog strong{display:block;font-size:14px}.dshUnsavedDialog p{margin:6px 0 14px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}.dshUnsavedActions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.dshUnsavedActions button{min-height:34px;padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}.dshUnsavedActions button:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshUnsavedActions .dshUnsavedDiscard{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}";document.head.appendChild(style)}
 			ctx.effect(() => ctx.locale.register(NS, {
@@ -1014,6 +1041,7 @@ window.__ModuleLoader__.load({
 				label: "记忆与上下文",inject:()=>({api:connection.api}),children:{"settings.memory.import":{kind:"single",scope:"root"}}
 			}, MemorySection));
 
+            ctx.slots.inject("settings.section",()=>ctx.slots.register({name:"settings.section",id:"computer-permissions",order:26,label:"应用权限"},ComputerPermissionsSection));
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "security",

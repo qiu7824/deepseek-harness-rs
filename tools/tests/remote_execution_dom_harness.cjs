@@ -1,0 +1,25 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const modules=process.argv[2],React=require(path.join(modules,'react')),{JSDOM}=require(path.join(modules,'jsdom'));
+const dom=new JSDOM('<main></main>',{url:'http://localhost/'});Object.assign(globalThis,{window:dom.window,document:dom.window.document,IS_REACT_ACT_ENVIRONMENT:true});
+const h=React.createElement,root=require(path.join(modules,'react-dom/client')).createRoot(document.querySelector('main'));
+const source=fs.readFileSync(path.join(__dirname,'../../web/src/runtime-plugins/ui-workspace.js'),'utf8');
+const row={connection:{id:'a43cf8c5-5f80-4e83-8ed3-ec08683c2450',host:'fixture',port:22,workspace:'/work',helper:'helper',user:'',configFile:''},handshake:{workspace:'/work',os:'linux',arch:'x64',permissionCeiling:'read-only'}};
+let requests=[],created=[],picked=[],closed=0,gate=null,reject=false;
+const context={react:React,globalThis:{crypto:require('node:crypto').webcrypto},_deepseek_ai_dsh_client_ui_primitives:{Modal:({children})=>h('section',{role:'dialog'},children)},workspaceSourceRequest:async(url,args)=>{requests.push(args);if(args.action==='list')return {items:[]};if(args.action==='connect'){if(gate)await gate;if(reject)throw Error('remote grant rejected');return row;}return {removed:true}}};
+vm.runInNewContext(source.slice(source.indexOf('function RemoteExecutionDialog('),source.indexOf('function SshWorkspaceDialog(')),context);
+const props={createWorkspace:async(args)=>{created.push(args);return {workspaceId:'workspace'}},onPick:id=>picked.push(id),onClose:()=>closed++};
+const act=fn=>React.act(async()=>{await fn();await new Promise(r=>setImmediate(r))});
+const properties=node=>node[Object.keys(node).find(k=>k.startsWith('__reactProps$'))];
+const submit=()=>properties(document.querySelector('form')).onSubmit({preventDefault(){}});
+(async()=>{
+ await act(()=>root.render(h(context.RemoteExecutionDialog,props)));
+ let release;gate=new Promise(r=>release=r);
+ await act(()=>{submit();submit()});assert.equal(requests.filter(r=>r.action==='connect').length,1);assert.ok(document.querySelector('button[type=submit]').disabled);
+ await act(()=>release());gate=null;
+ assert.equal(created.length,1);assert.equal(created[0].kind,'ssh-execution');assert.equal(created[0].source,row.connection.id);assert.equal(picked[0],'workspace');assert.equal(closed,1);
+ await act(()=>root.render(null));reject=true;
+ await act(()=>root.render(h(context.RemoteExecutionDialog,props)));await act(()=>submit());assert.match(document.querySelector('[role=alert]').textContent,/grant rejected/);assert.equal(created.length,1);
+ await act(()=>root.render(null));reject=false;gate=new Promise(r=>release=r);
+ await act(()=>root.render(h(context.RemoteExecutionDialog,props)));await act(()=>submit());await act(()=>root.render(null));await act(()=>release());assert.equal(created.length,1,'detached dialog must not create a workspace from a late handshake');
+ await act(()=>root.unmount());console.log('PASS remote execution UI: explicit connection, duplicate submission, rejection and detached-handshake isolation');
+})().catch(e=>{console.error(e);process.exitCode=1});

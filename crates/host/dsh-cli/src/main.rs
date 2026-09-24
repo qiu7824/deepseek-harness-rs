@@ -3,9 +3,15 @@
 //! boot itself arrives with the profile-boot milestone; the adapter prints
 //! and exits for help/version/parse errors).
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "allocation-diagnostics")))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(windows, feature = "allocation-diagnostics"))]
+mod allocation_diagnostics;
+#[cfg(all(windows, feature = "allocation-diagnostics"))]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: allocation_diagnostics::MeasuredAllocator = allocation_diagnostics::MeasuredAllocator;
 
 #[cfg(windows)]
 mod allocator_idle;
@@ -45,13 +51,23 @@ fn main() {
             serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "revision": env!("DSH_BUILD_REVISION"),
-                "dirty": env!("DSH_BUILD_DIRTY") != "false"
+                "dirty": env!("DSH_BUILD_DIRTY") != "false",
+                "allocationDiagnostics": cfg!(feature = "allocation-diagnostics")
             })
         );
         return;
     }
     #[cfg(windows)]
     configure_allocator();
+    #[cfg(all(windows, feature = "allocation-diagnostics"))]
+    allocation_diagnostics::initialize();
+    if std::env::args().nth(1).as_deref() == Some("__dsh-image-codec") {
+        if let Err(error) = dsh_attachment_local::codec::run_worker() {
+            eprintln!("dsh-image-codec: {}", error.code);
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::var("DSH_TRACE_STARTUP").as_deref() == Ok("1") {
         let _ = tracing_subscriber::fmt()
             .with_env_filter("cordis=debug")
@@ -99,7 +115,11 @@ fn main() {
     #[cfg(windows)]
     runtime.block_on(allocator_idle::run(
         async_main(),
-        dsh_host::collect_allocator_on_park,
+        || {
+            dsh_host::collect_allocator_on_park();
+            #[cfg(feature = "allocation-diagnostics")]
+            allocation_diagnostics::sample();
+        },
     ));
     #[cfg(not(windows))]
     runtime.block_on(async_main());
@@ -178,6 +198,9 @@ async fn async_main() {
                 {
                     Ok(handle) => handle,
                     Err(error) => {
+                        if invocation.profile == "headless" && dsh_host_cli::headless::json_requested(&runtime_args) {
+                            let _=dsh_host_cli::headless::write_event(&serde_json::json!({"type":"error","message":error}),false);
+                        }
                         eprintln!("{error}");
                         std::process::exit(1);
                     }

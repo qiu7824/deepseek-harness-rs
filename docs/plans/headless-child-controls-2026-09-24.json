@@ -1,0 +1,130 @@
+{
+  "recordedAt": "2026-09-24T17:05:20.462526+08:00",
+  "status": "source_and_isolated_binary_verified_pending_installed_acceptance",
+  "installed": false,
+  "published": false,
+  "checks": {
+    "headless-child-combined-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\headless-child-combined-tests.log",
+      "sha256": "fc56b938805b3ade2ad19e0ed393377475086817c473b43cd143e447168ed730",
+      "results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\r",
+        "test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s\r",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s\r",
+        "test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.29s\r",
+        "test result: ok. 73 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s\r",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\r"
+      ]
+    },
+    "child-runtime-resident-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\child-runtime-resident-tests.log",
+      "sha256": "9ee9b36b3a3637f301b8cbeaca4304b0ab9eb67adb7f773a579b3da96b15eb7a",
+      "results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s\r"
+      ]
+    },
+    "child-runtime-host-check": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\child-runtime-host-check.log",
+      "sha256": "3789ea4ec0c776b9f9b1e124d476a760800042435d3f1ad745e6ebb47916125d",
+      "results": [
+        "Finished `dev` profile [unoptimized] target(s) in 40.47s\r"
+      ]
+    }
+  },
+  "implemented": [
+    "Settings priority: per-call override, then child settings, then parent route; provider changes never reuse foreign models.",
+    "Per-turn maxTurns and timeoutSeconds cancellation, including uncooperative model/tool/pre-step waits, with durable terminal state.",
+    "Descriptor v5 persists limits and route through cold resume; older descriptor generations remain readable.",
+    "maxParallel gates running local child turns per root and releases on settlement, independently of resident quota.",
+    "Headless multiword task, stdin, dash, help, exact session identity, NDJSON and invocation-scoped outcomes."
+  ],
+  "remaining": [
+    "External subagent providers must share the parallel policy before claiming all-provider coverage.",
+    "Installed integrated acceptance, explicit child/cwd-absent resume refusals and interrupted stdin/process behavior across platforms.",
+    "All other goal-status remaining work and release gates."
+  ],
+  "headlessBinaryAcceptance": {
+    "passed": true,
+    "binary": "D:\\codex操作目录\\learning-repair-20260922\\test-cache-no-debug\\debug\\dsh.exe",
+    "sha256": "2753a6e60f89f1c6b0275ed0ba04862670fc3d89b130868eb1223b07a769c46d",
+    "workdir": "D:\\codex操作目录\\learning-repair-20260922\\headless-acceptance-dc946614",
+    "checks": [
+      {
+        "name": "help",
+        "exitCode": 0,
+        "events": 0
+      },
+      {
+        "name": "words",
+        "exitCode": 0,
+        "events": 0
+      },
+      {
+        "name": "stdin",
+        "exitCode": 0,
+        "events": 0
+      },
+      {
+        "name": "dash",
+        "exitCode": 0,
+        "events": 0
+      },
+      {
+        "name": "empty",
+        "exitCode": 1,
+        "events": 1
+      },
+      {
+        "name": "mixed",
+        "exitCode": 1,
+        "events": 1
+      },
+      {
+        "name": "bad-option",
+        "exitCode": 1,
+        "events": 1
+      },
+      {
+        "name": "json",
+        "exitCode": 0,
+        "events": 7
+      },
+      {
+        "name": "resume",
+        "exitCode": 0,
+        "events": 7
+      },
+      {
+        "name": "unknown",
+        "exitCode": 1,
+        "events": 1
+      },
+      {
+        "name": "wrong-cwd",
+        "exitCode": 1,
+        "events": 1
+      },
+      {
+        "name": "new-failure",
+        "exitCode": 1,
+        "events": 6
+      },
+      {
+        "name": "lossless",
+        "exitCode": 0,
+        "events": 7
+      },
+      {
+        "name": "literal-json",
+        "exitCode": 1,
+        "events": 0
+      },
+      {
+        "name": "busy-session",
+        "exitCode": 1,
+        "events": 1
+      }
+    ],
+    "externalProviderRequests": 0
+  }
+}

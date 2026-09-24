@@ -31,8 +31,8 @@ use crate::fold::{
     GoalFoldState, apply_goal_event, decode_goal_change, empty_goal_fold_state, goal_change_ref,
 };
 use crate::requirements::{
-    GOAL_COMPLETION_GUARD_SERVICE, GoalCompletionError, GoalCompletionGuard,
-    GoalRequirementsIdentity,
+    GOAL_COMPLETION_GUARD_SERVICE, GOAL_USER_CONTROL_SERVICE, GoalCompletionError,
+    GoalCompletionGuard, GoalRequirementsIdentity, GoalUserControl,
 };
 use crate::runtime::GOAL_CHANGE_VERSION;
 use crate::types::{
@@ -424,18 +424,49 @@ impl GoalService {
 
     /// User controls change requirements only at a true idle boundary, so an
     /// old model request cannot publish work for a newer user goal.
+    fn with_user_control<T>(
+        &self,
+        agent: &Arc<dyn Agent>,
+        operation: impl FnOnce() -> Result<T, GoalError>,
+    ) -> Result<T, GoalError> {
+        if let Some(control) = agent
+            .ctx()
+            .get_typed::<Arc<dyn GoalUserControl>>(GOAL_USER_CONTROL_SERVICE, false)
+        {
+            let mut operation = Some(operation);
+            let mut result = None;
+            control.with_idle(agent, &mut || {
+                let action = operation.take().ok_or_else(|| {
+                    GoalError::new(
+                        "goal control callback was invoked more than once",
+                        GoalErrorCode::CommitFailed,
+                    )
+                })?;
+                result = Some(action()?);
+                Ok(())
+            })?;
+            return result.ok_or_else(|| {
+                GoalError::new(
+                    "goal control did not commit the requested operation",
+                    GoalErrorCode::CommitFailed,
+                )
+            });
+        }
+        let _control = agent.try_idle_control().map_err(|_| {
+            GoalError::new(
+                "stop current work and resolve pending input before changing goal requirements",
+                GoalErrorCode::AgentBusy,
+            )
+        })?;
+        operation()
+    }
+
     pub fn create_for_user(
         &self,
         agent: &Arc<dyn Agent>,
         request: CreateGoalRequest,
     ) -> Result<GoalView, GoalError> {
-        let _control = agent.try_idle_control().map_err(|_| {
-            GoalError::new(
-                "stop current work and resolve pending input before creating a new goal",
-                GoalErrorCode::AgentBusy,
-            )
-        })?;
-        self.create(agent, request)
+        self.with_user_control(agent, || self.create(agent, request))
     }
 
     pub fn edit_for_user(
@@ -455,9 +486,19 @@ impl GoalService {
             && current
                 .as_ref()
                 .is_some_and(|goal| goal.phase != GoalPhase::Complete);
-        let _control = needs_idle.then(|| agent.try_idle_control().map_err(|_| GoalError::new(
-            "stop current work and resolve pending input before changing goal requirements", GoalErrorCode::AgentBusy))).transpose()?;
-        self.edit(agent, ref_, request)
+        if needs_idle {
+            self.with_user_control(agent, || self.edit(agent, ref_, request))
+        } else {
+            self.edit(agent, ref_, request)
+        }
+    }
+
+    pub fn clear_for_user(
+        &self,
+        agent: &Arc<dyn Agent>,
+        ref_: &GoalRef,
+    ) -> Result<GoalRef, GoalError> {
+        self.with_user_control(agent, || self.clear(agent, ref_))
     }
 
     /// Create and arm a goal. A completed goal may be replaced; every other

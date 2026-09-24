@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
+use dsh_app_boot::plugin_profile::{Profile, read_runtime};
 use dsh_host_webserver::{WebHandlerError, WebResponse, WebRoute, WebRouteKind, WebServer};
 use http::{Method, Response, StatusCode};
 use serde_json::{Value, json};
@@ -15,53 +16,22 @@ const MAX_CLIENT_ASSET_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const RETIRED_BUNDLED_PLUGINS: [&str; 1] = ["dsh-task-manager"];
 
 fn remove_retired_bundled(profile: &Path) -> Result<(), String> {
-    let package_path = profile.join("package.json");
-    let mut package: Value = match std::fs::read(&package_path) {
-        Ok(raw) => serde_json::from_slice(&raw)
-            .map_err(|error| format!("parse {}: {error}", package_path.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(error) => return Err(format!("read {}: {error}", package_path.display())),
-    };
-    let mut changed = false;
-    if let Some(dependencies) = package
-        .get_mut("dependencies")
-        .and_then(Value::as_object_mut)
-    {
-        for name in RETIRED_BUNDLED_PLUGINS {
-            changed |= dependencies.remove(name).is_some();
-        }
-    }
-    let inventory_path = profile.join("plugins.json");
-    let mut inventory: Vec<Value> = std::fs::read(&inventory_path)
-        .ok()
-        .and_then(|raw| serde_json::from_slice(&raw).ok())
-        .unwrap_or_default();
-    let before = inventory.len();
-    inventory.retain(|entry| {
-        !RETIRED_BUNDLED_PLUGINS.contains(&entry.get("id").and_then(Value::as_str).unwrap_or(""))
-    });
-    changed |= inventory.len() != before;
+    let profile = Profile::open(profile)?;
+    let mut documents = profile.documents()?;
     for name in RETIRED_BUNDLED_PLUGINS {
-        if let Some(directory) = package_directory(profile, name)
-            && directory.exists()
-        {
-            std::fs::remove_dir_all(&directory).map_err(|error| {
-                format!("remove retired plugin {}: {error}", directory.display())
-            })?;
-            changed = true;
+        if documents.manifest.get("dependencies").and_then(|value|value.get(name)).and_then(Value::as_str)!=Some("bundled") {continue;}
+        let mut changed = documents
+            .manifest
+            .get_mut("dependencies")
+            .and_then(Value::as_object_mut)
+            .is_some_and(|deps| deps.remove(name).is_some());
+        let before = documents.entries.len();
+        documents.entries.retain(|entry| entry["id"] != name);
+        changed |= before != documents.entries.len();
+        changed |= dsh_app_boot::plugin_profile::package_path(profile.root(), name)?.exists();
+        if changed {
+            profile.replace(documents.clone(), Some((name, None)))?;
         }
-    }
-    if changed {
-        std::fs::write(
-            &package_path,
-            serde_json::to_vec_pretty(&package).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| format!("write {}: {error}", package_path.display()))?;
-        std::fs::write(
-            &inventory_path,
-            serde_json::to_vec_pretty(&inventory).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| format!("write {}: {error}", inventory_path.display()))?;
     }
     Ok(())
 }
@@ -130,6 +100,8 @@ fn bundled_tree_matches(source: &Path, destination: &Path) -> bool {
 
 pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
     remove_retired_bundled(profile)?;
+    let profile = Profile::open(profile)?;
+    let mut documents = profile.documents()?;
     let Some(root) = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join("plugins")))
@@ -139,87 +111,53 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
             (cfg!(debug_assertions) && checkout.is_dir()).then_some(checkout)
         })
     else {
-        return Ok(());
+        return profile.checkpoint();
     };
-    let package_path = profile.join("package.json");
-    if !package_path.exists() {
-        dsh_workspace_resources::persist_json(
-            &package_path,
-            &json!({"name":"dsh-client-profile","private":true,"dependencies":{}}),
-        )?;
-    }
-    let mut profile_manifest: Value = serde_json::from_slice(
-        &std::fs::read(&package_path)
-            .map_err(|error| format!("read {}: {error}", package_path.display()))?,
-    )
-    .map_err(|error| format!("parse {}: {error}", package_path.display()))?;
-    let dependencies = profile_manifest
-        .as_object_mut()
-        .ok_or_else(|| "profile package.json must be an object".to_string())?
-        .entry("dependencies")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| "profile dependencies must be an object".to_string())?;
-    let inventory_path = profile.join("plugins.json");
-    let mut inventory: Vec<Value> = std::fs::read(&inventory_path)
-        .ok()
-        .and_then(|raw| serde_json::from_slice(&raw).ok())
-        .unwrap_or_default();
-    let mut changed = false;
-    for entry in
-        std::fs::read_dir(&root).map_err(|error| format!("read {}: {error}", root.display()))?
-    {
-        let entry = entry.map_err(|error| format!("read bundled plugin: {error}"))?;
-        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+    for entry in std::fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
-        let manifest_path = entry.path().join("package.json");
-        let Ok(raw) = std::fs::read(&manifest_path) else {
+        let Ok(raw) = std::fs::read(entry.path().join("package.json")) else {
             continue;
         };
         let Ok(manifest) = serde_json::from_slice::<Value>(&raw) else {
             continue;
         };
-        let Some(name) = manifest.get("name").and_then(Value::as_str) else {
+        let Some(name) = manifest["name"].as_str() else {
             continue;
         };
-        let Some(destination) = package_directory(profile, name) else {
-            continue;
-        };
-        if !bundled_tree_matches(&entry.path(), &destination) {
-            if destination.exists() {
-                std::fs::remove_dir_all(&destination).map_err(|error| {
-                    format!("refresh bundled plugin {}: {error}", destination.display())
-                })?;
-            }
-            copy_bundled_tree(&entry.path(), &destination)?;
-            changed = true;
+        if documents.manifest.get("dependencies").and_then(|value|value.get(name)).and_then(Value::as_str).is_some_and(|source|source!="bundled") {continue;}
+        let destination = dsh_app_boot::plugin_profile::package_path(profile.root(), name)?;
+        let refresh = !bundled_tree_matches(&entry.path(), &destination);
+        let mut next = documents.clone();
+        next.manifest
+            .as_object_mut()
+            .ok_or("invalid profile manifest")?
+            .entry("dependencies")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("invalid profile dependencies")?
+            .entry(name)
+            .or_insert_with(|| json!("bundled"));
+        if !next.entries.iter().any(|row| row["id"] == name) {
+            next.entries
+                .push(json!({"id":name,"name":name,"disabled":name=="dsh-auto-review"}));
         }
-        if !dependencies.contains_key(name) {
-            dependencies.insert(name.to_string(), Value::String("bundled".to_string()));
-            changed = true;
-        }
-        if !inventory
-            .iter()
-            .any(|item| item.get("id").and_then(Value::as_str) == Some(name))
-        {
-            inventory.push(json!({"id": name, "name": name, "disabled": false}));
-            changed = true;
+        if refresh || next.manifest != documents.manifest || next.entries != documents.entries {
+            let source = entry.path();
+            profile.replace(
+                next.clone(),
+                if refresh {
+                    Some((name, Some(source.as_path())))
+                } else {
+                    None
+                },
+            )?;
+            documents = next;
         }
     }
-    if changed {
-        std::fs::write(
-            &package_path,
-            serde_json::to_vec_pretty(&profile_manifest).map_err(|e| e.to_string())?,
-        )
-        .map_err(|error| format!("write {}: {error}", package_path.display()))?;
-        std::fs::write(
-            &inventory_path,
-            serde_json::to_vec_pretty(&inventory).map_err(|e| e.to_string())?,
-        )
-        .map_err(|error| format!("write {}: {error}", inventory_path.display()))?;
-    }
-    Ok(())
+    profile.checkpoint()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -349,14 +287,11 @@ fn javascript_response(method: &Method, bytes: Bytes) -> WebResponse {
 }
 
 pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
-    let manifest_path = profile.join("package.json");
-    let raw = match std::fs::read(&manifest_path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("read {}: {error}", manifest_path.display())),
-    };
-    let manifest: Value = serde_json::from_slice(&raw)
-        .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
+    let loaded = read_runtime(profile);
+    if let Some(issue) = &loaded.issue {
+        eprintln!("dsh: {issue}");
+    }
+    let manifest = loaded.documents.manifest;
     let dependencies = manifest
         .get("dependencies")
         .and_then(Value::as_object)
@@ -400,7 +335,10 @@ pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
             eprintln!("dsh: skipping client plugin {name:?}: unsafe or missing client export");
             continue;
         };
-        let Some(bytes) = read_bounded(&source, MAX_CLIENT_BYTES)? else {
+        let Some(bytes) = read_bounded(&source, MAX_CLIENT_BYTES).unwrap_or_else(|error| {
+            eprintln!("dsh: skipping client plugin {name:?}: {error}");
+            None
+        }) else {
             eprintln!("dsh: skipping client plugin {name:?}: client bundle exceeds 2 MiB");
             continue;
         };
@@ -433,7 +371,12 @@ pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
                     );
                     continue;
                 };
-                let Some(asset_bytes) = read_bounded(&asset_source, MAX_CLIENT_ASSET_BYTES)? else {
+                let Some(asset_bytes) = read_bounded(&asset_source, MAX_CLIENT_ASSET_BYTES)
+                    .unwrap_or_else(|error| {
+                        eprintln!("dsh: skipping client asset {name:?}/{asset_name:?}: {error}");
+                        None
+                    })
+                else {
                     eprintln!("dsh: skipping oversized client asset {name:?}/{asset_name:?}");
                     continue;
                 };
@@ -502,12 +445,9 @@ pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
 }
 
 pub(crate) fn disabled_plugins(profile: &Path) -> std::collections::HashSet<String> {
-    let path = profile.join("plugins.json");
-    let Ok(raw) = std::fs::read(path) else {
-        return std::collections::HashSet::new();
-    };
-    serde_json::from_slice::<Vec<Value>>(&raw)
-        .unwrap_or_default()
+    read_runtime(profile)
+        .documents
+        .entries
         .into_iter()
         .filter(|entry| entry.get("disabled").and_then(Value::as_bool) == Some(true))
         .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_string))
@@ -574,6 +514,10 @@ pub fn compose(
         .ok_or_else(|| "web plugin manifest entries are absent".to_string())?;
     let mut disposers = Vec::new();
     for plugin in plugins {
+        if entries.iter().any(|entry|entry.get("id").and_then(Value::as_str)==Some(plugin.id.as_str())) {
+            eprintln!("dsh: optional client plugin {:?} conflicts with a core module and was not loaded",plugin.id);
+            continue;
+        }
         if plugin.id == "dsh-skin-center" && !skins_allowed {
             continue;
         }
@@ -635,6 +579,18 @@ pub fn compose(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_user_package_is_not_removed_as_a_retired_bundled_plugin() {
+        let root=std::env::temp_dir().join(format!("keep-user-plugin-{}",uuid::Uuid::new_v4()));
+        let package=root.join("node_modules/dsh-task-manager");std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(root.join("package.json"),json!({"dependencies":{"dsh-task-manager":"github:owner/repo#commit"}}).to_string()).unwrap();
+        std::fs::write(root.join("plugins.json"),json!([{"id":"dsh-task-manager","name":"dsh-task-manager","disabled":true}]).to_string()).unwrap();
+        std::fs::write(package.join("client.js"),b"owned custom package").unwrap();
+        remove_retired_bundled(&root).unwrap();assert!(package.join("client.js").is_file());
+        assert!(std::fs::read_to_string(root.join("package.json")).unwrap().contains("github:owner/repo"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn retired_task_manager_is_removed_from_existing_profile() {

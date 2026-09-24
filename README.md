@@ -75,9 +75,9 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-{core,skin,free}-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-{core,skin,free}-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.22-macos-{x86_64,aarch64}-{core,skin,free}-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-core-portable.zip`
+- `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-core-portable.tar.gz`
+- `deepseek-harness-rs-v0.1.3-alpha.22-macos-{x86_64,aarch64}-core-portable.tar.gz`
 - 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
 
 完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
@@ -105,11 +105,7 @@ http://127.0.0.1:58080/
 
 启动器由固定 commit 的 ZSUI 构建，不依赖 CMD、PowerShell、WebView 或额外运行时；负责启动、停止、重启正式 `deepseek-harness-rs web` 进程以及打开网页、日志目录。Windows 安装器和启动器按系统 UI 语言自动显示简体中文或英文。 全新安装默认位于 `D:\Program Files (x86)\DeepSeek Harness-rs\<variant>`，升级沿用原安装位置；默认位置不可用时需选择其他目录。
 
-需要扩展皮肤时，另行下载 `skin` 包并运行其中的 `deepseek-harness-rs-skin`（Windows 为 `.exe`）；它只把皮肤资产安装到同目录的 `web/dist/skins`，默认 `core` 包始终不携带皮肤资源。
-
-`free` 包与 `core` 使用同一套正式运行时和 Web 界面，只预置通过发布检查的 OpenCode Zen 免费模型。检查[官方模型目录](https://opencode.ai/zen/v1/models)中的精确 ID、官方输入／输出／缓存读取价格、匿名流式推理、工具调用与工具结果续接，并将最近 24 小时的验证证据绑定到包内运行时校验和。`free-model-verification.json` 列出各候选的实际结果；设置中的免费模型页可刷新目录、重新检测和添加已通过的模型。免费包不包含凭据或皮肤载荷。
-
-可选的 `free` 版按平台与构建执行匿名模型验收，仅在通过后发布。是否提供 `free` 包，以该次 GitHub Release 的实际资产和包内 `free-model-verification.json` 为准；`core` 和 `skin` 独立验收。
+发行结构为 **Web 核心版与 Flutter 桌面客户端**，共用 Rust Host 及 HTTP/WebSocket 协议。Web 仅提供 `core` 包；模型目录与连接管理在核心版设置中提供，不按模型另设安装版本。Flutter 源码位于 [`apps/desktop_flutter`](apps/desktop_flutter)，各平台的构建与验收状态见[桌面平台矩阵](docs/desktop-platforms.zh.md)。
 
 普通会话、原生工具和 Web 界面由 Rust 核心提供。JavaScript／TypeScript 代码模式及部分外部工具需要单独配置 Node；设置中的运行环境页显示实际路径、版本及能力检测结果。
 

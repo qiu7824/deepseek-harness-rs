@@ -1,0 +1,32 @@
+[package]
+name = "dsh-experimental-auto-review"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+description = "Optional session-only authorization review for native and nested tool calls"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-agent = { path = "../../core/agent" }
+dsh-llm = { path = "../../core/llm" }
+dsh-session = { path = "../../core/session" }
+dsh-tools = { path = "../../core/tools" }
+dsh-permission-presets = { path = "../permission-presets" }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-subagent = { path = "../../subagent/subagent" }
+dsh-subagent-spawn-in-process = { path = "../../subagent/subagent-spawn" }
+dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
+dsh-code-runtime = { path = "../../code-runtime/code-runtime" }
+dsh-agent-loop = { path = "../../core/agent-loop" }
+dsh-scope = { path = "../../core/scope" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-user-approval = { path = "../user-approval" }
+dsh-shell = { path = "../../shell/shell" }
+dsh-sandbox = { path = "../../sandbox/sandbox" }

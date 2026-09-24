@@ -495,6 +495,15 @@ pub struct SessionSelectModelResult {
 pub struct SessionRenameRequest {
     pub session_id: SessionId,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_title: Option<SessionTitleEditBase>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTitleEditBase {
+    pub value: Option<String>,
+    pub through_seq: i64,
 }
 
 /// `session.rename` response value.
@@ -582,6 +591,20 @@ pub struct SessionAttachmentResult {
     pub attachment: ImageAttachmentRef,
     /// Base64-encoded image bytes.
     pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFileAttachmentRequest {
+    pub session_id: SessionId,
+    pub attachment: dsh_attachment::FileAttachmentRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFileAttachmentResult {
+    pub attachment: dsh_attachment::FileAttachmentRef,
+    pub path: String,
 }
 
 /// `session.updateQueue` request payload.
@@ -688,6 +711,11 @@ pub trait SessionsApi: Send + Sync {
         &self,
         request: RpcRequest<SessionAttachmentRequest>,
     ) -> RpcResponse<SessionAttachmentResult>;
+
+    async fn file_attachment(
+        &self,
+        request: RpcRequest<SessionFileAttachmentRequest>,
+    ) -> RpcResponse<SessionFileAttachmentResult>;
 
     /// Edits, removes, or strictly steers one pending queued occurrence.
     async fn update_queue(

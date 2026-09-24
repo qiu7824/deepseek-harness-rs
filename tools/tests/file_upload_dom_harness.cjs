@@ -5,10 +5,10 @@ const React=require(path.join(modules,'react')),jsx=require(path.join(modules,'r
 const source=fs.readFileSync(path.join(__dirname,'../../web/src/runtime-plugins/ui-conversation.js'),'utf8');
 const emptyDecorations={token:null,chips:[],textRefs:[],hint:null};
 const context={ContextMeter:()=>null,react:React,react_jsx_runtime:jsx,window,document,Text:window.Text,getComputedStyle:window.getComputedStyle.bind(window),setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame:fn=>setTimeout(fn,0),cancelAnimationFrame:clearTimeout,ResizeObserver:class{observe(){}disconnect(){}},clsx:(...parts)=>parts.filter(Boolean).join(' '),InputBar_module_css_default:new Proxy({},{get:(_,key)=>key}),INERT_DECORATIONS:emptyDecorations,deriveDecorations:()=>emptyDecorations,attachmentRailLabels:()=>({}),imageSizeText:String,
- _deepseek_ai_dsh_client_ui_primitives:new Proxy({Tooltip:({children})=>children,Toast:({text})=>h("div",{role:"alert"},text)},{get:(object,key)=>object[key]||(()=>null)}),
+ _deepseek_ai_dsh_client_ui_primitives:new Proxy({Tooltip:({children})=>children,Toast:({text})=>h("div",{role:"alert"},text),IconCloseOutline16:()=>h('svg',{'data-close-icon':true})},{get:(object,key)=>object[key]||(()=>null)}),
  _deepseek_ai_dsh_client_ui_attachment:{AttachmentRail:({items,onRemove})=>h('div',null,items.map(item=>h('button',{key:item.id,'aria-label':item.removeLabel,onClick:()=>onRemove(item)},item.alt)))}};
 vm.runInNewContext(source.slice(source.indexOf('function isRasterFile('),source.indexOf('function imageMediaType(')),context);
-const begin=source.indexOf('function InputBar('),end=source.indexOf('\n\t\t//#endregion',begin);vm.runInNewContext(source.slice(begin,end),context);
+const begin=source.indexOf('function DraftAttachmentRemove('),end=source.indexOf('\n\t\t//#endregion',source.indexOf('function InputBar(',begin));vm.runInNewContext(source.slice(begin,end),context);
 
 let imageLimits={maxImageBytes:0,maxMessageImageBytes:0,maxImagesPerMessage:20};
 let active='a', counter=0; const states=new Map(['a','b'].map(id=>[id,{draft:'',imageIds:[],phase:'editing',queue:[],claim:null}]));
@@ -25,11 +25,11 @@ const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,
 async function choose(files){const input=document.querySelector('[data-file-picker]');Object.defineProperty(input,'files',{configurable:true,value:files});await act(()=>input.dispatchEvent(new window.Event('change',{bubbles:true})));}
 (async()=>{
  await act(render);assert.ok(document.querySelector('button[aria-label="file.upload"]'));
- await choose([new window.File(['hello'],'设计.txt',{type:'text/plain'}),new window.File(['%PDF'],'report.pdf',{type:'application/pdf'})]);
+ await choose([new window.File(['hello'],'璁捐.txt',{type:'text/plain'}),new window.File(['%PDF'],'report.pdf',{type:'application/pdf'})]);
  assert.equal(document.querySelectorAll('[data-file-draft]').length,2);assert.equal(document.querySelectorAll('[data-file-draft] img, [data-file-draft] iframe').length,0);
  assert.equal(document.querySelector('button[aria-label="input.send"]').disabled,false,'file-only prompts are sendable');
  await act(()=>document.querySelector('button[aria-label="input.send"]').click());assert.equal(submitted[0].imageIds.length,2);
- await act(()=>document.querySelector('button[aria-label="file.remove:设计.txt"]').click());assert.equal(states.get('a').imageIds.length,1);
+ await act(()=>document.querySelector('button[aria-label="file.remove:璁捐.txt"]').click());assert.equal(states.get('a').imageIds.length,1);
  const oversized=new window.File(['x'],'large.bin');Object.defineProperty(oversized,'size',{value:17*1024*1024});await choose([oversized]);
  assert.equal(states.get('a').imageIds.length,2,'files above 16 MiB are accepted');
  await choose(Array.from({length:15},(_,i)=>new window.File(['x'],`extra-${i}.bin`)));
@@ -41,7 +41,15 @@ async function choose(files){const input=document.querySelector('[data-file-pick
  await choose([largeImage]);assert.equal(states.get('b').imageIds.length,1,'explicit image byte limit still rejects oversized input');
  assert.match(document.body.textContent,/image.fileTooLarge/);
  active='a';await act(render);assert.equal(document.querySelectorAll('[data-file-draft]').length,2);
+ imageLimits={...imageLimits,maxImageBytes:0};await choose([new window.File(['png'],'frame.png',{type:'image/png'})]);
+ let removers=[...document.querySelectorAll('.dshDraftRemove')];assert.equal(removers.length,3);assert.ok(removers.every(button=>button.querySelector('[data-close-icon]')),'file and image removal share the same control');
+ const beforeRemove=[...states.get('a').imageIds];const imageId=beforeRemove.at(-1);
  states.get('a').phase='submitting';await act(render);assert.equal(document.querySelector('button[aria-label="file.upload"]').disabled,true);
- await choose([new window.File(['x'],'late.txt')]);assert.equal(states.get('a').imageIds.length,2,'late chooser completion cannot modify a submitting draft');
+ removers=[...document.querySelectorAll('.dshDraftRemove')];assert.ok(removers.every(button=>button.disabled),'submission locks file and image removal together');
+ await act(()=>removers.forEach(button=>button.click()));assert.deepEqual(states.get('a').imageIds,beforeRemove,'locked removal cannot mutate the pending payload');
+ assert.equal(document.querySelector('.dshDraftImageThumb').disabled,false,'read-only image preview remains available while sending');
+ await choose([new window.File(['x'],'late.txt')]);assert.equal(states.get('a').imageIds.length,3,'late chooser completion cannot modify a submitting draft');
+ states.get('a').phase='editing';await act(render);await act(()=>document.querySelector('button[aria-label="image.remove:frame.png"]').click());
+ assert.deepEqual(states.get('a').imageIds,beforeRemove.filter(id=>id!==imageId),'image removal preserves the file attachments');assert.equal(document.activeElement,document.querySelector('textarea'),'removing an attachment restores composer focus');
  await act(()=>root.unmount());dom.window.close();console.log('PASS actual file composer: picker, binary labels, file-only send, remove, limits, session isolation and submission lock');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close();});

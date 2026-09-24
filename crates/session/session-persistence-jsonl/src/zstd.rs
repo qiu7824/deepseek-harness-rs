@@ -142,12 +142,27 @@ pub fn compress_zstd_frame(input: &[u8]) -> Result<Vec<u8>, String> {
     encoder
         .include_checksum(true)
         .map_err(|error| format!("zstd checksum flag failed: {error}"))?;
+    // Each frame is already an owned, complete slice. Supplying its exact size
+    // lets Zstd size its native window/tables to the frame instead of reserving
+    // an unknown-length streaming context for every small journal append.
+    encoder
+        .set_pledged_src_size(Some(input.len() as u64))
+        .map_err(|error| format!("zstd source size failed: {error}"))?;
     // One frame per call: finish() emits exactly one frame.
     std::io::Write::write_all(&mut encoder, input)
         .map_err(|error| format!("zstd write failed: {error}"))?;
     encoder
         .finish()
         .map_err(|error| format!("zstd finish failed: {error}"))
+}
+
+#[cfg(test)]
+pub(crate) fn legacy_streaming_fixture(input: &[u8], window_log: u32) -> Vec<u8> {
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 0).unwrap();
+    encoder.include_checksum(true).unwrap();
+    encoder.window_log(window_log).unwrap();
+    std::io::Write::write_all(&mut encoder, input).unwrap();
+    encoder.finish().unwrap()
 }
 
 /// Decompress one complete frame and validate its checksum
@@ -216,4 +231,44 @@ pub fn parse_zstd_header_plaintext(plaintext: &[u8]) -> Result<String, String> {
 pub fn decode_zstd_header_line(first_frame: &[u8]) -> Result<String, String> {
     let plaintext = decompress_zstd_frame(first_frame)?;
     parse_zstd_header_plaintext(&plaintext)
+}
+
+#[cfg(test)]
+mod source_size_tests {
+    use super::*;
+
+    #[test]
+    fn exact_size_frames_keep_payload_checksums_and_torn_tail_recovery() {
+        for size in [0, 1, 255, 256, 4096, 65536, 2 * 1024 * 1024] {
+            let data: Vec<u8> = (0..size).map(|i| ((i * 31) % 251) as u8).collect();
+            let frame = compress_zstd_frame(&data).unwrap();
+            assert_eq!(zstd::zstd_safe::get_frame_content_size(&frame).unwrap(), Some(size as u64));
+            assert_eq!(decompress_zstd_frame(&frame).unwrap(), data);
+            let scan = scan_zstd_frames(&frame).unwrap();
+            assert_eq!(scan.frames.len(), 1);
+            assert!(scan.torn_start.is_none());
+            assert_eq!(decompress_zstd_prefix(&frame[..frame.len()-1]), data);
+            let mut corrupt = frame;
+            *corrupt.last_mut().unwrap() ^= 0x10;
+            assert!(decompress_zstd_frame(&corrupt).is_err());
+        }
+    }
+
+    #[test]
+    fn known_small_frame_uses_a_smaller_native_compression_context() {
+        use zstd::zstd_safe::{CCtx, InBuffer, OutBuffer, CParameter};
+        fn native_bytes(known: bool) -> usize {
+            let input = vec![b'x'; 16 * 1024];
+            let mut context = CCtx::create(); context.init(0).unwrap();
+            context.set_parameter(CParameter::ChecksumFlag(true)).unwrap();
+            if known { context.set_pledged_src_size(Some(input.len() as u64)).unwrap(); }
+            let mut output = Vec::with_capacity(zstd::zstd_safe::compress_bound(input.len()));
+            let mut output = OutBuffer::around(&mut output); let mut input = InBuffer::around(&input);
+            context.compress_stream(&mut output, &mut input).unwrap();
+            context.sizeof()
+        }
+        let unknown = native_bytes(false); let known = native_bytes(true);
+        println!("16 KiB frame native context: unknown={unknown} bytes, exact={known} bytes");
+        assert!(known < unknown / 4, "known source length did not bound the native compression window");
+    }
 }

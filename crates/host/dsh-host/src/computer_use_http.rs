@@ -222,6 +222,7 @@ async fn handle(
                 "error": availability_error,
                 "adapter": runtime.as_ref().and_then(|runtime| runtime.adapter_id_for(&body).ok()),
                 "targets": runtime.as_ref().map(|runtime| runtime.targets()),
+                "nativeProtocol": runtime.as_ref().map(|runtime|runtime.native_protocol_status()),
                 "ownerSessionId": owner.id,
                 "defaultBrowserSessionId": DEFAULT_BROWSER_SESSION_ID,
                 "actions": actions,

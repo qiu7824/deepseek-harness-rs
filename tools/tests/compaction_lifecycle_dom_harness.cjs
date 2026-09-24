@@ -37,7 +37,8 @@ function session() {
   assert.equal(node.data.pending, false, 'end without a replacement must settle the indicator');
   await act(() => root.render(React.createElement(context.Item, { node: node.data, t: k => k })));
   assert.doesNotMatch(document.body.textContent, /message.compaction.running/);
-  assert.match(document.body.textContent, /compaction cancelled/);
+  assert.match(document.body.textContent, /message.compaction.stopped/);
+  assert.doesNotMatch(document.body.textContent, /message.compaction.failed/);
   assert.equal(document.querySelector('button').disabled, true);
   const completed = session(); const first = completed.emit(event('compaction/start', 'complete'));
   completed.emit(event('compaction/summary', 'complete', { summary: [{ type: 'text', text: 'Keep unfinished constraints.' }], shadowedSeqs: [1, 2], shadowedTokenCount: 4000 }));
@@ -50,6 +51,12 @@ function session() {
   assert.doesNotMatch(document.body.textContent, /message.compaction.running/);
   assert.equal(context.def.match(event('compaction/start', 'manual', { sourceCommandId: 'cmd-1' })), null);
   assert.equal(context.commands.match(event('compaction/start', 'manual', { sourceCommandId: 'cmd-1' })).id, 'cmd-1');
+  const native = session(); native.emit(event('compaction/start', 'native'));
+  native.emit(event('compaction/summary', 'native', { summary: [{type:'text',text:'Native checkpoint'}], shadowedSeqs:[1,2], shadowedTokenCount:64 }));
+  native.emit({type:'user/message',seq:++seq,time:seq*100,surfaceOp:{op:'replace',startSeq:1,endSeq:2},data:{source:{kind:'compact-checkpoint',compactionId:'native'}}});
+  const settled = native.emit(event('compaction/end', 'native'));
+  assert.equal(settled.data.summary, 'Native checkpoint');
+  assert.notEqual(settled.data.pending, true);
   await act(() => root.unmount()); dom.window.close();
   console.log('PASS automatic compaction: null wire fields, pending display, cancelled end, landed checkpoint and manual separation');
 })().catch(error => { console.error(error); process.exitCode = 1; dom.window.close(); });

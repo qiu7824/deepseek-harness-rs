@@ -52,6 +52,8 @@ fn action_contract_is_object_rooted_and_requires_each_action_dependency() {
         json!({"action":"read","id":"script","path":"probe.ps1","limit":32001}),
         json!({"action":"read","id":"script","path":"probe.ps1","limit":1.5}),
         json!({"action":"list","unknown":true}),
+        json!({"action":"promote","id":"candidate","path":"report.docx","target":"report.docx","expectedSha256":"null"}),
+        json!({"action":"promote","id":"candidate","path":"report.docx","target":"report.docx","expectedSha256":""}),
     ] {
         assert!(
             !dsh_tools::validate_json_schema_value(&schema, &args, "arguments").is_empty(),
@@ -95,6 +97,7 @@ async fn missing_scratch_dependencies_are_rejected_before_dispatch() {
         json!({"action":"write","path":"probe.ps1","content":"test"}),
         json!({"action":"promote","id":"candidate","path":"report.docx","target":"report.docx"}),
         json!({"action":"release"}),
+        json!({"action":"promote","id":"candidate","path":"report.docx","target":"report.docx","expectedSha256":"null"}),
     ] {
         let result = tools
             .execute(dsh_tools::ToolExecutionInput {

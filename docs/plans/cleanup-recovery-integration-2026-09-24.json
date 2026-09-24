@@ -1,0 +1,48 @@
+{
+  "recordedAt": "2026-09-24T20:22:54.989430+08:00",
+  "status": "source_and_composed_host_verified_pending_installed_acceptance",
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "checks": {
+    "cleanup-resource-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\cleanup-resource-tests.log",
+      "sha256": "b5d587cc0e32b41838ee72fb6c7623307f3bdace1d0d77aa5b5634f0be986bdf",
+      "results": [
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s"
+      ]
+    },
+    "cleanup-host-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\cleanup-host-tests.log",
+      "sha256": "ebbcbb6fad05100920f0308d6a71a18175981b5bd75ff596e6da50a93045227a",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 1.08s"
+      ]
+    },
+    "cleanup-dom-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\cleanup-dom-tests.log",
+      "sha256": "0804709a8fd7dc32d9062fc18612f21e08fecf7f8e59a3a4e0e9a95d5a90c286",
+      "results": [
+        "PASS artifacts DOM: tab placement, preview, context menu, versioned trash, busy resource protection, session isolation and settings rollback"
+      ]
+    }
+  },
+  "files": {
+    "crates/host/dsh-host/src/workspace_resources.rs": "ac642eb136f19ef8ae0348f9bb07f3ea3a4dd8174e409ce21cfc314d8054c857",
+    "crates/host/dsh-host/src/artifacts.rs": "7ae209b83ad085d53e17160407cc20bade1c65164eaaf02165151655a856d442",
+    "crates/host/dsh-host/src/cleanup_recovery_tests.rs": "d03d3b08a94b0e48f19f77e799edceeee67e98d3b34ad2f307784e4ddba75dd8",
+    "crates/workspace/workspace-resources/src/execution.rs": "713c502cb7938569b06a9122f6112bc4fab5a48e69655e169265e7162a128b60",
+    "release/plugins/dsh-artifacts/lib/client.js": "8c0b796d741030d42d07aaeb9c4c2805ea0a748bed2efeb5f6e74f6c67f5057c"
+  },
+  "implemented": [
+    "Task collection is limited to its displayed scope; global cleanup requires the settings view and malformed task identifiers are rejected.",
+    "Pending diagnostic and experience references retain non-cache evidence; unreadable existing ledgers conservatively retain evidence.",
+    "Recovery is idempotent; verified original destinations remain recoverable after task deletion and absent parent directories, without replacing changed user files.",
+    "Resource location identifiers disambiguate duplicate cache identifiers; offline registered roots remain catalogued and are not silently recreated.",
+    "Inherited explicit Cargo cache paths are honored; automatic collection respects enabled/autoClean and active task protection."
+  ],
+  "remainingAcceptance": [
+    "Installed UI, long-running jobs, real offline volumes and final package acceptance.",
+    "No production diagnostics or evidence were deleted by these isolated tests."
+  ]
+}

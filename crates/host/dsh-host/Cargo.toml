@@ -83,6 +83,7 @@ dsh-storage-domain = { path = "../../storage/storage-domain" }
 dsh-message-feedback = { path = "../../feedback/message-feedback" }
 dsh-storage-json = { path = "../../storage/storage-json" }
 dsh-workspace = { path = "../../workspace/workspace" }
+dsh-remote-execution = { path = "../../workspace/remote-execution" }
 dsh-jobs = { path = "../../jobs/jobs" }
 dsh-jobs-local = { path = "../../jobs/jobs-local" }
 dsh-sandbox = { path = "../../sandbox/sandbox" }
@@ -90,6 +91,7 @@ dsh-sandbox-local = { path = "../../sandbox/sandbox-local" }
 dsh-sandbox-policy = { path = "../../sandbox/sandbox-policy" }
 dsh-pwsh-local = { path = "../../shell/pwsh-local" }
 dsh-permission-presets = { path = "../../interaction/permission-presets" }
+dsh-experimental-auto-review = { path = "../../interaction/auto-review" }
 dsh-plan-mode = { path = "../../plan/plan-mode" }
 dsh-shell = { path = "../../shell/shell" }
 dsh-session = { path = "../../core/session" }

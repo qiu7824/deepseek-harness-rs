@@ -37,12 +37,14 @@ other projects to AppContainer. Writable accounts remain project-specific.
 ## Build and distribution
 
 ```powershell
-cargo build --locked --release --workspace --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+python tools/build_native_sandbox.py --target-dir target/native-windows-sandbox
 cargo test --locked --release --manifest-path native/windows-sandbox/Cargo.toml -p codex-windows-sandbox --lib
 ```
 
 Distribute `dsh-windows-native.exe`, `dsh-command-runner.exe`, and
 `dsh-windows-sandbox-setup.exe` together with license, notice and upstream identity.
+`BUILD_IDENTITY.json` binds all three helper hashes to the exact native source
+and product version. Packaging rejects missing, stale or mixed helper sets.
 Helper hashes are checked before dispatch. Setup version 6 includes the trusted
 host's ACL-maintenance rights and read-only network-policy access; older setup
 state requires explicit initialization before reuse.

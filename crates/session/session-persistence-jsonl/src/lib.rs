@@ -3,8 +3,12 @@
 //! Rust port of `@deepseek-ai/dsh-session-persistence-jsonl`.
 
 pub mod format;
+pub mod generations;
 pub mod index;
 mod packed_stream;
+mod native_writer;
+mod native_reader;
+pub mod v4_artifact;
 pub mod zstd;
 
 pub use format::{

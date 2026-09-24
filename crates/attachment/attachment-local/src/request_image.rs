@@ -6,15 +6,14 @@ use dsh_attachment::{
     RequestImagePolicy, request_image_variant_id,
 };
 
-use crate::image::probe_image;
-use crate::store::read_image_file;
-
 fn cache_path(root: &Path, variant: &dsh_attachment::ImageVariantId) -> PathBuf {
     let digest = variant
         .as_str()
         .strip_prefix("sha256:")
         .unwrap_or("invalid");
-    root.join("request-images").join(&digest[..2]).join(digest)
+    root.join("request-images-v3")
+        .join(&digest[..2])
+        .join(digest)
 }
 
 fn encode(
@@ -219,7 +218,7 @@ fn webp_is_animated(data: &[u8]) -> bool {
 
 /// Whether the encoded source carries multiple animation frames. Animated
 /// sources must never enter the single-frame `DynamicImage` transform path.
-fn is_animated(data: &[u8], media_type: ImageMediaType) -> bool {
+pub(crate) fn is_animated(data: &[u8], media_type: ImageMediaType) -> bool {
     match media_type {
         ImageMediaType::Png => png_is_animated(data),
         ImageMediaType::Gif => gif_is_animated(data),
@@ -228,158 +227,148 @@ fn is_animated(data: &[u8], media_type: ImageMediaType) -> bool {
     }
 }
 
+pub(crate) fn transform(
+    data: &[u8],
+    policy: &RequestImagePolicy,
+    signal: Option<&AttachmentAbort>,
+) -> Result<(Vec<u8>, u64, u64), AttachmentError> {
+    let mut image = image::load_from_memory(data)
+        .map_err(|error| AttachmentError::new("INVALID_IMAGE", error.to_string()))?;
+    let pixels = u64::from(image.width()) * u64::from(image.height());
+    if pixels > policy.max_pixels {
+        let scale = (policy.max_pixels as f64 / pixels as f64).sqrt();
+        let width = (f64::from(image.width()) * scale).floor().max(1.0) as u32;
+        let height = (f64::from(image.height()) * scale).floor().max(1.0) as u32;
+        image = crate::request_resize::resize(image, width, height, signal)?;
+    }
+    let (data, width, height) = loop {
+        if aborted(signal) {
+            return Err(AttachmentError::new(
+                "ATTACHMENT_ABORTED",
+                "attachment read cancelled",
+            ));
+        }
+        let data = encode(&image, policy.preferred_media_type)?;
+        if data.len() as u64 <= policy.max_bytes {
+            break (data, u64::from(image.width()), u64::from(image.height()));
+        }
+        if image.width() == 1 && image.height() == 1 {
+            return Err(AttachmentError::new(
+                "REQUEST_IMAGE_TOO_LARGE",
+                "Request image cannot satisfy the encoded-byte budget.",
+            ));
+        }
+        let width = (image.width() * 3 / 4).max(1);
+        let height = (image.height() * 3 / 4).max(1);
+        image = crate::request_resize::resize(image, width, height, signal)?;
+    };
+    if aborted(signal) {
+        return Err(AttachmentError::new(
+            "ATTACHMENT_ABORTED",
+            "attachment read cancelled",
+        ));
+    }
+    Ok((data, width, height))
+}
+
 pub async fn read_request_image_file(
     root: &Path,
     reference: &ImageAttachmentRef,
     policy: &RequestImagePolicy,
     signal: Option<&AttachmentAbort>,
 ) -> Result<RequestImageAttachment, AttachmentError> {
-    if aborted(signal) {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_ABORTED",
-            "attachment read cancelled",
-        ));
-    }
+    use tokio::io::AsyncReadExt;
+    let mut stored = open_request_image_file(root, reference, policy, signal).await?;
+    let mut data = Vec::new();
+    stored
+        .reader
+        .read_to_end(&mut data)
+        .await
+        .map_err(crate::codec::io_error)?;
+    crate::codec::check_cancel(signal)?;
+    Ok(RequestImageAttachment {
+        attachment_id: stored.attachment_id,
+        variant_id: stored.variant_id,
+        media_type: stored.media_type,
+        data,
+        width: stored.width,
+        height: stored.height,
+    })
+}
+
+pub async fn open_request_image_file(
+    root: &Path,
+    reference: &ImageAttachmentRef,
+    policy: &RequestImagePolicy,
+    signal: Option<&AttachmentAbort>,
+) -> Result<dsh_attachment::RequestImageStream, AttachmentError> {
+    use crate::codec::{CodecJob, check_cancel, error};
+    check_cancel(signal)?;
     if policy.max_pixels == 0 || policy.max_bytes == 0 {
-        return Err(AttachmentError::new(
+        return Err(error(
             "INVALID_REQUEST_IMAGE_POLICY",
             "Request image budgets must be positive.",
         ));
     }
     let variant_id = request_image_variant_id(reference, policy);
     let cached = cache_path(root, &variant_id);
-    if let Ok(data) = std::fs::read(&cached) {
-        let metadata = probe_image(&data)?;
-        if metadata.media_type == policy.preferred_media_type
-            && metadata.width * metadata.height <= policy.max_pixels
-            && data.len() as u64 <= policy.max_bytes
+    // Cache objects are content addressed and verified with their sidecar;
+    // legacy cache bytes without a sidecar are regenerated from the master.
+    if let Some((file, info)) = crate::store::open_variant(&cached, signal).await? {
+        if info.media_type == policy.preferred_media_type
+            && info.width * info.height <= policy.max_pixels
+            && info.bytes <= policy.max_bytes
         {
-            return Ok(RequestImageAttachment {
+            return Ok(dsh_attachment::RequestImageStream {
                 attachment_id: reference.attachment_id.clone(),
                 variant_id,
-                media_type: metadata.media_type,
-                data,
-                width: metadata.width,
-                height: metadata.height,
+                media_type: info.media_type,
+                bytes: info.bytes,
+                width: info.width,
+                height: info.height,
+                reader: Box::pin(tokio::fs::File::from_std(file)),
             });
         }
     }
-    if aborted(signal) {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_ABORTED",
-            "attachment read cancelled",
-        ));
-    }
-    let master = read_image_file(root, reference, signal).await?;
-    if is_animated(&master.data, master.reference.media_type) {
-        if master.reference.width * master.reference.height <= policy.max_pixels
-            && master.data.len() as u64 <= policy.max_bytes
-        {
-            return Ok(RequestImageAttachment {
-                attachment_id: reference.attachment_id.clone(),
-                variant_id,
-                media_type: master.reference.media_type,
-                data: master.data,
-                width: master.reference.width,
-                height: master.reference.height,
-            });
-        }
-        return Err(AttachmentError::new(
-            "ANIMATED_REQUEST_IMAGE_TRANSFORM_UNAVAILABLE",
-            "Animated images cannot be resized or transcoded without losing frames.",
-        ));
-    }
-    static PREPARATIONS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
-        std::sync::OnceLock::new();
-    let acquire = PREPARATIONS
-        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)))
-        .clone()
-        .acquire_owned();
-    let permit = tokio::select! {
-        permit=acquire=>permit.map_err(|_|AttachmentError::new("ATTACHMENT_UNAVAILABLE","image worker pool closed"))?,
-        _=async {loop {if aborted(signal){break;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}=>return Err(AttachmentError::new("ATTACHMENT_ABORTED","attachment read cancelled")),
-    };
-    let worker_policy = policy.clone();
-    let worker_signal = signal.cloned();
-    let (data, width, height) = tokio::task::spawn_blocking(move || {
-        // The permit stays with synchronous work even if its awaiting request is
-        // cancelled, preventing detached image preparation from growing unbounded.
-        let _permit = permit;
-        let policy = worker_policy;
-        let signal = worker_signal.as_ref();
-        if aborted(signal) {
-            return Err(AttachmentError::new(
-                "ATTACHMENT_ABORTED",
-                "attachment read cancelled",
-            ));
-        }
-        let mut image = image::load_from_memory(&master.data)
-            .map_err(|error| AttachmentError::new("INVALID_IMAGE", error.to_string()))?;
-        let pixels = u64::from(image.width()) * u64::from(image.height());
-        if pixels > policy.max_pixels {
-            let scale = (policy.max_pixels as f64 / pixels as f64).sqrt();
-            let width = (f64::from(image.width()) * scale).floor().max(1.0) as u32;
-            let height = (f64::from(image.height()) * scale).floor().max(1.0) as u32;
-            image = crate::request_resize::resize(image, width, height, signal)?;
-        }
-        let (data, width, height) = loop {
-            if aborted(signal) {
-                return Err(AttachmentError::new(
-                    "ATTACHMENT_ABORTED",
-                    "attachment read cancelled",
-                ));
-            }
-            let data = encode(&image, policy.preferred_media_type)?;
-            if data.len() as u64 <= policy.max_bytes {
-                break (data, u64::from(image.width()), u64::from(image.height()));
-            }
-            if image.width() == 1 && image.height() == 1 {
-                return Err(AttachmentError::new(
-                    "REQUEST_IMAGE_TOO_LARGE",
-                    "Request image cannot satisfy the encoded-byte budget.",
-                ));
-            }
-            let width = (image.width() * 3 / 4).max(1);
-            let height = (image.height() * 3 / 4).max(1);
-            image = crate::request_resize::resize(image, width, height, signal)?;
-        };
-        if aborted(signal) {
-            return Err(AttachmentError::new(
-                "ATTACHMENT_ABORTED",
-                "attachment read cancelled",
-            ));
-        }
-        Ok((data, width, height))
-    })
-    .await
-    .map_err(|_| AttachmentError::new("ATTACHMENT_PREPARATION_FAILED", "image worker failed"))??;
-    if aborted(signal) {
-        return Err(AttachmentError::new(
-            "ATTACHMENT_ABORTED",
-            "attachment read cancelled",
-        ));
-    }
-    if let Some(parent) = cached.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;
-    }
-    dsh_atomic_write::write_file_atomic(
-        &cached,
-        &data,
-        dsh_atomic_write::WriteFileAtomicOptions {
-            mode: 0o600,
-            dir_mode: Some(0o700),
-        },
+    // The worker permit is taken before source reads and remains held through
+    // verification/publication; only one bounded copy is held in the Host.
+    let mut master = crate::store::open_image_file(root, reference, signal).await?;
+    let job = CodecJob::stage(
+        root,
+        &mut master.reader,
+        reference.media_type,
+        reference.bytes,
+        reference.width.saturating_mul(reference.height),
+        signal,
     )
-    .await
-    .map_err(|error| AttachmentError::new("ATTACHMENT_WRITE_FAILED", error.to_string()))?;
-    Ok(RequestImageAttachment {
+    .await?;
+    let (job, info) = job.run(Some(policy.clone()), signal).await?;
+    check_cancel(signal)?;
+    if info.preserved {
+        return Ok(dsh_attachment::RequestImageStream {
+            attachment_id: reference.attachment_id.clone(),
+            variant_id,
+            media_type: reference.media_type,
+            bytes: reference.bytes,
+            width: reference.width,
+            height: reference.height,
+            reader: crate::store::open_image_file(root, reference, signal)
+                .await?
+                .reader,
+        });
+    }
+    crate::store::publish_variant(&job.output(), &cached, &info, signal).await?;
+    let (file, info) = crate::store::open_variant(&cached, signal)
+        .await?
+        .ok_or_else(|| error("ATTACHMENT_CORRUPT", "Image variant was not published."))?;
+    Ok(dsh_attachment::RequestImageStream {
         attachment_id: reference.attachment_id.clone(),
         variant_id,
-        media_type: policy.preferred_media_type,
-        data,
-        width,
-        height,
+        media_type: info.media_type,
+        bytes: info.bytes,
+        width: info.width,
+        height: info.height,
+        reader: Box::pin(tokio::fs::File::from_std(file)),
     })
 }
 

@@ -1,7 +1,8 @@
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use serde_json::{Map, Value, json};
+use dsh_app_boot::plugin_profile::{Documents, Profile};
+use serde_json::{Value, json};
 
 fn valid_package_name(name: &str) -> bool {
     let parts: Vec<_> = name.split('/').collect();
@@ -110,78 +111,40 @@ fn validate_web_plugin(root: &Path) -> Result<(String, bool), String> {
     Ok((name.to_string(), has_host))
 }
 
-fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(destination)
-        .map_err(|error| format!("create {}: {error}", destination.display()))?;
-    for entry in
-        std::fs::read_dir(source).map_err(|error| format!("read {}: {error}", source.display()))?
-    {
-        let entry = entry.map_err(|error| format!("read plugin entry: {error}"))?;
-        let kind = entry
-            .file_type()
-            .map_err(|error| format!("stat plugin entry: {error}"))?;
-        let target = destination.join(entry.file_name());
-        if kind.is_symlink() {
-            return Err(format!(
-                "dsh: plugin contains unsupported symlink {}",
-                entry.path().display()
-            ));
-        }
-        if kind.is_dir() {
-            if entry.file_name() == ".git" {
-                continue;
-            }
-            copy_tree(&entry.path(), &target)?;
-        } else if kind.is_file() {
-            std::fs::copy(entry.path(), &target)
-                .map_err(|error| format!("copy {}: {error}", entry.path().display()))?;
-        }
-    }
-    Ok(())
-}
-
-fn update_plugin_inventory(profile: &Path, name: &str, installed: bool) -> Result<(), String> {
-    let path = profile.join("plugins.json");
-    let mut entries: Vec<Value> = if path.is_file() {
-        serde_json::from_slice(
-            &std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?,
-        )
-        .map_err(|error| format!("parse {}: {error}", path.display()))?
-    } else {
-        Vec::new()
-    };
-    let legacy_entry_id = format!("web:{name}");
-    entries.retain(|entry| {
-        let id = entry.get("id").and_then(Value::as_str);
-        id != Some(name) && id != Some(&legacy_entry_id)
-    });
-    if installed {
-        entries.push(json!({"id": name, "name": name, "disabled": false}));
-    }
-    let bytes = serde_json::to_vec_pretty(&entries)
-        .map_err(|error| format!("encode plugin inventory: {error}"))?;
-    std::fs::write(&path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
-}
-
-fn update_dependency(profile: &Path, name: &str, spec: Option<&str>) -> Result<(), String> {
-    let path = profile.join("package.json");
-    let mut manifest = read_manifest(&path)?;
-    let object = manifest
+fn update_documents(
+    mut documents: Documents,
+    name: &str,
+    spec: Option<&str>,
+) -> Result<Documents, String> {
+    let dependencies = documents
+        .manifest
         .as_object_mut()
-        .ok_or_else(|| "dsh: profile package.json must be an object".to_string())?;
-    let dependencies = object
+        .ok_or("invalid profile manifest")?
         .entry("dependencies")
-        .or_insert_with(|| Value::Object(Map::new()))
+        .or_insert_with(|| json!({}))
         .as_object_mut()
-        .ok_or_else(|| "dsh: profile dependencies must be an object".to_string())?;
+        .ok_or("invalid dependencies")?;
     if let Some(spec) = spec {
-        dependencies.insert(name.to_string(), Value::String(spec.to_string()));
+        dependencies.insert(name.into(), json!(spec));
     } else {
         dependencies.remove(name);
     }
-    let bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| format!("encode profile manifest: {error}"))?;
-    std::fs::write(&path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
+    let legacy = format!("web:{name}");
+    let previous = documents
+        .entries
+        .iter()
+        .find(|entry| entry["id"] == name || entry["id"] == legacy)
+        .cloned();
+    documents
+        .entries
+        .retain(|entry| entry["id"] != name && entry["id"] != legacy);
+    if spec.is_some() {
+        let mut entry = previous.unwrap_or_else(|| json!({"disabled":false}));
+        entry["id"] = json!(name);
+        entry["name"] = json!(name);
+        documents.entries.push(entry);
+    }
+    Ok(documents)
 }
 
 fn github_source(spec: &str) -> Result<(String, &str), String> {
@@ -208,81 +171,80 @@ fn github_source(spec: &str) -> Result<(String, &str), String> {
     Ok((format!("https://github.com/{repo}.git"), reference))
 }
 
-fn add(profile: &Path, spec: &str) -> Result<(), String> {
+fn add(profile: &Profile, spec: &str) -> Result<(), String> {
     let (url, reference) = github_source(spec)?;
-    let staging = profile.join(format!(".dsh-plugin-stage-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&staging);
-    let status = Command::new("git")
-        .args(["clone", "--depth", "1", &url])
-        .arg(&staging)
-        .status()
-        .map_err(|error| format!("dsh: failed to start git: {error}"))?;
-    if !status.success() {
-        return Err(format!("dsh: git clone failed with {status}"));
+    profile.documents()?;
+    let operation = profile.operation_dir()?;
+    let staging = operation.join("download");
+    let result = (|| {
+        for (cwd, args) in [
+            (
+                profile.root(),
+                vec![
+                    "clone".to_string(),
+                    "--no-checkout".into(),
+                    "--depth".into(),
+                    "1".into(),
+                    url,
+                    staging.to_string_lossy().into_owned(),
+                ],
+            ),
+            (
+                staging.as_path(),
+                vec![
+                    "fetch".into(),
+                    "--depth".into(),
+                    "1".into(),
+                    "origin".into(),
+                    reference.into(),
+                ],
+            ),
+            (
+                staging.as_path(),
+                vec!["checkout".into(), "--detach".into(), "FETCH_HEAD".into()],
+            ),
+        ] {
+            let mut command = Command::new("git");
+            command
+                .current_dir(cwd)
+                .args(args)
+                .env("GIT_TERMINAL_PROMPT", "0");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            let status = command
+                .status()
+                .map_err(|error| format!("dsh: failed to run Git: {error}"))?;
+            if !status.success() {
+                return Err(format!("dsh: plugin Git operation failed: {status}"));
+            }
+        }
+        let (name, has_host) = validate_web_plugin(&staging)?;
+        let documents = update_documents(profile.documents()?, &name, Some(spec))?;
+        profile.replace(documents, Some((&name, Some(&staging))))?;
+        println!("installed {name} (pure Web client)");
+        if has_host {
+            eprintln!(
+                "dsh: {name} also declares a Node Host bundle; only its Web client was installed"
+            );
+        }
+        Ok(())
+    })();
+    if let Err(cleanup) = profile.discard_stage(&operation) {
+        if let Err(error) = result {
+            return Err(format!("{error}; staging cleanup failed: {cleanup}"));
+        }
+        eprintln!("dsh: plugin committed; staging cleanup needs retry: {cleanup}");
     }
-    let fetch = Command::new("git")
-        .current_dir(&staging)
-        .args(["fetch", "--depth", "1", "origin", reference])
-        .status()
-        .map_err(|error| format!("dsh: failed to fetch plugin commit: {error}"))?;
-    if !fetch.success() {
-        let _ = std::fs::remove_dir_all(&staging);
-        return Err(format!("dsh: git fetch {reference:?} failed"));
-    }
-    let checkout = Command::new("git")
-        .current_dir(&staging)
-        .args(["checkout", "--detach", "FETCH_HEAD"])
-        .status()
-        .map_err(|error| format!("dsh: failed to checkout plugin commit: {error}"))?;
-    if !checkout.success() {
-        let _ = std::fs::remove_dir_all(&staging);
-        return Err(format!("dsh: git checkout {reference:?} failed"));
-    }
-    let (name, has_host) = validate_web_plugin(&staging)?;
-    let target = package_dir(profile, &name)?;
-    let install = profile.join(format!(".dsh-plugin-install-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&install);
-    copy_tree(&staging, &install)?;
-    let _ = std::fs::remove_dir_all(&staging);
-    if target.exists() {
-        std::fs::remove_dir_all(&target)
-            .map_err(|error| format!("remove old {}: {error}", target.display()))?;
-    }
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("create {}: {error}", parent.display()))?;
-    }
-    std::fs::rename(&install, &target)
-        .map_err(|error| format!("install {}: {error}", target.display()))?;
-    update_dependency(profile, &name, Some(spec))?;
-    update_plugin_inventory(profile, &name, true)?;
-    println!("installed {name} (pure Web client)");
-    if has_host {
-        eprintln!(
-            "dsh: note: {name} also declares a Node Host bundle; Rust loads its Web client only"
-        );
-    }
-    Ok(())
+    result
 }
 
-fn remove(profile: &Path, name: &str) -> Result<(), String> {
-    let target = package_dir(profile, name)?;
-    if target.exists() {
-        let root = profile
-            .join("node_modules")
-            .canonicalize()
-            .map_err(|error| format!("canonicalize plugin root: {error}"))?;
-        let canonical = target
-            .canonicalize()
-            .map_err(|error| format!("canonicalize plugin target: {error}"))?;
-        if canonical == root || !canonical.starts_with(&root) {
-            return Err("dsh: refusing to remove a path outside the plugin root".to_string());
-        }
-        std::fs::remove_dir_all(&target)
-            .map_err(|error| format!("remove {}: {error}", target.display()))?;
-    }
-    update_dependency(profile, name, None)?;
-    update_plugin_inventory(profile, name, false)?;
+fn remove(profile: &Profile, name: &str) -> Result<(), String> {
+    package_dir(profile.root(), name)?;
+    let documents = update_documents(profile.documents()?, name, None)?;
+    profile.replace(documents, Some((name, None)))?;
     println!("removed {name}");
     Ok(())
 }
@@ -301,10 +263,33 @@ fn list(profile: &Path) -> Result<(), String> {
 }
 
 pub fn run(profile: &Path, args: &[String]) -> Result<(), String> {
+    if args.len()==1 && args[0]=="list" {return list(profile);}
+    let mut profile = Profile::open(profile)?;
+    if let Ok(operation_id) = std::env::var("DSH_PLUGIN_OPERATION_ID") {
+        profile.set_operation(dsh_app_boot::plugin_profile::OperationTag {
+            operation_id,
+            action: args.first().cloned().unwrap_or_default(),
+            spec: args.get(1).cloned().unwrap_or_default(),
+        })?;
+    }
     match args {
-        [command, spec] if command == "add" => add(profile, spec),
-        [command, name] if command == "remove" => remove(profile, name),
-        [command] if command == "list" => list(profile),
-        _ => Err("usage: dsh plugin --profile <name> add github:owner/repo[#ref] | remove <package> | list".to_string()),
+        [command,spec] if command=="add"=>add(&profile,spec),
+        [command,name] if command=="remove"=>remove(&profile,name),
+        [command] if command=="list"=>list(profile.root()),
+        [command] if command=="recover"=>{profile.restore_last_good()?;println!("restored last validated plugin configuration; rejected documents retained");Ok(())},
+        _=>Err("usage: dsh plugin --profile <name> add github:owner/repo#<commit> | remove <package> | list | recover".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn plugin_upgrade_preserves_disabled_state_and_user_configuration() {
+        let documents=Documents {manifest:json!({"dependencies":{"demo":"old"},"kept":true}),entries:vec![json!({"id":"web:demo","name":"demo","disabled":true,"config":{"workspacePanel":"keep"}}),json!({"id":"unrelated","name":"unrelated"})]};
+        let next=update_documents(documents,"demo",Some("new")).unwrap();
+        assert_eq!(next.manifest["kept"],true);assert_eq!(next.manifest["dependencies"]["demo"],"new");
+        let plugin=next.entries.iter().find(|entry|entry["id"]=="demo").unwrap();assert_eq!(plugin["disabled"],true);assert_eq!(plugin["config"]["workspacePanel"],"keep");
+        assert!(next.entries.iter().any(|entry|entry["id"]=="unrelated"));
     }
 }

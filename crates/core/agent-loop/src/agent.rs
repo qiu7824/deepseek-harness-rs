@@ -202,6 +202,13 @@ enum PreparedStep {
     },
 }
 
+struct TurnDeadline(Option<tokio::task::JoinHandle<()>>);
+impl Drop for TurnDeadline {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() { task.abort(); }
+    }
+}
+
 /// Drives one session through turn and step boundaries.
 pub struct ReactLoopAgent {
     published: AtomicBool,
@@ -770,17 +777,50 @@ impl ReactLoopAgent {
         {
             *phase_turn = turn;
         }
+        let deadline = TurnDeadline(self.options.timeout_seconds.map(|seconds| {
+            let weak = self.weak.clone();
+            let expected_signal = signal.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+                if let Some(agent) = weak.upgrade() {
+                    let _boundary = agent.control_boundary.lock();
+                    let owns_turn = matches!(&*agent.phase.lock(), Phase::Running { abort, .. }
+                        if Arc::ptr_eq(abort, &expected_signal) && !abort.aborted());
+                    if owns_turn {
+                        agent.cancel(AgentCancelCause::Hook { reason: "subagent timeoutSeconds exceeded".into() }, None);
+                    }
+                }
+            })
+        }));
         let mut turn_ends: Option<TurnEndReason> = None;
         let mut continuation = crate::response_continuation::ResponseContinuation::default();
         let mut target = InboxTarget::NextTurn;
         let step_outcome: Result<(), LoopCancelled> = async {
+            let _run_permit = if let Some(gate) = self.ctx.get_typed::<Arc<dsh_agent::AgentRunAdmission>>("agentRunAdmission", false) {
+                match (gate.admit)(self) {
+                    Ok(permit) => Some(permit),
+                    Err(reason) => {
+                        self.cancel(AgentCancelCause::Hook { reason }, None);
+                        throw_if_aborted(&signal)?;
+                        unreachable!()
+                    }
+                }
+            } else { None };
             loop {
                 throw_if_aborted(&signal)?;
                 let step = match &*self.phase.lock() {
                     Phase::Running { step, .. } => *step + 1,
                     _ => unreachable!(),
                 };
-                let decision = self.pre_step(target, (turn, step)).await?;
+                if self.options.max_steps.is_some_and(|limit| step > limit) {
+                    self.cancel(AgentCancelCause::Hook { reason: "subagent maxTurns exceeded".into() }, None);
+                    throw_if_aborted(&signal)?;
+                }
+                let decision = tokio::select! {
+                    biased;
+                    _ = signal.cancelled() => { throw_if_aborted(&signal)?; unreachable!() },
+                    result = self.pre_step(target, (turn, step)) => result?,
+                };
                 let PreparedStep::Enter {
                     messages,
                     assembly,
@@ -857,6 +897,7 @@ impl ReactLoopAgent {
             }
         }
         .await;
+        drop(deadline);
         if let Err(error) = step_outcome {
             if signal.aborted() {
                 turn_ends = Some(TurnEndReason::Aborted {
@@ -961,7 +1002,11 @@ impl ReactLoopAgent {
 
         let mut first_attempt = true;
         loop {
-            let prepared = self.prepare_request(turn, step, &signal).await;
+            let prepared = tokio::select! {
+                biased;
+                _ = signal.cancelled() => { throw_if_aborted(&signal)?; unreachable!() },
+                result = self.prepare_request(turn, step, &signal) => result,
+            };
             let (config, prepared_call) = match prepared {
                 Ok(prepared) => prepared,
                 Err(error) => {

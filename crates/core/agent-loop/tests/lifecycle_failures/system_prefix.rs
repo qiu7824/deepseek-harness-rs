@@ -139,8 +139,28 @@ async fn real_manual_and_automatic_compaction_preserve_v3_prefix_across_repeated
         .unwrap();
     assert!(!third.shadowed_seqs.contains(&system_seq));
     assert_prefix(session, &prefix);
+    for event in session.events().iter().filter(|event| {
+        matches!(
+            event.type_.as_str(),
+            "compaction/start" | "compaction/summary" | "compaction/end"
+        )
+    }) {
+        assert!(
+            event.data.get("sourceCommandId").is_none(),
+            "automatic and unowned manual compaction must agree with their checkpoint's absent command owner"
+        );
+    }
     turn(&harness, "Continue after repeated compaction.").await;
     assert_prefix(session, &prefix);
+    let mut native = dsh_session::format_v4::V4Validator::new(
+        serde_json::to_value(session.header()).unwrap(), session.inherited_event_count().get(),
+    ).unwrap();
+    for event in session.events().iter() {
+        let row = serde_json::to_value(event).unwrap();
+        dsh_session::format_v4::encode_v4_event(row.clone(), &Default::default()).unwrap();
+        native.push(&row).unwrap_or_else(|error| panic!("native event {} {}: {error}", event.seq, event.type_));
+    }
+    native.finish().unwrap();
     let calls = calls.lock();
     assert_eq!(
         calls

@@ -66,6 +66,8 @@ def verify_release_tag(tag: str, version: str) -> None:
 
 
 def verify_build_identity(info: dict, version: str, revision: str) -> None:
+    if info.get("allocationDiagnostics", False) is not False:
+        raise ValueError("allocation diagnostic builds cannot be released")
     if (info.get("version") != version or info.get("revision") != revision
             or info.get("dirty") is not False):
         raise ValueError("binary build identity does not match the clean release source")

@@ -2,12 +2,15 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const modules=process.argv[2]||process.env.DSH_REACT_TEST_MODULES;const {JSDOM}=require(path.join(modules,'jsdom'));
 const dom=new JSDOM('<main id="root"></main>',{pretendToBeVisual:true,url:'http://127.0.0.1/'});Object.assign(global,{window:dom.window,document:dom.window.document,IS_REACT_ACT_ENVIRONMENT:true});
 const React=require(path.join(modules,'react')),jsx=require(path.join(modules,'react/jsx-runtime')),Client=require(path.join(modules,'react-dom/client')),h=React.createElement;
+let voice;const speech=[];window.SpeechRecognition=class{constructor(){speech.push(this)}start(){this.started=true}stop(){this.stopped=true}abort(){this.aborted=true}};
+window.__ModuleLoader__={load:definition=>{voice=definition.factory(()=>React)}};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../../release/plugins/dsh-voice-input/lib/client.js'),'utf8'),{window,console});
 const source=fs.readFileSync(path.join(__dirname,'../../web/src/runtime-plugins/ui-conversation.js'),'utf8');
 const emptyDecorations={token:null,chips:[],textRefs:[],hint:null};
 const context={ContextMeter:()=>null,react:React,react_jsx_runtime:jsx,window,document,Text:window.Text,getComputedStyle:window.getComputedStyle.bind(window),setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame:fn=>setTimeout(fn,0),cancelAnimationFrame:clearTimeout,ResizeObserver:class{observe(){}disconnect(){}},clsx:(...parts)=>parts.filter(Boolean).join(' '),InputBar_module_css_default:new Proxy({},{get:(_,key)=>key}),INERT_DECORATIONS:emptyDecorations,deriveDecorations:()=>emptyDecorations,attachmentRailLabels:()=>({}),imageSizeText:String,
  _deepseek_ai_dsh_client_ui_primitives:new Proxy({Tooltip:({children})=>children},{get:(object,key)=>object[key]||(()=>null)}),
  _deepseek_ai_dsh_client_ui_attachment:{AttachmentRail:({items,onRemove})=>h('div',null,items.map(item=>h('button',{key:item.id,'aria-label':item.removeLabel,onClick:()=>onRemove(item)},item.alt)))}};
-const begin=source.indexOf('function InputBar('),end=source.indexOf('\n\t\t//#endregion',begin);vm.runInNewContext(source.slice(begin,end),context);
+const begin=source.indexOf('function DraftAttachmentRemove('),end=source.indexOf('\n\t\t//#endregion',source.indexOf('function InputBar(',begin));vm.runInNewContext(source.slice(begin,end),context);
 let tips='on';let active='a';const state=new Map(['a','b'].map(id=>[id,{draft:'',imageIds:[],phase:'editing',queue:[],claim:null}])),submissions=[];
 let activity={running:false,removed:false},stops=0;
 const image={id:'image',file:{name:'frame.png'},previewUrl:'data:image/png;base64,fixture'};
@@ -20,10 +23,12 @@ const shell={notices:{},lexicon:{}};
 const factory=vm.runInNewContext('('+source.slice(injectStart,injectEnd)+')',{composerTips:{store},ABSENT_NOTICES:{},ABSENT_LEXICON:{},ABSENT_MENU_LAUNCHER:{},concreteConversation:()=>({}),ctx:{},inputHub:{shell:()=>shell,inputTriggers:()=>undefined}});
 assert.equal(factory(undefined).hooks.composerTips,store,'unscoped composer binds the preference hook');
 assert.equal(factory('a').hooks.composerTips,store,'scoped composer retains the same preference hook');
-const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,useComposerTips:select=>select({mode:tips}),useSession:select=>select(activity),stop:()=>stops++,useInput:select=>select(state.get(active)),inputActions:{pruneImages(){},submit(){submissions.push({sessionId:active,...state.get(active)})}},keyboard:{snapshot:{},setDraft(value){state.set(active,{...state.get(active),draft:value});render()},track(){}},draftImages:ids=>ids.map(()=>image),removeImage:()=>{state.set(active,{...state.get(active),imageIds:[]});render()},useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),useProjection:(name,select)=>select?select(undefined):undefined,t:key=>key,renderSlot:()=>null}));
+const updateDraft=value=>{state.set(active,{...state.get(active),draft:value});render();};
+const render=()=>root.render(h(context.InputBar,{key:active,sessionId:active,useComposerTips:select=>select({mode:tips}),useSession:select=>select(activity),stop:()=>stops++,useInput:select=>select(state.get(active)),inputActions:{pruneImages(){},submit(){submissions.push({sessionId:active,...state.get(active)})}},keyboard:{snapshot:{},setDraft:updateDraft,track(){}},rightItems:h(voice.VoiceInputButton,{sessionId:active,input:state.get(active),inputActions:{setDraft:updateDraft}}),draftImages:ids=>ids.map(()=>image),removeImage:()=>{state.set(active,{...state.get(active),imageIds:[]});render()},useNotices:select=>select(null),useLexicon:select=>select({}),useMenuLauncher:select=>select(null),useProjection:(name,select)=>select?select(undefined):undefined,t:key=>key,renderSlot:name=>name==='conversation.input.model'?h('button',{'data-model-control':true},'Model'):null}));
 const send=()=>document.querySelector('button[aria-label="input.send"]');
 (async()=>{
  await act(render);assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').placeholder,'placeholder.default');
+ const controls=[...document.querySelectorAll('button')];assert.ok(controls.indexOf(document.querySelector('[data-model-control]'))<controls.indexOf(document.querySelector('.dsh-voice-input-button')));assert.ok(controls.indexOf(document.querySelector('.dsh-voice-input-button'))<controls.indexOf(send()),'voice input is after the model selector and before Send');
  state.set('a',{...state.get('a'),draft:' \n\t'});await act(render);assert.equal(send().disabled,true);assert.equal(document.querySelector('textarea').value,' \n\t','meaningful whitespace is preserved for editing');
  state.set('a',{...state.get('a'),draft:'text'});await act(render);assert.equal(send().disabled,false);
  assert.notEqual(document.querySelector('textarea').style.color,'transparent','plain input has native visible text');
@@ -44,5 +49,13 @@ const send=()=>document.querySelector('button[aria-label="input.send"]');
  let stop=document.querySelector('button[aria-label="input.stop"]');assert.ok(stop,'pending main admission exposes Stop before running status arrives');assert.equal(stop.disabled,false);await act(()=>stop.click());assert.equal(stops,1);
  activity={...activity,subagent:{address:{mode:'continuable'},parentAvailable:false}};await act(render);stop=document.querySelector('button[aria-label="input.stop"]');assert.ok(stop,'a pending child admission can stop even while its parent is offline');assert.equal(stop.disabled,false);await act(()=>stop.click());assert.equal(stops,2);assert.equal(submissions.length,1,'Stop never submits a draft');
  activity={...activity,subagent:{address:{mode:'one-shot'},parentAvailable:false}};await act(render);assert.equal(document.querySelector('button[aria-label="input.stop"]'),null,'read-only one-shot views never gain stop authority');
- await act(()=>root.unmount());dom.window.close();console.log('PASS actual InputBar DOM: whitespace, deletion, attachment-only submission, session switching and placeholder restoration');
+ activity={running:false,commandRunning:true,removed:false};state.set('a',{...state.get('a'),phase:'editing',draft:''});await act(render);
+ stop=document.querySelector('button[aria-label="input.stop"]');assert.ok(stop,'a manual command exposes Stop even without a running model turn');assert.equal(stop.disabled,false);await act(()=>stop.click());assert.equal(stops,3);
+ activity={...activity,commandRunning:false};await act(render);assert.equal(send().disabled,true,'command settlement restores the ordinary empty composer');
+ activity={running:false,removed:false};state.set('a',{...state.get('a'),phase:'editing',draft:'语音前缀'});await act(render);
+ await act(async()=>{document.querySelector('textarea').dispatchEvent(new window.MouseEvent('pointerdown',{bubbles:true,button:0,clientX:50,clientY:100}));await new Promise(resolve=>setTimeout(resolve,370));});
+ const engine=speech.at(-1);assert.equal(engine?.started,true,'the actual InputBar textarea starts voice recognition on hold');
+ await act(()=>engine.onresult({results:[Object.assign([{transcript:'实时内容'}],{isFinal:false})]}));assert.equal(document.querySelector('textarea').value,'语音前缀 实时内容');
+ await act(()=>document.body.dispatchEvent(new window.MouseEvent('pointerup',{bubbles:true,button:0})));assert.equal(engine.stopped,true);await act(()=>engine.onend());
+ await act(()=>root.unmount());dom.window.close();console.log('PASS actual InputBar DOM: whitespace, attachments, switching, tips, model/voice/send order and input-field dictation');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close();});

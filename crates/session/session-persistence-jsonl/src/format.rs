@@ -66,6 +66,8 @@ pub struct HeaderLine {
         rename = "seedLength"
     )]
     pub seed_length: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "isSeeded")]
+    pub is_seeded: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
     #[serde(rename = "delegationDepth")]
@@ -97,7 +99,8 @@ pub fn to_header_line(
         created_at: header.created_at,
         cwd: header.cwd.clone(),
         parent_session: header.parent_session.clone(),
-        seed_length: header.is_seeded.then_some(cut.get()),
+        seed_length: (header.version < 4 && header.is_seeded).then_some(cut.get()),
+        is_seeded: (header.version == 4).then_some(header.is_seeded),
         origin: header.origin.clone(),
         delegation_depth: header.delegation_depth.unwrap_or(0),
         agent_preset: header.agent_preset.clone(),
@@ -106,17 +109,20 @@ pub fn to_header_line(
 
 /// Translate a version-0 physical header into logical metadata and its cut.
 pub fn from_header_line(line: &HeaderLine) -> Result<SessionStorageMetadata, String> {
-    if line.version != SESSION_FORMAT_VERSION && line.version != LEGACY_SESSION_FORMAT_VERSION {
+    if ![0, 3, 4].contains(&line.version) {
         return Err(session_format_version_refusal(&line.id, line.version));
+    }
+    if line.version == 4 && (line.seed_length.is_some() || line.is_seeded.is_none()) {
+        return Err("V4 framing requires isSeeded and refuses seedLength".into());
     }
     Ok(SessionStorageMetadata {
         meta: SessionHeader {
-            version: SESSION_FORMAT_VERSION,
+            version: line.version,
             id: line.id.clone(),
             created_at: line.created_at,
             cwd: line.cwd.clone(),
             parent_session: line.parent_session.clone(),
-            is_seeded: line.seed_length.is_some(),
+            is_seeded: line.is_seeded.unwrap_or(line.seed_length.is_some()),
             origin: line.origin.clone(),
             delegation_depth: Some(line.delegation_depth),
             agent_preset: line.agent_preset.clone(),
@@ -131,6 +137,9 @@ fn is_header_line(value: &serde_json::Value) -> bool {
     let Some(record) = value.as_object() else {
         return false;
     };
+    if value["version"].as_f64() == Some(4.0) {
+        return dsh_session::format_v4::decode_v4_header(value.clone()).is_ok();
+    }
     record.get("type").and_then(|v| v.as_str()) == Some("session")
         && record.get("version").and_then(|v| v.as_u64()).is_some()
         && record.get("id").and_then(|v| v.as_str()).is_some()
@@ -230,7 +239,13 @@ pub fn log_path(
     id: &SessionId,
     compression: JsonlCompression,
 ) -> PathBuf {
-    session_dir(root, cwd, id).join(format!("session{}", log_suffix(compression)))
+    session_dir(root, cwd, id).join(format!("session.v{SESSION_FORMAT_VERSION}{}", log_suffix(compression)))
+}
+
+pub fn compression_of(path: &Path) -> JsonlCompression {
+    if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".jsonl.zstd")) {
+        JsonlCompression::Zstd
+    } else { JsonlCompression::None }
 }
 
 /// Serialize an event batch as JSONL lines (no trailing newline)
@@ -274,6 +289,9 @@ fn parse_header_record(record: &[u8]) -> Result<SessionStorageMetadata, String> 
     }
     let parsed: serde_json::Value = serde_json::from_slice(&record[..record.len() - 1])
         .map_err(|_| "corrupt session log: header line is not valid JSON".to_string())?;
+    if parsed["version"].as_f64() == Some(4.0) {
+        return native_header_storage(parsed);
+    }
     refuse_foreign_format_version(&parsed)?;
     if !is_header_line(&parsed) {
         return Err("corrupt session log: first line is not a session header".to_string());
@@ -291,7 +309,7 @@ fn refuse_foreign_format_version(parsed: &serde_json::Value) -> Result<(), Strin
     let Some(version) = record.get("version").and_then(|v| v.as_u64()) else {
         return Ok(());
     };
-    if version == SESSION_FORMAT_VERSION || version == LEGACY_SESSION_FORMAT_VERSION {
+    if [0, 3, 4].contains(&version) {
         return Ok(());
     }
     let id = record
@@ -316,6 +334,7 @@ pub struct SessionLogScanner {
     issue: Option<String>,
     finished: bool,
     legacy_v0: bool,
+    native: Option<dsh_session::format_v4::V4Decoder>,
 }
 
 impl SessionLogScanner {
@@ -323,6 +342,9 @@ impl SessionLogScanner {
     /// record.
     pub fn new(header_record: &[u8]) -> Result<Self, String> {
         let storage = parse_header_record(header_record)?;
+        let native = if storage.meta.version == 4 {
+            Some(dsh_session::format_v4::V4Decoder::new(serde_json::from_slice(header_record).map_err(|e| e.to_string())?, dsh_session::format_v4::V4Recovery::RecoverableTail)?)
+        } else { None };
         let legacy_v0 =
             serde_json::from_slice::<serde_json::Value>(&header_record[..header_record.len() - 1])
                 .ok()
@@ -340,6 +362,7 @@ impl SessionLogScanner {
             issue: None,
             finished: false,
             legacy_v0,
+            native,
         })
     }
 
@@ -391,6 +414,9 @@ impl SessionLogScanner {
         self.finished = true;
         let mut events = self.events;
         let mut source_offsets = (0..=events.len()).collect::<Vec<_>>();
+        if let Some(native) = self.native {
+            self.inherited_event_count = SessionLogOffset::new(native.finish()?.inherited_event_count)?;
+        }
         if self.legacy_v0 {
             let mut legacy = self.meta.clone();
             legacy.version = LEGACY_SESSION_FORMAT_VERSION;
@@ -407,6 +433,7 @@ impl SessionLogScanner {
                 0
             })?;
             events = report.events;
+            self.meta = report.header;
             source_offsets = report.source_cuts;
         }
         Ok(SessionLogScan {
@@ -422,6 +449,13 @@ impl SessionLogScanner {
     /// (TS `consumeEventLine`; the `throw` sites surface as `Err`).
     fn consume_event_line(&mut self, line: &[u8], end_byte: usize) -> Result<(), String> {
         self.event_line += 1;
+        if let Some(native) = self.native.as_mut() {
+            if let Some(row) = native.decode_json_line(line)? {
+                self.events.push(serde_json::from_value(row).map_err(|e| format!("invalid native V4 event: {e}"))?);
+                self.committed_bytes = end_byte;
+            }
+            return Ok(());
+        }
         let parsed: serde_json::Value = match serde_json::from_slice(line) {
             Ok(parsed) => parsed,
             Err(_) => {
@@ -507,9 +541,19 @@ pub fn parse_header_meta(first_line: &str) -> Option<SessionHeader> {
 /// Parse the logical header together with the exact inherited cut.
 pub fn parse_header_storage(first_line: &str) -> Option<SessionStorageMetadata> {
     let parsed: serde_json::Value = serde_json::from_str(first_line).ok()?;
+    if parsed["version"].as_f64() == Some(4.0) { return native_header_storage(parsed).ok(); }
     if !is_header_line(&parsed) {
         return None;
     }
     let line: HeaderLine = serde_json::from_value(parsed).ok()?;
     from_header_line(&line).ok()
+}
+
+fn native_header_storage(value: serde_json::Value) -> Result<SessionStorageMetadata, String> {
+    let logical = dsh_session::format_v4::decode_v4_header(value)?;
+    Ok(SessionStorageMetadata {
+        meta: serde_json::from_value(logical).map_err(|error| format!("invalid V4 header: {error}"))?,
+        // V4 stores this cut in the accepted inherited end-seed marker.
+        inherited_event_count: SessionLogOffset::ZERO,
+    })
 }

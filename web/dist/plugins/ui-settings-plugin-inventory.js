@@ -190,7 +190,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** Render the read-only plugin inventory: agent presets first, then the global plane. */
-		function PluginInventorySettingsTab({ list, setEnabled, canToggle, presetName, t }) {
+		function PluginInventorySettingsTab({ list, setEnabled, cancel, canToggle, presetName, t }) {
 			const sectionId = (0, react.useId)();
 			const [request, setRequest] = (0, react.useState)(0);
 			const [query, setQuery] = (0, react.useState)("");
@@ -206,7 +206,7 @@ window.__ModuleLoader__.load({
 				if (busy !== null) return;
 				setBusy(entry.entryId); setActionError("");
 				try { await setEnabled(entry, !entry.enabled); setRequest(value => value + 1); }
-				catch (error) { setActionError(error.message || String(error)); setRequest(value => value + 1); }
+				catch (error) { if(error.name!=="AbortError")setActionError(error.message || String(error)); setRequest(value => value + 1); }
 				finally { setBusy(null); }
 			};
 			(0, react.useEffect)(() => {
@@ -308,14 +308,17 @@ window.__ModuleLoader__.load({
 					rowKey: key,
 					moduleName: entry.moduleName,
 					entryId: entry.entryId,
-					control: canToggle(entry) ? (0, react_jsx_runtime.jsx)("button", {
+                    control: canToggle(entry) ? (0,react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment,{children:[
+                        (0, react_jsx_runtime.jsx)("button", {
 						type: "button", role: "switch", "aria-checked": entry.enabled,
 						"aria-label": `${t("enablePlugin")} ${title}`, disabled: busy !== null,
 						className: PluginInventorySettingsTab_module_css_default.switcher,
 						style: { margin: "0 14px 12px", height: 30 },
 						onClick: () => void togglePlugin(entry),
 						children: busy === entry.entryId ? t("changingPlugin") : t(entry.enabled ? "disablePlugin" : "enablePlugin")
-					}) : null,
+					}),
+                        busy===entry.entryId?(0,react_jsx_runtime.jsx)("button",{type:"button",className:PluginInventorySettingsTab_module_css_default.switcher,onClick:()=>void cancel().catch(error=>setActionError(error.message)),children:t("cancelPluginOperation")}):null
+                    ]}):null,
 					failed,
 					expanded,
 					onToggle: toggleRow,
@@ -631,69 +634,89 @@ window.__ModuleLoader__.load({
 		/** Read-only Host plugin inventory registered into Web Settings. */
 		/** Dictionary namespace owned by this plugin. */
 		const NS = "settings.pluginInventory";
-		Object.assign(zh, { enablePlugin: "启动插件", disablePlugin: "关闭插件", changingPlugin: "正在切换…" });
-		Object.assign(en, { enablePlugin: "Enable plugin", disablePlugin: "Disable plugin", changingPlugin: "Applying…" });
-		function createPluginController(ctx) {
-			const catalog = (window.__DSH_BOOT__?.availableEntries || window.__DSH_BOOT__?.entries || []).filter(row => row.manageable === true);
-			const byName = new Map(catalog.map(row => [row.id, row]));
-			let queue = Promise.resolve();
-			const serial = operation => { const result = queue.then(operation); queue = result.catch(() => {}); return result; };
-			const rawList = async () => {
-				const result = await ctx.remote.pluginInventory.list();
-				if (!result.ok) throw new Error(result.error.message);
-				return result.value;
-			};
-			const setHost = async (entry, enabled) => {
-				const result = await ctx.remote.pluginInventory.setEnabled({entryId: entry.entryId, enabled});
-				if (!result.ok) throw new Error(result.error.message);
-			};
-			const clientEntry = name => [...ctx.loader.entries()].find(entry => entry.options.name === name);
-			const ensureBundle = async row => {
-				if (ctx.modules.loadCache.has(row.id)) return;
-				const url = new URL(row.url, window.location.href);
-				if (url.origin !== window.location.origin || !url.pathname.startsWith("/plugins/external/")) throw new Error("插件资源地址无效");
-				await new Promise((resolve, reject) => {
-					const script = document.createElement("script"); script.src = url.href;
-					const timer = setTimeout(() => { script.remove(); reject(new Error("插件加载超时")); }, 15000);
-					script.onload = () => { clearTimeout(timer); script.remove(); resolve(); };
-					script.onerror = () => { clearTimeout(timer); script.remove(); reject(new Error(`插件资源加载失败：${row.id}`)); };
-					document.head.appendChild(script);
-				});
-			};
-			const reconcile = async snapshot => {
-				const unavailable = new Set(snapshot.entries.filter(row => !row.enabled).map(row => row.moduleName));
-				let previous = -1;
-				while (previous !== unavailable.size) { previous = unavailable.size; for (const row of catalog) if ((row.inject || []).some(id => unavailable.has(id))) unavailable.add(row.id); }
-				// Dependency order also makes disposal run before its provider disappears.
-				const ordered = [], visited = new Set();
-				const visit = row => { if (visited.has(row.id)) return; visited.add(row.id); for (const id of row.inject || []) if (byName.has(id)) visit(byName.get(id)); ordered.push(row); };
-				catalog.forEach(visit);
-				for (const row of [...ordered].reverse()) { const entry = clientEntry(row.id); if (unavailable.has(row.id) && entry && !entry.options.disabled) await entry.update({disabled: true}); }
-				for (const row of ordered) {
-					if (unavailable.has(row.id)) continue;
-					let entry = clientEntry(row.id);
-					if (!entry) { await ensureBundle(row); const id = await ctx.loader.create({name: row.id}); entry = ctx.loader.resolve(id); }
-					else if (entry.options.disabled) await entry.update({disabled: false});
-					await entry._await();
-					if (entry.fiber?.state !== 2) throw new Error(`插件未启动：${row.id}`);
-				}
-				return {...snapshot, entries: snapshot.entries.map(row => byName.has(row.moduleName) ? {...row, fiberPhase: unavailable.has(row.moduleName) ? null : ["pending", "loading", "active", "failed", null, "unloading"][clientEntry(row.moduleName)?.fiber?.state] ?? null} : row)};
-			};
-			return {
-				canToggle: entry => byName.has(entry.moduleName),
-				list: () => serial(async () => reconcile(await rawList())),
-				setEnabled: (entry, enabled) => serial(async () => {
-					if (!byName.has(entry.moduleName)) throw new Error("此组件由运行配置管理");
-					await setHost(entry, enabled);
-					try { await reconcile(await rawList()); }
-					catch (error) {
-						try { await setHost(entry, entry.enabled); await reconcile(await rawList()); }
-						catch (rollback) { throw new Error(`${error.message}；恢复失败：${rollback.message}`); }
-						throw error;
-					}
-				})
-			};
-		}
+		Object.assign(zh, { enablePlugin: "启动插件", disablePlugin: "关闭插件", changingPlugin: "正在切换…", cancelPluginOperation:"取消" });
+		Object.assign(en, { enablePlugin: "Enable plugin", disablePlugin: "Disable plugin", changingPlugin: "Applying…", cancelPluginOperation:"Cancel" });
+        async function requestPluginOperation(input) {
+            const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),15000);
+            try {const response=await fetch("/__dsh-plugin-manager",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(input),signal:abort.signal});const value=await response.json();if(!response.ok)throw new Error(value.error||"插件操作失败");return value;}
+            finally {clearTimeout(timer);}
+        }
+        function createPluginController(ctx,request=requestPluginOperation) {
+            const catalog=(window.__DSH_BOOT__?.availableEntries||window.__DSH_BOOT__?.entries||[]).filter(row=>row.manageable===true),byName=new Map(catalog.map(row=>[row.id,row]));
+            const ordered=[],visited=new Set();
+            const visit=row=>{if(visited.has(row.id))return;visited.add(row.id);for(const id of row.inject||[])if(byName.has(id))visit(byName.get(id));ordered.push(row);};catalog.forEach(visit);
+            let active=null,closed=false,generation=0,lastSignature="",repairPending=false;
+            const failures=new Map((globalThis.__DSH_PLUGIN_FAILURES__||[]).map(row=>[row.id,row.message]));
+            const aborted=()=>Object.assign(new Error("插件操作已取消"),{name:"AbortError"});
+            const rawList=async()=>{const result=await ctx.remote.pluginInventory.list();if(!result.ok)throw new Error(result.error.message);return result.value;};
+            const clientEntry=name=>[...ctx.loader.entries()].find(entry=>entry.options.name===name);
+            const unavailable=snapshot=>{const missing=new Set(snapshot.entries.filter(row=>!row.enabled).map(row=>row.moduleName));let previous=-1;while(previous!==missing.size){previous=missing.size;for(const row of catalog)if((row.inject||[]).some(id=>missing.has(id)))missing.add(row.id);}return missing;};
+            const project=snapshot=>{const missing=unavailable(snapshot);return {...snapshot,entries:snapshot.entries.map(row=>byName.has(row.moduleName)?{...row,fiberPhase:missing.has(row.moduleName)?null:failures.has(row.moduleName)?"failed":["pending","loading","active","failed",null,"unloading"][clientEntry(row.moduleName)?.fiber?.state]??null}:row)};};
+            const repairLate=()=>{if(closed)return;if(active){repairPending=true;return;}void rawList().then(snapshot=>reconcile(snapshot)).catch(()=>{});};
+            const wait=(work,signal)=>new Promise((resolve,reject)=>{
+                let settled=false,timer;
+                const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener("abort",cancel);error?reject(error):resolve(value);};
+                const cancel=()=>finish(aborted());
+                timer=setTimeout(()=>finish(new Error("浏览器插件操作超时")),15000);
+                signal?.addEventListener("abort",cancel,{once:true});
+                Promise.resolve(work).then(value=>{if(settled){repairLate();return;}finish(null,value);},error=>{if(!settled)finish(error);else repairLate();});
+                if(signal?.aborted)cancel();
+            });
+            const ensureBundle=async(row,signal)=>{
+                if(ctx.modules.loadCache.has(row.id))return;
+                const url=new URL(row.url,window.location.href);if(url.origin!==window.location.origin||!url.pathname.startsWith("/plugins/external/"))throw new Error("插件资源地址无效");
+                await new Promise((resolve,reject)=>{
+                    const script=document.createElement("script");script.src=url.href;
+                    const finish=error=>{clearTimeout(timer);signal?.removeEventListener("abort",cancel);script.onload=script.onerror=null;script.remove();error?reject(error):resolve();};
+                    const cancel=()=>finish(aborted()),timer=setTimeout(()=>finish(new Error("插件加载超时")),15000);
+                    script.onload=()=>finish();script.onerror=()=>finish(new Error(`插件资源加载失败：${row.id}`));signal?.addEventListener("abort",cancel,{once:true});
+                    if(signal?.aborted){cancel();return;}document.head.appendChild(script);
+                });
+            };
+            const reconcile=async(snapshot,{signal,strict=false,scope}={})=>{
+                const revision=++generation,missing=unavailable(snapshot),errors=[];
+                const check=()=>{if(closed||revision!==generation||signal?.aborted)throw aborted();};
+                const apply=async(row,disable)=>{
+                    check();let entry=clientEntry(row.id);
+                    if(disable){if(entry&&(!entry.options.disabled||entry.fiber&&entry.fiber.state!==4))await wait(entry.update({disabled:true},true),signal);failures.delete(row.id);check();return;}
+                    if(!strict&&failures.has(row.id))return;
+                    if(!entry){await ensureBundle(row,signal);check();const key=await wait(ctx.loader.create({name:row.id}),signal);entry=ctx.loader.resolve(key);}
+                    else if(entry.options.disabled)await wait(entry.update({disabled:false}),signal);
+                    check();if(entry.fiber?.state!==2)await wait(entry._await(),signal);check();
+                    if(entry.fiber?.state!==2)throw new Error(`插件未启动：${row.id}`);failures.delete(row.id);
+                };
+                for(const row of [...ordered].reverse().filter(row=>missing.has(row.id)&&(!scope||scope.has(row.id)))){try{await apply(row,true);}catch(error){if(error.name==="AbortError")throw error;failures.set(row.id,error.message);errors.push(error);}}
+                for(const row of ordered.filter(row=>!missing.has(row.id)&&(!scope||scope.has(row.id)))){try{await apply(row,false);}catch(error){if(error.name==="AbortError")throw error;failures.set(row.id,error.message);errors.push(error);}}
+                if(strict&&errors.length)throw errors[0];return project(snapshot);
+            };
+            const cancel=async()=>{if(!active)return;active.abort.abort();if(active.id)await request({action:"cancel",operationId:active.id});};
+            ctx.effect?.(()=>()=>{closed=true;generation++;if(active){active.abort.abort();if(active.id)void request({action:"cancel",operationId:active.id}).catch(()=>{});}},"plugin enablement lifecycle");
+            return {
+                canToggle:entry=>byName.has(entry.moduleName),cancel,
+                list:async()=>{const snapshot=await rawList();const signature=JSON.stringify(snapshot.entries.map(row=>[row.entryId,row.enabled]));if(!active&&signature!==lastSignature){lastSignature=signature;void reconcile(snapshot).catch(()=>{});}return project(snapshot);},
+                setEnabled:async(entry,enabled)=>{
+                    if(active)throw new Error("另一项插件启停操作正在执行");if(!byName.has(entry.moduleName))throw new Error("此组件由运行配置管理");
+                    const scope=new Set([entry.moduleName]);let count=-1;while(count!==scope.size){count=scope.size;for(const row of catalog)if((row.inject||[]).some(id=>scope.has(id)))scope.add(row.id);}const previousFailures=new Map(failures);const run={id:null,abort:new AbortController()};active=run;generation++;let clientWork=null,clientSent=false;
+                    try {
+                        let operation=(await request({action:enabled?"enable":"disable",spec:entry.entryId,clientAck:true})).operation;run.id=operation.operationId;
+                        if(run.abort.signal.aborted)await request({action:"cancel",operationId:run.id});
+                        for(;;){
+                            if(operation.phase==="awaiting-client"&&!clientSent){clientSent=true;clientWork=(async()=>{
+                                try{await reconcile(await rawList(),{signal:run.abort.signal,strict:true,scope});await request({action:"client-result",operationId:run.id,ok:true});}
+                                catch(error){await request({action:"client-result",operationId:run.id,ok:false,error:error.message}).catch(()=>{});}
+                            })();}
+                            if(["succeeded","failed","cancelled","interrupted","recovery-required"].includes(operation.phase)){
+                                if(operation.phase!=="succeeded"){run.abort.abort();if(clientWork)await wait(clientWork).catch(()=>{});for(const id of scope){if(previousFailures.has(id))failures.set(id,previousFailures.get(id));else failures.delete(id);}await reconcile(await rawList(),{scope}).catch(()=>{});if(operation.phase==="cancelled")throw aborted();throw new Error(operation.error||"插件启停失败");}
+                                lastSignature="";return operation.result;
+                            }
+                            await new Promise(resolve=>setTimeout(resolve,50));operation=(await request({action:"status",operationId:run.id})).operation;
+                        }
+                    } catch(error) {if(run.id&&error.name!=="AbortError")await request({action:"cancel",operationId:run.id}).catch(()=>{});throw error;}
+                    finally {if(active===run)active=null;lastSignature="";if(repairPending){repairPending=false;repairLate();}}
+                }
+            };
+        }
+
 		/** Services required by the Settings registration and generated Remote face. */
 		const inject = [
 			"modules",

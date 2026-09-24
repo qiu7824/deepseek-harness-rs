@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 
+mod user;
+pub use user::UserTerminalSpawnSpec;
+
 use cordis::Context;
 use dsh_sandbox::{ConfinedSandboxMode, SandboxMode, SandboxPolicy, SandboxProvider};
 use dsh_sandbox_policy::{SandboxPolicyRequest, SandboxPolicyService};
@@ -575,12 +578,21 @@ impl LocalPtySession {
                     break;
                 }
                 if matches!(self.status(), TerminalSessionStatus::Exited { .. }) {
+                    if startup.is_ready().map_err(|message| TerminalBackendSpawnError::coded(message, TerminalErrorCode::SandboxSetupFailed))? {
+                        break;
+                    }
+                    let detail = startup_tail(&self.output.lock().snapshot().0);
+                    let code = match dsh_sandbox::native_startup_failure_code(&detail) {
+                        "SANDBOX_BUSY" => TerminalErrorCode::SandboxBusy,
+                        "SANDBOX_QUARANTINED" => TerminalErrorCode::SandboxQuarantined,
+                        _ => TerminalErrorCode::SandboxSetupFailed,
+                    };
                     return Err(TerminalBackendSpawnError::coded(
                         format!(
                             "Sandbox runner exited before command readiness: {}",
-                            startup_tail(&self.output.lock().snapshot().0)
+                            detail
                         ),
-                        TerminalErrorCode::SandboxSetupFailed,
+                        code,
                     ));
                 }
                 if Instant::now() >= deadline {

@@ -75,7 +75,7 @@ def validate_payload(directory: Path, tag: str) -> dict[str, str]:
                 raise ValueError("checksum filename is not owned by this platform")
             rows[name] = sha
         from release_variants import expected_artifacts
-        variant_names = ["core", "skin", "free"] if any("-free-" in n or "-free." in n for n in rows) else ["core", "skin"]
+        variant_names = ["core"]
         if set(rows) != expected_artifacts(f"deepseek-harness-rs-{artifact_tag}-{platform}", platform.split("-")[0], variant_names):
             raise ValueError("platform artifact set is incomplete")
         expected.update(rows)

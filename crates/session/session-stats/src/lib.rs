@@ -11,3 +11,6 @@ pub mod types;
 pub use index::{INJECT, NAME, StatsPlugin, apply};
 pub use projection::session_stats_projection_definition;
 pub use types::SessionStatsProjection;
+
+#[cfg(test)]
+mod timing_tests;

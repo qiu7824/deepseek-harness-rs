@@ -224,3 +224,48 @@ fn planted_symlink_blocks_collection_without_touching_target() {
         "original"
     );
 }
+
+#[test]
+fn explicit_protection_and_disabled_auto_collection_preserve_payloads_and_restore_is_idempotent() {
+    let fixture = Fixture::new();
+    let store = Store::open(&fixture.0).unwrap();
+    let mut lease = store
+        .allocate("owner", "project", "log", "evidence")
+        .unwrap();
+    let id = lease.id().to_string();
+    fs::write(lease.path().join("log.txt"), b"evidence").unwrap();
+    lease.finish(true).unwrap();
+    drop(lease);
+    let mut policy = Policy::default();
+    policy.enabled = false;
+    assert!(
+        store
+            .collect(&policy, now() + 400 * DAY, false)
+            .unwrap()
+            .is_empty()
+    );
+    let protected = BTreeSet::from([id.clone()]);
+    assert!(
+        store
+            .collect_protected_ids(
+                &Policy::default(),
+                now() + 400 * DAY,
+                true,
+                &BTreeSet::new(),
+                &protected
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read(store.path(&id, "log.txt").unwrap()).unwrap(),
+        b"evidence"
+    );
+    store.quarantine(&id).unwrap();
+    store.restore(&id).unwrap();
+    store.restore(&id).unwrap();
+    assert_eq!(
+        fs::read(store.path(&id, "log.txt").unwrap()).unwrap(),
+        b"evidence"
+    );
+}

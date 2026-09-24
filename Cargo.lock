@@ -1424,7 +1424,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dsh-acp"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "dsh-jsonrpc-runtime",
  "parking_lot",
@@ -1500,6 +1500,8 @@ dependencies = [
  "dsh-session-persistence",
  "dsh-session-persistence-jsonl",
  "dsh-settings",
+ "dsh-subagent",
+ "dsh-subagent-spawn-in-process",
  "dsh-system-prompt",
  "dsh-token-meter",
  "dsh-tools",
@@ -1543,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-agent-team"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "cordis",
  "dsh-agent",
@@ -1601,6 +1603,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tokio",
  "tracing",
 ]
@@ -1639,14 +1642,19 @@ dependencies = [
  "dsh-home-paths",
  "dsh-invariants",
  "dsh-schemastery",
+ "fs2",
  "image",
  "indexmap",
+ "libc",
  "parking_lot",
+ "png 0.18.1",
  "regex",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1680,7 +1688,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-code-graph"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "ignore",
  "regex",
@@ -1827,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-compaction-tool-result-pruner"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "async-trait",
  "cordis",
@@ -1958,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-desktop-controller"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -1983,6 +1991,34 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "dsh-experimental-auto-review"
+version = "0.1.0-rc.8"
+dependencies = [
+ "async-trait",
+ "cordis",
+ "dsh-agent",
+ "dsh-agent-loop",
+ "dsh-code-runtime",
+ "dsh-llm",
+ "dsh-permission-presets",
+ "dsh-sandbox",
+ "dsh-sandbox-policy",
+ "dsh-scope",
+ "dsh-session",
+ "dsh-shell",
+ "dsh-subagent",
+ "dsh-subagent-spawn-in-process",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "dsh-user-approval",
+ "futures",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2079,6 +2115,7 @@ dependencies = [
  "dsh-llm",
  "dsh-scope",
  "dsh-session",
+ "dsh-session-projection",
  "futures",
  "parking_lot",
  "regex",
@@ -2147,6 +2184,7 @@ dependencies = [
  "dsh-cordis-loader",
  "dsh-credentials",
  "dsh-credentials-local",
+ "dsh-experimental-auto-review",
  "dsh-fs",
  "dsh-fs-local",
  "dsh-goal",
@@ -2171,6 +2209,7 @@ dependencies = [
  "dsh-permission-presets",
  "dsh-plan-mode",
  "dsh-pwsh-local",
+ "dsh-remote-execution",
  "dsh-repeat-tool-reminder",
  "dsh-sandbox",
  "dsh-sandbox-local",
@@ -2262,13 +2301,14 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-apiproxy"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "cordis",
  "dsh-agent",
  "dsh-agent-presets",
+ "dsh-app-boot",
  "dsh-atomic-write",
  "dsh-attachment",
  "dsh-attachment-local",
@@ -2289,6 +2329,8 @@ dependencies = [
  "dsh-mcp-client",
  "dsh-message-feedback",
  "dsh-native-command",
+ "dsh-sandbox",
+ "dsh-sandbox-policy",
  "dsh-schemastery",
  "dsh-scope",
  "dsh-session",
@@ -2335,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-host-cli"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "cordis",
  "dsh-acp",
@@ -2355,6 +2397,7 @@ dependencies = [
  "dsh-session-persistence",
  "dsh-session-persistence-jsonl",
  "dsh-subagent",
+ "futures",
  "indexmap",
  "libmimalloc-sys",
  "mimalloc",
@@ -2480,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-http-proxy"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "dsh-home-paths",
  "reqwest",
@@ -2535,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-jsonrpc-runtime"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "serde_json",
 ]
@@ -2552,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-launcher"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "aes",
  "dsh-home-paths",
@@ -2578,6 +2621,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cordis",
+ "dsh-attachment",
  "dsh-brand",
  "dsh-invariants",
  "dsh-timeout",
@@ -2598,6 +2642,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "cordis",
  "dsh-anonymous-user-id",
  "dsh-atomic-write",
@@ -2745,6 +2790,7 @@ dependencies = [
  "dsh-session-projection",
  "dsh-settings",
  "dsh-shell",
+ "dsh-tools",
  "dsh-user-approval",
  "futures",
  "indexmap",
@@ -2818,6 +2864,7 @@ dependencies = [
  "sha2",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2880,6 +2927,7 @@ version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
  "cordis",
+ "dsh-attachment",
  "dsh-invariants",
  "dsh-sandbox",
  "dsh-session",
@@ -3008,6 +3056,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "uuid",
@@ -3038,6 +3087,7 @@ dependencies = [
  "dsh-invariants",
  "dsh-session",
  "dsh-session-persistence",
+ "dsh-session-persistence-jsonl",
  "dsh-session-projection",
  "dsh-session-title",
  "dsh-storage",
@@ -3234,7 +3284,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-session-turn-outline"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "cordis",
  "dsh-llm",
@@ -3331,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-skin-installer"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "winresource",
  "zip",
@@ -3627,7 +3677,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-task-runtime"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "image",
  "memchr",
@@ -3763,6 +3813,7 @@ dependencies = [
  "base64 0.22.1",
  "cordis",
  "dsh-agent",
+ "dsh-agent-loop",
  "dsh-atomic-write",
  "dsh-attachment",
  "dsh-llm",
@@ -3789,6 +3840,7 @@ version = "0.1.0-rc.8"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "cordis",
  "dsh-agent",
  "dsh-attachment",
@@ -3804,6 +3856,7 @@ dependencies = [
  "futures",
  "serde_json",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -4102,7 +4155,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-tool-web"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4148,6 +4201,7 @@ dependencies = [
  "dsh-code-runtime",
  "dsh-llm",
  "dsh-sandbox",
+ "dsh-sandbox-policy",
  "dsh-scope",
  "dsh-session",
  "dsh-system-prompt",
@@ -4210,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-uu-controller"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "base64 0.22.1",
  "dsh-http-proxy",
@@ -4224,7 +4278,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4237,7 +4291,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web-fetch-http"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -4257,7 +4311,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-web-search-deepseek"
-version = "0.1.3-alpha.34"
+version = "0.1.3-alpha.34+local.20260923.3"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -63,19 +63,78 @@ pub struct ImageAttachmentRef {
     pub name: Option<String>,
 }
 
-/// Any known content block, discriminated by `type` (merge-extensible in TS;
-/// Rust models the four core blocks).
+pub use dsh_attachment::FileAttachmentRef;
+
+/// Plugin-owned blocks retain their payload without weakening core block decoding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExtensionContentBlock {
+    #[serde(rename = "type", deserialize_with = "extension_content_type")]
+    pub type_: String,
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, JsonValue>,
+}
+
+fn extension_content_type<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    if value
+        .strip_prefix("plugin:")
+        .is_some_and(|name| !name.is_empty())
+    {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "extension content type requires a plugin: prefix",
+        ))
+    }
+}
+
+fn present_true<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
+    if bool::deserialize(deserializer)? {
+        Ok(Some(true))
+    } else {
+        Err(serde::de::Error::custom(
+            "this marker must be true when present",
+        ))
+    }
+}
+
+/// Known core blocks and producer-owned extensions, discriminated by `type`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ContentBlock {
     /// Plain text visible to the end user.
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// Reasoning / thinking content, distinct from visible text.
-    Reasoning { text: String },
+    Reasoning {
+        text: String,
+    },
     /// A durable raster image reference.
     Image {
         #[serde(rename = "attachment")]
         attachment: ImageAttachmentRef,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "present_true"
+        )]
+        offloaded: Option<bool>,
+    },
+    File {
+        attachment: FileAttachmentRef,
+    },
+    ToolAddition {
+        #[serde(rename = "toolName")]
+        tool_name: String,
+    },
+    ToolRemoval {
+        #[serde(rename = "toolName")]
+        tool_name: String,
     },
     /// A tool invocation requested by the model.
     ToolCall {
@@ -93,17 +152,23 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none", rename = "isError")]
         is_error: Option<bool>,
     },
+    #[serde(untagged)]
+    Extension(ExtensionContentBlock),
 }
 
 impl ContentBlock {
     /// The `type` tag (TS `block.type`).
-    pub fn type_tag(&self) -> &'static str {
+    pub fn type_tag(&self) -> &str {
         match self {
             ContentBlock::Text { .. } => "text",
             ContentBlock::Reasoning { .. } => "reasoning",
             ContentBlock::Image { .. } => "image",
+            ContentBlock::File { .. } => "file",
+            ContentBlock::ToolAddition { .. } => "tool-addition",
+            ContentBlock::ToolRemoval { .. } => "tool-removal",
             ContentBlock::ToolCall { .. } => "tool-call",
             ContentBlock::ToolResult { .. } => "tool-result",
+            ContentBlock::Extension(block) => &block.type_,
         }
     }
 
@@ -262,6 +327,13 @@ impl StreamChunk {
 /// JSON-schema description of a tool, as sent to the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "deferLoading",
+        deserialize_with = "present_true"
+    )]
+    pub defer_loading: Option<bool>,
     pub name: String,
     pub description: String,
     /// JSON Schema object for the arguments.

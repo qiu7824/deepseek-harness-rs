@@ -14,8 +14,9 @@ use serde_json::Value as JsonValue;
 use crate::types::{SessionEvent, SurfaceOp};
 
 /// Runtime counterpart of the message-producing event union.
-pub const SURFACE_EVENT_TYPES: [&str; 4] = [
+pub const SURFACE_EVENT_TYPES: [&str; 5] = [
     "system/message",
+    "developer/message",
     "user/message",
     "assistant/message",
     "tool/result",
@@ -66,7 +67,9 @@ pub fn derive_event_message(event: &SessionEvent) -> Option<Message> {
             }
             Some(message)
         }
-        "tool/result" => serde_json::from_value::<Message>(event.data.get("message")?.clone()).ok(),
+        "tool/result" | "developer/message" => {
+            serde_json::from_value::<Message>(event.data.get("message")?.clone()).ok()
+        }
         _ => None,
     }
 }
@@ -114,7 +117,7 @@ struct SurfaceFoldState {
 /// A validated replacement transition that has not mutated fold state yet.
 #[derive(Debug, Clone, PartialEq)]
 struct SurfaceReplacePlan {
-    image_count: Option<usize>,
+    images: Option<crate::image_offload::InputImages>,
     seq: u64,
     start: u64,
     end: u64,
@@ -129,7 +132,7 @@ enum SurfacePlan {
     Append {
         seq: u64,
         prepend: bool,
-        image_count: Option<usize>,
+        images: Option<crate::image_offload::InputImages>,
     },
     Replace(SurfaceReplacePlan),
     Offload(crate::image_offload::Targets),
@@ -275,14 +278,30 @@ fn assert_tool_result_rewrite(
     Ok(())
 }
 
-/// Copy `data` with `message.content[0].content` set to `null`
-/// (TS `assertToolResultRewrite`'s comparison projection).
+/// Compare all result metadata while allowing only the payload to change.
+/// V3 replay keeps its wrapped result shape; V4 stores the payload directly.
 fn with_nulled_result_content(data: &JsonValue) -> Option<JsonValue> {
     let mut copy = data.clone();
     let message = copy.as_object_mut()?.get_mut("message")?.as_object_mut()?;
-    let first = message.get_mut("content")?.as_array_mut()?.first_mut()?;
-    let block = first.as_object_mut()?;
-    block.insert("content".to_string(), JsonValue::Null);
+    match message.get("role")?.as_str()? {
+        "tool" => {
+            message.get("content")?.as_array()?;
+            message.insert("content".into(), JsonValue::Null);
+        }
+        "user" => {
+            let content = message.get_mut("content")?.as_array_mut()?;
+            if content.len() != 1 {
+                return None;
+            }
+            let block = content[0].as_object_mut()?;
+            if block.get("type")?.as_str()? != "tool-result" {
+                return None;
+            }
+            block.get("content")?.as_array()?;
+            block.insert("content".into(), JsonValue::Null);
+        }
+        _ => return None,
+    }
     Some(copy)
 }
 
@@ -317,7 +336,7 @@ fn plan_surface_event(
         SurfaceOp::Append => {
             assert_provenance(event, &[])?;
             Ok(Some(SurfacePlan::Append {
-                image_count: crate::image_offload::input_count(event),
+                images: crate::image_offload::input_images(event),
                 seq: event.seq.get(),
                 prepend: event.type_ == "system/message"
                     && event.data.get("prefix").and_then(JsonValue::as_bool) == Some(true),
@@ -332,7 +351,7 @@ fn plan_surface_event(
                 SurfaceOp::Append => unreachable!(),
             };
             Ok(Some(SurfacePlan::Replace(SurfaceReplacePlan {
-                image_count: crate::image_offload::input_count(event),
+                images: crate::image_offload::input_images(event),
                 seq: event.seq.get(),
                 start,
                 end,
@@ -353,10 +372,13 @@ fn apply_surface_plan(
         Some(SurfacePlan::Append {
             seq,
             prepend,
-            image_count,
+            images,
         }) => {
-            if let Some(count) = image_count {
-                state.image_counts.insert(seq, count);
+            if let Some(images) = images {
+                state.image_counts.insert(seq, images.count);
+                if !images.omitted.is_empty() {
+                    state.omitted.insert(seq, images.omitted);
+                }
             }
             if prepend && !state.nodes.is_empty() {
                 // Explicit prefixes can repair a shadowed system node. Old
@@ -371,7 +393,7 @@ fn apply_surface_plan(
         }
         Some(SurfacePlan::Replace(plan)) => {
             let SurfaceReplacePlan {
-                image_count,
+                images,
                 seq,
                 start,
                 end,
@@ -383,8 +405,11 @@ fn apply_surface_plan(
                 state.image_counts.remove(seq);
                 state.omitted.remove(seq);
             }
-            if let Some(count) = image_count {
-                state.image_counts.insert(seq, count);
+            if let Some(images) = images {
+                state.image_counts.insert(seq, images.count);
+                if !images.omitted.is_empty() {
+                    state.omitted.insert(seq, images.omitted);
+                }
             }
             state
                 .nodes
@@ -494,7 +519,7 @@ impl StreamingSurfaceFold {
             SurfaceOp::Append => {
                 assert_provenance(event, &[])?;
                 Some(SurfacePlan::Append {
-                    image_count: crate::image_offload::input_count(event),
+                    images: crate::image_offload::input_images(event),
                     seq: event.seq.get(),
                     prepend: event.type_ == "system/message"
                         && event.data.get("prefix").and_then(JsonValue::as_bool) == Some(true),
@@ -527,7 +552,7 @@ impl StreamingSurfaceFold {
                     }
                 }
                 Some(SurfacePlan::Replace(SurfaceReplacePlan {
-                    image_count: crate::image_offload::input_count(event),
+                    images: crate::image_offload::input_images(event),
                     seq: event.seq.get(),
                     start,
                     end,
@@ -589,6 +614,41 @@ mod streaming_tests {
         streaming.push(&events[1]).expect("second chunk");
         streaming.push(&events[2]).expect("replacement chunk");
         assert_eq!(streaming.finish(), complete);
+    }
+
+    #[test]
+    fn flat_tool_rewrites_preserve_correlation_and_error_metadata() {
+        let mut original = event(0, SurfaceOp::Append, None);
+        original.type_ = "tool/result".into();
+        original.data = serde_json::json!({"message":{
+            "id":"result-1","role":"tool","toolCallId":"call-1","isError":true,
+            "source":{"kind":"tool","callId":"call-1"},
+            "content":[{"type":"text","text":"large output"}]
+        }});
+        let mut replacement = original.clone();
+        replacement.seq = SessionSeq::new(1).unwrap();
+        replacement.surface_op = Some(SurfaceOp::Replace { start: 0, end: 0 });
+        replacement.source_event_seqs = Some(vec![0]);
+        replacement.data["message"]["content"] = serde_json::json!([]);
+        let events = vec![original.clone(), replacement.clone()];
+        let complete = fold_surface(&events).unwrap();
+        let mut streaming = StreamingSurfaceFold::default();
+        for event in &events {
+            streaming.push(event).unwrap();
+        }
+        assert_eq!(streaming.finish(), complete);
+        assert_eq!(complete.nodes, vec![1]);
+        for field in ["toolCallId", "isError", "source", "id"] {
+            let mut invalid = replacement.clone();
+            invalid.data["message"][field] = JsonValue::Null;
+            assert!(
+                fold_surface(&[original.clone(), invalid.clone()]).is_err(),
+                "{field}"
+            );
+            let mut streaming = StreamingSurfaceFold::default();
+            streaming.push(&original).unwrap();
+            assert!(streaming.push(&invalid).is_err(), "{field}");
+        }
     }
 
     #[test]

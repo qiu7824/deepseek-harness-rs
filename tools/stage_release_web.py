@@ -44,6 +44,13 @@ def stage_release_web(target: pathlib.Path) -> dict[str, object]:
     if temporary:
         raise ValueError(f"temporary files cannot be staged: {', '.join(temporary)}")
 
+    optional_boot = SOURCE / "assets" / "optional-plugin-boot.js"
+    if not optional_boot.is_file() or optional_boot.read_bytes() != (ROOT / "web/src/optional-plugin-boot.js").read_bytes():
+        raise ValueError("optional plugin startup adapter is missing or stale")
+    shells = list((SOURCE / "assets").glob("index-*.js"))
+    if len(shells) != 1 or "__dshBootPluginEntries" not in shells[0].read_text(encoding="utf-8"):
+        raise ValueError("Web shell has not integrated optional plugin failure isolation")
+
     manifest_path = SOURCE / "plugins" / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     for entry in manifest.get("entries", []):

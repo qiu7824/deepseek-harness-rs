@@ -1191,7 +1191,15 @@ impl LlmRuntime {
                 } else {
                     merged_call_options(options, &resolved_config)
                 };
-                let filtered = self.for_adapter(resolved_options, &registration.adapter);
+                let mut filtered = self.for_adapter(resolved_options, &registration.adapter);
+                if let Err(failure) =
+                    crate::file_projection::project(&self.ctx, &mut filtered).await
+                {
+                    return Some((
+                        adapter_failure_chunk(failure, signal.as_ref()),
+                        AdapterPhase::Done,
+                    ));
+                }
                 let mut stream = match catch_unwind(AssertUnwindSafe(|| adapter.stream(&filtered)))
                 {
                     Ok(stream) => stream,

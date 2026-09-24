@@ -1,0 +1,52 @@
+{
+  "recordedAt": "2026-09-24T20:49:22.333701+08:00",
+  "status": "controller_primitives_and_isolated_browser_verified_native_orchestration_pending",
+  "installed": false,
+  "published": false,
+  "checks": {
+    "native-pointer-actions-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\native-pointer-actions-tests.log",
+      "sha256": "fe9812034f265414df7e4e916998de8105c12e60b4ed1a7793ae3df1f60a9578",
+      "results": [
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+        "test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s",
+        "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    "native-pointer-browser-real": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\native-pointer-browser-real.log",
+      "sha256": "51c52d3add010de6075cce9e041aa61d941ff5544ccfb9da2d319a9e7c85a661",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.93s"
+      ]
+    },
+    "native-pointer-controller-final": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\native-pointer-controller-final.log",
+      "sha256": "57e5b50aaed284ab61b2d5b9e3fc2849fe1a7538986c2c6fa8d2cca532e0b3ac",
+      "results": [
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s"
+      ]
+    }
+  },
+  "files": {
+    "crates/computer-use/desktop-controller/src/input.rs": "4cec4a64b950526a98580bd1228fd4f2389bcaea2e281f6ab82f564a16f6cf9c",
+    "crates/computer-use/desktop-controller/src/native.rs": "e28ca4c25b48a6e2e7ef50865b1d837418470d17ac3dce3edd6772c7e8117804",
+    "crates/computer-use/desktop-controller/src/main.rs": "38663c6099c2fda7fee1518bb9a452ba3e5ba9e145bbae6ffca372580cf5502e",
+    "crates/computer-use/tool-computer-use-command/src/browser.rs": "28ffdc77e8f393177a6ec910b69a3ab83f03d0480698cc1b31207d57d0d5506e",
+    "crates/computer-use/tool-computer-use-command/src/lib.rs": "09493b802ee2d5bc120896b7aef2e4adecf12f08db5784d4d8ae95621f6d3175",
+    "crates/computer-use/tool-computer-use-command/tests/native_browser_edge.rs": "994c97cb787ecbd3f5f0216e0aefc1746e5781d972de15f4a107aa3867859a9e"
+  },
+  "implemented": [
+    "Native and browser controllers preserve full bounded drag paths with one press/release; legacy endpoint drags retain interpolation.",
+    "Agent move is a distinct authorized action; raw GUI-only mouse edges remain GUI-only.",
+    "Pointer modifier keys are validated before dispatch; native modifiers are released on action completion/error and browser modifier flags reach actual pointer events.",
+    "Browser click release uses a bounded cleanup channel even after cancellation; loopback CDP verifies release after a cancelled press.",
+    "Real isolated headless browser verified Ctrl-click, Shift-drag through all three supplied points, move coordinates, screenshots and existing session/tab/upload boundaries."
+  ],
+  "remaining": [
+    "Native computer batch tool registration, Host settings and frame/identity-bound execution orchestration.",
+    "Native protocol failure recovery, historical screenshot offload and safety-check acknowledgement.",
+    "Real Windows application pointer acceptance, installed full GUI, other platforms and all original release requirements."
+  ]
+}

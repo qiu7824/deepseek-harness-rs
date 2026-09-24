@@ -1077,6 +1077,7 @@ impl Engine {
             return Ok(snapshot);
         }
         let (w, h, rect) = self.observed.ok_or("请先观察桌面画面，再发送输入")?;
+        input::validate_observed_viewport(args,w,h)?;
         if bounds(self.target, self.monitor)? != rect {
             self.observed = None;
             return Err("桌面布局已变化，请重新截图".into());
@@ -1094,135 +1095,184 @@ impl Engine {
                 rect,
             )
         };
-        match action {
-            "mouse_move" | "mouse_down" => {
-                let (x, y) = coordinate("x", "y")?;
-                let button = args["button"].as_str().unwrap_or("left");
-                if action == "mouse_down"
-                    && !matches!(button, "left" | "right" | "middle" | "back" | "forward")
-                {
-                    return Err("不支持的鼠标按键".into());
-                }
-                self.pointer_allowed(human, x, y)?;
-                input::move_to(x, y)?;
-                if action == "mouse_down" {
-                    self.pointer_allowed(human, x, y)?;
-                    self.remember_input(input::HeldInput::Button(button.into()));
-                    input::button(button, true)?;
-                    self.held_foreground = Some(unsafe { GetForegroundWindow() } as usize);
-                } else if !self.held.is_empty() {
-                    self.held_deadline = Some(Instant::now() + Duration::from_secs(5));
-                }
-            }
-            "key_down" => {
-                let code = input::key_code(args["key"].as_str().ok_or("缺少按键")?)?;
+        let pointer_action = matches!(
+            action,
+            "move" | "click" | "double_click" | "drag" | "scroll"
+        );
+        let modifiers = if pointer_action {
+            input::pointer_modifiers(args)?
+        } else {
+            Vec::new()
+        };
+        let drag_points = if action == "drag" {
+            Some(input::drag_points(args, w, h, rect)?)
+        } else {
+            None
+        };
+        if pointer_action
+            && action != "drag"
+            && (action != "scroll" || args.get("x").is_some() || args.get("y").is_some())
+        {
+            coordinate("x", "y")?;
+        }
+        if matches!(action, "click" | "double_click")
+            && !matches!(
+                args["button"].as_str().unwrap_or("left"),
+                "left" | "right" | "middle" | "back" | "forward"
+            )
+        {
+            return Err("不支持的鼠标按键".into());
+        }
+        let mut pressed_modifiers = Vec::new();
+        let action_result = (|| {
+            for code in modifiers {
+                self.input_allowed(human)?;
                 self.remember_input(input::HeldInput::Key(code));
+                pressed_modifiers.push(code);
                 input::key(code, false)?;
             }
-            "click" | "double_click" => {
-                let (x, y) = coordinate("x", "y")?;
-                let button = args["button"].as_str().unwrap_or("left");
-                if !matches!(button, "left" | "right" | "middle" | "back" | "forward") {
-                    return Err("不支持的鼠标按键".into());
-                }
-                self.pointer_allowed(human, x, y)?;
-                input::move_to(x, y)?;
-                for _ in 0..if action == "double_click" { 2 } else { 1 } {
-                    self.pointer_allowed(human, x, y)?;
-                    let held = input::HeldInput::Button(button.into());
-                    self.remember_input(held.clone());
-                    let down = input::button(button, true);
-                    let up = self.held.release(&held, input::release_held);
-                    down?;
-                    up?;
-                    std::thread::sleep(Duration::from_millis(40));
-                }
-            }
-            "type" | "input" => {
-                let text = args["text"]
-                    .as_str()
-                    .filter(|s| !s.is_empty() && s.len() <= 32768)
-                    .ok_or("输入文本长度无效")?;
-                for unit in text.encode_utf16() {
-                    self.input_allowed(human)?;
-                    let held = input::HeldInput::Unicode(unit);
-                    self.remember_input(held.clone());
-                    let down = input::unicode(unit, false);
-                    let up = self.held.release(&held, input::release_held);
-                    down?;
-                    up?;
-                }
-            }
-            "key" | "keypress" => {
-                let keys = args["keys"]
-                    .as_array()
-                    .filter(|v| !v.is_empty() && v.len() <= 5)
-                    .ok_or("需要 1 至 5 个按键")?;
-                let keys = keys
-                    .iter()
-                    .map(|k| input::key_code(k.as_str().ok_or("按键格式无效")?))
-                    .collect::<Result<Vec<_>, String>>()?;
-                let mut held = Vec::new();
-                let down = (|| {
-                    for key in keys {
-                        self.input_allowed(human)?;
-                        held.push(key);
-                        self.remember_input(input::HeldInput::Key(key));
-                        input::key(key, false)?;
-                    }
-                    Ok::<(), String>(())
-                })();
-                let mut released = Ok(());
-                for key in held.into_iter().rev() {
-                    if let Err(error) = self
-                        .held
-                        .release(&input::HeldInput::Key(key), input::release_held)
-                    {
-                        released = Err(error)
-                    }
-                }
-                down?;
-                released?;
-            }
-            "scroll" => {
-                if args.get("x").is_some() || args.get("y").is_some() {
+            match action {
+                "move" | "mouse_move" | "mouse_down" => {
                     let (x, y) = coordinate("x", "y")?;
+                    let button = args["button"].as_str().unwrap_or("left");
+                    if action == "mouse_down"
+                        && !matches!(button, "left" | "right" | "middle" | "back" | "forward")
+                    {
+                        return Err("不支持的鼠标按键".into());
+                    }
+                    self.pointer_allowed(human, x, y)?;
+                    input::move_to(x, y)?;
+                    if action == "mouse_down" {
+                        self.pointer_allowed(human, x, y)?;
+                        self.remember_input(input::HeldInput::Button(button.into()));
+                        input::button(button, true)?;
+                        self.held_foreground = Some(unsafe { GetForegroundWindow() } as usize);
+                    } else if !self.held.is_empty() {
+                        self.held_deadline = Some(Instant::now() + Duration::from_secs(5));
+                    }
+                }
+                "key_down" => {
+                    let code = input::key_code(args["key"].as_str().ok_or("缺少按键")?)?;
+                    self.remember_input(input::HeldInput::Key(code));
+                    input::key(code, false)?;
+                }
+                "click" | "double_click" => {
+                    let (x, y) = coordinate("x", "y")?;
+                    let button = args["button"].as_str().unwrap_or("left");
+                    if !matches!(button, "left" | "right" | "middle" | "back" | "forward") {
+                        return Err("不支持的鼠标按键".into());
+                    }
+                    self.pointer_allowed(human, x, y)?;
+                    input::move_to(x, y)?;
+                    for _ in 0..if action == "double_click" { 2 } else { 1 } {
+                        self.pointer_allowed(human, x, y)?;
+                        let held = input::HeldInput::Button(button.into());
+                        self.remember_input(held.clone());
+                        let down = input::button(button, true);
+                        let up = self.held.release(&held, input::release_held);
+                        down?;
+                        up?;
+                        std::thread::sleep(Duration::from_millis(40));
+                    }
+                }
+                "type" | "input" => {
+                    let text = args["text"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 32768)
+                        .ok_or("输入文本长度无效")?;
+                    for unit in text.encode_utf16() {
+                        self.input_allowed(human)?;
+                        let held = input::HeldInput::Unicode(unit);
+                        self.remember_input(held.clone());
+                        let down = input::unicode(unit, false);
+                        let up = self.held.release(&held, input::release_held);
+                        down?;
+                        up?;
+                    }
+                }
+                "key" | "keypress" => {
+                    let keys = args["keys"]
+                        .as_array()
+                        .filter(|v| !v.is_empty() && v.len() <= 5)
+                        .ok_or("需要 1 至 5 个按键")?;
+                    let keys = keys
+                        .iter()
+                        .map(|k| input::key_code(k.as_str().ok_or("按键格式无效")?))
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let mut held = Vec::new();
+                    let down = (|| {
+                        for key in keys {
+                            self.input_allowed(human)?;
+                            held.push(key);
+                            self.remember_input(input::HeldInput::Key(key));
+                            input::key(key, false)?;
+                        }
+                        Ok::<(), String>(())
+                    })();
+                    let mut released = Ok(());
+                    for key in held.into_iter().rev() {
+                        if let Err(error) = self
+                            .held
+                            .release(&input::HeldInput::Key(key), input::release_held)
+                        {
+                            released = Err(error)
+                        }
+                    }
+                    down?;
+                    released?;
+                }
+                "scroll" => {
+                    if args.get("x").is_some() || args.get("y").is_some() {
+                        let (x, y) = coordinate("x", "y")?;
+                        self.pointer_allowed(human, x, y)?;
+                        input::move_to(x, y)?;
+                        self.pointer_allowed(human, x, y)?;
+                    }
+                    input::scroll(
+                        args["deltaX"].as_f64().unwrap_or(0.0),
+                        args["deltaY"].as_f64().unwrap_or(0.0),
+                    )?;
+                }
+                "drag" => {
+                    let points = drag_points.as_ref().expect("validated drag path");
+                    let (x, y) = points[0];
                     self.pointer_allowed(human, x, y)?;
                     input::move_to(x, y)?;
                     self.pointer_allowed(human, x, y)?;
+                    self.remember_input(input::HeldInput::Button("left".into()));
+                    let pressed = input::button("left", true);
+                    let moved = (|| {
+                        pressed?;
+                        for &(next_x, next_y) in &points[1..] {
+                            self.pointer_allowed(human, next_x, next_y)?;
+                            input::move_to(next_x, next_y)?;
+                            std::thread::sleep(Duration::from_millis(16));
+                        }
+                        Ok::<(), String>(())
+                    })();
+                    let released = self.held.release(
+                        &input::HeldInput::Button("left".into()),
+                        input::release_held,
+                    );
+                    moved?;
+                    released?;
                 }
-                input::scroll(
-                    args["deltaX"].as_f64().unwrap_or(0.0),
-                    args["deltaY"].as_f64().unwrap_or(0.0),
-                )?;
+                _ => return Err("不支持的本机桌面操作".into()),
             }
-            "drag" => {
-                let (x, y) = coordinate("x", "y")?;
-                let (ex, ey) = coordinate("endX", "endY")?;
-                self.pointer_allowed(human, x, y)?;
-                input::move_to(x, y)?;
-                self.pointer_allowed(human, x, y)?;
-                self.remember_input(input::HeldInput::Button("left".into()));
-                let pressed = input::button("left", true);
-                let moved = (|| {
-                    pressed?;
-                    for n in 1..=12 {
-                        let next_x = x + (ex - x) * n / 12;
-                        let next_y = y + (ey - y) * n / 12;
-                        self.pointer_allowed(human, next_x, next_y)?;
-                        input::move_to(next_x, next_y)?;
-                        std::thread::sleep(Duration::from_millis(16));
-                    }
-                    Ok::<(), String>(())
-                })();
-                let released = self.held.release(
-                    &input::HeldInput::Button("left".into()),
-                    input::release_held,
-                );
-                moved?;
-                released?;
+            Ok::<(), String>(())
+        })();
+        let mut release_error = None;
+        for code in pressed_modifiers.into_iter().rev() {
+            if let Err(error) = self
+                .held
+                .release(&input::HeldInput::Key(code), input::release_held)
+            {
+                release_error.get_or_insert(error);
             }
-            _ => return Err("不支持的本机桌面操作".into()),
+        }
+        action_result?;
+        if let Some(error) = release_error {
+            return Err(error);
         }
         self.capture.invalidate()?;
         if direct || args["includeScreenshot"] == false {

@@ -12,9 +12,9 @@ use dsh_tools::{
     ToolExecution, ToolOutputDefinition, ToolResultView,
 };
 use futures::{FutureExt, StreamExt};
-mod read_window;
 #[cfg(test)]
 mod read_numeric_tests;
+mod read_window;
 use std::sync::Arc;
 
 pub const NAME: &str = "tool-fs";
@@ -28,9 +28,17 @@ const STREAM_MIN_SIZE: u64 = 10 * 1024 * 1024;
 // representation, so as_u64 alone rejects valid model arguments. Float forms
 // must be integral and exactly representable; strings and fractions stay errors.
 fn line_integer(value: &serde_json::Value) -> Option<u64> {
-    value.as_u64().or_else(|| value.as_f64()
-        .filter(|number| number.is_finite() && *number >= 0.0 && *number <= 9_007_199_254_740_991.0 && number.fract() == 0.0)
-        .map(|number| number as u64))
+    value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|number| {
+                number.is_finite()
+                    && *number >= 0.0
+                    && *number <= 9_007_199_254_740_991.0
+                    && number.fract() == 0.0
+            })
+            .map(|number| number as u64)
+    })
 }
 
 fn body_error(error: FsError) -> ToolBodyError {
@@ -400,7 +408,7 @@ impl Service {
                             value["path"].as_str().unwrap_or(""), image["mediaType"].as_str().unwrap_or(""),
                             image["width"].as_u64().unwrap_or(0), image["height"].as_u64().unwrap_or(0), image["bytes"].as_u64().unwrap_or(0),
                         ) },
-                        dsh_llm::ContentBlock::Image { attachment: dsh_llm::ImageAttachmentRef {
+                        dsh_llm::ContentBlock::Image { offloaded: None, attachment: dsh_llm::ImageAttachmentRef {
                             attachment_id: image["attachmentId"].as_str().unwrap_or("").to_string(),
                             media_type: image["mediaType"].as_str().map(str::to_string), bytes: image["bytes"].as_u64(),
                             width: image["width"].as_u64(), height: image["height"].as_u64(), name: image["name"].as_str().map(str::to_string),
@@ -425,7 +433,7 @@ impl Service {
                     if let Some(reference) = reference {
                         let store = service.ctx.get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
                             .ok_or_else(|| ToolBodyError::plain("Attachment store unavailable"))?;
-                        let image = store.read_image(&reference, Some(&signal(&exec))).await
+                        let image = store.open_image(&reference, Some(&signal(&exec))).await
                             .map_err(|error| ToolBodyError::coded(error.message, "AttachmentError", &error.code))?;
                         return Ok(serde_json::json!({"path":path,"image":image.reference}));
                     }
@@ -437,11 +445,17 @@ impl Service {
                     if info.kind != FsInfoType::File { return Err(body_error(FsError::new(format!("cannot read \"{}\": not a regular file", target.display_path), FsErrorCode::FsNotRegularFile))); }
                     let attachments = service.ctx.get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false).map(|slot| slot.as_ref().clone()).ok_or_else(|| ToolBodyError::plain("read_image requires the attachments service"))?;
                     let limits = attachments.image_limits();
-                    let data = service.fs.read_bytes(&target, Some(signal(&exec)), limits.image_byte_limit().min(limits.message_byte_limit())).await.map_err(body_error)?;
+                    use tokio::io::AsyncReadExt;
+                    let chunks = service.fs.stream_bytes(&target, Some(signal(&exec)), limits.image_byte_limit().min(limits.message_byte_limit())).await.map_err(body_error)?;
+                    let chunks = chunks.map(|chunk| chunk.map(bytes::Bytes::from).map_err(std::io::Error::other));
+                    let mut reader = tokio_util::io::StreamReader::new(chunks);
+                    let mut data = Vec::with_capacity(16);
+                    (&mut reader).take(16).read_to_end(&mut data).await.map_err(|error| ToolBodyError::plain(error.to_string()))?;
                     if data.starts_with(b"%PDF-"){return Err(ToolBodyError::coded("PDF is a document; render its pages with the PDF workflow before using read_image. Do not retry the PDF as an image.","ImageFormatError","IMAGE_FORMAT_UNSUPPORTED"));}
                     let media_type = image_media_type_for_path(path).or_else(|| sniff_image_media_type(&data)).ok_or_else(|| ToolBodyError::plain(format!("cannot read \"{}\": the file content is not a supported PNG/JPEG/WebP/GIF image", target.display_path)))?;
                     if !limits.media_types.contains(&media_type) { return Err(ToolBodyError::plain(format!("cannot read \"{}\": {} images are not accepted by this deployment", target.display_path, media_type.as_str()))); }
-                    let saved = attachments.save_image(&dsh_attachment::SaveImageAttachment { data, media_type, name: std::path::Path::new(&target.display_path).file_name().map(|name| name.to_string_lossy().into_owned()) }).await.map_err(|error| ToolBodyError::plain(error.to_string()))?;
+                    let input = std::io::Cursor::new(data).chain(reader);
+                    let saved = attachments.save_image_stream(Box::pin(input), media_type, std::path::Path::new(&target.display_path).file_name().map(|name| name.to_string_lossy().into_owned()), Some(&signal(&exec))).await.map_err(|error| ToolBodyError::coded(error.message, "AttachmentError", &error.code))?;
                     emit_observed(&service.ctx, &target, FsObservation::Present { version: info.version }, &exec);
                     Ok(serde_json::json!({"path":target.display_path,"image":{"attachmentId":saved.attachment_id.to_string(),"mediaType":saved.media_type.as_str(),"bytes":saved.bytes,"width":saved.width,"height":saved.height,"name":saved.name}}))
                 })

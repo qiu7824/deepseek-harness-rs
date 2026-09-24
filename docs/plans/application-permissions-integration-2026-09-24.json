@@ -1,0 +1,45 @@
+{
+  "recordedAt": "2026-09-24T20:22:54.987434+08:00",
+  "status": "source_and_composed_host_verified_pending_installed_acceptance",
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "checks": {
+    "application-permission-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\application-permission-tests.log",
+      "sha256": "6eac43f9955b37c46359dc3477f432f6acbce4ebe80e4375dda5c65fd455d98b",
+      "results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 302 filtered out; finished in 0.18s"
+      ]
+    },
+    "application-controller-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\application-controller-tests.log",
+      "sha256": "c0320c00196f795691e6ca0e5f379483e760be9eb9e706a451c94a2f6a2cf613",
+      "results": [
+        "test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s"
+      ]
+    },
+    "application-permission-dom-tests": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\application-permission-dom-tests.log",
+      "sha256": "31b8823cb735b3c187ff4edc957234499b2aa7319d79f5ff30f435c5eaa8b248",
+      "results": [
+        "PASS application permissions UI: explicit target/owner/scopes, revocation, CAS draft preservation and closed-storage recovery"
+      ]
+    }
+  },
+  "files": {
+    "crates/host/dsh-host/src/computer_permissions.rs": "9ae6bd86ebc1acc016e054f89d590e694a0f1ba4a9551b307888948d0941e41a",
+    "web/src/runtime-plugins/ui-settings-general.js": "38700e787dc714ce9954b33af2ac33361938647dd7bb8babc117550fd08fed8d",
+    "tools/tests/computer_permissions_dom_harness.cjs": "0634e0087e9e840f66665fcf9b1a0a8ab6d597b89699dffadc69559712e50751"
+  },
+  "implemented": [
+    "Host installs application authorization before the computer adapter; filesystem access does not imply desktop authorization.",
+    "Once, session and persistent grants use adapter-attested identity; independent grant generations fence pending actions on revocation.",
+    "Corrupt grant storage closes automated control while Host remains available; explicit recovery retains invalid original bytes.",
+    "External edits invalidate active leases; session ownership changes reject stale grants; settings expose scoped grants, revocation and recovery."
+  ],
+  "remainingAcceptance": [
+    "Installed desktop acceptance with real applications and all supported operating systems.",
+    "Native model computer protocol remains a separate implementation and acceptance requirement."
+  ]
+}

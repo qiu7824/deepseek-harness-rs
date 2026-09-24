@@ -113,6 +113,7 @@ mod tests {
             adapter: Arc::new(RecordingAdapter { id, calls }),
             timeout: std::time::Duration::from_secs(1),
             owner_agents: Mutex::default(),
+            observation_epochs: Mutex::default(),
         }
     }
 

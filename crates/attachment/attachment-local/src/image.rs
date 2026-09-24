@@ -28,7 +28,13 @@ fn media_type_of(format: ImageFormat) -> Option<ImageMediaType> {
 /// Parse a supported raster's header and return its intrinsic metadata
 /// without decoding pixels (TS `probeImage`).
 pub fn probe_image(data: &[u8]) -> Result<DetectedImage, AttachmentError> {
-    let reader = image::ImageReader::new(std::io::Cursor::new(data))
+    probe_reader(std::io::Cursor::new(data))
+}
+
+pub(crate) fn probe_reader(
+    reader: impl std::io::BufRead + std::io::Seek,
+) -> Result<DetectedImage, AttachmentError> {
+    let reader = image::ImageReader::new(reader)
         .with_guessed_format()
         .map_err(|_| {
             AttachmentError::new("INVALID_IMAGE", "Unsupported or malformed image data.")

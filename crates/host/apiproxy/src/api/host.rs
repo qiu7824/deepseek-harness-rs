@@ -38,6 +38,27 @@ pub struct HostDescribeResult {
     /// Whether this deployment can hand a path to a user-visible native
     /// desktop.
     pub can_open_path: bool,
+    /// User todo snapshots written outside a turn can be restored safely.
+    /// Older hosts omit this field; clients must not assume support by version.
+    #[serde(default)]
+    pub supports_idle_todo_edits: bool,
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::HostDescribeResult;
+
+    #[test]
+    fn legacy_host_description_does_not_advertise_idle_todo_edits() {
+        let legacy = serde_json::json!({
+            "home": "home", "version": "0.1", "cwd": ".",
+            "attachedSessions": 0, "canOpenPath": false
+        });
+        let mut description: HostDescribeResult = serde_json::from_value(legacy).unwrap();
+        assert!(!description.supports_idle_todo_edits);
+        description.supports_idle_todo_edits = true;
+        assert_eq!(serde_json::to_value(description).unwrap()["supportsIdleTodoEdits"], true);
+    }
 }
 
 /// `host.pickDirectory` response value (null = operator cancelled).

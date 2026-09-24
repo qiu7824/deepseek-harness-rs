@@ -178,6 +178,7 @@ fn effect(name: &str, arguments: &Value) -> EffectKind {
             | "job_output"
             | "job_list"
     ) || name == "agent_team" && matches!(arguments["action"].as_str(), Some("status" | "wait"))
+        || name == "workspace_scratch" && matches!(arguments["action"].as_str(), Some("read" | "list" | "inspect"))
     {
         EffectKind::ReadOnly
     } else {
@@ -211,15 +212,8 @@ fn outcome_flags(name: &str, value: Option<&Value>, is_error: bool) -> (bool, bo
 
 fn model_parameters() -> Value {
     let mut schema = json!({"type":"object","properties":{"action":{"type":"string","enum":["create","list","get","validate","complete","recover"]},"taskId":{"type":"string","minLength":1,"description":"Required for get, validate, complete and recover. Optional for create: omitted IDs are generated deterministically and returned; reuse the returned taskId."},"idempotencyKey":{"type":"string","minLength":1,"description":"Optional operation key; the runtime supplies one when omitted. Reuse an explicit key only for an identical retry."},"contract":{"type":"object","properties":{"objective":{"type":"string"},"goalId":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"expectedOutputs":{"type":"array","items":{"type":"string"}},"acceptanceChecks":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"checker":{"type":"object","description":"kind=text(path,required,forbidden), json(path,assertions keyed by JSON pointer), image(path,min_width,min_height,channels), office_package(path,format docx/xlsx/pptx), tool_result(step_id exact ID or tool:NAME,assertions), manual(reason)"}},"required":["id","description","checker"]}},"validationSubject":{"type":"object","properties":{"kind":{"type":"string"},"identity":{"type":"string"},"expectedOutcome":{"type":"string"}},"required":["kind","identity","expectedOutcome"]}},"required":["objective","acceptanceChecks"]}},"required":["action"],"additionalProperties":false});
-    // A few gateways incorrectly stringify nested arguments. Accept that
-    // transport shape so the Host can decode and validate it with a precise
-    // error, while keeping the canonical contract schema object-only.
-    let contract_properties = schema["properties"]["contract"]["properties"].clone();
-    schema["properties"]["contract"] = json!({"oneOf":[
-        {"type":"object","properties":contract_properties,"required":["objective","acceptanceChecks"]},
-        {"type":"string","minLength":2,"description":"JSON-encoded contract object accepted for gateway compatibility"}
-    ]});
-    schema["properties"]["contract"]["oneOf"][0]["properties"]["acceptanceChecks"]["items"]["properties"]["checker"] = json!({"oneOf":[
+    schema["properties"]["contract"]["description"] = json!("Pass a JSON object with objective and acceptanceChecks; do not quote or stringify the contract object.");
+    schema["properties"]["contract"]["properties"]["acceptanceChecks"]["items"]["properties"]["checker"] = json!({"oneOf":[
         {"type":"object","properties":{"kind":{"type":"string","const":"text"},"path":{"type":"string"},"required":{"type":"array","items":{"type":"string"}},"forbidden":{"type":"array","items":{"type":"string"}}},"required":["kind","path","required"],"additionalProperties":false},
         {"type":"object","properties":{"kind":{"type":"string","const":"json"},"path":{"type":"string"},"assertions":{"type":"object","description":"JSON Pointer keys, for example /scripts/test. Keys must start with / (or be empty to match the whole result)."}},"required":["kind","path","assertions"],"additionalProperties":false},
         {"type":"object","properties":{"kind":{"type":"string","const":"tool_result"},"step_id":{"type":"string","description":"When creating a contract use tool: followed by the tool name, e.g. tool:execute_native or tool:pwsh. Do not invent future step labels."},"assertions":{"type":"object","description":"JSON Pointer keys into the recorded result, e.g. {\"/exitCode\":0}. Plain exitCode is not a JSON Pointer."}},"required":["kind","step_id","assertions"],"additionalProperties":false},
@@ -747,13 +741,9 @@ impl TaskExecution {
         let outcome: std::result::Result<TaskContract, TaskActionError> = async {
             Ok(match action {
                 "create" => {
-                    let raw_contract = match &args["contract"] {
-                        Value::String(text) => serde_json::from_str::<Value>(text)
-                            .map_err(|_| "contract must be a JSON object, not arbitrary text".to_string())?,
-                        value => value.clone(),
-                    };
+                    let raw_contract = args["contract"].clone();
                     if !raw_contract.is_object() {
-                        return Err("contract must be an object containing objective and acceptanceChecks".into());
+                        return Err("contract must be an object containing objective and acceptanceChecks; do not stringify the object".into());
                     }
                     let mut spec: ContractSpec = serde_json::from_value(raw_contract)
                         .map_err(|e| e.to_string())?;
@@ -990,7 +980,9 @@ pub(crate) async fn install(
                             "session:{owner}:call:{}",
                             execution.call_id.as_str()
                         )];
-                        let observed = if result.is_error && (body_invoked == Some(false)||effects_started==Some(false)) {
+                        let adapter_not_dispatched = matches!(execution.name.as_str(), "pwsh" | "execute_native" | "execute_steps" | "execute_script")
+                            && result.meta.as_ref().and_then(|meta| meta.get("executionReceipt")).is_some_and(|receipt| receipt["commandStarted"] == false && receipt["effects"] == "none" && receipt["processState"] == "not_started");
+                        let observed = if result.is_error && (body_invoked == Some(false)||effects_started==Some(false)||adapter_not_dispatched) {
                             runtime.observe_not_dispatched(owner, &task.task_id, &id, &format!("result-{}", digest(id.as_bytes())), evidence)
                         } else { runtime.observe(
                             owner,
@@ -1191,6 +1183,16 @@ pub(crate) fn register_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_contract_schema_rejects_stringified_objects_before_dispatch() {
+        let contract = json!({"objective":"Check result","acceptanceChecks":[{"id":"exists","description":"Expected output","checker":{"kind":"text","path":"result.txt","required":["done"]}}]});
+        let schema = model_parameters();
+        assert!(dsh_tools::validate_json_schema_value(&schema, &json!({"action":"create","contract":contract}), "arguments").is_empty());
+        for bad in [json!(contract.to_string()), json!("{broken"), json!([]), json!(null)] {
+            let errors = dsh_tools::validate_json_schema_value(&schema, &json!({"action":"create","contract":bad}), "arguments");
+            assert!(errors.iter().any(|error|error.contains("arguments.contract") && error.contains("object")), "{errors:?}");
+        }
+    }
     #[test]
     fn cancellation_classification_never_trusts_error_message_text() {
         assert_eq!(TaskActionError::Cancelled.code(), "CANCELLED");

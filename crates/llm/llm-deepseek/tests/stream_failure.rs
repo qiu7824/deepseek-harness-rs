@@ -509,45 +509,44 @@ async fn anthropic_message_stop_settles_before_eof_and_keeps_actual_model() {
 }
 
 #[tokio::test]
-async fn anthropic_cancel_interrupts_a_quiet_body() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let (ready, ready_rx) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        read_request(&mut socket).await;
-        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000\r\n\r\n").await.unwrap();
-        let _ = ready.send(());
-        let mut byte = [0];
-        let _ = socket.read(&mut byte).await;
-    });
-    let ctx = Context::root();
-    let runtime = LlmRuntime::install(&ctx);
-    apply(
-        &ctx,
-        &runtime,
-        adapter_for_api(
-            format!("http://{address}"),
-            Some("anthropic-messages".into()),
-        ),
-    )
-    .unwrap();
-    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let signal = flag.clone();
-    let mut request = options();
-    request.signal = Some(Arc::new(move || {
-        signal.load(std::sync::atomic::Ordering::SeqCst)
-    }));
-    let stream = runtime.stream(request);
-    let collection = tokio::spawn(async move { stream.collect::<Vec<_>>().await });
-    ready_rx.await.unwrap();
-    flag.store(true, std::sync::atomic::Ordering::SeqCst);
-    let chunks = tokio::time::timeout(Duration::from_secs(2), collection)
-        .await
-        .expect("Anthropic cancellation must not wait for idle timeout")
+async fn messages_cancel_interrupts_a_quiet_body() {
+    for api in ["anthropic-messages", "deepseek-messages"] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready, ready_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000\r\n\r\n").await.unwrap();
+            let _ = ready.send(());
+            let mut byte = [0];
+            let _ = socket.read(&mut byte).await;
+        });
+        let ctx = Context::root();
+        let runtime = LlmRuntime::install(&ctx);
+        apply(
+            &ctx,
+            &runtime,
+            adapter_for_api(format!("http://{address}"), Some(api.into())),
+        )
         .unwrap();
-    assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::Finish{reason:FinishReason::Error{failure},..}if failure.code=="CANCELLED")));
-    server.abort();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = flag.clone();
+        let mut request = options();
+        request.signal = Some(Arc::new(move || {
+            signal.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let stream = runtime.stream(request);
+        let collection = tokio::spawn(async move { stream.collect::<Vec<_>>().await });
+        ready_rx.await.unwrap();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        let chunks = tokio::time::timeout(Duration::from_secs(2), collection)
+            .await
+            .expect("Anthropic cancellation must not wait for idle timeout")
+            .unwrap();
+        assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::Finish{reason:FinishReason::Error{failure},..}if failure.code=="CANCELLED")));
+        server.abort();
+    }
 }
 
 fn protocol_prefix(api: &str) -> Vec<u8> {
@@ -555,7 +554,7 @@ fn protocol_prefix(api: &str) -> Vec<u8> {
         "openai-responses" => vec![
             serde_json::json!({"type":"response.output_text.delta","item_id":"m0","output_index":0,"delta":"Saved prefix"}),
         ],
-        "anthropic-messages" => vec![
+        "anthropic-messages" | "deepseek-messages" => vec![
             serde_json::json!({"type":"message_start","message":{"id":"m0","model":"test-model","usage":{"input_tokens":1,"output_tokens":1}}}),
             serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
             serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Saved prefix"}}),
@@ -572,7 +571,7 @@ fn protocol_prefix(api: &str) -> Vec<u8> {
 fn protocol_terminal(api: &str) -> &'static [u8] {
     match api {
         "openai-responses" => b"data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
-        "anthropic-messages" => b"data: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n",
+        "anthropic-messages" | "deepseek-messages" => b"data: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n",
         _ => b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
     }
 }
@@ -606,6 +605,7 @@ async fn collect_exact_sse(api: &str, body: Vec<u8>) -> Vec<StreamChunk> {
 #[tokio::test]
 async fn all_protocols_preserve_valid_frames_before_same_body_encoding_or_json_failure() {
     for api in [
+        "deepseek-messages",
         "openai-completions",
         "openai-responses",
         "anthropic-messages",
@@ -647,6 +647,7 @@ async fn all_protocols_preserve_valid_frames_before_same_body_encoding_or_json_f
 #[tokio::test]
 async fn all_protocols_honor_the_terminal_before_unrelated_malformed_tail_bytes() {
     for api in [
+        "deepseek-messages",
         "openai-completions",
         "openai-responses",
         "anthropic-messages",
@@ -683,6 +684,7 @@ async fn all_protocols_honor_the_terminal_before_unrelated_malformed_tail_bytes(
 #[tokio::test]
 async fn all_protocols_flush_an_unterminated_valid_final_event_at_eof() {
     for api in [
+        "deepseek-messages",
         "openai-completions",
         "openai-responses",
         "anthropic-messages",

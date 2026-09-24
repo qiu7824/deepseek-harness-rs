@@ -1,6 +1,6 @@
 //! Code Mode `run_code` transport.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use dsh_code_runtime::{CodeBindingErrorClass, CodeBindingFunction, CodeBindingNamespace};
@@ -10,6 +10,60 @@ use serde_json::{Value as JsonValue, json};
 use crate::{
     ToolBodyError, ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition, ToolRuntime,
 };
+
+struct NestedDispatchLog {
+    session: Option<dsh_session::Session>,
+    start: JsonValue,
+    settled: bool,
+    start_seq: Option<u64>,
+}
+impl NestedDispatchLog {
+    fn begin(agent:Option<&Arc<dyn dsh_agent::Agent>>,start:JsonValue,signal:&crate::AbortPredicate)->Result<Self,String> {
+        let session=agent.map(|agent|agent.session().clone());
+        let start_seq=if let Some(session)=&session {Some(session.append_if("tool/ptc-dispatch-start",start.clone(),None,|_|!signal())?.ok_or("Nested tool execution cancelled before dispatch")?.seq.get())}else{None};
+        Ok(Self {session,start,settled:false,start_seq})
+    }
+    fn finish(&mut self,result:&crate::ToolExecutionResult)->Result<(),String> {
+        let mut value=self.start.clone();value["isError"]=json!(result.is_error);value["content"]=json!(result.content);
+        if let Some(meta)=&result.meta {value["meta"]=meta.clone();}
+        if let Some(info)=result.error.as_ref().and_then(|error|error.info.as_ref()) {value["error"]=json!({"name":info.name,"code":info.code});}
+        if let (Some(session),Some(seq))=(&self.session,self.start_seq) {session.append_if("tool/ptc-dispatch",value,None,|events|pending_dispatch(events,seq))?;}
+        self.settled=true;Ok(())
+    }
+}
+impl Drop for NestedDispatchLog {
+    fn drop(&mut self) {
+        if self.settled {return;}
+        if let Some(session)=&self.session {
+            let mut value=self.start.clone();value["isError"]=json!(true);
+            value["content"]=json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
+            value["error"]=json!({"name":"ToolAbortedError","code":"ABORTED"});
+            if let Some(seq)=self.start_seq {let _=session.append_if("tool/ptc-dispatch",value,None,|events|pending_dispatch(events,seq));}
+        }
+    }
+}
+
+fn pending_dispatch(events:&[dsh_session::SessionEvent],seq:u64)->bool {
+    let Some(start)=events.get(seq as usize).filter(|e|e.type_=="tool/ptc-dispatch-start") else {return false;};
+    !events.iter().skip(seq as usize+1).any(|event|
+        matches!(event.type_.as_str(),"step/end"|"turn/end")
+        || event.type_=="tool/ptc-dispatch" && event.data["subCallId"]==start.data["subCallId"] && event.data["rootCallId"]==start.data["rootCallId"])
+}
+struct CodeLifetime {closed:Arc<AtomicBool>,session:Option<dsh_session::Session>,root:dsh_llm::CallId,from:u64}
+impl Drop for CodeLifetime {
+    fn drop(&mut self) {
+        self.closed.store(true,Ordering::SeqCst);
+        let Some(session)=&self.session else {return;};
+        let pending=session.with_events(|events|events.iter().skip(self.from as usize)
+            .filter(|e|e.type_=="tool/ptc-dispatch-start" && e.data["rootCallId"]==self.root.as_str() && pending_dispatch(events,e.seq.get()))
+            .map(|e|(e.seq.get(),e.data.clone())).collect::<Vec<_>>());
+        for (seq,mut value) in pending {
+            value["isError"]=json!(true);value["content"]=json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
+            value["error"]=json!({"name":"ToolAbortedError","code":"ABORTED"});
+            let _=session.append_if("tool/ptc-dispatch",value,None,|events|pending_dispatch(events,seq));
+        }
+    }
+}
 
 pub(crate) const TYPESCRIPT_RUN_CODE_DESCRIPTION: &str = "Execute a TypeScript program against the available tools. Takes two required arguments: `code`, the BODY of an async function (erasable syntax only; top-level `await` and `return` work), and `description`, a short summary of what the program does. Call tools as `await tools.name(args)` per the declarations in the system prompt. Only what you print or return comes back — curate it.";
 
@@ -91,13 +145,18 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                     .upgrade()
                     .ok_or_else(|| ToolBodyError::plain("tool runtime is unavailable"))?;
                 let code_runtime = owner.code_runtime().map_err(ToolBodyError::plain)?;
+                let closed=Arc::new(AtomicBool::new(false));
+                let session=agent.as_ref().map(|agent|agent.session().clone());
+                let _lifetime=CodeLifetime {closed:closed.clone(),from:session.as_ref().map(|s|s.seq().get()).unwrap_or(0),session,root:root_call_id.clone()};
+                let original_signal=signal;
+                let signal:crate::AbortPredicate=Arc::new(move ||closed.load(Ordering::SeqCst) || original_signal());
                 let sequence = Arc::new(AtomicU64::new(0));
                 let mut functions = owner
                     .schemas(agent.as_ref().map(|agent| agent.scope_key()))
                     .into_iter()
                     .filter(|schema| schema.name != crate::RUN_CODE_NAME)
                     .map(|schema| {
-                        let name = schema.name;
+                        let name = schema.name.clone();
                         let owner = Arc::clone(&owner);
                         let agent = agent.clone();
                         let root_call_id = root_call_id.clone();
@@ -112,22 +171,16 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                             let parent_call_id = parent_call_id.clone();
                             let signal = signal.clone();
                             let name = binding_name.clone();
+                            let schema=schema.clone();
                             let n = sequence.fetch_add(1, Ordering::Relaxed) + 1;
                             Box::pin(async move {
-                                let result = owner
-                                    .execute(crate::ToolExecutionInput {
-                                        call_id: call_id(format!(
-                                            "{}:code:{n}",
-                                            parent_call_id.as_str()
-                                        )),
-                                        root_call_id: Some(root_call_id),
-                                        name: name.clone(),
-                                        arguments,
-                                        agent,
-                                        parent: Some(parent),
-                                        signal,
-                                    })
-                                    .await;
+                                if signal(){return Err("Nested tool execution cancelled before dispatch".into());}
+                                let sub_call_id=call_id(format!("{}:code:{n}",parent_call_id.as_str()));
+                                let mut log=NestedDispatchLog::begin(agent.as_ref(),json!({"rootCallId":root_call_id,"parentCallId":parent_call_id,"subCallId":sub_call_id,"name":name,"arguments":arguments}),&signal)?;
+                                let result=owner.execute_bound(crate::ToolExecutionInput {
+                                    call_id:sub_call_id,root_call_id:Some(root_call_id),name:name.clone(),arguments,agent,parent:Some(parent),signal,
+                                },schema).await;
+                                log.finish(&result)?;
                                 if result.is_error {
                                     return Err(result
                                         .error

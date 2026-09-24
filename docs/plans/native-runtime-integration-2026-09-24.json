@@ -1,0 +1,199 @@
+{
+  "recordedAt": "2026-09-24T12:47:38.656453+08:00",
+  "status": "source_integrated_pending_installed_acceptance",
+  "sourceRoot": "D:\\codex操作目录\\learning-repair-20260922\\cold-history-memory-source",
+  "sourceHead": "8ac58ecd1488ea6018b6d058a39b3f0b659e69ab",
+  "runtimeFormatVersion": 4,
+  "installedRuntimeFormatVersion": 3,
+  "installed": false,
+  "published": false,
+  "diagnosticsDeleted": 0,
+  "implemented": [
+    "默认 V4 独立版本文件写入；旧版本按相邻迁移发布，保留原始文件。",
+    "历史分页、事件块、引用范围解码、用户消息及列表元数据读取；以实际文件识别压缩格式。",
+    "压缩残尾恢复，冷恢复关系校验，工具未开始及结果未知的原生错误结果恢复。",
+    "分叉继承边界与恢复标记分离，子会话发布持久目录记录。",
+    "V0–V4 CLI 导入、父子证据收集、V4 原生编码与图像 ZIP 恢复。",
+    "Web 同时读取历史与 V4 替换坐标，识别 developer 消息；源码与分发文件一致。"
+  ],
+  "migrationBoundary": {
+    "upstreamCommit": "00102833dfaee1da9f48a3a8eae9d34005a75218",
+    "upstreamSource": "packages/session/session-format-v2-to-v3/src/migration.ts",
+    "behavior": "首个模型步骤前已有表面消息、无法保留原次序的历史拒绝迁移；不添加伪造执行步骤、不重排记录；原始代次保留，raw 导出不触发迁移。"
+  },
+  "checks": {
+    "session_and_agent": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\v4-session-agent-final.log",
+      "sha256": "e50b2edab72df6212e03a51ce534a70e27c930d9eff3d32ae675e255fbfccf91",
+      "results": [
+        {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 43,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 72,
+          "failed": 0,
+          "ignored": 2
+        },
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "persistence_and_subagent": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\v4-cold-restore-final.log",
+      "sha256": "de7239298c2b724ae566c993a00821acce12cbde447826acf171d17e646d28a7",
+      "results": [
+        {
+          "passed": 46,
+          "failed": 0,
+          "ignored": 3
+        },
+        {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 6,
+          "failed": 0,
+          "ignored": 1
+        },
+        {
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "native_backend_lifecycle": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\v4-native-runtime-final.log",
+      "sha256": "388d709d9335bc3a58e95cea2ad29be9483d366d66e9e2ebd02e8e89575d88bf",
+      "results": [
+        {
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "history_import": {
+      "path": "D:\\codex操作目录\\learning-repair-20260922\\v4-history-import-final.log",
+      "sha256": "7741cc132fd7ce638f444c59df70d65d0d280e3742cbf884dff5094edb506a0d",
+      "results": [
+        {
+          "passed": 6,
+          "failed": 0,
+          "ignored": 1
+        }
+      ]
+    }
+  },
+  "webCheck": {
+    "harness": "tools/tests/native_message_format_harness.cjs",
+    "result": "passed",
+    "sourceAndDistEqual": true
+  },
+  "files": {
+    "crates/core/session/src/types.rs": "c45feaca522bebcf809b74ac3ee805bcb31fc32efc82169ea5ad5aa077c6f85f",
+    "crates/core/session/src/store.rs": "78da96e5f17fb96085b7d0c03a4635d375abaa98aa9a75f6d03d203242f79905",
+    "crates/core/session/src/format_v4/owned.rs": "8285f35bf1b93ba3c27ddb876ecf97ff95f38edea70cc14d8e5bf055892d350d",
+    "crates/session/session-persistence-jsonl/src/index.rs": "48172d57cd4e31c7b83dd2efc26dfb71cc074835cccc6d74c8b1e95edaf3bd95",
+    "crates/session/session-persistence-jsonl/src/format.rs": "6af0eeed7ac83eed3e2f5b11476c35e67316e6d75448cd96dd3bcfe631748639",
+    "crates/session/session-persistence-jsonl/src/generation_lifecycle.rs": "ce5bc7b8362ed7b217cdffee12bbf1de7699281089937ba89037e37d0dbe6959",
+    "crates/session/session-persistence-jsonl/src/native_writer.rs": "7fca65de98b9fb52c624269bf486ed4ac4ea28e19138e9bd3353d603c2b74ca3",
+    "crates/session/session-persistence-jsonl/src/native_reader.rs": "7e12eb28853693c16eca48800a62cbdd5394391e5c50a04a1a3400c28ed44525",
+    "crates/session/session-persistence-jsonl/src/v4_artifact.rs": "299bfc437442706a790d59586e04b1b61ea2dc6249b03d4d7ea641171d31c7aa",
+    "crates/session/session-persistence-jsonl/tests/native_runtime.rs": "2a2606203b619188e916d8c8ef214694e7f03613e0c10acb9a0eb2ee8fa21633",
+    "crates/host/dsh-cli/src/history_import.rs": "0cae112c68c947a47f84f3d223b32f0adc9db9769df4ea3e0ea37e1e64411c5b",
+    "crates/subagent/subagent/src/descriptor-seed.rs": "e82c63b27a6611049c680a9b4feb512d9f5029e9838ef443feb5e2394aea8c98",
+    "crates/subagent/subagent/src/descriptor.rs": "4b24a5ce65c129de19029cbbe34e516b946d77956ac286a2eba0a89f859dda4a",
+    "crates/subagent/subagent/src/continuation.rs": "bb3ac2c67ad6c604d5cf84eba11bf3a0d65686e5606cebb4a282af8faf753d7c",
+    "crates/subagent/subagent/src/in_process.rs": "7b9d3455c7970ec6325135d12f56244494f7996f90fe73a2c1ea2d644cbf92e0",
+    "web/src/runtime-plugins/connection.js": "10b544c71334051f493e40b45eec29e0240085705884ba6fb4042d60a26dfb82",
+    "web/src/runtime-plugins/client-runtime.js": "789084abf725ee1636ce06059867d3e9715b1f9a505eef8b55c56f51ac229667"
+  },
+  "remainingAcceptance": [
+    "新安装版中现有会话继续执行、导入后冷恢复、父子任务与 GUI 历史分页的联合验收。",
+    "完整会话及附件导入导出矩阵、其他客户端协议和全部原案复验。",
+    "全部其余主线功能集成、实际麦克风、全 UI、多平台、完整负载内存与发布验收。"
+  ]
+}

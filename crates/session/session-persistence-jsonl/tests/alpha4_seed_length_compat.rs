@@ -3,6 +3,7 @@ use dsh_session_persistence_jsonl::{HeaderLine, from_header_line, to_header_line
 
 fn physical(seed_length: Option<u64>) -> HeaderLine {
     HeaderLine {
+        is_seeded: None,
         type_: "session".to_string(),
         version: 0,
         id: session_id("compat"),

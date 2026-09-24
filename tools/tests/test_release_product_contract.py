@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 from tools.verify_release_version import workspace_version
 
 VERSION = workspace_version()
-VARIANTS = ("core", "skin", "free")
+VARIANTS = ("core",)
 PLATFORMS = (
     ("windows", "x86_64", "zip", "setup.exe"),
     ("linux", "x86_64", "tar.gz", "deb"),
@@ -146,10 +146,10 @@ class ReleaseProductContractTests(unittest.TestCase):
 
         gate = workflow_step(workflow, "版本与产品门禁")
         self.assertNotIn("python tools/verify_free_model_catalog.py", gate)
-        free_gate = workflow_step(workflow, "验证免费模型完整运行链路")
-        self.assertIn("continue-on-error: true", free_gate)
-        self.assertIn("--binary target/release/", free_gate)
-        self.assertIn("ling-3.0-flash-fin-free", free_gate)
+        self.assertNotIn("验证免费模型完整运行链路", workflow)
+        self.assertNotIn("--variant skin", workflow)
+        self.assertNotIn("--variant free", workflow)
+        self.assertIn("--binary target/release/", workflow_step(workflow, "固定 Web 核心版发行"))
 
     def test_free_model_catalog_verifier_uses_the_live_official_endpoint(self):
         verifier = (ROOT / "tools" / "verify_free_model_catalog.py").read_text(
@@ -164,9 +164,8 @@ class ReleaseProductContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         for marker in (
-            "core archive unexpectedly carries package defaults",
-            "skin payload presence does not match package variant",
-            "free archive is missing its package defaults",
+            "core archive unexpectedly carries model-specific package defaults",
+            "core archive includes a retired skin payload",
             "packaged host version mismatch",
             'manifest["variant"]',
         ):
@@ -216,9 +215,6 @@ class ReleaseProductContractTests(unittest.TestCase):
                 "send_message",
                 "web_fetch",
                 "core",
-                "skin",
-                "free",
-                "free-model-verification.json",
                 "https://opencode.ai/zen/v1/models",
             ):
                 self.assertIn(marker, source)

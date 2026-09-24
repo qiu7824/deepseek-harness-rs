@@ -24,6 +24,7 @@ mod code_intelligence;
 mod code_mode_dependency;
 mod codex_account;
 mod computer_use_http;
+mod computer_permissions;
 mod computer_use_stream;
 #[cfg(test)]
 mod context_stats_test;
@@ -65,6 +66,7 @@ mod uu_terminal;
 mod video_http;
 mod video_reader;
 mod web_preview;
+mod user_terminal;
 mod web_search_settings;
 #[cfg(windows)]
 mod windows_peer_identity;
@@ -72,6 +74,7 @@ mod windows_sandbox_http;
 mod workspace_copy;
 mod workspace_resources;
 mod workspace_ssh;
+mod remote_execution_http;
 
 #[cfg(windows)]
 static ALLOCATOR_COLLECT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -1739,6 +1742,7 @@ pub struct HostSpine {
     pub agent_presets: Arc<dsh_agent_presets::AgentPresets>,
     api_route: RouteDisposer,
     computer_use_route: RouteDisposer,
+    computer_permissions_route: RouteDisposer,
     task_models_route: RouteDisposer,
     productivity_route: RouteDisposer,
     agent_team_route: RouteDisposer,
@@ -1751,6 +1755,7 @@ pub struct HostSpine {
     windows_sandbox_route: RouteDisposer,
     discovery_settings_route: RouteDisposer,
     plugin_manager_route: RouteDisposer,
+    remote_execution_route: RouteDisposer,
     pub runtime_paths: Arc<runtime_paths::RuntimePaths>,
     data_root: std::path::PathBuf,
     owns_data_root: bool,
@@ -1820,6 +1825,7 @@ impl HostSpine {
             .get_or_init(|| async {
                 self.web_server.shutdown().await;
                 (self.computer_use_route)();
+                (self.computer_permissions_route)();
                 (self.agent_team_route)();
                 (self.web_preview_route)();
                 (self.provider_auth_route)();
@@ -1829,6 +1835,7 @@ impl HostSpine {
                 (self.task_execution_route)();
                 (self.windows_sandbox_route)();
                 (self.plugin_manager_route)();
+                (self.remote_execution_route)();
                 (self.discovery_settings_route)();
                 (self.api_route)();
 
@@ -2080,6 +2087,7 @@ fn compose_host_in_fiber(
 
     let sessions = SessionStore::install(ctx);
     let session_projections = dsh_session_projection::SessionProjectionRegistry::install(ctx);
+    dsh_goal::register_goal_projection(ctx).map_err(|error| format!("goal-projection: {error}"))?;
     dsh_session_stats::apply(ctx).map_err(|error| format!("session-stats: {error}"))?;
     dsh_session_turn_outline::apply(ctx)
         .map_err(|error| format!("session-turn-outline: {error}"))?;
@@ -2193,9 +2201,10 @@ fn compose_host_in_fiber(
     )
     .map_err(|error| format!("code-runtime-node: {error}"))?;
     let jobs = LocalJobRegistry::install(ctx, Default::default());
-    let terminals = TerminalSessionService::install(ctx);
+    let _terminals = TerminalSessionService::install(ctx);
     let _terminal_shell = dsh_terminal_bash::ShellTerminalBackend::install(ctx, Default::default())
         .map_err(|error| format!("terminal-bash: {error}"))?;
+    let user_terminals = user_terminal::UserTerminals::install(ctx, _terminal_shell.clone());
     #[cfg(windows)]
     let native_terminal_type = "cmd";
     #[cfg(not(windows))]
@@ -2302,6 +2311,8 @@ fn compose_host_in_fiber(
             dsh_settings::settings_namespace("computer-use")
                 .map_err(|error| format!("settings namespace: {error}"))?,
             dsh_schemastery::Schema::object(indexmap::IndexMap::from([
+                ("nativeProtocol".to_string(),dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false))),
+                ("nativeTarget".to_string(),dsh_schemastery::Schema::union(vec![dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("local".into())),dsh_schemastery::Schema::constant(dsh_schemastery::Data::String("browser".into()))]).default(dsh_schemastery::Data::String("local".into()))),
                 (
                     "enabled".to_string(),
                     dsh_schemastery::Schema::boolean().default(dsh_schemastery::Data::Bool(false)),
@@ -2520,17 +2531,26 @@ fn compose_host_in_fiber(
                     "riskToolPolicy".to_string(),
                     dsh_schemastery::Schema::union(vec![
                         dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "follow-access".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
                             "ask".to_string(),
                         )),
                         dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
                             "deny".to_string(),
                         )),
                     ])
-                    .default(dsh_schemastery::Data::String("ask".to_string())),
+                    .default(dsh_schemastery::Data::String("follow-access".to_string())),
                 ),
                 (
                     "outsideWritePolicy".to_string(),
                     dsh_schemastery::Schema::union(vec![
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "follow-access".to_string(),
+                        )),
+                        dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
+                            "allow".to_string(),
+                        )),
                         dsh_schemastery::Schema::constant(dsh_schemastery::Data::String(
                             "ask-directory".to_string(),
                         )),
@@ -2541,7 +2561,7 @@ fn compose_host_in_fiber(
                             "deny".to_string(),
                         )),
                     ])
-                    .default(dsh_schemastery::Data::String("ask-directory".to_string())),
+                    .default(dsh_schemastery::Data::String("follow-access".to_string())),
                 ),
                 (
                     "sensitiveReadPolicy".to_string(),
@@ -2573,9 +2593,7 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("settings security: {error}"))?;
     // Subagent defaults namespace: wires the "子智能体" settings section.
     // Fields map to child agent resolution (provider/model/reasoning/maxTokens),
-    // the loop's parallel-tool-call cap, and the delegation depth cap. Fields
-    // that the runtime does not yet consume are kept so the UI can round-trip
-    // them without validation loss.
+    // running-child admission, per-turn step/time limits and delegation depth.
     let subagent_scope = settings
         .register(
             ctx,
@@ -2627,7 +2645,12 @@ fn compose_host_in_fiber(
                         .min(0.0)
                         .max(32.0)
                         .step(1.0)
-                        .default(dsh_schemastery::Data::Number(0.0)),
+                        .default(dsh_schemastery::Data::Number(1.0)),
+                ),
+                (
+                    "maxActiveSubagents".to_string(),
+                    dsh_schemastery::Schema::number().min(1.0).max(9_007_199_254_740_991.0).step(1.0)
+                        .default(dsh_schemastery::Data::Number(8.0)),
                 ),
                 (
                     "timeoutSeconds".to_string(),
@@ -3250,16 +3273,17 @@ fn compose_host_in_fiber(
                 _ => "",
             };
             dsh_tools::SecurityPolicyConfig {
-                risk_tool_policy: if text("riskToolPolicy") == "deny" {
-                    dsh_tools::RiskToolPolicy::Deny
-                } else {
-                    dsh_tools::RiskToolPolicy::Ask
+                risk_tool_policy: match text("riskToolPolicy") {
+                    "deny" => dsh_tools::RiskToolPolicy::Deny,
+                    "ask" => dsh_tools::RiskToolPolicy::Ask,
+                    _ => dsh_tools::RiskToolPolicy::FollowAccess,
                 },
                 outside_write_policy: match text("outsideWritePolicy") {
                     "deny" => dsh_tools::OutsideWritePolicy::Deny,
                     "ask-every-time" => dsh_tools::OutsideWritePolicy::AskEveryTime,
                     "allow" => dsh_tools::OutsideWritePolicy::Allow,
-                    _ => dsh_tools::OutsideWritePolicy::AskDirectory,
+                    "ask-directory" => dsh_tools::OutsideWritePolicy::AskDirectory,
+                    _ => dsh_tools::OutsideWritePolicy::FollowAccess,
                 },
                 sensitive_read_policy: if text("sensitiveReadPolicy") == "deny" {
                     dsh_tools::SensitiveReadPolicy::Deny
@@ -3281,16 +3305,17 @@ fn compose_host_in_fiber(
                 _ => "",
             };
             *watched_security_policy.write() = dsh_tools::SecurityPolicyConfig {
-                risk_tool_policy: if text("riskToolPolicy") == "deny" {
-                    dsh_tools::RiskToolPolicy::Deny
-                } else {
-                    dsh_tools::RiskToolPolicy::Ask
+                risk_tool_policy: match text("riskToolPolicy") {
+                    "deny" => dsh_tools::RiskToolPolicy::Deny,
+                    "ask" => dsh_tools::RiskToolPolicy::Ask,
+                    _ => dsh_tools::RiskToolPolicy::FollowAccess,
                 },
                 outside_write_policy: match text("outsideWritePolicy") {
                     "deny" => dsh_tools::OutsideWritePolicy::Deny,
                     "ask-every-time" => dsh_tools::OutsideWritePolicy::AskEveryTime,
                     "allow" => dsh_tools::OutsideWritePolicy::Allow,
-                    _ => dsh_tools::OutsideWritePolicy::AskDirectory,
+                    "ask-directory" => dsh_tools::OutsideWritePolicy::AskDirectory,
+                    _ => dsh_tools::OutsideWritePolicy::FollowAccess,
                 },
                 sensitive_read_policy: if text("sensitiveReadPolicy") == "deny" {
                     dsh_tools::SensitiveReadPolicy::Deny
@@ -3363,6 +3388,10 @@ fn compose_host_in_fiber(
         },
     )
     .map_err(|error| format!("fs-local: {error}"))?;
+    let remote_execution=dsh_remote_execution::RemoteRuntime::install(ctx,data_root.join("remote-execution"),subprocess.clone());
+    dsh_remote_execution::install_routes(ctx,remote_execution.clone())?;
+    remote_execution_http::install_tools(ctx,&tools,remote_execution.clone())?;
+    let routed_fs=ctx.get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs",false).ok_or("routed filesystem unavailable")?.as_ref().clone();
     let _skills = dsh_skill::SkillRegistry::install(ctx, Default::default())
         .map_err(|error| format!("skills: {error}"))?;
     let _skill_badge = dsh_skill_badge::apply(ctx);
@@ -3380,7 +3409,7 @@ fn compose_host_in_fiber(
         ctx,
         &tools,
         &system_prompt,
-        _fs.clone(),
+        routed_fs,
         Some(resources.clone()),
         &data_root,
     ))?;
@@ -3455,6 +3484,7 @@ fn compose_host_in_fiber(
         )
         .map_err(|error| format!("voice: {error}"))?;
     }
+    let computer_permissions=computer_permissions::ComputerPermissions::install(ctx,data_root.clone())?;
     let mut computer_use_runtime = None;
     if let dsh_schemastery::Data::Object(object) = (computer_use_scope.get)()
         && matches!(
@@ -3638,6 +3668,12 @@ fn compose_host_in_fiber(
         );
     }
     if computer_use_runtime.is_some() {
+        if let dsh_schemastery::Data::Object(object)=(computer_use_scope.get)() {
+            if matches!(object.get("nativeProtocol"),Some(dsh_schemastery::Data::Bool(true))) {
+                let target=match object.get("nativeTarget"){Some(dsh_schemastery::Data::String(value))=>value.as_str(),_=>"local"};
+                if let Err(error)=dsh_tool_computer_use_command::install_native_protocol(ctx,target) {dsh_tool_computer_use_command::native_protocol_failure(ctx,&error);eprintln!("native computer protocol unavailable: {error}");}
+            }
+        }
         let packaged = std::env::current_exe()
             .map_err(|e| e.to_string())?
             .parent()
@@ -3727,9 +3763,20 @@ fn compose_host_in_fiber(
             )
         };
         let defaults = Arc::new(read(&subagent_scope));
+        let read_capacity=|scope:&dsh_settings::SettingsScope| -> Result<u64,String> {
+            let value=(scope.get)().to_json().ok_or("invalid subagent settings")?;
+            dsh_subagent::resident_quota::parse_capacity(value.get("maxActiveSubagents")).map_err(|error|error.to_string())
+        };
+        let read_parallel=|scope:&dsh_settings::SettingsScope| -> Result<u64,String> {
+            let value=(scope.get)().to_json().ok_or("invalid subagent settings")?;
+            dsh_subagent::resident_quota::parse_capacity(value.get("maxParallel")).map_err(|error|error.to_string())
+        };
+        _subagents.set_max_parallel(read_parallel(&subagent_scope)?)?;
+        _subagents.set_max_active_subagents(read_capacity(&subagent_scope)?).map_err(|error|error.to_string())?;
         ctx.register_service(defaults.clone());
         let bridge_scope = subagent_scope.clone();
         let bridge_defaults = defaults.clone();
+        let bridge_subagents=_subagents.clone();
         let listener: Arc<cordis::Listener> =
             Arc::new(move |_ctx: &Context, args: Vec<cordis::ArcValue>| {
                 let is_subagent = args
@@ -3738,6 +3785,8 @@ fn compose_host_in_fiber(
                     .is_some_and(|ns| ns.as_str() == "subagent");
                 if is_subagent {
                     bridge_defaults.update(read(&bridge_scope));
+                    if let Err(error)=read_parallel(&bridge_scope).and_then(|value|bridge_subagents.set_max_parallel(value)) {eprintln!("subagent parallel limit update rejected: {error}");}
+                    if let Err(error)=read_capacity(&bridge_scope).and_then(|value|bridge_subagents.set_max_active_subagents(value).map_err(|error|error.to_string())) {eprintln!("subagent capacity update rejected: {error}");}
                 }
                 async move { None }.boxed()
             });
@@ -4043,11 +4092,13 @@ fn compose_host_in_fiber(
     );
     if let Some(profile) = profile {
         let profile_dir = data_root.join("profiles").join(profile);
-        client_plugins::materialize_bundled(&profile_dir)?;
+        if let Err(error)=client_plugins::materialize_bundled(&profile_dir) {eprintln!("dsh: optional plugin profile retained without refresh: {error}");}
         for plugin in client_plugins::discover(&profile_dir)? {
-            loader.core.register(&plugin.id, Arc::new(NoopPlugin));
+            if plugin.id!="dsh-auto-review" {loader.core.register(&plugin.id, Arc::new(NoopPlugin));}
         }
     }
+    loader.core.register("dsh-auto-review",Arc::new(dsh_experimental_auto_review::AutoReviewPlugin));
+    loader.core.register("@deepseek-ai/dsh-experimental-auto-review",Arc::new(dsh_experimental_auto_review::AutoReviewPlugin));
     ctx.register_service(loader);
     if let Some(profile) = profile {
         let plugin_config = data_root
@@ -4055,17 +4106,19 @@ fn compose_host_in_fiber(
             .join(profile)
             .join("plugins.json");
         if plugin_config.is_file() {
-            let raw = std::fs::read_to_string(&plugin_config).map_err(|error| {
-                format!("plugins config read {}: {error}", plugin_config.display())
-            })?;
-            let entries: Vec<serde_json::Value> = serde_json::from_str(&raw).map_err(|error| {
-                format!("plugins config parse {}: {error}", plugin_config.display())
-            })?;
+            let loaded=dsh_app_boot::plugin_profile::read_runtime(plugin_config.parent().expect("profile directory"));
+            if let Some(issue)=&loaded.issue {eprintln!("dsh: {issue}");}
+            let entries=loaded.documents.entries;
             let loader = ctx
                 .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
                 .map(|slot| slot.as_ref().clone())
                 .ok_or_else(|| "loader service missing after install".to_string())?;
-            futures::executor::block_on(dsh_app_boot::boot("dsh-host", &loader, &entries))?;
+            for entry in &entries {
+                if let Err(error)=futures::executor::block_on(dsh_app_boot::mount_entries(&loader,std::slice::from_ref(entry))) {
+                    eprintln!("dsh: optional plugin failed; other plugins remain available: {error}");
+                }
+            }
+            if let Err(error)=futures::executor::block_on(loader.tree.await_ready()) {eprintln!("dsh: optional plugin activation failed: {error}");}
         }
     }
     let mut onboarding_properties = indexmap::IndexMap::new();
@@ -4436,11 +4489,15 @@ fn compose_host_in_fiber(
     let discovery_settings_route =
         discovery_settings::register(&web_server, &data_root, tools.clone(), allow_remote_host);
     let plugin_manager_route = plugin_manager::register(
+        ctx,
         &web_server,
         data_root.clone(),
         profile.unwrap_or("web").into(),
+        subprocess.clone(),
+        api_proxy.clone(),
         allow_remote_host,
     );
+    let remote_execution_route=remote_execution_http::register(&web_server,remote_execution);
     let environment_route = execution_profiles.register(&web_server, allow_remote_host);
     let task_execution_route = task_execution::register_route(
         &web_server,
@@ -4473,7 +4530,7 @@ fn compose_host_in_fiber(
         workspace_registry.clone(),
         agents.clone(),
         api_proxy.clone(),
-        terminals.clone(),
+        user_terminals.clone(),
         jobs.clone(),
         subprocess.clone(),
         sandbox.clone(),
@@ -4487,6 +4544,7 @@ fn compose_host_in_fiber(
         api_proxy.clone(),
         allow_remote_host,
     );
+    let computer_permissions_route=computer_permissions.register(&web_server,allow_remote_host);
     let computer_use_route = computer_use_http::register(
         &web_server,
         agents.clone(),
@@ -4555,6 +4613,7 @@ fn compose_host_in_fiber(
         agent_presets,
         api_route,
         computer_use_route,
+        computer_permissions_route,
         task_models_route,
         productivity_route,
         agent_team_route,
@@ -4567,6 +4626,7 @@ fn compose_host_in_fiber(
         windows_sandbox_route,
         discovery_settings_route,
         plugin_manager_route,
+        remote_execution_route,
         runtime_paths,
         data_root,
         owns_data_root,
@@ -5319,3 +5379,6 @@ mod model_discovery_profile_tests {
         server.await.expect("listing server");
     }
 }
+
+#[cfg(test)]
+mod auto_review_plugin_tests;

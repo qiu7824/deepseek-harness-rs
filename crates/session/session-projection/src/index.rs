@@ -41,6 +41,7 @@ pub type ProjectionApply = Arc<dyn Fn(&ArcValue, &SessionEvent) -> ArcValue + Se
 /// (the persisted-cache precondition). An unchanged state reference
 /// (`Arc::ptr_eq`, the TS `Object.is` equivalent) produces zero downstream
 /// work.
+#[derive(Clone)]
 pub struct ProjectionDefinition {
     /// The projection key this unit owns.
     pub key: String,
@@ -86,6 +87,10 @@ pub struct ProjectionCheckpointRow {
 
 /// Checkpoint rows keyed by projection key (TS `ProjectionCheckpoint`).
 pub type ProjectionCheckpoint = indexmap::IndexMap<String, ProjectionCheckpointRow>;
+
+#[path = "stream_restore.rs"]
+mod stream_restore;
+pub use stream_restore::ProjectionStreamRestore;
 
 /// Per-session per-unit watermark cache row (TS `UnitCell`).
 struct UnitCell {

@@ -227,6 +227,7 @@ fn paused(lease: &Lease) -> AdapterError {
 
 #[async_trait]
 impl ComputerUseAdapter for ControlledAdapter {
+    async fn permission_identity(&self,request:&AdapterRequest,signal:AbortPredicate)->Result<crate::ComputerTargetIdentity,AdapterError>{self.inner.permission_identity(request,signal).await}
     fn adapter_id(&self) -> &'static str {
         self.inner.adapter_id()
     }
@@ -348,6 +349,9 @@ impl ComputerUseAdapter for ControlledAdapter {
             lease.cancel()
         }
         let revision = lease.revision.load(Ordering::SeqCst);
+        if let Some(expected)=request.arguments.get("observedControlGeneration") {
+            if expected.as_u64()!=Some(revision) {return Err(AdapterError::new("COMPUTER_USE_STALE_CONTROL","Control changed after the observed frame; capture a fresh frame"));}
+        }
         // A GUI viewer opening the existing control session is not agent
         // work. Another viewer's initial manual-mode publication must not
         // cancel its pending start. Explicit close still stops the transport.

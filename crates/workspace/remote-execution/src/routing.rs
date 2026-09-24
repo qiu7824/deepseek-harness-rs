@@ -522,7 +522,7 @@ async fn collect(
     signal: Option<ShellAbort>,
     limit: u64,
 ) -> Result<ShellRunResult, String> {
-    let (execution_id, mut value) = remote.submit(&id, execution.clone()).await?;
+    let (execution_id, mut value) = remote.submit(&id, execution.clone(), signal.clone()).await?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let (mut out_offset, mut err_offset) = (0, 0);

@@ -118,6 +118,7 @@ fn message_text(item: &Value) -> String {
 
 #[derive(Default)]
 pub(crate) struct ResponsesTranslator {
+    native_computer_enabled: bool,
     next_index: u64,
     text: Option<(u64, String)>,
     reasoning: Option<(u64, String)>,
@@ -133,6 +134,9 @@ pub(crate) struct ResponsesTranslator {
 }
 
 impl ResponsesTranslator {
+    pub(crate) fn enable_native_computer(&mut self) {
+        self.native_computer_enabled = true;
+    }
     pub(crate) fn finished(&self) -> bool {
         self.ended
     }
@@ -156,10 +160,12 @@ impl ResponsesTranslator {
         // A terminal event may itself exceed the limit. Its safe text must
         // still close with an error; dropping it would leave no terminal event.
         let had_tools = self.tool_fragment_seen
-            || self
-                .items
-                .iter()
-                .any(|item| item.value["type"] == "function_call");
+            || self.items.iter().any(|item| {
+                matches!(
+                    item.value["type"].as_str(),
+                    Some("function_call" | "computer_call")
+                )
+            });
         chunks.retain_mut(|chunk| match chunk {
             StreamChunk::BlockEnd { block:ContentBlock::Text {..} | ContentBlock::Reasoning {..}, .. } | StreamChunk::Usage {..} => true,
             StreamChunk::Finish {reason, replay_state} => {
@@ -200,6 +206,15 @@ impl ResponsesTranslator {
         });
         let item = &mut self.items[index];
         let mut incoming = value.clone();
+        if item.value["type"] == "computer_call" {
+            for key in ["call_id", "actions", "action", "pending_safety_checks"] {
+                if let (Some(old), Some(next)) = (item.value.get(key), incoming.get(key)) {
+                    if old != next && (item.complete || key == "call_id") {
+                        item.conflicted = true;
+                    }
+                }
+            }
+        }
         if item.complete {
             for key in ["content", "summary"] {
                 if incoming.get(key).is_some() && !extends_parts(&item.value[key], &incoming[key]) {
@@ -220,6 +235,15 @@ impl ResponsesTranslator {
                             item.conflicted = true;
                         }
                     }
+                }
+            }
+        }
+        // Action arrays are atomic snapshots, never merge by position: doing so
+        // could retain a removed action or a stale suffix of a drag path.
+        if incoming["type"] == "computer_call" {
+            for key in ["actions", "action", "pending_safety_checks"] {
+                if incoming.get(key).is_some() {
+                    item.value.as_object_mut().map(|o| o.remove(key));
                 }
             }
         }
@@ -372,6 +396,9 @@ impl ResponsesTranslator {
                 if let Some(value) = event.get("item").filter(|value| value["type"].is_string()) {
                     let done = event["type"] == "response.output_item.done";
                     let index = self.upsert(value, event["output_index"].as_u64(), done);
+                    if value["type"] == "computer_call" {
+                        self.tool_fragment_seen = true;
+                    }
                     if value["type"] == "function_call" {
                         self.tool_fragment_seen = true;
                         if !done && !self.tools.contains_key(&index) {
@@ -509,12 +536,39 @@ impl ResponsesTranslator {
             .iter()
             .map(|index| self.items[*index].value.clone())
             .collect::<Vec<_>>();
-        let had_tools =
-            self.tool_fragment_seen || items.iter().any(|item| item["type"] == "function_call");
+        let had_tools = self.tool_fragment_seen
+            || items.iter().any(|item| {
+                matches!(
+                    item["type"].as_str(),
+                    Some("function_call" | "computer_call")
+                )
+            });
         let mut safe_tools = Vec::new();
         let mut invalid_tool = false;
+        let mut unsupported_computer = false;
         for index in &order.0 {
             let tracked = &self.items[*index];
+            if tracked.value["type"] == "computer_call" {
+                if !self.native_computer_enabled {
+                    unsupported_computer = true;
+                }
+                match dsh_llm::computer_protocol::parse_call(&tracked.value) {
+                    Ok((call, args))
+                        if tracked.complete
+                            && !tracked.conflicted
+                            && self.native_computer_enabled =>
+                    {
+                        safe_tools.push((
+                            *index,
+                            call,
+                            dsh_llm::computer_protocol::TOOL_NAME.to_string(),
+                            args.to_string(),
+                        ));
+                    }
+                    _ => invalid_tool = true,
+                }
+                continue;
+            }
             if tracked.value["type"] != "function_call" {
                 continue;
             }
@@ -564,6 +618,10 @@ impl ResponsesTranslator {
             ));
         }
         if had_tools && safe_tools.is_empty() {
+            invalid_tool = true;
+        }
+        let mut call_ids = std::collections::HashSet::new();
+        if safe_tools.iter().any(|(_, id, _, _)| !call_ids.insert(id)) {
             invalid_tool = true;
         }
         let has_refusal = self.refusal_seen
@@ -618,6 +676,13 @@ impl ResponsesTranslator {
                             .and_then(Value::as_str)
                             .unwrap_or(""),
                     ),
+                ),
+            }
+        } else if unsupported_computer {
+            FinishReason::Error {
+                failure: failure(
+                    "Native computer calls require an enabled computer protocol integration",
+                    "UNSUPPORTED_TOOL_CALL",
                 ),
             }
         } else if invalid_tool {
@@ -712,7 +777,9 @@ impl ResponsesTranslator {
                     index
                 };
                 if let Some(position) = order.0.iter().position(|index| *index == item) {
-                    items[position]["arguments"] = json!(arguments);
+                    if items[position]["type"] == "function_call" {
+                        items[position]["arguments"] = json!(arguments);
+                    }
                     if items[position]["status"] == "in_progress" {
                         items[position]["status"] = json!("completed");
                     }

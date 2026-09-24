@@ -872,6 +872,8 @@ impl SystemPrompt {
                     description: tool.description.clone(),
                     // Detach (TS `structuredClone(parameters)`).
                     parameters: tool.parameters.clone(),
+
+                    defer_loading: None,
                 })
                 .collect();
             let accepted = result

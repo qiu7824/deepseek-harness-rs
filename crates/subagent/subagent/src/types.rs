@@ -179,6 +179,11 @@ pub trait SubagentRun: Send + Sync + 'static {
 pub trait SubagentProvider: Send + Sync + 'static {
     /// Unique registry name (e.g. `spawn`, `fork`, `acp`).
     fn name(&self) -> &str;
+    /// In-process providers use AgentLoop's per-turn admission. Other providers
+    /// reserve a shared running slot before startup until confirmed disposal.
+    fn uses_agent_run_admission(&self) -> bool {
+        false
+    }
     /// The start-time features this provider supports.
     fn capabilities(&self) -> SubagentCapabilities;
     /// Whether the child sees the parent's completed-turn prefix.

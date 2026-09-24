@@ -7,6 +7,7 @@ description = "Canonical provider-neutral message and streaming vocabulary plus 
 
 [dependencies]
 dsh-brand = { path = "../../util/brand" }
+dsh-attachment = { path = "../../attachment/attachment" }
 dsh-timeout = { path = "../../util/timeout" }
 dsh-invariants = { path = "../../util/invariants" }
 cordis = { path = "../../vendor/cordis" }

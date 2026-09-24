@@ -1,0 +1,15 @@
+{
+  "name": "dsh-auto-review",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Optional per-call authorization review for explicitly selected Auto sessions",
+  "exports": {
+    "./client": "./lib/client.js"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  }
+}

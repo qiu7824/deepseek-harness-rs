@@ -558,6 +558,8 @@ mod route_image_pricing_tests {
                         height: Some(800),
                         name: None,
                     },
+
+                    offloaded: None,
                 },
             ],
             MessageSource::User {

@@ -7,5 +7,5 @@ pub mod types;
 
 pub use index::{
     ProjectionApply, ProjectionChangeListener, ProjectionCheckpoint, ProjectionCheckpointRow,
-    ProjectionDefinition, ProjectionSnapshot, SessionProjectionRegistry,
+    ProjectionDefinition, ProjectionSnapshot, ProjectionStreamRestore, SessionProjectionRegistry,
 };

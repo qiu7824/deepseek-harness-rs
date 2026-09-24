@@ -679,7 +679,7 @@ window.__ModuleLoader__.load({
 		function checkpointId(event) {
 			if (event.type !== "user/message") return void 0;
 			const source = event.data.source;
-			return source.kind === "plugin" && source.plugin === "compact" && typeof source.compactionId === "string" && source.compactionId !== "" ? source.compactionId : void 0;
+			return (source.kind === "compact-checkpoint" || source.kind === "plugin" && source.plugin === "compact") && typeof source.compactionId === "string" && source.compactionId !== "" ? source.compactionId : void 0;
 		}
 		function eventCompactionId(event) {
 			if (event.type !== "compaction/start" && event.type !== "compaction/summary" && event.type !== "compaction/end") return void 0;
@@ -1178,7 +1178,8 @@ window.__ModuleLoader__.load({
 		}
 		function rootResult(match, previous) {
 			if (match.event.type !== "tool/result") return void 0;
-			const result = match.event.data.message.content[0];
+			const message = match.event.data.message;
+			const result = message.role === "tool" ? message : message.content[0];
 			return {
 				kind: "tool-result",
 				seq: match.event.seq,
@@ -1229,6 +1230,8 @@ window.__ModuleLoader__.load({
 				callTime: previous === void 0 || "kind" in previous ? null : previous.time,
 				content: data.content ?? [],
 				isError: data.isError === true,
+                error: data.error,
+                meta: data.meta,
 				callView: null,
 				resultView: null,
 				subCalls: []
@@ -1264,16 +1267,16 @@ window.__ModuleLoader__.load({
 		}
 		function updateDispatch(state, match) {
 			const event = match.event;
-			if (event.type !== "tool/code-dispatch-start" && event.type !== "tool/code-dispatch") return state;
+			if (!["tool/code-dispatch-start","tool/code-dispatch","tool/ptc-dispatch-start","tool/ptc-dispatch"].includes(event.type)) return state;
 			const data = event.data;
 			const parentId = String(data.parentCallId);
 			const childId = String(data.subCallId);
 			const siblings = state.children.get(parentId) ?? [];
 			const index = siblings.indexOf(childId);
 			if (index < 0 && !acceptsEdge(state, parentId, childId)) return state;
-			if (event.type === "tool/code-dispatch-start" && index >= 0) return state;
+			if (event.type.endsWith("-dispatch-start") && index >= 0) return state;
 			const calls = new Map(state.calls);
-			calls.set(childId, event.type === "tool/code-dispatch-start" ? childCall(match, data) : childResult(match, data, calls.get(childId)));
+			calls.set(childId, event.type.endsWith("-dispatch-start") ? childCall(match, data) : childResult(match, data, calls.get(childId)));
 			if (index >= 0) return {
 				...state,
 				calls
@@ -1358,7 +1361,7 @@ window.__ModuleLoader__.load({
 					id: String(event.data.message.source.callId),
 					role: "update"
 				};
-				if (event.type === "tool/code-dispatch-start" || event.type === "tool/code-dispatch") {
+				if (["tool/code-dispatch-start","tool/code-dispatch","tool/ptc-dispatch-start","tool/ptc-dispatch"].includes(event.type)) {
 					const rootCallId = event.data.rootCallId;
 					return typeof rootCallId === "string" && rootCallId !== "" ? {
 						id: rootCallId,

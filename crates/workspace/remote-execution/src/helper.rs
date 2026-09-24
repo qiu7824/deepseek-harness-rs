@@ -392,38 +392,8 @@ impl Helper {
             },
         )
         .await?;
-        let mut command =
-            std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
-        command
-            .args([
-                "--worker",
-                self.root.to_str().ok_or("helper path is not Unicode")?,
-                id,
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(())
-                    }
-                });
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x00000008 | 0x00000200 | 0x08000000);
-        }
-        command.spawn().map_err(|e| {
-            format!("worker dispatch failed; query original execution id before retrying: {e}")
-        })?;
+        crate::worker_spawn::spawn(&std::env::current_exe().map_err(|e|e.to_string())?,&self.root,id)
+            .map_err(|e|format!("worker dispatch failed; query original execution id before retrying: {e}"))?;
         self.query(handshake, id, &json!({}), false).await
     }
 
@@ -723,5 +693,33 @@ pub async fn run_cli(args: Vec<String>) -> Result<i32, String> {
             Ok(0)
         }
         _ => Err("usage: dsh-remote-helper --authorize <workspace> <mode> | --stdio".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn remote_grant_context_and_workspace_boundaries_are_enforced_before_effects() {
+        let root=std::env::temp_dir().join(format!("remote-boundary-{}",uuid::Uuid::new_v4()));
+        let workspace=root.join("workspace");let state=root.join("state");
+        std::fs::create_dir_all(&workspace).unwrap();std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(workspace.join("inside.txt"),b"inside").unwrap();std::fs::write(root.join("outside.txt"),b"outside").unwrap();
+        let policy=Policy {version:PROTOCOL_VERSION,host_id:uuid::Uuid::new_v4().to_string(),workspaces:vec![WorkspaceGrant {path:workspace.canonicalize().unwrap().to_string_lossy().into_owned(),max_mode:"read-only".into()}]};
+        std::fs::write(state.join("policy.json"),serde_json::to_vec(&policy).unwrap()).unwrap();
+        let helper=Helper::open(state).unwrap();let handshake=helper.handshake(&workspace.to_string_lossy()).unwrap();
+        let request=|mode:&str,context:&str,payload:Value|Request {protocol_version:PROTOCOL_VERSION,request_id:uuid::Uuid::new_v4().to_string(),workspace:workspace.to_string_lossy().into_owned(),action:"file".into(),context_id:Some(context.into()),execution_id:None,permission_mode:Some(mode.into()),payload};
+        let read=helper.request(request("read-only",&handshake.context_id,json!({"op":"read","path":"inside.txt"}))).await;
+        assert!(read.ok,"{:?}",read.error);assert_eq!(read.value["base64"],base64::engine::general_purpose::STANDARD.encode(b"inside"));
+        let outside=helper.request(request("read-only",&handshake.context_id,json!({"op":"read","path":root.join("outside.txt")}))).await;
+        assert!(!outside.ok);assert!(outside.error.unwrap().contains("escapes"));
+        let elevated=helper.request(request("workspace-write",&handshake.context_id,json!({"op":"write","path":"denied.txt","content":"no"}))).await;
+        assert!(!elevated.ok);assert!(elevated.error.unwrap().contains("grant"));assert!(!workspace.join("denied.txt").exists());
+        let stale=helper.request(request("read-only","stale-context",json!({"op":"read","path":"inside.txt"}))).await;
+        assert!(!stale.ok);assert!(stale.error.unwrap().contains("context changed"));
+        let mut incompatible=request("read-only",&handshake.context_id,json!({"op":"read","path":"inside.txt"}));incompatible.protocol_version+=1;
+        assert!(helper.request(incompatible).await.error.unwrap().contains("version mismatch"));
+        assert_eq!(std::fs::read(root.join("outside.txt")).unwrap(),b"outside");drop(helper);
+        assert!(root.canonicalize().unwrap().starts_with(std::env::temp_dir().canonicalize().unwrap()));std::fs::remove_dir_all(root).unwrap();
     }
 }

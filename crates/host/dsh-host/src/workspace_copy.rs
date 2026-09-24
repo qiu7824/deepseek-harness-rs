@@ -288,6 +288,18 @@ pub fn promote_validated(
     expected_source_sha256: Option<&str>,
     signal: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<Value, String> {
+    promote_validated_tracked(store, id, relative, project, target, expected, expected_source_sha256, signal, Arc::new(|| Ok(())))
+}
+
+pub fn promote_validated_tracked(
+    store: &Store, id: &str, relative: &str, project: &str, target: &str,
+    expected: &Value, expected_source_sha256: Option<&str>,
+    signal: Arc<dyn Fn() -> bool + Send + Sync>,
+    mark_effects: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+) -> Result<Value, String> {
+    if !expected.is_null() && !expected.as_str().is_some_and(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) {
+        return Err("expectedSha256 必须是 inspect 返回的 64 位小写 SHA-256；新文件使用 JSON null，不能使用字符串 \"null\"".into());
+    }
     let root = std::fs::canonicalize(project).map_err(|e| e.to_string())?;
     let destination = safe(&root, target)?;
     let source = store.path(id, relative)?;
@@ -313,6 +325,11 @@ pub fn promote_validated(
         if !matches(&destination)? {
             return Err("交付期间目标被修改，候选产物保留".into());
         }
+        if signal() { return Err("交付已取消，目标未修改".into()); }
+        // All version/content checks finish before the requested target write.
+        // Failures above have no delivery effect; publication failures below
+        // remain conservatively unknown until inspected.
+        mark_effects()?;
         if expected.is_null() {
             // Link only the copied snapshot in the destination directory, then
             // unlink its temporary name. The execution source has a separate inode.
@@ -334,6 +351,31 @@ mod tests {
         let path = std::env::temp_dir().join(format!("dsh-copy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[test]
+    fn rejected_promotion_has_no_effect_boundary_and_success_marks_before_publication() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = fixture(); let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let store = Store::open(root.join("managed")).unwrap();
+        let mut candidate = store.allocate("owner", &project.to_string_lossy(), "candidate", "result").unwrap();
+        let id = candidate.id().to_owned(); let source = candidate.path().join("result.txt");
+        std::fs::write(&source, b"validated output").unwrap(); candidate.finish(true).unwrap();
+        let seen = Arc::new(AtomicBool::new(false)); let seen_marker = seen.clone();
+        let marker: Arc<dyn Fn() -> Result<(), String> + Send + Sync> = Arc::new(move || { seen_marker.store(true, Ordering::SeqCst); Ok(()) });
+        for expected in [json!("null"), json!("0".repeat(64))] {
+            assert!(promote_validated_tracked(&store, &id, "result.txt", &project.to_string_lossy(), "result.txt", &expected, None, Arc::new(|| false), marker.clone()).is_err());
+            assert!(!seen.load(Ordering::SeqCst));
+            assert!(!project.join("result.txt").exists());
+        }
+        let refused: Arc<dyn Fn() -> Result<(), String> + Send + Sync> = Arc::new(|| Err("execution already ended".into()));
+        assert!(promote_validated_tracked(&store, &id, "result.txt", &project.to_string_lossy(), "result.txt", &Value::Null, None, Arc::new(|| false), refused).is_err());
+        assert!(!project.join("result.txt").exists());
+        assert_eq!(std::fs::read_dir(&project).unwrap().count(), 0);
+        promote_validated_tracked(&store, &id, "result.txt", &project.to_string_lossy(), "result.txt", &Value::Null, None, Arc::new(|| false), marker).unwrap();
+        assert!(seen.load(Ordering::SeqCst));
+        assert_eq!(std::fs::read(project.join("result.txt")).unwrap(), b"validated output");
+        drop(candidate); drop(store); std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn validated_promotion_rejects_candidate_replaced_after_check() {

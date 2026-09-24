@@ -21,7 +21,8 @@
         "editor.js": "./lib/editor.js",
         "markdown.js": "./lib/markdown.js",
         "mermaid.js": "./lib/mermaid.js",
-        "pdf.js": "./lib/pdf.js"
+        "pdf.js": "./lib/pdf.js",
+        "docx.js": "./lib/docx.js"
       }
     }
   }

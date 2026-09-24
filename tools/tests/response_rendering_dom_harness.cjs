@@ -31,7 +31,7 @@ async function nativeMarkdown() {
   // Execute the shipped parser/URL sanitizer without booting the application.
   const bootstrap = shell.lastIndexOf('const Vc=document.getElementById("root")');
   assert.ok(bootstrap > 0);
-  let source = shell.slice(0, bootstrap).replace(/from(["'])(\.\/[^"']+)\1/g, (_all, _quote, relative) => 'from' + JSON.stringify(pathToFileURL(path.join(assets, relative)).href));
+  let source = shell.slice(0, bootstrap).replace(/from(["'])(\.\/[^"']+)\1/g, (_all, _quote, relative) => 'from' + JSON.stringify(new URL(relative, pathToFileURL(assets + path.sep)).href));
   source += '\nexport {bp as renderMarkdown};';
   const filename = path.join(temporary, 'native-markdown.mjs'); fs.writeFileSync(filename, source);
   const native = await import(pathToFileURL(filename));
@@ -45,9 +45,9 @@ async function main() {
   const disclosure = { f: jsx, R: React, Fn: {}, ye: (...args) => args.filter(Boolean).join(' '), Bl: () => null };
   vm.runInNewContext(shell.slice(start, end) + `;this.Component=${name};`, disclosure);
   primitives = new Proxy({ DisclosureRow: disclosure.Component, MarkdownText: await nativeMarkdown(), Menu: ({ anchor, open, items, onSelect }) => React.createElement(React.Fragment, null, anchor, open && React.createElement('div', { role: 'menu' }, items.map(item => React.createElement('button', { key: item.id, title: item.detail, role: 'menuitem', onClick: () => onSelect?.(item.id) }, item.label)))) }, { get: (target, key) => target[key] ?? (() => null) });
+  Object.assign(runtime, load('client-runtime.js', 'contextProvenance,contextForm,createRevisionDraftStore'));
   const tool = load('ui-tool.js', 'GenericToolCard,ToolImage,toolDisplayTitle,toolDisplaySummary');
-  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect,registerChatNodeRenderers');
-  Object.assign(runtime, load('client-runtime.js', 'contextProvenance,contextForm'));
+  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect,registerChatNodeRenderers,StatsLine');
   const subagent = load('ui-subagent.js', 'SubagentMarkdownOutput,SubagentToolRow,subagentFileLinks,zh,en');
   const trajectory = load('ui-trajectory.js', 'TrajectoryLocale,LaneLabels,RecordTiming,AssistantTimingPanel,StartedAtValue,zh,en');
   const modelUi = load('ui-model-selection.js', 'ModelSelect,zh,en');
@@ -55,6 +55,12 @@ async function main() {
   const zh = translate(conversation.zh), en = translate(conversation.en);
   assert.deepEqual(Object.keys(conversation.zh).sort(), Object.keys(conversation.en).sort());
   assert.deepEqual(Object.keys(trajectory.zh).sort(), Object.keys(trajectory.en).sort());
+  const cancelledStats={turns:1,steps:1,llmMs:22035,toolMs:0,ttftMs:0,ttftSteps:0,decodeMs:0,decodeTokens:0,requestMs:0,requestOutputTokens:0,requestSamples:0,requestSources:[]};
+  primitives.Tooltip=({children,label})=>React.createElement('span',{title:label},children);
+  await act(()=>root.render(React.createElement(conversation.StatsLine,{useSession:select=>select({chat:{legacy:{nodes:[]}}}),useProjection:key=>key==='sessionStats'?cancelledStats:undefined,t:zh})));
+  assert.match(document.body.textContent,/LLM 22s/,'a cancelled request with no assistant message still displays its measured model time');
+  assert.match(document.querySelector('span[title]').title,/失败、取消和重试/);
+  await act(()=>root.render(null));delete primitives.Tooltip;
   let dispose;
   const service = new conversation.ConversationController({ effect: effect => { dispose = effect(); }, get: name => name === 'sessions' ? { binding: id => ({ session: sessions.get(id) }) } : null }, { input: {}, blocks: {} });
   let reads = 0;

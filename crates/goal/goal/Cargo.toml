@@ -12,6 +12,7 @@ dsh-brand = { path = "../../util/brand" }
 dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
 dsh-session = { path = "../../core/session" }
+dsh-session-projection = { path = "../../session/session-projection" }
 regex = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

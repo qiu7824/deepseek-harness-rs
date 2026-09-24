@@ -1,6 +1,27 @@
 use crate::ImageAttachmentRef;
 use serde_json::Value;
 
+/// Read only declared, admitted file slots, never opaque tool arguments or text.
+pub fn file_references_for_event(kind: &str, data: &Value) -> Vec<crate::FileAttachmentRef> {
+    let message = match kind {
+        "user/message" => data,
+        "tool/result" => &data["message"],
+        _ => return vec![],
+    };
+    if !(message["role"] == "user" && message["source"]["kind"] == "user"
+        || message["role"] == "tool" && message["source"]["kind"] == "tool")
+    {
+        return vec![];
+    }
+    message["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "file")
+        .filter_map(|block| serde_json::from_value(block["attachment"].clone()).ok())
+        .collect()
+}
+
 /// Resolve an image only from events supplied by the owning session. Opaque
 /// IDs (including the bare digest) are not workspace filenames.
 pub fn find_image_reference(value: &Value, id: &str) -> Option<ImageAttachmentRef> {

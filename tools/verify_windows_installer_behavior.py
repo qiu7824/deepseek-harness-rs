@@ -37,7 +37,7 @@ def run(command: list[str], log: pathlib.Path, timeout: int = 120) -> int:
 
 def prepare(stage: pathlib.Path, scratch: pathlib.Path) -> tuple[pathlib.Path, dict]:
     manifest = json.loads((stage / "PACKAGE.json").read_text(encoding="utf-8"))
-    if manifest.get("platform") != "windows" or manifest.get("variant") not in ("core", "skin", "free"):
+    if manifest.get("platform") != "windows" or manifest.get("variant") != "core":
         raise ValueError("a complete Windows release stage is required")
     for name in ("dsh-launcher.exe", "deepseek-harness-rs.exe"):
         path = stage / name

@@ -157,6 +157,8 @@ pub(super) async fn message(
                     height: Some(reference.height),
                     name: reference.name,
                 },
+
+                offloaded: None,
             },
         ],
         dsh_llm::MessageSource::User {
@@ -169,6 +171,11 @@ pub(super) async fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "private codec child entry for Host attachment integration"]
+    fn image_codec_worker_entry() {
+        dsh_attachment_local::codec::run_worker().unwrap();
+    }
     fn body() -> Value {
         json!({"browserSessionId":"uu-control-one","annotations":{"strokes":[[{"x":0.1,"y":0.2},{"x":0.9,"y":0.8}]],"notes":[{"text":"请检查红线区域","at":123,"x":0.4,"y":0.5}]},"viewport":{"width":1,"height":1},"screenshot":{"mediaType":"image/png","base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}})
     }
@@ -176,6 +183,18 @@ mod tests {
         std::path::PathBuf,
         std::sync::Arc<dsh_attachment_local::LocalAttachmentStore>,
     ) {
+        dsh_attachment_local::codec::configure_worker(
+            dsh_attachment_local::codec::CodecWorkerCommand {
+                program: std::env::current_exe().unwrap(),
+                arguments: vec![
+                    "--exact".into(),
+                    "computer_use_http::annotation::tests::image_codec_worker_entry".into(),
+                    "--ignored".into(),
+                    "--nocapture".into(),
+                ],
+            },
+        )
+        .unwrap();
         let root =
             std::env::temp_dir().join(format!("dsh-annotation-test-{}", uuid::Uuid::new_v4()));
         let context = cordis::Context::root();

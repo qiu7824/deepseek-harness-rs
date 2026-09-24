@@ -226,6 +226,10 @@ pub(crate) struct Harness {
 }
 
 pub(crate) async fn harness() -> Harness {
+    harness_with_options(dsh_agent::AgentOptions::default()).await
+}
+
+pub(crate) async fn harness_with_options(options: dsh_agent::AgentOptions) -> Harness {
     let ctx = Context::root();
     dsh_system_prompt::SystemPrompt::install(&ctx, dsh_system_prompt::Config::default())
         .expect("system prompt");
@@ -244,7 +248,7 @@ pub(crate) async fn harness() -> Harness {
             execution_mode: Default::default(),
             provider: Some("test".to_string()),
             model: Some("model".to_string()),
-            ..Default::default()
+            ..options
         },
         session,
     )

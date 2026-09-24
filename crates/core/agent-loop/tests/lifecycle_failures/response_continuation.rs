@@ -360,7 +360,7 @@ async fn initial_and_post_tool_empty_answers_recover_before_completing() {
                 .events()
                 .iter()
                 .any(|event| event.type_ == "user/message"
-                    && event.data["source"]["plugin"] == "agent-loop:response-recovery")
+                    && event.data["source"]["kind"] == "plugin:agent-loop:response-recovery")
         );
     }
 }

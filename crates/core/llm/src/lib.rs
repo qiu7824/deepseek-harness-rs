@@ -13,7 +13,9 @@ pub mod attribution;
 pub mod brand;
 pub mod call_config;
 pub mod content;
+pub mod computer_protocol;
 pub mod error;
+mod file_projection;
 pub mod invariant;
 pub mod message;
 pub mod never;
@@ -49,10 +51,11 @@ pub use invariant::{
 };
 pub use message::{
     AgentInstructionChange, AssistantMessage, CONTEXT_SUMMARY_MAX_CHARS, ContextForm,
-    ContextSnapshotSection, Message, MessageSource, ModelMessageSource, Role, SkillCatalogEntry,
-    ToolMessageSource, ToolResultMessage, ToolResultMessageInput, UserMessage,
-    bound_context_summary, create_assistant_message, create_message, create_tool_result_message,
-    create_user_message, freeze_message, is_token_delta,
+    ContextSnapshotSection, DeveloperMessage, Message, MessageSource, ModelMessageSource,
+    ProducerMessageSource, Role, SkillCatalogEntry, ToolMessageSource, ToolResultMessage,
+    ToolResultMessageInput, UserMessage, bound_context_summary, create_assistant_message,
+    create_developer_message, create_message, create_tool_result_message, create_user_message,
+    freeze_message, is_token_delta,
 };
 pub use never::assert_never;
 pub use request_telemetry::{RequestPhase, RequestTelemetry};
@@ -67,9 +70,13 @@ pub use runtime::{
     StreamFactory, assert_usable_api_key, generate_options_config_equals,
 };
 pub use types::{
-    ContentBlock, ExecutionMode, FinishReason, GenerateOptions, ImageAttachmentRef, LlmCallConfig,
-    LlmCallConfigAdapterDefaults, LlmConfigurableProvider, LlmDiscoveredModel, LlmFailure,
-    LlmModelContext, LlmModelDiscoveryRequest, LlmModelInfo, LlmModelReasoningInfo,
-    LlmProviderInfo, LlmReasoningEffortInfo, LlmResolvedModelInfo, ModelModality, StreamChunk,
-    SystemPromptUpdate, TokenUsage, ToolCallBlock, ToolSchema,
+    ContentBlock, ExecutionMode, ExtensionContentBlock, FileAttachmentRef, FinishReason,
+    GenerateOptions, ImageAttachmentRef, LlmCallConfig, LlmCallConfigAdapterDefaults,
+    LlmConfigurableProvider, LlmDiscoveredModel, LlmFailure, LlmModelContext,
+    LlmModelDiscoveryRequest, LlmModelInfo, LlmModelReasoningInfo, LlmProviderInfo,
+    LlmReasoningEffortInfo, LlmResolvedModelInfo, ModelModality, StreamChunk, SystemPromptUpdate,
+    TokenUsage, ToolCallBlock, ToolSchema,
 };
+
+#[cfg(test)]
+mod message_v4_tests;

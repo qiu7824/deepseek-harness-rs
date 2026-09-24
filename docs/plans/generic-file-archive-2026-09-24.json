@@ -1,0 +1,28 @@
+{
+  "recordedAt": "2026-09-24T17:05:20.463525+08:00",
+  "installed": false,
+  "published": false,
+  "status": "source_verified_pending_installed_matrix",
+  "checks": {
+    "path": "D:\\codex操作目录\\learning-repair-20260922\\file-archive-tests.log",
+    "sha256": "eabe824915637a58c111017ddd5e30553d408e078e1eb7558de4067ef1347f85",
+    "results": [
+      "test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s\r",
+      "test result: ok. 15 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.34s\r"
+    ]
+  },
+  "implemented": [
+    "V4-aware archive reference decoding; queued/cancelled admitted file references are retained.",
+    "Streaming verbatim file entries with byte-count checks and export worker cleanup.",
+    "Import validates content SHA, length, filename, duplicate ZIP entries and conflicting metadata before publishing sessions."
+  ],
+  "verified": [
+    "Chinese filename with spaces and binary content survives actual streaming V4 ZIP export and import.",
+    "Repeated import is idempotent; corrupt bytes are rejected before sessions are published; source attachment bytes remain intact.",
+    "Opaque tool arguments cannot introduce file export references."
+  ],
+  "remaining": [
+    "Installed GUI export/import including descendants, multiple files, queued items and cancellation matrix.",
+    "Import size limits remain 64 MiB per entry and 256 MiB total; full goal acceptance is still pending."
+  ]
+}
