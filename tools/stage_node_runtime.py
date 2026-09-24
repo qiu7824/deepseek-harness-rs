@@ -34,3 +34,14 @@ def stage_node_runtime(stage:pathlib.Path,platform:str,arch:str,cache:pathlib.Pa
         (output/binary).chmod((output/binary).stat().st_mode|stat.S_IXUSR|stat.S_IXGRP|stat.S_IXOTH)
     identity={'version':lock['version'],'archive':archive_name,'archiveSha256':expected,'binarySha256':hashlib.sha256((output/binary).read_bytes()).hexdigest()}
     (output/'IDENTITY.json').write_text(json.dumps(identity,indent=2)+'\n',encoding='utf-8')
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--stage', type=pathlib.Path, required=True)
+    parser.add_argument('--platform', choices=['windows', 'linux', 'macos'], required=True)
+    parser.add_argument('--arch', choices=['x86_64', 'aarch64'], required=True)
+    parser.add_argument('--cache', type=pathlib.Path, required=True)
+    args = parser.parse_args()
+    stage_node_runtime(args.stage, args.platform, args.arch, args.cache)

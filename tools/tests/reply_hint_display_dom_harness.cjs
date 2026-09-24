@@ -25,12 +25,17 @@ const primitives = new Proxy({
   MarkdownText: ({ text }) => React.createElement('p', null, text),
   Menu: ({ anchor, open, items, onSelect, selectedId }) => React.createElement(React.Fragment, null, anchor, open && React.createElement('div', { role: 'menu' }, items.map(item => React.createElement('button', { key: item.id, role: 'menuitemradio', 'aria-checked': item.id === selectedId, onClick: () => onSelect(item.id) }, item.label))))
 }, { get: (target, key) => target[key] ?? (props => React.createElement('svg', { 'data-native-icon': key, 'aria-hidden': true, width: props.size ?? 14, height: props.size ?? 14 })) });
+const runtimeClient = { createSnapshotStore: store, window: dom.window, crypto: require('node:crypto').webcrypto };
+const runtimeSource = fs.readFileSync(path.join(plugins, 'client-runtime.js'), 'utf8');
+const draftStart = runtimeSource.indexOf('function createRevisionDraftStore('), draftEnd = runtimeSource.indexOf('exports.createRevisionDraftStore', draftStart);
+assert.ok(draftStart >= 0 && draftEnd > draftStart);
+vm.runInNewContext(runtimeSource.slice(draftStart, draftEnd), runtimeClient);
 function load(name, names) {
   let exported;
   vm.runInNewContext(fs.readFileSync(path.join(plugins, name), 'utf8').replace('return module.exports;', `exports.test={${names}};return module.exports;`), {
-    document, console, setTimeout, clearTimeout, setInterval, clearInterval,
+    document, console, crypto: runtimeClient.crypto, setTimeout, clearTimeout, setInterval, clearInterval,
     requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout,
-    window: { __ModuleLoader__: { load: definition => { exported = definition.factory(id => id === 'react' ? React : id === 'react/jsx-runtime' ? jsx : id.endsWith('ui-primitives') ? primitives : id === '@deepseek-ai/cordis' ? { Service: class {} } : { createSnapshotStore: store }); } } }
+    window: { addEventListener: window.addEventListener.bind(window), removeEventListener: window.removeEventListener.bind(window), localStorage: window.localStorage, __ModuleLoader__: { load: definition => { exported = definition.factory(id => id === 'react' ? React : id === 'react/jsx-runtime' ? jsx : id.endsWith('ui-primitives') ? primitives : id === '@deepseek-ai/cordis' ? { Service: class {} } : runtimeClient); } } }
   });
   return exported.test;
 }

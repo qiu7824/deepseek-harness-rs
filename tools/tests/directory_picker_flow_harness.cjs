@@ -42,7 +42,7 @@ assert.equal(registrations.length, 3, 'workspace, sidebar and settings share the
 const registration = registrations[0], injected = registration.slot.inject();
 const workspaceSource = fs.readFileSync(path.join(__dirname, '../../web/dist/plugins/ui-workspace.js'), 'utf8');
 const start = workspaceSource.indexOf('const ADD_WORKSPACE ='), end = workspaceSource.indexOf('function WorkspacePicker(', start);
-const ownerContext = { react: React, react_jsx_runtime: jsx, _deepseek_ai_dsh_client_ui_primitives: primitives, WorkspacePicker_module_css_default: {},
+const ownerContext = { AbortController, react: React, react_jsx_runtime: jsx, _deepseek_ai_dsh_client_ui_primitives: primitives, WorkspacePicker_module_css_default: {},
   fetch: async (_url, options) => { assert.equal(typeof JSON.parse(options.body).path, 'string'); return { ok: true, json: async () => ({}) }; } };
 vm.runInNewContext(workspaceSource.slice(start, end), ownerContext);
 const act = callback => React.act(async () => { await callback(); await new Promise(resolve => setTimeout(resolve, 15)); });
