@@ -41,6 +41,19 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
         with:
           cache-on-failure: true
+      - name: 隔离并规范测试临时目录
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
+          root.mkdir(parents=True, exist_ok=True)
+          root = root.resolve(strict=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
+                  stream.write(f'{key}={root}\n')
+          PY
       - name: Linux 原生图形依赖
         if: matrix.platform == 'linux'
         run: |

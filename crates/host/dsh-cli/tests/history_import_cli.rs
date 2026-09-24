@@ -3,7 +3,10 @@ use std::io::Write;
 
 #[test]
 fn image_zip_import_runs_through_the_async_cli_entrypoint() {
-    let root = std::env::temp_dir().join(format!("dsh-cli-image-import-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("dsh-cli-image-import-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let image = vec![
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
