@@ -41,7 +41,10 @@ def main():
         removed=request(port,'file-action',{'sessionId':owner,'action':'trash','path':report['path'],'etag':report['etag']})
         assert not (project/'report.txt').exists();resources=request(port,'resources',{'sessionId':owner})['entries'];item=next(item for item in resources if item['id']==removed['id']);assert item['kind']=='trash'
         request(port,'file-action',{'sessionId':owner,'action':'restore','id':removed['id']});assert (project/'report.txt').read_text()=='concurrent edit'
+        request(port,'file-action',{'sessionId':owner,'action':'restore','id':removed['id']})
+        (project/'report.txt').write_text('edited after restore',encoding='utf8')
         request(port,'file-action',{'sessionId':owner,'action':'restore','id':removed['id']},400)
+        assert (project/'report.txt').read_text()=='edited after restore', 'repeated restore must not overwrite subsequent edits'
         current=next(entry for entry in request(port,'list',{'sessionId':owner})['entries'] if entry['path']=='report.txt')
         request(port,'file-action',{'sessionId':owner,'action':'rename','path':'report.txt','etag':current['etag'],'newPath':'renamed.txt'});assert (project/'renamed.txt').exists()
         request(port,'file-action',{'sessionId':owner,'action':'rename','path':'../outside.txt','etag':current['etag'],'newPath':'escape.txt'},400)

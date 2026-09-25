@@ -146,14 +146,30 @@ impl Fold {
             else {
                 return;
             };
-            for block in event.data["message"]["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
+            let message = &event.data["message"];
+            let native = message["role"] == "tool";
+            if native
+                && (message["isError"] == true
+                    || message["toolCallId"] != call.data["callId"]
+                    || message["source"]["kind"] != "tool"
+                    || message["source"]["callId"] != call.data["callId"])
             {
-                if block["type"] != "tool-result"
-                    || block["isError"] != false
-                    || block["toolCallId"] != call.data["callId"]
+                return;
+            }
+            let blocks = if native {
+                vec![message]
+            } else {
+                message["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            };
+            for block in blocks {
+                if !native
+                    && (block["type"] != "tool-result"
+                        || block["isError"] != false
+                        || block["toolCallId"] != call.data["callId"])
                 {
                     continue;
                 }
@@ -454,6 +470,35 @@ mod tests {
         result.data["message"]["content"][0]["toolCallId"] = json!("unrelated");
         denied.event(&session, &result);
         assert!(denied.loaded.is_empty());
+    }
+    #[test]
+    fn native_skill_result_tracks_body_but_rejects_failure_and_foreign_provenance() {
+        let session =
+            Session::create(dsh_session::session_id("native-skill"), None, None, None).unwrap();
+        let call = session.append("tool/call", json!({"turn":1,"step":1,"callId":"c","name":"skill","arguments":"{\"name\":\"loaded-skill\"}"}), None).unwrap();
+        let text = render_skill_content("loaded-skill", "fixture", None, "BODY");
+        let result: SessionEvent = serde_json::from_value(json!({"type":"tool/result","seq":10,"time":10,"sourceEventSeqs":[call.seq.get()],"data":{"message":{"role":"tool","toolCallId":"c","source":{"kind":"tool","callId":"c"},"content":[{"type":"text","text":text}]}}})).unwrap();
+        let mut fold = Fold::default();
+        fold.event(&session, &result);
+        assert_eq!(fold.loaded[0].0, "loaded-skill");
+        assert_eq!(fold.loaded[0].1.digest, hash(&text));
+        for (pointer, value) in [
+            ("/data/message/isError", json!(true)),
+            ("/data/message/toolCallId", json!("other")),
+            ("/data/message/source/kind", json!("user")),
+            ("/data/message/source/callId", json!("other")),
+        ] {
+            let mut bad = result.clone();
+            if pointer.ends_with("isError") {
+                bad.data["message"]["isError"] = value;
+            } else {
+                let path = pointer.strip_prefix("/data").unwrap();
+                *bad.data.pointer_mut(path).unwrap() = value;
+            }
+            let mut rejected = Fold::default();
+            rejected.event(&session, &bad);
+            assert!(rejected.loaded.is_empty(), "{pointer}");
+        }
     }
     #[test]
     fn loaded_skill_metadata_is_bounded_and_latest_source_wins() {

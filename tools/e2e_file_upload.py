@@ -70,16 +70,18 @@ def main():
                 time.sleep(.05)
             messages = json.dumps(Model.records[0]['messages'], ensure_ascii=False)
             assert '设计说明.txt' in messages and 'report.pdf' in messages
-            assert '.dsh-attachments' in messages and 'ZmlsZS1vbmU=' not in messages
-            paths = [p for p in (workspace / '.dsh-attachments').rglob('*') if p.is_file()]
+            assert 'attachments' in messages and 'ZmlsZS1vbmU=' not in messages
+            assert not (workspace / '.dsh-attachments').exists(), 'upload must not create workspace-owned mutable copies'
+            stored = home / 'attachments/v1/files'
+            paths = [p for p in stored.rglob('*') if p.is_file()]
             assert sorted(p.read_bytes() for p in paths) == sorted([b'file-one', b'%PDF fixture'])
             # An accepted retry must not create a second prompt or overwrite bytes.
             call('session.prompt', payload)
-            assert len([p for p in (workspace / '.dsh-attachments').rglob('*') if p.is_file()]) == 2
+            assert len([p for p in stored.rglob('*') if p.is_file()]) == 2
             before = {str(p): p.read_bytes() for p in paths}
             invalid = {**payload, 'requestId': 'bad-upload', 'content': [part('valid.txt', b'not-published'), part('../escape.txt', b'bad')]}
             assert call('session.prompt', invalid, False)['ok'] is False
-            assert {str(p): p.read_bytes() for p in (workspace / '.dsh-attachments').rglob('*') if p.is_file()} == before
+            assert {str(p): p.read_bytes() for p in stored.rglob('*') if p.is_file()} == before
             assert not (workspace / 'escape.txt').exists()
             (root / 'evidence.json').write_text(json.dumps({'passed': True, 'realModelCalls': 0, 'originalBytes': True, 'fileOnlyPrompt': True, 'retryNoOverwrite': True, 'batchValidation': True}), encoding='utf-8')
     finally:

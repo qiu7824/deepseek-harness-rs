@@ -124,9 +124,9 @@ def main():
             call('subagent.prompt', {**address, 'requestId': 'direct-steer', 'delivery': 'steer', 'content': [{'type': 'text', 'text': 'direct-steer-marker'}]})
             Model.release.set()
             until(lambda: Model.records, lambda rs: any((r.get('model') == 'child' and FACT in json.dumps(r) and ('direct-steer-marker' in json.dumps(r)) for r in rs)), 'reference snapshot and steer must enter child model')
-            history = until(lambda: call('subagent.history', {**address, 'maxMessages': 100}), lambda v: any((e['event']['type'] == 'user/message' and e['event']['data'].get('source', {}).get('plugin') == 'session-reference' for e in v['events'])), 'reference plugin history')
+            history = until(lambda: call('subagent.history', {**address, 'maxMessages': 100}), lambda v: any((e['event']['type'] == 'user/message' and (e['event']['data'].get('source', {}).get('kind') == 'session-reference' or e['event']['data'].get('source', {}).get('plugin') == 'session-reference') for e in v['events'])), 'reference plugin history')
             messages = [e['event']['data'] for e in history['events'] if e['event']['type'] == 'user/message']
-            context = next((i for i, m in enumerate(messages) if m.get('source', {}).get('plugin') == 'session-reference'))
+            context = next((i for i, m in enumerate(messages) if (m.get('source', {}).get('kind') == 'session-reference' or m.get('source', {}).get('plugin') == 'session-reference')))
             target = next((i for i, m in enumerate(messages) if m.get('source', {}).get('rpcId') == 'reference-steer'))
             assert context + 1 == target, 'reference must be adjacent to its exact human claim'
             assert 'edited-and-removed' not in json.dumps(messages), 'removed queued work was delivered'
