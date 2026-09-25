@@ -248,6 +248,7 @@ void main() {
     final read = Completer<Json>();
     RequestScope? reading;
     api.handleRpc = (method, payload, scope) async {
+      if (method == 'commands.activity') return {'active': false};
       if (method == 'commands.execute') {
         return {
           'result': {'kind': 'success'},
@@ -272,6 +273,7 @@ void main() {
     expect(c.planMode!.pending, isFalse);
     final next = Completer<Json>();
     api.handleRpc = (method, payload, scope) async {
+      if (method == 'commands.activity') return {'active': false};
       if (method == 'commands.execute') {
         return {
           'result': {'kind': 'success'},
