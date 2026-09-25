@@ -3,6 +3,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      run_behavior_e2e:
+        description: Run the full packaged behavior E2E suite
+        type: boolean
+        default: true
 permissions:
   contents: write
 concurrency:
@@ -243,6 +248,7 @@ jobs:
           VERSION="${{ steps.release.outputs.version }}"
           python tools/verify_release_package.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
       - name: 正式包数据与图片回归
+        if: github.event_name != 'workflow_dispatch' || inputs.run_behavior_e2e
         timeout-minutes: 40
         shell: bash
         run: |
