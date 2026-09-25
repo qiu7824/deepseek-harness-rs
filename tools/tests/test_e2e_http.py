@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler
 import pathlib
 import sys
 import threading
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,24 @@ from e2e_http import ThreadingHTTPServer
 
 
 class FixtureServerTests(unittest.TestCase):
+    def test_session_manifest_fingerprints_native_and_legacy_but_not_temporary_files(self):
+        from e2e_settings_model_preserves_data import session_manifest
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            names = ["session.jsonl", "session.jsonl.zstd", "session.v4.jsonl", "session.v4.jsonl.zstd"]
+            for index, name in enumerate(names):
+                path = root / str(index) / name
+                path.parent.mkdir()
+                path.write_bytes(b"published")
+            (root / "session.v4.jsonl.tmp").write_bytes(b"not committed")
+            (root / "session.v4.jsonl.backup").write_bytes(b"backup")
+            before = session_manifest(root)
+            self.assertEqual(len(before), 4)
+            (root / "2/session.v4.jsonl").write_bytes(b"changed")
+            after = session_manifest(root)
+            self.assertNotEqual(before["2/session.v4.jsonl"], after["2/session.v4.jsonl"])
+            self.assertEqual(before.keys(), after.keys())
+
     def test_bind_does_not_resolve_loopback_hostname(self):
         with patch("socket.getfqdn", side_effect=AssertionError("reverse DNS must not run")):
             with ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler) as server:

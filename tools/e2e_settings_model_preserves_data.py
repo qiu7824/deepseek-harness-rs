@@ -132,7 +132,7 @@ def session_manifest(root: pathlib.Path) -> dict[str, tuple[int, str]]:
     return {
         path: fingerprint
         for path, fingerprint in file_manifest(root).items()
-        if path.endswith("/session.jsonl") or path.endswith("/session.jsonl.zstd")
+        if re.fullmatch(r"session(?:\.v[0-4])?\.jsonl(?:\.zstd)?", pathlib.PurePosixPath(path).name)
     }
 
 

@@ -22,6 +22,27 @@ pub(crate) struct TaskExecution {
 }
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 
+#[derive(Default)]
+struct LiveAdmissions(parking_lot::Mutex<BTreeMap<(String, String), (usize, u64, String)>>);
+impl LiveAdmissions {
+    fn identity(execution: &ToolExecution) -> (usize, u64) {
+        (execution as *const ToolExecution as usize, execution.token)
+    }
+    fn finish(&self, owner: &str, id: &str, execution: &ToolExecution) -> Option<String> {
+        let mut entries = self.0.lock();
+        let key = (owner.to_owned(), id.to_owned());
+        let identity = Self::identity(execution);
+        if entries
+            .get(&key)
+            .is_some_and(|entry| (entry.0, entry.1) == identity)
+        {
+            entries.remove(&key).map(|entry| entry.2)
+        } else {
+            None
+        }
+    }
+}
+
 #[path = "task_goals.rs"]
 mod goals;
 #[path = "task_input_snapshot.rs"]
@@ -934,22 +955,38 @@ pub(crate) async fn install(
         cordis::EventOptions::default().global(true),
     )
     .await;
+    let admissions = Arc::new(LiveAdmissions::default());
+    let guard_admissions = admissions.clone();
     let runtime = service.runtime.clone();
     tools.guard(ctx,Arc::new(move|execution|{
         let owner=execution.agent.as_ref()?.id().as_str().to_owned();
-        let task=match runtime.active(&owner) {Ok(Some(task))=>task,Ok(None)=>return None,Err(error)=>return Some(error)};
+        let id=execution_id(execution);
+        let mut live = guard_admissions.0.lock();
+        let key = (owner.clone(), id.clone());
+        let identity = LiveAdmissions::identity(execution);
+        if live.get(&key).is_some_and(|entry| (entry.0, entry.1) != identity) {
+            return Some("Execution identity belongs to another live invocation".into());
+        }
+        let task=match runtime.active(&owner) {Ok(Some(task))=>task,Ok(None)=>return live.contains_key(&key).then(||"Task was retired before dispatch".into()),Err(error)=>return Some(error)};
         if execution.name=="update_goal"&&execution.arguments["action"]=="complete" || execution.name=="present" {
             if task.state!=TaskState::Completed {return Some("Complete task_execution acceptance before final delivery or marking the goal complete".into());}
         }
         if exempt(&execution.name) {return None;}
-        let id=execution_id(execution);
+        if let Some(entry) = live.get(&key) {
+            return if entry.2 == task.task_id && task.steps.iter().any(|step| step.execution_id == id && step.state == StepState::Dispatched) {
+                None
+            } else { Some("Task execution changed before dispatch".into()) };
+        }
         if task.steps.iter().any(|step|step.execution_id==id) {return Some("Execution identity is already durable; inspect its status rather than replaying it".into());}
         let input_identity=digest(&serde_json::to_vec(&execution.arguments).unwrap_or_default());
         if task.steps.iter().any(|step|step.effect!=EffectKind::ReadOnly && matches!(step.state,StepState::Unknown|StepState::Running|StepState::Dispatched) && step.tool==execution.name && step.input_identity==input_identity) {
             return Some("An identical operation may already have effects or still be running; inspect its execution before retrying".into());
         }
         let step=Step{id:id.clone(),execution_id:id.clone(),idempotency_key:id.clone(),input_identity:digest(&serde_json::to_vec(&execution.arguments).unwrap_or_default()),tool:execution.name.clone(),effect:effect(&execution.name, &execution.arguments),state:StepState::Prepared,updated_at:now(),process:None,result_identity:None,result:None,evidence_refs:vec![],failure_reason:None};
-        runtime.prepare(&owner,&task.task_id,step).and_then(|_|runtime.dispatch(&owner,&task.task_id,&id)).err()
+        if live.len() >= 4096 {return Some("Task execution admission capacity reached".into());}
+        if let Err(error) = runtime.prepare(&owner,&task.task_id,step).and_then(|_|runtime.dispatch(&owner,&task.task_id,&id)) {return Some(error);}
+        live.insert(key, (identity.0, identity.1, task.task_id));
+        None
     }))?;
     let runtime = service.runtime.clone();
     ctx.on(
@@ -957,6 +994,7 @@ pub(crate) async fn install(
         Arc::new(move |listener_ctx, args| {
             let ctx = listener_ctx.clone();
             let runtime = runtime.clone();
+            let admissions = admissions.clone();
             let execution = args
                 .first()
                 .and_then(downcast_arc::<Arc<ToolExecution>>)
@@ -974,11 +1012,13 @@ pub(crate) async fn install(
                 {
                     let owner = agent.id().as_str();
                     let id = execution_id(&execution);
+                    // A rejected replay must not settle the original invocation.
+                    let Some(admitted_task) = admissions.finish(owner, &id, &execution) else { return None; };
                     // Include cancelled contracts: late notifications must not reactivate them.
                     if let Ok(tasks) = runtime.list(owner)
                         && let Some(task) = tasks
                             .iter()
-                            .find(|t| t.steps.iter().any(|s| s.execution_id == id))
+                            .find(|t| t.task_id == admitted_task && t.steps.iter().any(|s| s.execution_id == id))
                     {
                         let value = result.value.clone().or_else(|| result.meta.as_ref().and_then(|meta|meta.get("executionReceipt")).cloned()).or_else(|| result.error.as_ref().map(|error|json!({"isError":true,"error":{"message":error.message,"code":error.info.as_ref().map(|info|info.code.clone())}})));
                         let (success, running) = outcome_flags(&execution.name, value.as_ref(), result.is_error);
@@ -1189,6 +1229,108 @@ pub(crate) fn register_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn repeated_guard_checks_allow_one_body_but_replayed_call_cannot_change_its_receipt() {
+        use dsh_agent::{AgentFactory, AgentRegistry, CreateAgentOptions};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root = std::env::temp_dir().join(format!("task-admission-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = Context::root();
+        let prompt = dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+        dsh_llm::LlmRuntime::install(&ctx);
+        dsh_session::SessionStore::install(&ctx);
+        dsh_session_projection::SessionProjectionRegistry::install(&ctx);
+        AgentRegistry::install(&ctx);
+        let tools = ToolRuntime::install(&ctx, Default::default()).unwrap();
+        let fs = dsh_fs_local::LocalFileSystem::install(
+            &ctx,
+            dsh_fs_local::Config {
+                cwd: Some(root.to_string_lossy().into_owned()),
+                diff_basis_max_bytes: None,
+            },
+        )
+        .unwrap();
+        let service = install(&ctx, &tools, &prompt, fs, None, &root)
+            .await
+            .unwrap();
+        let loops = dsh_agent_loop::AgentLoop::install(&ctx, Default::default()).unwrap();
+        let owner = loops
+            .create_agent(
+                &ctx,
+                CreateAgentOptions {
+                    meta: Some(dsh_session::CreateSessionMeta {
+                        cwd: Some(root.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        service.runtime.create(owner.agent.id().as_str(),"task",serde_json::from_value(json!({"objective":"Read once","acceptanceChecks":[{"id":"read","description":"read succeeds","checker":{"kind":"tool_result","step_id":"tool:read","assertions":{"/ok":true}}}]})).unwrap()).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let calls = count.clone();
+        tools
+            .register(
+                &ctx,
+                ToolDefinition {
+                    name: "read".into(),
+                    description: "fixture".into(),
+                    parameters: json!({"type":"object"}),
+                    output: ToolOutputDefinition {
+                        schema: json!({}),
+                        render: Arc::new(|_, v| {
+                            Ok(vec![dsh_llm::ContentBlock::Text {
+                                text: v.to_string(),
+                            }])
+                        }),
+                        presentation_meta: None,
+                    },
+                    timeout_ms: None,
+                    is_concurrency_safe: None,
+                    execute: Arc::new(move |_, _| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Box::pin(async { Ok(json!({"ok":true})) })
+                    }),
+                    finalize_content: None,
+                    present_call: None,
+                    present_result: None,
+                },
+            )
+            .unwrap();
+        let input = dsh_tools::ToolExecutionInput {
+            call_id: dsh_llm::call_id("one-call"),
+            root_call_id: None,
+            name: "read".into(),
+            arguments: json!({}),
+            agent: Some(owner.agent.clone()),
+            parent: None,
+            signal: Arc::new(|| false),
+        };
+        let first = tools.execute(input.clone()).await;
+        assert!(!first.is_error, "{:?}", first.error);
+        let before = service
+            .runtime
+            .get(owner.agent.id().as_str(), "task")
+            .unwrap();
+        assert_eq!(before.steps.len(), 1);
+        assert!(tools.execute(input).await.is_error);
+        let after = service
+            .runtime
+            .get(owner.agent.id().as_str(), "task")
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
+        owner.dispose.await;
+        for dispose in ctx.fiber.disposables.clear() {
+            dispose().await;
+        }
+        drop(service);
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn live_contract_schema_rejects_stringified_objects_before_dispatch() {
         let contract = json!({"objective":"Check result","acceptanceChecks":[{"id":"exists","description":"Expected output","checker":{"kind":"text","path":"result.txt","required":["done"]}}]});

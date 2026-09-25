@@ -14,22 +14,13 @@ from e2e_http import ThreadingHTTPServer
 
 sys.dont_write_bytecode = True
 from e2e_model_management import isolated_environment, running_fixture_host
-from e2e_settings_model_preserves_data import require_ok, rpc
+from e2e_settings_model_preserves_data import require_ok, rpc, session_manifest as persisted_session_manifest
 
 MODELS = [{"id": name, "contextWindow": 32768, "maxTokens": 4096} for name in ("model-a", "model-b")]
 
 
 def session_manifest(home):
-    result = {}
-    for path in sorted((home / "sessions").rglob("*")):
-        if not path.is_file() or path.name not in ("session.jsonl", "session.jsonl.zstd"):
-            continue
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-        result[path.relative_to(home).as_posix()] = digest.hexdigest()
-    return result
+    return persisted_session_manifest(home / "sessions")
 
 
 class LearningFixture(BaseHTTPRequestHandler):
