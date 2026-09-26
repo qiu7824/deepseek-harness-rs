@@ -34,7 +34,7 @@ window.__ModuleLoader__.load({
 						id: props.id,
 						className: sharedSecretClasses.input,
 						type: "password",
-						autoComplete: "off",
+						autoComplete: "new-password",
 						value: props.text,
 						disabled: props.disabled,
 						onChange: (event) => {
