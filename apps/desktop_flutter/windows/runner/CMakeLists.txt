@@ -13,6 +13,7 @@ add_executable(${BINARY_NAME} WIN32
   "win32_window.cpp"
   "voice_recognizer.cpp"
   "speech_speaker.cpp"
+  "clipboard_reader.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
   "runner.exe.manifest"

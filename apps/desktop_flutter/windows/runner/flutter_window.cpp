@@ -113,6 +113,41 @@ bool FlutterWindow::OnCreate() {
           result->NotImplemented();
         }
       });
+  clipboard_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "dsh/clipboard",
+          &flutter::StandardMethodCodec::GetInstance());
+  clipboard_channel_->SetMethodCallHandler(
+      [this](const auto& call, auto result) {
+        if (call.method_name() != "read") {
+          result->NotImplemented();
+          return;
+        }
+        ClipboardContent content;
+        std::string error;
+        if (!ReadClipboardContent(GetHandle(), &content, &error)) {
+          result->Error("clipboard-busy", error);
+          return;
+        }
+        flutter::EncodableList files;
+        for (auto& file : content.files) {
+          files.emplace_back(std::move(file));
+        }
+        flutter::EncodableMap payload{
+            {flutter::EncodableValue("files"), flutter::EncodableValue(files)}};
+        if (!content.png.empty()) {
+          payload[flutter::EncodableValue("png")] =
+              flutter::EncodableValue(std::move(content.png));
+        } else if (!content.bgra.empty()) {
+          payload[flutter::EncodableValue("bgra")] =
+              flutter::EncodableValue(std::move(content.bgra));
+          payload[flutter::EncodableValue("width")] =
+              flutter::EncodableValue(content.width);
+          payload[flutter::EncodableValue("height")] =
+              flutter::EncodableValue(content.height);
+        }
+        result->Success(flutter::EncodableValue(payload));
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -136,6 +171,8 @@ void FlutterWindow::OnDestroy() {
   speech_speaker_.Shutdown();
   if (speech_channel_) speech_channel_->SetMethodCallHandler(nullptr);
   speech_channel_.reset();
+  if (clipboard_channel_) clipboard_channel_->SetMethodCallHandler(nullptr);
+  clipboard_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

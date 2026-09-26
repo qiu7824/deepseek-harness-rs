@@ -5,14 +5,75 @@
 #include <gdk/gdkx.h>
 #endif
 
+#include <cstring>
+
 #include "flutter/generated_plugin_registrant.h"
 
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  FlMethodChannel* clipboard_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+// Replies to one dsh/clipboard read with copied files or a PNG image.
+static void clipboard_respond(FlMethodCall* method_call, FlValue* files,
+                              GdkPixbuf* pixbuf) {
+  g_autoptr(FlValue) payload = fl_value_new_map();
+  fl_value_set_string_take(payload, "files", files);
+  if (pixbuf != nullptr) {
+    gchar* buffer = nullptr;
+    gsize size = 0;
+    if (gdk_pixbuf_save_to_buffer(pixbuf, &buffer, &size, "png", nullptr,
+                                  nullptr)) {
+      fl_value_set_string_take(
+          payload, "png",
+          fl_value_new_uint8_list(reinterpret_cast<const uint8_t*>(buffer),
+                                  size));
+      g_free(buffer);
+    }
+  }
+  g_autoptr(FlMethodResponse) response =
+      FL_METHOD_RESPONSE(fl_method_success_response_new(payload));
+  fl_method_call_respond(method_call, response, nullptr);
+}
+
+static void clipboard_image_cb(GtkClipboard* clipboard, GdkPixbuf* pixbuf,
+                               gpointer data) {
+  g_autoptr(FlMethodCall) method_call = FL_METHOD_CALL(data);
+  clipboard_respond(method_call, fl_value_new_list(), pixbuf);
+}
+
+// Files take precedence; image content is requested only without files.
+static void clipboard_uris_cb(GtkClipboard* clipboard, gchar** uris,
+                              gpointer data) {
+  FlMethodCall* method_call = FL_METHOD_CALL(data);
+  FlValue* files = fl_value_new_list();
+  for (gchar** uri = uris; uri != nullptr && *uri != nullptr; uri++) {
+    g_autofree gchar* path = g_filename_from_uri(*uri, nullptr, nullptr);
+    if (path != nullptr) fl_value_append_take(files, fl_value_new_string(path));
+  }
+  if (fl_value_get_length(files) > 0) {
+    clipboard_respond(method_call, files, nullptr);
+    g_object_unref(method_call);
+    return;
+  }
+  fl_value_unref(files);
+  gtk_clipboard_request_image(clipboard, clipboard_image_cb, method_call);
+}
+
+static void clipboard_method_cb(FlMethodChannel* channel,
+                                FlMethodCall* method_call,
+                                gpointer user_data) {
+  if (strcmp(fl_method_call_get_name(method_call), "read") != 0) {
+    fl_method_call_respond_not_implemented(method_call, nullptr);
+    return;
+  }
+  GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+  gtk_clipboard_request_uris(clipboard, clipboard_uris_cb,
+                             g_object_ref(method_call));
+}
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
@@ -75,6 +136,13 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->clipboard_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+      "dsh/clipboard", FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(
+      self->clipboard_channel, clipboard_method_cb, self, nullptr);
+
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
@@ -121,6 +189,7 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
+  g_clear_object(&self->clipboard_channel);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 

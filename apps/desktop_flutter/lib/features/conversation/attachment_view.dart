@@ -9,6 +9,7 @@ import 'package:dsh_client/dsh_client.dart';
 import '../../design/primitives.dart';
 import '../../design/typography.dart';
 import '../../design/context_menu.dart';
+import '../../src/composer_attachments.dart';
 
 class UploadedFileCard extends StatelessWidget {
   const UploadedFileCard({super.key, required this.file, this.onPressed});
@@ -232,4 +233,126 @@ class _AttachmentViewState extends State<AttachmentView> {
             ),
     ),
   );
+}
+
+/// One composer attachment before sending: images show a thumbnail that opens
+/// a preview, other files show their name and size. Both can be removed.
+class PendingAttachmentTile extends StatelessWidget {
+  const PendingAttachmentTile({
+    super.key,
+    required this.file,
+    required this.onRemove,
+    this.onPreview,
+  });
+  final PendingAttachment file;
+  final VoidCallback onRemove;
+  final VoidCallback? onPreview;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = DshColors(context);
+    final size = UploadedFileReceipt(
+      file.name,
+      '',
+      file.data.length,
+    ).displaySize;
+    final remove = Semantics(
+      button: true,
+      label: '移除附件：${file.name}',
+      child: Material(
+        color: colors.base,
+        shape: CircleBorder(side: BorderSide(color: colors.border)),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onRemove,
+          child: Padding(
+            padding: const EdgeInsets.all(3),
+            child: DshGlyph(LucideIcons.x, size: 12, color: colors.muted),
+          ),
+        ),
+      ),
+    );
+    if (imageMediaTypes.contains(file.type)) {
+      return Tooltip(
+        message: '${file.name} · $size',
+        child: SizedBox(
+          width: 64,
+          height: 64,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: Semantics(
+                  button: onPreview != null,
+                  label: '预览图片：${file.name}',
+                  child: InkWell(
+                    onTap: onPreview,
+                    borderRadius: BorderRadius.circular(10),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: DecoratedBox(
+                        position: DecorationPosition.foreground,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: colors.border),
+                        ),
+                        child: Image.memory(
+                          file.data,
+                          cacheWidth: 128,
+                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
+                          errorBuilder: (_, _, _) => ColoredBox(
+                            color: colors.layer,
+                            child: Center(
+                              child: DshGlyph(
+                                LucideIcons.image,
+                                size: 18,
+                                color: colors.muted,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(top: -6, right: -6, child: remove),
+            ],
+          ),
+        ),
+      );
+    }
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 240),
+      padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: colors.layer,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DshGlyph(LucideIcons.paperclip, size: 14, color: colors.muted),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              file.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: DshTypography.caption.copyWith(color: colors.text),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            size,
+            style: DshTypography.caption.copyWith(color: colors.muted),
+          ),
+          const SizedBox(width: 6),
+          remove,
+        ],
+      ),
+    );
+  }
 }

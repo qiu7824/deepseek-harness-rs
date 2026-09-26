@@ -23,6 +23,7 @@ import '../features/conversation/artifacts_view.dart';
 import '../features/workbench/workbench_panel.dart' show previewUrl;
 import '../features/conversation/code_graph_view.dart';
 import '../features/workbench/project_tasks.dart';
+import 'composer_attachments.dart';
 import 'controller.dart';
 import 'interactions.dart';
 import 'voice_input.dart';
@@ -114,7 +115,7 @@ class _ConversationState extends State<Conversation>
   final freshMessages = <String, int>{};
   MessageFeedbackController? feedback;
   bool feedbackConnected = false;
-  final attachments = <({String name, Uint8List data, String type})>[];
+  final attachments = <PendingAttachment>[];
   @override
   Map<String, int> get resourceDiagnostics => {
     'conversationViews': 1,
@@ -475,7 +476,7 @@ class _ConversationState extends State<Conversation>
     final parts = [
       for (final file in submittedAttachments)
         {
-          'type': file.type.startsWith('image/') ? 'image' : 'file',
+          'type': imageMediaTypes.contains(file.type) ? 'image' : 'file',
           'name': file.name,
           'mediaType': file.type,
           'data': base64Encode(file.data),
@@ -500,30 +501,28 @@ class _ConversationState extends State<Conversation>
     }
   }
 
+  int get pendingAttachmentBytes =>
+      attachments.fold<int>(0, (n, f) => n + f.data.length);
+
+  void admitAttachment(int length) {
+    if (attachments.length >= 8) throw StateError('单条消息最多添加 8 个附件');
+    if (length + pendingAttachmentBytes > 16 * 1024 * 1024) {
+      throw StateError('附件总大小不能超过 16 MiB');
+    }
+  }
+
   Future<void> addFiles(List<XFile> files) async {
     try {
       for (final file in files) {
-        if (attachments.length >= 8) throw StateError('单条消息最多添加 8 个附件');
-        final length = await file.length();
-        final total = attachments.fold<int>(0, (n, f) => n + f.data.length);
-        if (length + total > 16 * 1024 * 1024) {
-          throw StateError('附件总大小不能超过 16 MiB');
+        if (FileSystemEntity.typeSync(file.path) ==
+            FileSystemEntityType.directory) {
+          throw StateError('不能添加文件夹：${file.name}');
         }
+        admitAttachment(await file.length());
         final data = await file.readAsBytes();
         if (!mounted) return;
-        if (data.length +
-                attachments.fold<int>(0, (n, f) => n + f.data.length) >
-            16 * 1024 * 1024) {
-          throw StateError('附件总大小不能超过 16 MiB');
-        }
-        final ext = file.name.split('.').last.toLowerCase();
-        final type = switch (ext) {
-          'png' => 'image/png',
-          'jpg' || 'jpeg' => 'image/jpeg',
-          'webp' => 'image/webp',
-          'gif' => 'image/gif',
-          _ => 'application/octet-stream',
-        };
+        admitAttachment(data.length);
+        final type = attachmentMediaType(file.name, data);
         setState(
           () => attachments.add((name: file.name, data: data, type: type)),
         );
@@ -533,6 +532,92 @@ class _ConversationState extends State<Conversation>
       c.emit();
     }
   }
+
+  /// Attaches copied files or a copied image; otherwise runs [pasteText].
+  /// Text wins over a bitmap copied alongside it (Office and spreadsheet
+  /// copies carry both), so only image-only clipboards become attachments.
+  Future<void> pasteClipboard(VoidCallback pasteText) async {
+    final session = c.selectedId;
+    ClipboardAttachments content;
+    try {
+      content = await NativeClipboard.read();
+    } catch (e) {
+      if (!mounted) return;
+      c.error = '无法读取剪贴板：$e';
+      c.emit();
+      pasteText();
+      return;
+    }
+    if (!mounted || c.selectedId != session) return;
+    if (content.files.isNotEmpty) {
+      await addFiles([for (final path in content.files) XFile(path)]);
+      return;
+    }
+    final png = content.png;
+    if (png != null && !await Clipboard.hasStrings()) {
+      if (!mounted || c.selectedId != session) return;
+      try {
+        admitAttachment(png.length);
+        setState(
+          () => attachments.add((
+            name: pastedImageName(DateTime.now()),
+            data: png,
+            type: 'image/png',
+          )),
+        );
+      } catch (e) {
+        c.error = '$e';
+        c.emit();
+      }
+      return;
+    }
+    pasteText();
+  }
+
+  Future<void> previewAttachment(PendingAttachment file) => showDialog<void>(
+    context: context,
+    builder: (context) => Dialog(
+      child: SizedBox(
+        width: 1000,
+        height: 720,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      file.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  DshIcon(
+                    LucideIcons.x,
+                    label: '关闭',
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: InteractiveViewer(
+                minScale: .1,
+                maxScale: 5,
+                child: Image.memory(
+                  file.data,
+                  cacheWidth: 2000,
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -573,9 +658,7 @@ class _ConversationState extends State<Conversation>
                 !c.loading &&
                 !c.sending;
             final activityCount =
-                !c.readingHistory && (c.interruptible || c.compacting)
-                ? 1
-                : 0;
+                !c.readingHistory && (c.interruptible || c.compacting) ? 1 : 0;
             final messageIndices = {
               for (var i = 0; i < c.transcript.length; i++)
                 c.transcript[i].id: c.transcript.length - 1 - i + activityCount,
@@ -1243,26 +1326,27 @@ class _ConversationState extends State<Conversation>
             child: Column(
               children: [
                 if (attachments.isNotEmpty)
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      for (final file in attachments)
-                        InputChip(
-                          label: Text(
-                            file.name,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          avatar: DshGlyph(
-                            file.type.startsWith('image/')
-                                ? LucideIcons.image
-                                : LucideIcons.paperclip,
-                            size: 14,
-                          ),
-                          onDeleted: () =>
-                              setState(() => attachments.remove(file)),
-                        ),
-                    ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final (index, file) in attachments.indexed)
+                            PendingAttachmentTile(
+                              key: ValueKey('pending-attachment-$index'),
+                              file: file,
+                              onPreview: imageMediaTypes.contains(file.type)
+                                  ? () => previewAttachment(file)
+                                  : null,
+                              onRemove: () =>
+                                  setState(() => attachments.remove(file)),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 Focus(
                   onKeyEvent: (_, event) {
@@ -1292,34 +1376,71 @@ class _ConversationState extends State<Conversation>
                     );
                     return KeyEventResult.handled;
                   },
-                  child: TextField(
-                    key: const Key('prompt-input'),
-                    controller: input,
-                    focusNode: focus,
-                    onChanged: (text) {
-                      voice.cancel();
-                      c.setDraft(text);
+                  child: Actions(
+                    actions: {
+                      PasteTextIntent: _ComposerPasteAction(pasteClipboard),
                     },
-                    style: DshTypography.composer.copyWith(color: colors.text),
-                    minLines: hero ? 2 : 1,
-                    maxLines: 8,
-                    decoration: InputDecoration(
-                      hintText:
-                          c.currentWorkspace == null && c.selectedId == null
-                          ? '选择一个工作区开始'
-                          : c.planMode?.requestedActive == true
-                          ? '描述你的任务以生成计划'
-                          : hero
-                          ? '描述你想要构建的内容'
-                          : '给智能体发消息',
-                      hintStyle: DshTypography.composer.copyWith(
-                        color: colors.muted,
+                    child: TextField(
+                      key: const Key('prompt-input'),
+                      controller: input,
+                      focusNode: focus,
+                      contextMenuBuilder: (context, state) {
+                        void paste() {
+                          state.hideToolbar();
+                          unawaited(
+                            pasteClipboard(
+                              () => state.pasteText(
+                                SelectionChangedCause.toolbar,
+                              ),
+                            ),
+                          );
+                        }
+
+                        final items = [...state.contextMenuButtonItems];
+                        final item = ContextMenuButtonItem(
+                          type: ContextMenuButtonType.paste,
+                          onPressed: paste,
+                        );
+                        final index = items.indexWhere(
+                          (item) => item.type == ContextMenuButtonType.paste,
+                        );
+                        if (index < 0) {
+                          items.add(item);
+                        } else {
+                          items[index] = item;
+                        }
+                        return AdaptiveTextSelectionToolbar.buttonItems(
+                          anchors: state.contextMenuAnchors,
+                          buttonItems: items,
+                        );
+                      },
+                      onChanged: (text) {
+                        voice.cancel();
+                        c.setDraft(text);
+                      },
+                      style: DshTypography.composer.copyWith(
+                        color: colors.text,
                       ),
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      isDense: true,
-                      contentPadding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                      minLines: hero ? 2 : 1,
+                      maxLines: 8,
+                      decoration: InputDecoration(
+                        hintText:
+                            c.currentWorkspace == null && c.selectedId == null
+                            ? '选择一个工作区开始'
+                            : c.planMode?.requestedActive == true
+                            ? '描述你的任务以生成计划'
+                            : hero
+                            ? '描述你想要构建的内容'
+                            : '给智能体发消息',
+                        hintStyle: DshTypography.composer.copyWith(
+                          color: colors.muted,
+                        ),
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                      ),
                     ),
                   ),
                 ),
@@ -2126,6 +2247,7 @@ class MessageCard extends StatelessWidget {
                 data: visible,
                 fontSize: 14,
                 conversationStyle: item.kind == 'assistant',
+                imageBaseDirectory: cwd,
                 onTapLink: (_, url, _) {
                   if (url != null) unawaited(openLink(url));
                 },
@@ -2560,5 +2682,18 @@ class _ReasoningMessageState extends State<ReasoningMessage> {
         ],
       ),
     );
+  }
+}
+
+/// Overrides the prompt field's paste shortcut so copied files and images
+/// become attachments; text paste runs through the field's own action.
+class _ComposerPasteAction extends ContextAction<PasteTextIntent> {
+  _ComposerPasteAction(this.paste);
+  final Future<void> Function(VoidCallback pasteText) paste;
+  @override
+  Object? invoke(PasteTextIntent intent, [BuildContext? context]) {
+    final fallback = callingAction;
+    unawaited(paste(() => fallback?.invoke(intent)));
+    return null;
   }
 }

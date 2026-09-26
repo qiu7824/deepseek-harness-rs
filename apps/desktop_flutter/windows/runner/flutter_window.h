@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "win32_window.h"
+#include "clipboard_reader.h"
 #include "voice_recognizer.h"
 #include "speech_speaker.h"
 
@@ -37,6 +38,7 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> speech_channel_;
   SpeechSpeaker speech_speaker_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> theme_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> clipboard_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

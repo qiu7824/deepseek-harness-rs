@@ -23,10 +23,15 @@ class DshMarkdown extends StatefulWidget {
     this.fontSize = 14,
     this.conversationStyle = false,
     this.onSecondaryTapLink,
+    this.imageBaseDirectory,
   });
   final String data;
   final double fontSize;
   final bool conversationStyle;
+
+  /// Directory that relative local image paths resolve against, normally the
+  /// session workspace.
+  final String? imageBaseDirectory;
   final MarkdownTapLinkCallback? onTapLink;
   final void Function(String text, String? href, Offset position)?
   onSecondaryTapLink;
@@ -48,7 +53,8 @@ class _DshMarkdownState extends State<DshMarkdown> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.data != widget.data ||
         oldWidget.fontSize != widget.fontSize ||
-        oldWidget.conversationStyle != widget.conversationStyle) {
+        oldWidget.conversationStyle != widget.conversationStyle ||
+        oldWidget.imageBaseDirectory != widget.imageBaseDirectory) {
       _body = null;
       _nodes = null;
     }
@@ -169,6 +175,7 @@ class _DshMarkdownState extends State<DshMarkdown> {
                 : style,
             onTapLink: _link,
             onSecondaryTapLink: _linkMenu,
+            imageBaseDirectory: widget.imageBaseDirectory,
           ),
         ],
       ],
@@ -217,6 +224,7 @@ class DshMarkdownBlock extends StatefulWidget {
     required this.style,
     required this.onTapLink,
     this.onSecondaryTapLink,
+    this.imageBaseDirectory,
   });
   final md.Node node;
   final String signature;
@@ -224,6 +232,7 @@ class DshMarkdownBlock extends StatefulWidget {
   final MarkdownTapLinkCallback onTapLink;
   final void Function(String text, String? href, Offset position)?
   onSecondaryTapLink;
+  final String? imageBaseDirectory;
   @override
   State<DshMarkdownBlock> createState() => _DshMarkdownBlockState();
 }
@@ -250,7 +259,8 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
   void didUpdateWidget(DshMarkdownBlock oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.signature != widget.signature ||
-        oldWidget.style != widget.style) {
+        oldWidget.style != widget.style ||
+        oldWidget.imageBaseDirectory != widget.imageBaseDirectory) {
       _clear();
     }
   }
@@ -291,16 +301,20 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
         Widget failed(BuildContext context, Object error, StackTrace? stack) =>
             Text(alt ?? '图片无法显示');
         Widget content;
+        ImageProvider? full;
+        final local = markdownImageFile(uri, widget.imageBaseDirectory);
         if (uri.scheme == 'http' || uri.scheme == 'https') {
+          full = NetworkImage('$uri');
           content = Image.network(
             '$uri',
             cacheWidth: 1600,
             fit: BoxFit.contain,
             errorBuilder: failed,
           );
-        } else if (uri.scheme == 'file' || uri.scheme.isEmpty) {
+        } else if (local != null) {
+          full = FileImage(File(local));
           content = Image.file(
-            uri.scheme == 'file' ? File.fromUri(uri) : File(uri.path),
+            File(local),
             cacheWidth: 1600,
             fit: BoxFit.contain,
             errorBuilder: failed,
@@ -319,15 +333,28 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
         } else {
           content = Text(alt ?? '图片无法显示');
         }
+        final preview = full;
         return GestureDetector(
+          onTap: preview == null
+              ? null
+              : () => showMarkdownImage(
+                  context,
+                  preview,
+                  alt ?? title ?? local ?? '$uri',
+                ),
           onSecondaryTapUp: (event) => widget.onSecondaryTapLink?.call(
             alt ?? title ?? '图片',
-            '$uri',
+            local ?? '$uri',
             event.globalPosition,
           ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 600),
-            child: content,
+          child: MouseRegion(
+            cursor: preview == null
+                ? MouseCursor.defer
+                : SystemMouseCursors.zoomIn,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 600),
+              child: content,
+            ),
           ),
         );
       },
@@ -352,6 +379,99 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
     );
   }
 }
+
+/// Local file behind a Markdown image source, or null for remote and inline
+/// images. Handles `file:` URIs, Windows drive paths (which parse as a
+/// one-letter scheme), percent-encoded names and paths relative to [base].
+String? markdownImageFile(Uri uri, String? base, {bool? windows}) {
+  final onWindows = windows ?? Platform.isWindows;
+  String decode(String value) {
+    try {
+      return Uri.decodeComponent(value);
+    } on ArgumentError {
+      return value;
+    }
+  }
+
+  String path;
+  if (uri.scheme == 'file') {
+    try {
+      path = uri.toFilePath(windows: onWindows);
+    } on UnsupportedError {
+      return null;
+    }
+  } else if (onWindows && RegExp(r'^[a-zA-Z]$').hasMatch(uri.scheme)) {
+    path = '${uri.scheme.toUpperCase()}:${decode(uri.path)}';
+  } else if (uri.scheme.isEmpty && !uri.hasAuthority) {
+    path = decode(uri.path);
+  } else {
+    return null;
+  }
+  if (path.isEmpty) return null;
+  final absolute =
+      path.startsWith('/') ||
+      (onWindows &&
+          (path.startsWith(r'\') || RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(path)));
+  if (absolute) return onWindows ? path.replaceAll('/', r'\') : path;
+  if (base == null || base.isEmpty) return null;
+  final separator = onWindows ? r'\' : '/';
+  var relative = onWindows ? path.replaceAll('/', r'\') : path;
+  if (relative.startsWith('.$separator')) relative = relative.substring(2);
+  final root = base.endsWith('/') || base.endsWith(r'\')
+      ? base.substring(0, base.length - 1)
+      : base;
+  return '$root$separator$relative';
+}
+
+/// Opens one Markdown image at full size with zoom and pan.
+Future<void> showMarkdownImage(
+  BuildContext context,
+  ImageProvider image,
+  String title,
+) => showDialog<void>(
+  context: context,
+  builder: (context) => Dialog(
+    child: SizedBox(
+      width: 1000,
+      height: 720,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ),
+                DshIcon(
+                  LucideIcons.x,
+                  label: '关闭',
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: InteractiveViewer(
+              minScale: .1,
+              maxScale: 5,
+              child: Image(
+                image: ResizeImage.resizeIfNeeded(2000, null, image),
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => const Center(child: Text('图片无法显示')),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ),
+);
 
 class _InlineCodeBuilder extends MarkdownElementBuilder {
   @override
