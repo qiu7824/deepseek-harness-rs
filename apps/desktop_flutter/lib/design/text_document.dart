@@ -11,15 +11,10 @@ class TextDocument extends StatelessWidget {
 
   static int boundary(String text, int offset) {
     final at = offset.clamp(0, text.length);
-    if (at > 0 &&
-        at < text.length &&
-        text.codeUnitAt(at) >= 0xdc00 &&
-        text.codeUnitAt(at) <= 0xdfff &&
-        text.codeUnitAt(at - 1) >= 0xd800 &&
-        text.codeUnitAt(at - 1) <= 0xdbff) {
-      return at - 1;
-    }
-    return at;
+    if (at == 0 || at == text.length) return at;
+    // Resolve only the character around this offset, without materializing the
+    // preceding text or scanning the document from its beginning for each row.
+    return CharacterRange.at(text, at).stringBeforeLength;
   }
 
   @override

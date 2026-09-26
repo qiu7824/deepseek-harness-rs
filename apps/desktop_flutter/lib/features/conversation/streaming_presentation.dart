@@ -5,8 +5,9 @@ import 'package:flutter/scheduler.dart';
 
 import '../../design/primitives.dart';
 
-/// Reveals only received text; history is displayed immediately. The pending
-/// tail catches up within a short interval instead of accumulating a playback queue.
+/// Animates received text; history is displayed immediately when [revealInitial]
+/// is false. The pending tail catches up within a short interval and is flushed
+/// when streaming or animations stop.
 class ProgressiveText extends StatefulWidget {
   const ProgressiveText({
     super.key,
@@ -30,7 +31,7 @@ class _ProgressiveTextState extends State<ProgressiveText>
   int shown = 0;
   Duration previous = Duration.zero;
   Duration catchUpAt = const Duration(milliseconds: 300);
-  bool reduced = false;
+  bool reduced = false, tickersEnabled = true;
   @override
   void initState() {
     super.initState();
@@ -63,7 +64,7 @@ class _ProgressiveTextState extends State<ProgressiveText>
   }
 
   void sync() {
-    if (reduced) shown = ends.length;
+    if (!widget.streaming || reduced || !tickersEnabled) shown = ends.length;
     if (shown < ends.length && !ticker.isActive) {
       previous = Duration.zero;
       catchUpAt = const Duration(milliseconds: 300);
@@ -76,6 +77,7 @@ class _ProgressiveTextState extends State<ProgressiveText>
   void didChangeDependencies() {
     super.didChangeDependencies();
     reduced = MediaQuery.disableAnimationsOf(context);
+    tickersEnabled = TickerMode.valuesOf(context).enabled;
     sync();
   }
 

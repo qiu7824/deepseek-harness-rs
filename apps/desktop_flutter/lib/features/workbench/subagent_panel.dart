@@ -19,8 +19,11 @@ class SubagentPanel extends StatefulWidget {
 class _SubagentPanelState extends State<SubagentPanel>
     with WidgetsBindingObserver {
   final scope = RequestScope();
+  RequestScope readScope = RequestScope();
   List<Json> entries = [];
-  bool loading = true, fetching = false, paused = false;
+  bool loading = true, fetching = false;
+  bool panelVisible = true, appVisible = true;
+  bool get paused => !panelVisible || !appVisible;
   String? error;
   Json? selected;
   Timer? timer;
@@ -37,8 +40,27 @@ class _SubagentPanelState extends State<SubagentPanel>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    paused = state != AppLifecycleState.resumed;
-    if (!paused) load();
+    updateVisibility(app: state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    updateVisibility(panel: TickerMode.valuesOf(context).enabled);
+  }
+
+  void updateVisibility({bool? app, bool? panel}) {
+    final wasPaused = paused;
+    appVisible = app ?? appVisible;
+    panelVisible = panel ?? panelVisible;
+    if (paused == wasPaused) return;
+    if (paused) {
+      readScope.cancel();
+    } else {
+      readScope = RequestScope();
+      fetching = false;
+      load();
+    }
   }
 
   @override
@@ -46,29 +68,33 @@ class _SubagentPanelState extends State<SubagentPanel>
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     scope.cancel();
+    readScope.cancel();
     super.dispose();
   }
 
   Future<void> load() async {
-    if (fetching) return;
+    if (fetching || paused) return;
     fetching = true;
+    final requestScope = readScope;
     try {
       final result = await widget.api.rpc(
         'subagent.list',
         payload: {'parentSessionId': widget.parent},
-        scope: scope,
+        scope: requestScope,
       );
-      if (mounted) {
+      if (mounted && !requestScope.cancelled) {
         setState(() {
           entries = objects(result['entries']);
           error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && !requestScope.cancelled) setState(() => error = '$e');
     } finally {
-      fetching = false;
-      if (mounted) setState(() => loading = false);
+      if (identical(requestScope, readScope)) fetching = false;
+      if (mounted && !requestScope.cancelled) {
+        setState(() => loading = false);
+      }
     }
   }
 
@@ -214,13 +240,12 @@ class SubagentConversation extends StatefulWidget {
 class _SubagentConversationState extends State<SubagentConversation>
     with WidgetsBindingObserver {
   final scope = RequestScope(), input = TextEditingController();
+  RequestScope readScope = RequestScope();
   final window = ConversationWindow(maxBytes: 2 * 1024 * 1024, maxEvents: 2048);
   List<TranscriptItem> items = [];
-  bool loading = true,
-      fetching = false,
-      sending = false,
-      older = false,
-      paused = false;
+  bool loading = true, fetching = false, sending = false, older = false;
+  bool panelVisible = true, appVisible = true;
+  bool get paused => !panelVisible || !appVisible;
   String delivery = 'queue';
   String? error;
   Timer? timer;
@@ -242,8 +267,27 @@ class _SubagentConversationState extends State<SubagentConversation>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    paused = state != AppLifecycleState.resumed;
-    if (!paused && !older) load();
+    updateVisibility(app: state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    updateVisibility(panel: TickerMode.valuesOf(context).enabled);
+  }
+
+  void updateVisibility({bool? app, bool? panel}) {
+    final wasPaused = paused;
+    appVisible = app ?? appVisible;
+    panelVisible = panel ?? panelVisible;
+    if (paused == wasPaused) return;
+    if (paused) {
+      readScope.cancel();
+    } else {
+      readScope = RequestScope();
+      fetching = false;
+      if (!older) load();
+    }
   }
 
   @override
@@ -251,13 +295,15 @@ class _SubagentConversationState extends State<SubagentConversation>
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     scope.cancel();
+    readScope.cancel();
     input.dispose();
     super.dispose();
   }
 
   Future<void> load({bool previous = false}) async {
-    if (fetching) return;
+    if (fetching || paused) return;
     fetching = true;
+    final requestScope = readScope;
     try {
       final result = await widget.api.rpc(
         'subagent.history',
@@ -267,14 +313,14 @@ class _SubagentConversationState extends State<SubagentConversation>
           if (previous && window.events.isNotEmpty)
             'beforeSeq': window.events.first.startSeq,
         },
-        scope: scope,
+        scope: requestScope,
       );
       final page = HistoryPage.fromJson({
         ...result,
         'hasMoreBefore': result['hasMore'],
         'hasMoreAfter': previous,
       });
-      if (!mounted) return;
+      if (!mounted || requestScope.cancelled) return;
       window.replace(page);
       setState(() {
         items = window.project();
@@ -282,10 +328,12 @@ class _SubagentConversationState extends State<SubagentConversation>
         error = null;
       });
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && !requestScope.cancelled) setState(() => error = '$e');
     } finally {
-      fetching = false;
-      if (mounted) setState(() => loading = false);
+      if (identical(requestScope, readScope)) fetching = false;
+      if (mounted && !requestScope.cancelled) {
+        setState(() => loading = false);
+      }
     }
   }
 

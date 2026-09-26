@@ -111,8 +111,6 @@ class _ConversationState extends State<Conversation>
   List<MessageRailEntry> railEntriesCache = [];
   final voice = VoiceInputController();
   final readAloud = ReadAloudController();
-  final knownMessages = <String>{};
-  final freshMessages = <String, int>{};
   MessageFeedbackController? feedback;
   bool feedbackConnected = false;
   final attachments = <({String name, Uint8List data, String type})>[];
@@ -139,7 +137,7 @@ class _ConversationState extends State<Conversation>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     c.addListener(changed);
-    c.messageChanges.addListener(liveChanged);
+    c.messageChanges.addListener(changed);
     c.composerFocus.addListener(requestFocus);
     widget.viewRequest?.addListener(applyViewRequest);
     scroll.addListener(onScroll);
@@ -163,7 +161,7 @@ class _ConversationState extends State<Conversation>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     c.removeListener(changed);
-    c.messageChanges.removeListener(liveChanged);
+    c.messageChanges.removeListener(changed);
     c.composerFocus.removeListener(requestFocus);
     widget.viewRequest?.removeListener(applyViewRequest);
     input.dispose();
@@ -215,8 +213,7 @@ class _ConversationState extends State<Conversation>
     }
   }
 
-  void liveChanged() => changed(live: true);
-  void changed({bool live = false}) {
+  void changed() {
     if (!c.pluginEnabled('dsh-voice-input') ||
         !c.connected ||
         c.sending ||
@@ -261,8 +258,6 @@ class _ConversationState extends State<Conversation>
       navigating = false;
       navigationError = null;
       userAnchors.clear();
-      knownMessages.clear();
-      freshMessages.clear();
       railEntriesCache = [];
       railIndexRevision = -1;
       railUserSignature = '';
@@ -290,27 +285,6 @@ class _ConversationState extends State<Conversation>
         .toSet();
     userAnchors.removeWhere((seq, _) => !userSeqs.contains(seq));
     updateRailHighlight();
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final ids = c.transcript
-        .where((m) => m.kind == 'assistant')
-        .map((m) => m.id)
-        .toSet();
-    if ((live || c.sending) && !c.readingHistory) {
-      for (final item
-          in c.transcript.reversed
-              .where(
-                (m) => m.kind == 'assistant' && !knownMessages.contains(m.id),
-              )
-              .take(64)) {
-        freshMessages[item.id] = now;
-      }
-    }
-    freshMessages.removeWhere(
-      (id, when) => !ids.contains(id) || now - when > 600,
-    );
-    knownMessages
-      ..clear()
-      ..addAll(ids);
   }
 
   List<MessageRailEntry> get railEntries {
@@ -993,17 +967,8 @@ class _ConversationState extends State<Conversation>
                                             bottomSpacing: rawIndex == 0
                                                 ? 0
                                                 : 16,
-                                            animateNewContent:
-                                                follow &&
-                                                !c.readingHistory &&
-                                                freshMessages.containsKey(
-                                                  item.id,
-                                                ) &&
-                                                DateTime.now()
-                                                            .millisecondsSinceEpoch -
-                                                        freshMessages[item
-                                                            .id]! <=
-                                                    600,
+                                            animateUpdates:
+                                                follow && !c.readingHistory,
                                             cwd: c.selected?.cwd,
                                             onOpenPath: widget.onOpenPath,
                                             onOpenPlan: widget.onOpenPlan,
@@ -2005,7 +1970,7 @@ class MessageCard extends StatelessWidget {
     this.sessionId,
     this.cwd,
     this.hintDisplay = 'both',
-    this.animateNewContent = false,
+    this.animateUpdates = true,
     this.bottomSpacing = 16,
   });
   final TranscriptItem item;
@@ -2016,7 +1981,7 @@ class MessageCard extends StatelessWidget {
   final String? sessionId;
   final String? cwd;
   final String hintDisplay;
-  final bool animateNewContent;
+  final bool animateUpdates;
   final double bottomSpacing;
   final MessageFeedbackController? feedback;
   final ReadAloudController? readAloud;
@@ -2252,8 +2217,8 @@ class MessageCard extends StatelessWidget {
         else if (item.text.isNotEmpty)
           ProgressiveText(
             text: displayText,
-            revealInitial: animateNewContent,
-            streaming: item.streaming || animateNewContent,
+            revealInitial: false,
+            streaming: item.streaming && animateUpdates,
             builder: (visible) => ConstrainedBox(
               constraints: const BoxConstraints(minHeight: 24),
               child: DshMarkdown(

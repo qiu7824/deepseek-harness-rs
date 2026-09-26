@@ -298,11 +298,7 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
       ),
       checkboxBuilder: null,
       bulletBuilder: null,
-      builders: {
-        'pre': _CodeBuilder(),
-        'math': _MathBuilder(),
-        'code': _InlineCodeBuilder(),
-      },
+      builders: {'pre': _CodeBuilder(), 'math': _MathBuilder()},
       paddingBuilders: const {},
       listItemCrossAxisAlignment: MarkdownListItemCrossAxisAlignment.baseline,
       fitContent: true,
@@ -436,46 +432,6 @@ class MarkdownImage extends StatelessWidget {
             child: image(source),
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _InlineCodeBuilder extends MarkdownElementBuilder {
-  @override
-  Widget? visitElementAfterWithContext(
-    BuildContext context,
-    md.Element element,
-    TextStyle? preferredStyle,
-    TextStyle? parentStyle,
-  ) {
-    final colors = DshColors(context);
-    return Text.rich(
-      TextSpan(
-        children: [
-          WidgetSpan(
-            alignment: PlaceholderAlignment.middle,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 5),
-              decoration: BoxDecoration(
-                color: colors.dark
-                    ? const Color(0xff2c2c2e)
-                    : const Color(0xffebeef2),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: SelectableText(
-                element.textContent,
-                style: (preferredStyle ?? const TextStyle()).copyWith(
-                  backgroundColor: Colors.transparent,
-                  fontFamily: 'Consolas',
-                  fontSize: (parentStyle?.fontSize ?? 14) * .875,
-                  height: 19 / ((parentStyle?.fontSize ?? 14) * .875),
-                  color: colors.text,
-                ),
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

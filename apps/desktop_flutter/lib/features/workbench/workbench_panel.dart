@@ -63,26 +63,140 @@ class WorkbenchPanel extends StatefulWidget {
     required this.controller,
     required this.onClose,
     this.initialTab = 'files',
+    this.openRequest = 0,
+    this.onTabChanged,
     this.fileRequest,
+    this.onFileRequestHandled,
     this.planPreviews,
     this.onPlanSource,
   });
   final DesktopController controller;
   final VoidCallback onClose;
   final String initialTab;
+  final int openRequest;
+  final ValueChanged<String>? onTabChanged;
   final FileOpenRequest? fileRequest;
+  final ValueChanged<FileOpenRequest>? onFileRequestHandled;
   final PlanPreviewStore? planPreviews;
   final VoidCallback? onPlanSource;
   @override
   State<WorkbenchPanel> createState() => _WorkbenchPanelState();
 }
 
-class _WorkbenchPanelState extends State<WorkbenchPanel> {
-  late String tab = widget.initialTab;
+class _WorkbenchPanelState extends State<WorkbenchPanel>
+    implements ResourceDiagnostics {
+  static const labels = {
+    'files': '文件',
+    'git': 'Git',
+    'terminal': '终端',
+    'project-tasks': '项目任务',
+    'tasks': '后台任务',
+    'team': '子任务',
+    'plans': '计划预览',
+  };
+  final tabs = <String>[];
+  final tabAnchors = <String, GlobalKey>{};
+  String? tab;
+  FileOpenRequest? fileRequest;
+  @override
+  Map<String, int> get resourceDiagnostics => {'workbenchTabs': tabs.length};
+
+  @override
+  void initState() {
+    super.initState();
+    activateTab(widget.initialTab, notify: false);
+    acceptFileRequest();
+  }
+
+  void activateTab(String value, {bool notify = true}) {
+    value = labels.containsKey(value) ? value : 'files';
+    if (!tabs.contains(value)) tabs.add(value);
+    tab = value;
+    if (notify) widget.onTabChanged?.call(value);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || tab != value) return;
+      final anchor = tabAnchors[value]?.currentContext;
+      if (anchor != null) {
+        unawaited(Scrollable.ensureVisible(anchor, alignment: .5));
+      }
+    });
+  }
+
+  void acceptFileRequest() {
+    final request = widget.fileRequest;
+    if (request == null) return;
+    fileRequest = request;
+    activateTab('files', notify: false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onFileRequestHandled?.call(request);
+    });
+  }
+
+  void close(String value) {
+    final index = tabs.indexOf(value);
+    if (index < 0) return;
+    setState(() {
+      tabs.removeAt(index);
+      tabAnchors.remove(value);
+      if (value == 'files') fileRequest = null;
+      if (value == 'plans') widget.planPreviews?.clear();
+      if (tab == value) {
+        tab = tabs.isEmpty ? null : tabs[(index - 1).clamp(0, tabs.length - 1)];
+      }
+    });
+    if (tab != null) widget.onTabChanged?.call(tab!);
+  }
+
   @override
   void didUpdateWidget(covariant WorkbenchPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.initialTab != widget.initialTab) tab = widget.initialTab;
+    if (oldWidget.initialTab != widget.initialTab ||
+        oldWidget.openRequest != widget.openRequest) {
+      activateTab(widget.initialTab, notify: false);
+    }
+    if (oldWidget.fileRequest != widget.fileRequest) acceptFileRequest();
+  }
+
+  Widget panel(String value) {
+    if (value == 'plans') {
+      return widget.planPreviews == null
+          ? const DshEmpty('此计划预览已失效，请从原计划卡重新打开。')
+          : PlanPreviewPanel(
+              store: widget.planPreviews!,
+              onSource: widget.onPlanSource ?? widget.onClose,
+            );
+    }
+    final controller = widget.controller;
+    final api = controller.client;
+    final session = controller.selectedId;
+    if (api == null || session == null) {
+      return const DshEmpty('连接服务并选择会话后打开工具。');
+    }
+    final key = ValueKey((api, session, value));
+    return switch (value) {
+      'project-tasks' => ProjectTasks(key: key, api: api, session: session),
+      'terminal' => NativeTerminalPanel(
+        key: key,
+        api: api,
+        session: session,
+        onInputError: (message) {
+          if (controller.client == api && controller.selectedId == session) {
+            controller.error = '终端输入发送失败：$message';
+            controller.emit();
+          }
+        },
+      ),
+      'git' => GitPanel(key: key, api: api, session: session),
+      'team' => SubagentPanel(key: key, api: api, parent: session),
+      'tasks' => TaskPanel(key: key, controller: widget.controller),
+      _ => FilePanel(
+        key: key,
+        api: api,
+        session: session,
+        cwd: widget.controller.selected?.cwd ?? '',
+        fileRequest: fileRequest,
+      ),
+    };
   }
 
   @override
@@ -105,29 +219,80 @@ class _WorkbenchPanelState extends State<WorkbenchPanel> {
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
-                        for (final item in {
-                          'files': '文件',
-                          'git': 'Git',
-                          'terminal': '终端',
-                          'project-tasks': '项目任务',
-                          'tasks': '后台任务',
-                          'team': '子任务',
-                          if (widget.planPreviews?.items.isNotEmpty ?? false)
-                            'plans': '计划预览',
-                        }.entries)
-                          DshButton(
-                            height: 28,
-                            padding: const EdgeInsets.symmetric(horizontal: 10),
-                            outline: tab == item.key,
-                            onPressed: () => setState(() => tab = item.key),
-                            child: Text(
-                              item.value,
-                              style: const TextStyle(fontSize: 12),
+                        for (final value in tabs)
+                          Container(
+                            key: ValueKey('workbench-tab-$value'),
+                            decoration: BoxDecoration(
+                              color: tab == value ? colors.layer : null,
+                              border: Border(
+                                bottom: BorderSide(
+                                  color: tab == value
+                                      ? colors.blue
+                                      : Colors.transparent,
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Semantics(
+                                  key: tabAnchors.putIfAbsent(
+                                    value,
+                                    GlobalKey.new,
+                                  ),
+                                  selected: tab == value,
+                                  child: DshButton(
+                                    key: ValueKey('workbench-select-$value'),
+                                    height: 30,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                    ),
+                                    onPressed: () =>
+                                        setState(() => activateTab(value)),
+                                    child: Text(
+                                      labels[value]!,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                ),
+                                DshIcon(
+                                  LucideIcons.x,
+                                  key: ValueKey('workbench-close-$value'),
+                                  label: '关闭${labels[value]}标签',
+                                  size: 24,
+                                  glyphSize: 13,
+                                  onPressed: () => close(value),
+                                ),
+                              ],
                             ),
                           ),
                       ],
                     ),
                   ),
+                ),
+                PopupMenuButton<String>(
+                  key: const Key('workbench-add-tab'),
+                  tooltip: '打开工具标签',
+                  padding: EdgeInsets.zero,
+                  icon: const DshGlyph(LucideIcons.plus, size: 16),
+                  onSelected: (value) => setState(() => activateTab(value)),
+                  itemBuilder: (_) => [
+                    for (final entry in labels.entries)
+                      if (entry.key != 'plans' ||
+                          (widget.planPreviews?.items.isNotEmpty ?? false))
+                        PopupMenuItem(
+                          key: ValueKey('workbench-open-${entry.key}'),
+                          value: entry.key,
+                          child: Row(
+                            children: [
+                              Expanded(child: Text(entry.value)),
+                              if (tabs.contains(entry.key))
+                                const DshGlyph(LucideIcons.check, size: 14),
+                            ],
+                          ),
+                        ),
+                  ],
                 ),
                 DshIcon(
                   LucideIcons.x,
@@ -138,60 +303,29 @@ class _WorkbenchPanelState extends State<WorkbenchPanel> {
             ),
           ),
           Expanded(
-            child: switch (tab) {
-              'plans' =>
-                widget.planPreviews == null
-                    ? const DshEmpty('此计划预览已失效，请从原计划卡重新打开。')
-                    : PlanPreviewPanel(
-                        store: widget.planPreviews!,
-                        onSource: widget.onPlanSource ?? widget.onClose,
-                      ),
-              'project-tasks' => ProjectTasks(
-                key: ValueKey((
-                  widget.controller.client,
-                  widget.controller.selectedId,
-                )),
-                api: widget.controller.client!,
-                session: widget.controller.selectedId!,
-              ),
-              'terminal' => NativeTerminalPanel(
-                key: ValueKey((
-                  widget.controller.client,
-                  widget.controller.selectedId,
-                )),
-                api: widget.controller.client!,
-                session: widget.controller.selectedId!,
-              ),
-              'git' => GitPanel(
-                api: widget.controller.client!,
-                session: widget.controller.selectedId!,
-              ),
-              'team' => SubagentPanel(
-                key: ValueKey((
-                  widget.controller.client,
-                  widget.controller.selectedId,
-                )),
-                api: widget.controller.client!,
-                parent: widget.controller.selectedId!,
-              ),
-              'tasks' => TaskPanel(
-                key: ValueKey((
-                  widget.controller.client,
-                  widget.controller.selectedId,
-                )),
-                controller: widget.controller,
-              ),
-              _ => FilePanel(
-                key: ValueKey((
-                  widget.controller.client,
-                  widget.controller.selectedId,
-                )),
-                api: widget.controller.client!,
-                session: widget.controller.selectedId!,
-                cwd: widget.controller.selected?.cwd ?? '',
-                fileRequest: widget.fileRequest,
-              ),
-            },
+            child: tabs.isEmpty
+                ? const DshEmpty('使用 + 打开文件、终端或其他工具标签。')
+                : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      for (final value in tabs)
+                        Offstage(
+                          key: ValueKey((
+                            widget.controller.client,
+                            widget.controller.selectedId,
+                            value,
+                          )),
+                          offstage: tab != value,
+                          child: TickerMode(
+                            enabled: tab == value,
+                            child: ExcludeFocus(
+                              excluding: tab != value,
+                              child: panel(value),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
           ),
         ],
       ),
@@ -229,6 +363,7 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
   final files = <String>[];
   String? error;
   bool loading = false;
+  int listGeneration = 0;
   final scope = RequestScope();
   final cache = ResourceCache<String, String>(
     maxBytes: 16 * 1024 * 1024 - PlanPreviewStore.maxRetainedBytes,
@@ -262,6 +397,7 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
   }
 
   Future<void> list(String path) async {
+    final generation = ++listGeneration;
     setState(() => loading = true);
     try {
       final value = await widget.api.request(
@@ -269,7 +405,7 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
         scope: scope,
         maxBytes: 2 * 1024 * 1024,
       );
-      if (mounted) {
+      if (mounted && generation == listGeneration) {
         setState(() {
           entries = objects(value['entries']);
           directory = '${value['path'] ?? path}';
@@ -277,9 +413,13 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && generation == listGeneration) {
+        setState(() => error = '$e');
+      }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted && generation == listGeneration) {
+        setState(() => loading = false);
+      }
     }
   }
 
@@ -818,6 +958,7 @@ class _GitPanelState extends State<GitPanel> {
   String? path, error;
   List<String> diff = [];
   bool busy = false, staged = false;
+  int diffGeneration = 0;
   @override
   void initState() {
     super.initState();
@@ -852,20 +993,34 @@ class _GitPanelState extends State<GitPanel> {
   }
 
   Future<void> select(Json entry) async {
-    path = '${entry['path']}';
-    staged = entry['group'] == 'staged';
+    final generation = ++diffGeneration;
+    final requestedPath = '${entry['path']}';
+    final requestedStaged = entry['group'] == 'staged';
+    setState(() {
+      path = requestedPath;
+      staged = requestedStaged;
+      diff = [];
+      error = null;
+    });
+    bool current() =>
+        mounted &&
+        generation == diffGeneration &&
+        path == requestedPath &&
+        staged == requestedStaged;
     try {
       final result = await widget.api.request(
         previewUrl('git-diff', widget.session, {
-          'path': path,
-          'staged': staged ? '1' : '0',
+          'path': requestedPath,
+          'staged': requestedStaged ? '1' : '0',
         }),
         scope: scope,
         maxBytes: 8 * 1024 * 1024,
       );
-      if (mounted) setState(() => diff = '${result['diff'] ?? ''}'.split('\n'));
+      if (current()) {
+        setState(() => diff = '${result['diff'] ?? ''}'.split('\n'));
+      }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (current()) setState(() => error = '$e');
     }
   }
 
@@ -1060,9 +1215,11 @@ class NativeTerminalPanel extends StatefulWidget {
     super.key,
     required this.api,
     required this.session,
+    this.onInputError,
   });
   final DshClient api;
   final String session;
+  final ValueChanged<String>? onInputError;
   @override
   State<NativeTerminalPanel> createState() => _NativeTerminalPanelState();
 }
@@ -1070,19 +1227,25 @@ class NativeTerminalPanel extends StatefulWidget {
 class _NativeTerminalPanelState extends State<NativeTerminalPanel>
     with WidgetsBindingObserver
     implements ResourceDiagnostics {
+  static final inputTails = <(DshClient, String, String), Future<void>>{};
   @override
   Map<String, int> get resourceDiagnostics => {
     'terminalPanels': 1,
     'terminalBufferLines': terminal.buffer.lines.length,
     'terminalQueuedInputUnits': pendingInput.length + queuedInputLength,
+    'terminalInputOwners': inputTails.length,
   };
   late Terminal terminal;
   final scope = RequestScope();
+  final inputScope = RequestScope();
+  late final inputApi = widget.api;
+  late final inputSession = widget.session;
   RequestScope readScope = RequestScope();
   List<Json> entries = [];
   String? active, error;
   Timer? timer, resizeTimer, inputTimer;
-  bool visible = true;
+  bool panelVisible = true, appVisible = true;
+  bool get visible => panelVisible && appVisible;
   int? pollingEpoch;
   int listGeneration = 0, queuedInputLength = 0;
   Future<void> inputWrites = Future.value();
@@ -1137,9 +1300,20 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final nextVisible = state == AppLifecycleState.resumed;
-    if (visible == nextVisible) return;
-    visible = nextVisible;
+    updateVisibility(app: state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    updateVisibility(panel: TickerMode.valuesOf(context).enabled);
+  }
+
+  void updateVisibility({bool? app, bool? panel}) {
+    final wasVisible = visible;
+    appVisible = app ?? appVisible;
+    panelVisible = panel ?? panelVisible;
+    if (visible == wasVisible) return;
     if (!visible) {
       unawaited(flushInput());
       timer?.cancel();
@@ -1156,6 +1330,9 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // Accepted keystrokes stay bound to their original terminal even when the
+    // view closes before the batching delay or an earlier write completes.
+    unawaited(flushInput().whenComplete(inputScope.cancel));
     timer?.cancel();
     resizeTimer?.cancel();
     inputTimer?.cancel();
@@ -1173,28 +1350,47 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
     final text = pendingInput, owner = active, generation = epoch;
     pendingInput = '';
     if (text.isEmpty) return inputWrites;
-    if (owner == null || scope.cancelled) return;
+    if (owner == null || inputScope.cancelled) return;
     queuedInputLength += text.length;
-    inputWrites = inputWrites.then((_) async {
-      try {
-        if (!scope.cancelled) {
-          for (final chunk in terminalInputChunks(text)) {
-            if (scope.cancelled ||
-                !await action(
-                  'input',
-                  extra: {'text': chunk},
-                  terminalId: owner,
-                  requestEpoch: generation,
-                )) {
-              break;
-            }
-          }
-        }
-      } finally {
-        queuedInputLength -= text.length;
-      }
-    });
-    await inputWrites;
+    final target = (inputApi, inputSession, owner);
+    final previousLocal = inputWrites, previousOwner = inputTails[target];
+    late final Future<void> write;
+    // A reopened view joins the same terminal's existing write tail. Each job
+    // only awaits tails captured before publication, so dependencies cannot cycle.
+    write =
+        Future.wait<void>([
+              previousLocal,
+              if (previousOwner != null &&
+                  !identical(previousOwner, previousLocal))
+                previousOwner,
+            ])
+            .then((_) async {
+              try {
+                if (!inputScope.cancelled) {
+                  for (final chunk in terminalInputChunks(text)) {
+                    if (inputScope.cancelled ||
+                        !await action(
+                          'input',
+                          extra: {'text': chunk},
+                          terminalId: owner,
+                          requestEpoch: generation,
+                        )) {
+                      break;
+                    }
+                  }
+                }
+              } finally {
+                queuedInputLength -= text.length;
+              }
+            })
+            .whenComplete(() {
+              if (identical(inputTails[target], write)) {
+                inputTails.remove(target);
+              }
+            });
+    inputWrites = write;
+    inputTails[target] = write;
+    await write;
   }
 
   Future<bool> action(
@@ -1204,25 +1400,30 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
     int? requestEpoch,
   }) async {
     final owner = terminalId ?? active, generation = requestEpoch ?? epoch;
-    if (owner == null || scope.cancelled) return false;
+    final requestScope = action == 'input' ? inputScope : scope;
+    if (owner == null || requestScope.cancelled) return false;
     try {
-      await widget.api.request(
+      await (action == 'input' ? inputApi : widget.api).request(
         '/__dsh-preview/terminal-action',
         body: {
-          'sessionId': widget.session,
+          'sessionId': action == 'input' ? inputSession : widget.session,
           'terminalId': owner,
           'action': action,
           ...extra,
         },
         mutation: true,
-        scope: scope,
+        scope: requestScope,
       );
       return true;
     } catch (e) {
+      if (action == 'input' && !mounted && !inputScope.cancelled) {
+        inputScope.cancel();
+        widget.onInputError?.call('$e');
+      }
       if (mounted &&
           generation == epoch &&
           active == owner &&
-          !scope.cancelled) {
+          !requestScope.cancelled) {
         setState(() => error = '$e');
       }
       return false;
@@ -1447,36 +1648,71 @@ class TaskPanel extends StatefulWidget {
   State<TaskPanel> createState() => _TaskPanelState();
 }
 
-class _TaskPanelState extends State<TaskPanel> {
+class _TaskPanelState extends State<TaskPanel> with WidgetsBindingObserver {
   final scope = RequestScope();
+  late final api = widget.controller.client!;
+  late final session = widget.controller.selectedId!;
+  RequestScope readScope = RequestScope();
   List<Json> entries = [];
   String? error;
   bool busy = false;
+  bool panelVisible = true, appVisible = true;
+  bool get visible => panelVisible && appVisible;
   Timer? timer;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     load();
-    timer = Timer.periodic(const Duration(seconds: 4), (_) => load());
+    timer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (visible) load();
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    updateVisibility(panel: TickerMode.valuesOf(context).enabled);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    updateVisibility(app: state == AppLifecycleState.resumed);
+  }
+
+  void updateVisibility({bool? app, bool? panel}) {
+    final wasVisible = visible;
+    appVisible = app ?? appVisible;
+    panelVisible = panel ?? panelVisible;
+    if (visible == wasVisible) return;
+    if (!visible) {
+      readScope.cancel();
+    } else {
+      readScope = RequestScope();
+      busy = false;
+      load();
+    }
   }
 
   @override
   void dispose() {
     timer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     scope.cancel();
+    readScope.cancel();
     super.dispose();
   }
 
   Future<void> load() async {
-    if (busy) return;
+    if (busy || !visible) return;
     busy = true;
+    final requestScope = readScope;
     try {
-      final c = widget.controller;
-      final value = await c.client!.request(
-        previewUrl('job-list', c.selectedId!),
-        scope: scope,
+      final value = await api.request(
+        previewUrl('job-list', session),
+        scope: requestScope,
       );
-      if (mounted) {
+      if (mounted && !requestScope.cancelled) {
         setState(
           () => entries = objects(
             value['entries'] ?? value['items'] ?? value['agents'],
@@ -1484,9 +1720,9 @@ class _TaskPanelState extends State<TaskPanel> {
         );
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && !requestScope.cancelled) setState(() => error = '$e');
     } finally {
-      busy = false;
+      if (identical(requestScope, readScope)) busy = false;
     }
   }
 

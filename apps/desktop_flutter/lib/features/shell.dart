@@ -60,7 +60,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     previewClient = c.client;
     previewSession = c.selectedId;
     planPreviews.scope(c.client, c.selectedId);
-    if (dockTab == 'plans') dockTab = 'files';
+    dockTab = 'files';
+    fileRequest = null;
     if (mounted) setState(() {});
   }
 
@@ -99,6 +100,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   double sidebarWidth = 280, dockWidth = 470, chatWidth = 0;
   double availableWidth = 0;
   String dockTab = 'files';
+  int dockRequest = 0;
   FileOpenRequest? fileRequest;
   DshClient? fileRequestClient;
   String? fileRequestSession;
@@ -246,12 +248,21 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     setState(() {
       dockOpen = true;
       dockTab = tab;
+      dockRequest++;
     });
     if (availableWidth < 1100) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) scaffoldKey.currentState?.openEndDrawer();
       });
     }
+  }
+
+  void selectDockTab(String tab) {
+    if (dockTab != tab) setState(() => dockTab = tab);
+  }
+
+  void fileRequestHandled(FileOpenRequest request) {
+    if (identical(fileRequest, request)) fileRequest = null;
   }
 
   void toggleSidebar() {
@@ -537,10 +548,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                   SizedBox(
                     width: dockWidth.clamp(330, maxDockWidth),
                     child: WorkbenchPanel(
-                      key: ValueKey('dock-${c.selectedId}'),
+                      key: ValueKey((c.client, c.selectedId)),
                       controller: c,
                       initialTab: dockTab,
+                      openRequest: dockRequest,
+                      onTabChanged: selectDockTab,
                       fileRequest: currentFileRequest,
+                      onFileRequestHandled: fileRequestHandled,
                       planPreviews: planPreviews,
                       onPlanSource: planSource,
                       onClose: closeDock,
@@ -554,9 +568,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
               ? Drawer(
                   width: constraints.maxWidth * .9,
                   child: WorkbenchPanel(
+                    key: ValueKey((c.client, c.selectedId)),
                     controller: c,
                     initialTab: dockTab,
+                    openRequest: dockRequest,
+                    onTabChanged: selectDockTab,
                     fileRequest: currentFileRequest,
+                    onFileRequestHandled: fileRequestHandled,
                     planPreviews: planPreviews,
                     onPlanSource: planSource,
                     onClose: closeDock,

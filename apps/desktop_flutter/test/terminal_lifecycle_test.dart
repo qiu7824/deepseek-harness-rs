@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/features/workbench/workbench_panel.dart';
+import 'package:dsh_desktop/src/resource_diagnostics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -12,6 +13,7 @@ class TerminalApi extends DshClient {
   TerminalApi() : super('http://127.0.0.1:1');
   final reads = <({String id, RequestScope? scope})>[];
   final actions = <Json>[];
+  final inputScopes = <RequestScope?>[];
   Completer<Json>? slowRead, slowClose, slowInput;
   bool closedA = false;
   @override
@@ -38,6 +40,7 @@ class TerminalApi extends DshClient {
       return {'totalLines': 1, 'text': '$id> '};
     }
     actions.add(Map<String, dynamic>.from(body!));
+    if (body['action'] == 'input') inputScopes.add(scope);
     if (body['action'] == 'input' && slowInput != null) {
       return slowInput!.future;
     }
@@ -50,11 +53,19 @@ class TerminalApi extends DshClient {
   }
 }
 
-Future<void> showTerminal(WidgetTester tester, TerminalApi api) async {
+Future<void> showTerminal(
+  WidgetTester tester,
+  TerminalApi api, {
+  ValueChanged<String>? onInputError,
+}) async {
   await tester.pumpWidget(
     ShadApp(
       home: Scaffold(
-        body: NativeTerminalPanel(api: api, session: 'owner'),
+        body: NativeTerminalPanel(
+          api: api,
+          session: 'owner',
+          onInputError: onInputError,
+        ),
       ),
     ),
   );
@@ -69,6 +80,112 @@ Future<void> cleanup(WidgetTester tester, TerminalApi api) async {
 }
 
 void main() {
+  testWidgets(
+    'reopened terminal waits for the old view to finish every paste chunk',
+    (tester) async {
+      final api = TerminalApi()..slowInput = Completer<Json>();
+      await showTerminal(tester, api);
+      final old = tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .terminal;
+      final pasted = '中文🙂' * 3000;
+      old.onOutput!(pasted);
+      await tester.pump(const Duration(milliseconds: 20));
+      old.onOutput!('tail');
+      final pending = api.slowInput!;
+      await tester.pumpWidget(const SizedBox());
+      await showTerminal(tester, api);
+      final reopened = tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .terminal;
+      reopened.onOutput!('\r');
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(api.actions.where((a) => a['action'] == 'input'), hasLength(1));
+      api.slowInput = null;
+      pending.complete({'ok': true});
+      await tester.pump();
+      await tester.pump();
+      final sent = api.actions.where((a) => a['action'] == 'input').toList();
+      expect(sent.length, greaterThan(3));
+      expect(
+        sent.map((a) => a['text'] as String).join(),
+        '$pasted'
+        'tail\r',
+      );
+      expect(sent.last['text'], '\r');
+      expect(
+        sent.every((a) => a['terminalId'] == 'a' && a['sessionId'] == 'owner'),
+        isTrue,
+      );
+      final resources =
+          tester.state(find.byType(NativeTerminalPanel)) as ResourceDiagnostics;
+      expect(resources.resourceDiagnostics['terminalInputOwners'], 0);
+      await cleanup(tester, api);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'failed input after closing reports the error and cancels remaining writes',
+    (tester) async {
+      final api = TerminalApi()..slowInput = Completer<Json>();
+      final errors = <String>[];
+      await showTerminal(tester, api, onInputError: errors.add);
+      final terminal = tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .terminal;
+      terminal.onOutput!('first');
+      await tester.pump(const Duration(milliseconds: 20));
+      terminal.onOutput!('remaining');
+      await tester.pumpWidget(const SizedBox());
+      api.slowInput!.completeError(StateError('terminal disconnected'));
+      await tester.pump();
+      await tester.pump();
+      expect(errors, hasLength(1));
+      expect(errors.single, contains('terminal disconnected'));
+      expect(api.actions.where((a) => a['action'] == 'input'), hasLength(1));
+      expect(api.inputScopes.single!.cancelled, isTrue);
+      await api.close();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'closing the view drains accepted input to its original terminal in order',
+    (tester) async {
+      final oldApi = TerminalApi()..slowInput = Completer<Json>();
+      await showTerminal(tester, oldApi);
+      final terminal = tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .terminal;
+      terminal.onOutput!('first');
+      await tester.pump(const Duration(milliseconds: 20));
+      terminal.onOutput!('tail\r');
+      final pending = oldApi.slowInput!;
+      final inputScope = oldApi.inputScopes.single!;
+      await tester.pumpWidget(const SizedBox());
+      expect(inputScope.cancelled, isFalse);
+      expect(terminal.onOutput, isNull);
+      final newApi = TerminalApi();
+      await showTerminal(tester, newApi);
+      oldApi.slowInput = null;
+      pending.complete({'ok': true});
+      await tester.pump();
+      await tester.pump();
+      final sent = oldApi.actions.where((a) => a['action'] == 'input').toList();
+      expect(sent.map((a) => a['text']), ['first', 'tail\r']);
+      expect(
+        sent.every((a) => a['terminalId'] == 'a' && a['sessionId'] == 'owner'),
+        isTrue,
+      );
+      expect(newApi.actions.where((a) => a['action'] == 'input'), isEmpty);
+      expect(inputScope.cancelled, isTrue);
+      await cleanup(tester, newApi);
+      await oldApi.close();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   test(
     'output pages append partial lines once and keep new lines at column zero',
     () {

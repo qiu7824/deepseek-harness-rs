@@ -4,6 +4,7 @@ import 'package:dsh_desktop/src/window_theme.dart';
 import 'package:dsh_desktop/src/controller.dart';
 import 'package:dsh_desktop/src/conversation.dart';
 import 'package:dsh_desktop/src/app.dart';
+import 'package:dsh_desktop/design/rich_content.dart';
 import 'package:dsh_desktop/features/conversation/streaming_presentation.dart';
 import 'package:dsh_desktop/features/conversation/turn_activity.dart';
 import 'package:dsh_client/dsh_client.dart';
@@ -16,35 +17,116 @@ import 'controller_test.dart' show MemoryPreferences;
 import 'workbench_test.dart' show TestController;
 
 void main() {
+  testWidgets('a newly received final message is complete on its first frame', (
+    tester,
+  ) async {
+    final c = TestController()..selectedId = 's';
+    final old = TranscriptItem(id: 'old', kind: 'assistant', text: '历史正文');
+    c.transcript = [old];
+    await tester.pumpWidget(
+      ShadApp(
+        home: Scaffold(body: Conversation(controller: c)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('历史正文'), findsOneWidget);
+    const incoming = '刚刚收到的完整回复立即显示。';
+    c.transcript = [
+      old,
+      TranscriptItem(id: 'new', kind: 'assistant', text: incoming),
+    ];
+    c.messageChanges.value++;
+    await tester.pump();
+    final fresh = find.descendant(
+      of: find.byKey(const ValueKey('new')).last,
+      matching: find.byType(ProgressiveText),
+    );
+    expect(tester.widget<ProgressiveText>(fresh).streaming, isFalse);
+    expect(tester.widget<ProgressiveText>(fresh).revealInitial, isFalse);
+    expect(find.text(incoming), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
   testWidgets(
-    'a newly received final message animates even when deltas were coalesced',
+    'loading history while sending does not replay received paragraphs',
     (tester) async {
-      final c = TestController()..selectedId = 's';
-      final old = TranscriptItem(id: 'old', kind: 'assistant', text: '历史正文');
-      c.transcript = [old];
+      final c = TestController()
+        ..selectedId = 's'
+        ..sending = true
+        ..transcript = [
+          TranscriptItem(
+            id: 'restored',
+            kind: 'assistant',
+            text: '恢复的历史正文应完整可见',
+          ),
+        ];
+      await tester.pumpWidget(
+        ShadApp(
+          home: Scaffold(body: Conversation(controller: c)),
+        ),
+      );
+      expect(find.text('恢复的历史正文应完整可见'), findsOneWidget);
+      expect(
+        tester.widget<ProgressiveText>(find.byType(ProgressiveText)).streaming,
+        isFalse,
+      );
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
+  testWidgets(
+    'scrolling away and back remounts a streamed row with all received text',
+    (tester) async {
+      final history = [
+        for (var i = 0; i < 30; i++)
+          TranscriptItem(
+            id: 'history-$i',
+            kind: 'assistant',
+            text: '历史 $i\n\n${'已有内容 ' * 40}',
+          ),
+      ];
+      final c = TestController()
+        ..selectedId = 's'
+        ..transcript = history;
       await tester.pumpWidget(
         ShadApp(
           home: Scaffold(body: Conversation(controller: c)),
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('历史正文'), findsOneWidget);
-      const incoming = '刚刚收到的完整回复需要逐步显示。';
+      const received = '刚收到的正文，滚动回到这里仍然完整。';
       c.transcript = [
-        old,
-        TranscriptItem(id: 'new', kind: 'assistant', text: incoming),
+        ...history,
+        TranscriptItem(
+          id: 'live',
+          kind: 'assistant',
+          text: received,
+          streaming: true,
+        ),
       ];
       c.messageChanges.value++;
       await tester.pump();
-      final fresh = find.descendant(
-        of: find.byKey(const ValueKey('new')).last,
-        matching: find.byType(ProgressiveText),
+      expect(find.text(received), findsOneWidget);
+      final row = find.byKey(const ValueKey('live')).last;
+      final firstState = tester.state(
+        find.descendant(of: row, matching: find.byType(ProgressiveText)),
       );
-      expect(tester.widget<ProgressiveText>(fresh).streaming, isTrue);
-      expect(find.text(incoming), findsNothing);
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text(incoming), findsOneWidget);
+      final list = tester.widget<ListView>(
+        find.byKey(const PageStorageKey('messages-s')),
+      );
+      final controller = list.controller!;
+      expect(controller.position.maxScrollExtent, greaterThan(1000));
+      controller.jumpTo(controller.position.maxScrollExtent);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('live')), findsNothing);
+      controller.jumpTo(0);
+      await tester.pump();
+      expect(find.text(received), findsOneWidget);
+      final remounted = tester.state(
+        find.descendant(of: row, matching: find.byType(ProgressiveText)),
+      );
+      expect(remounted, isNot(same(firstState)));
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
     },
@@ -153,7 +235,6 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text(source), findsOneWidget);
       await show('$source 已结束', false);
-      await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('$source 已结束'), findsOneWidget);
       await show('历史完整消息', false, key: const ValueKey('history'));
       expect(find.text('历史完整消息'), findsOneWidget);
@@ -162,6 +243,118 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 1));
       expect(tester.binding.transientCallbackCount, 0);
+    },
+  );
+  testWidgets(
+    'stream completion immediately flushes a pending received append',
+    (tester) async {
+      Future<void> show(String text, bool streaming) => tester.pumpWidget(
+        MaterialApp(
+          home: ProgressiveText(
+            text: text,
+            streaming: streaming,
+            revealInitial: false,
+            builder: (visible) => Text(visible),
+          ),
+        ),
+      );
+      await show('已有正文', true);
+      final received = '已有正文${'新追加内容' * 100}';
+      await show(received, true);
+      expect(find.text(received), findsNothing);
+      await show(received, false);
+      expect(find.text(received), findsOneWidget);
+      expect(tester.binding.transientCallbackCount, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'muted tickers flush pending text and never replay it when resumed',
+    (tester) async {
+      Future<void> show(String text, bool enabled) => tester.pumpWidget(
+        MaterialApp(
+          home: TickerMode(
+            enabled: enabled,
+            child: ProgressiveText(
+              text: text,
+              streaming: true,
+              revealInitial: false,
+              builder: (visible) => Text(visible),
+            ),
+          ),
+        ),
+      );
+      await show('已有正文', true);
+      final received = '已有正文${'新追加内容' * 100}';
+      await show(received, true);
+      expect(find.text(received), findsNothing);
+      await show(received, false);
+      expect(find.text(received), findsOneWidget);
+      await show('$received 隐藏时又收到一段', false);
+      expect(find.text('$received 隐藏时又收到一段'), findsOneWidget);
+      await show('$received 隐藏时又收到一段', true);
+      expect(find.text('$received 隐藏时又收到一段'), findsOneWidget);
+      expect(tester.binding.transientCallbackCount, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'leaving follow mode flushes the pending text of a mounted message',
+    (tester) async {
+      final history = [
+        for (var i = 0; i < 12; i++)
+          TranscriptItem(
+            id: 'history-$i',
+            kind: 'assistant',
+            text: '历史 $i\n\n${'已有内容 ' * 40}',
+          ),
+      ];
+      TranscriptItem live(String text) => TranscriptItem(
+        id: 'live',
+        kind: 'assistant',
+        text: text,
+        streaming: true,
+      );
+      const initial = '已有正文\n\n第二段已经收到\n\n第三段已经收到\n\n第四段已经收到';
+      final c = TestController()
+        ..selectedId = 's'
+        ..transcript = [...history, live(initial)];
+      await tester.pumpWidget(
+        ShadApp(
+          home: Scaffold(body: Conversation(controller: c)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final row = find.byKey(const ValueKey('live')).last;
+      final markdown = find.descendant(
+        of: row,
+        matching: find.byType(DshMarkdown),
+      );
+      final progressive = find.descendant(
+        of: row,
+        matching: find.byType(ProgressiveText),
+      );
+      final state = tester.state(progressive);
+      // Keep part of the live row painted after crossing the 60 px follow
+      // threshold, so the same mounted row must flush its pending text.
+      expect(tester.getSize(row).height, greaterThan(80));
+      final received = '$initial${'新追加内容' * 20}';
+      c.transcript = [...history, live(received)];
+      c.messageChanges.value++;
+      await tester.pump();
+      expect(tester.widget<DshMarkdown>(markdown).data, isNot(received));
+      final list = tester.widget<ListView>(
+        find.byKey(const PageStorageKey('messages-s')),
+      );
+      list.controller!.jumpTo(80);
+      await tester.pump();
+      expect(tester.state(progressive), same(state));
+      expect(tester.widget<DshMarkdown>(markdown).data, received);
+      list.controller!.jumpTo(0);
+      await tester.pump();
+      expect(tester.widget<DshMarkdown>(markdown).data, received);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
     },
   );
   testWidgets(
