@@ -174,6 +174,22 @@ class RustRuntimeContractTests(unittest.TestCase):
         host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
         self.assertIn("dsh_schedule::apply_projection(ctx);", host)
 
+    def test_knowledge_bases_are_served_searched_and_listed(self):
+        manifest = json.loads((PLUGINS / "manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(any(row["url"] == "/plugins/ui-knowledge.js" for row in manifest["entries"]))
+        ui = self.source("ui-knowledge.js")
+        self.assertIn("/__dsh-knowledge/", ui)
+        self.assertIn('name:"main",key:"knowledge"', ui)
+        self.assertIn('name:"sidebar.panellist",id:"knowledge"', ui)
+        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn("knowledge_base::install(ctx, &data_root)", host)
+        self.assertIn("knowledge_base::attach(knowledge_store", host)
+        route = (ROOT / "crates" / "host" / "dsh-host" / "src" / "knowledge_base.rs").read_text(encoding="utf-8")
+        self.assertIn('"/__dsh-knowledge"', route)
+        self.assertIn("trusted_web_request", route)
+        discovery = (ROOT / "crates" / "core" / "tools" / "src" / "discovery.rs").read_text(encoding="utf-8")
+        self.assertIn('"knowledge_search"', discovery)
+
     def test_turn_usage_and_time_details_are_available(self):
         chat = self.source("ui-conversation.js")
         for required in (

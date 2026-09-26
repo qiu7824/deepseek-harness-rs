@@ -102,7 +102,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-sidebar",
       "url": "/plugins/ui-sidebar.js",
-      "rev": "699ff18a24ee78e3",
+      "rev": "8deb18866c642011",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-layout",
@@ -177,12 +177,22 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-schedule",
       "url": "/plugins/ui-schedule.js",
-      "rev": "91789d60a14e1dc8",
+      "rev": "4de40532be2d6f00",
       "inject": [
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-layout"
+      ],
+      "immediately": false
+    },
+    {
+      "id": "@deepseek-ai/dsh-client-ui-knowledge",
+      "url": "/plugins/ui-knowledge.js",
+      "rev": "8d4621c5e3724820",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
       ],
       "immediately": false
     },
