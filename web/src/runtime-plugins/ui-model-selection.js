@@ -260,7 +260,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:D:\HermesTemp\deepseek-harness\packages\client\ui-model-selection\src\client\ModelSelect.module.css.mjs
-        const css = ".oHd92q_root{min-width:0;position:relative}.oHd92q_trigger{min-width:0;max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:24px;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font-size:13px;font-weight:500;line-height:20px;display:flex}.oHd92q_trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.oHd92q_trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}.oHd92q_trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}.oHd92q_triggerLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.oHd92q_triggerEffort{color:var(--dsw-alias-label-caption);flex:none}.oHd92q_chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s}.oHd92q_chevronOpen{transform:rotate(180deg)}.oHd92q_menu{z-index:20;border:0;background:var(--dsw-specific-menu);width:min(320px,100vw - 32px);max-height:min(480px,100vh - 96px);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:16px;flex-direction:column;padding:6px;display:flex;position:absolute;bottom:calc(100% + 8px);right:0;overflow:hidden}.oHd92q_status,.oHd92q_empty{color:var(--dsw-alias-label-tertiary);padding:10px;font-size:13px;line-height:20px}.oHd92q_error,.oHd92q_warning{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);border-radius:8px;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px;padding:7px 8px;font-size:12px;line-height:18px;display:flex}.oHd92q_warning{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label)}.oHd92q_retry{color:inherit;font:inherit;cursor:pointer;background:0 0;border:none;flex:none;padding:0;font-weight:600}.oHd92q_search{box-sizing:border-box;flex:0 0 38px;min-height:38px;appearance:none;-webkit-appearance:none;width:100%;height:38px;border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:9px;background:var(--dsw-alias-bg-module-platform,#f5f6f8);color:var(--dsw-alias-label-primary);padding:0 10px;font:inherit;font-size:13px;outline:none}.oHd92q_search:focus{border-color:var(--dsw-alias-state-business-primary,#4d6bfe);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 12%,transparent)}.oHd92q_search::placeholder{color:var(--dsw-alias-label-tertiary)}.oHd92q_groups{min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-top:6px}.oHd92q_group+.oHd92q_group{margin-top:4px}.oHd92q_groupTitle{z-index:1;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-tertiary);padding:5px 8px 3px;font-size:12px;font-weight:500;line-height:18px;position:sticky;top:0}.oHd92q_option{width:100%;min-height:38px;color:inherit;text-align:left;cursor:pointer;background:0 0;border:none;border-radius:10px;outline:none;align-items:center;gap:8px;padding:6px 8px;display:flex}.oHd92q_option:hover:not(:disabled),.oHd92q_option:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}.oHd92q_selected{background:0 0}.oHd92q_option:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}.oHd92q_optionCopy{flex-direction:column;flex:1;min-width:0;display:flex}.oHd92q_modelName{color:inherit;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:500;line-height:20px;overflow:hidden}.oHd92q_description{color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:18px;overflow:hidden}.oHd92q_check{color:var(--dsw-alias-label-primary);flex:0 0 18px;place-items:center;display:grid}.oHd92q_cell{width:100%;height:40px;color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left;background:0 0;border:none;border-radius:10px;align-items:center;gap:8px;padding:0 10px;font-size:14px;line-height:22px;display:flex}.oHd92q_cell:hover{background:var(--dsw-alias-interactive-bg-hover)}.oHd92q_cellLabel{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}.oHd92q_cellValue{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-tertiary);flex:0 auto;overflow:hidden}.oHd92q_cellChevron{color:var(--dsw-alias-label-tertiary);flex:none}.dshEffortSlider{display:flex;flex-direction:column;gap:2px;padding:8px 10px 6px}.dshEffortHead{display:flex;justify-content:space-between;align-items:center;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}.dshEffortHead strong{color:var(--dsw-alias-label-primary);font-weight:600}.dshEffortSlider input[type=range]{width:100%;margin:6px 0 2px;accent-color:var(--dsw-alias-state-business-primary,#4d6bfe);cursor:pointer}.dshEffortSlider input[type=range]:disabled{cursor:default;opacity:.5}.dshEffortTicks{display:grid;gap:2px}.dshEffortTicks button{background:0 0;border:0;padding:2px 0;font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}.dshEffortTicks button:first-child{text-align:left}.dshEffortTicks button:last-child:not(:first-child){text-align:right}.dshEffortTicks button[data-active]{color:var(--dsw-alias-label-primary);font-weight:600}.dshEffortTicks button:disabled{cursor:default}";
+        const css = ".oHd92q_root{min-width:0;position:relative}.oHd92q_trigger{min-width:0;max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:24px;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font-size:13px;font-weight:500;line-height:20px;display:flex}.oHd92q_trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.oHd92q_trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}.oHd92q_trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}.oHd92q_triggerLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.oHd92q_triggerEffort{color:var(--dsw-alias-label-caption);flex:none}.oHd92q_chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s}.oHd92q_chevronOpen{transform:rotate(180deg)}.oHd92q_menu{z-index:20;border:0;background:var(--dsw-specific-menu);width:min(320px,100vw - 32px);max-height:min(480px,100vh - 96px);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:16px;flex-direction:column;padding:6px;display:flex;position:absolute;bottom:calc(100% + 8px);right:0;overflow:hidden}.oHd92q_status,.oHd92q_empty{color:var(--dsw-alias-label-tertiary);padding:10px;font-size:13px;line-height:20px}.oHd92q_error,.oHd92q_warning{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);border-radius:8px;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px;padding:7px 8px;font-size:12px;line-height:18px;display:flex}.oHd92q_warning{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-warn-label)}.oHd92q_retry{color:inherit;font:inherit;cursor:pointer;background:0 0;border:none;flex:none;padding:0;font-weight:600}.oHd92q_search{box-sizing:border-box;flex:0 0 38px;min-height:38px;appearance:none;-webkit-appearance:none;width:100%;height:38px;border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:9px;background:var(--dsw-alias-bg-module-platform,#f5f6f8);color:var(--dsw-alias-label-primary);padding:0 10px;font:inherit;font-size:13px;outline:none}.oHd92q_search:focus{border-color:var(--dsw-alias-state-business-primary,#4d6bfe);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 12%,transparent)}.oHd92q_search::placeholder{color:var(--dsw-alias-label-tertiary)}.oHd92q_groups{min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-top:6px}.oHd92q_group+.oHd92q_group{margin-top:4px}.oHd92q_groupTitle{z-index:1;background:var(--dsw-specific-menu);color:var(--dsw-alias-label-tertiary);padding:5px 8px 3px;font-size:12px;font-weight:500;line-height:18px;position:sticky;top:0}.oHd92q_option{width:100%;min-height:38px;color:inherit;text-align:left;cursor:pointer;background:0 0;border:none;border-radius:10px;outline:none;align-items:center;gap:8px;padding:6px 8px;display:flex}.oHd92q_option:hover:not(:disabled),.oHd92q_option:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}.oHd92q_selected{background:0 0}.oHd92q_option:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}.oHd92q_optionCopy{flex-direction:column;flex:1;min-width:0;display:flex}.oHd92q_modelName{color:inherit;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:500;line-height:20px;overflow:hidden}.oHd92q_description{color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:18px;overflow:hidden}.oHd92q_check{color:var(--dsw-alias-label-primary);flex:0 0 18px;place-items:center;display:grid}.oHd92q_cell{width:100%;height:40px;color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left;background:0 0;border:none;border-radius:10px;align-items:center;gap:8px;padding:0 10px;font-size:14px;line-height:22px;display:flex}.oHd92q_cell:hover{background:var(--dsw-alias-interactive-bg-hover)}.oHd92q_cellLabel{text-overflow:ellipsis;white-space:nowrap;flex:auto;min-width:0;overflow:hidden}.oHd92q_cellValue{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-tertiary);flex:0 auto;overflow:hidden}.oHd92q_cellChevron{color:var(--dsw-alias-label-tertiary);flex:none}.dshEffortSlider{display:flex;flex-direction:column;gap:2px;padding:8px 10px 6px}.dshEffortHead{display:flex;justify-content:space-between;align-items:center;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}.dshEffortHead strong{color:var(--dsw-alias-label-primary);font-weight:600}.dshEffortSlider input[type=range]{width:100%;margin:6px 0 2px;accent-color:var(--dsw-alias-state-business-primary,#4d6bfe);cursor:pointer}.dshEffortSlider input[type=range]:disabled{cursor:default;opacity:.5}.dshEffortTicks{display:grid;gap:2px}.dshEffortTicks button{background:0 0;border:0;padding:2px 0;font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}.dshEffortTicks button:first-child{text-align:left}.dshEffortTicks button:last-child:not(:first-child){text-align:right}.dshEffortTicks button[data-active]{color:var(--dsw-alias-label-primary);font-weight:600}.dshEffortTicks button:disabled{cursor:default}.dshContextSection{display:flex;flex-direction:column;gap:3px;padding:8px 10px 6px;margin-top:2px;border-top:1px solid var(--dsw-alias-border-l1,#eee)}.dshContextSection input[type=range]{width:100%;margin:4px 0 2px;accent-color:var(--dsw-alias-state-business-primary,#4d6bfe);cursor:pointer}.dshContextSection input[type=range]:disabled{opacity:.5;cursor:default}.dshContextBar{height:4px;border-radius:2px;background:var(--dsw-alias-bg-layer-2,#eceef2);overflow:hidden;margin:2px 0 6px}.dshContextBar span{display:block;height:100%;background:var(--dsw-alias-state-business-primary,#4d6bfe)}.dshContextActions{display:flex;align-items:center;gap:8px}.dshContextActions button{background:0 0;border:1px solid var(--dsw-alias-border-l2,#ddd);border-radius:14px;padding:2px 10px;font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);cursor:pointer}.dshContextActions button:disabled{opacity:.5;cursor:default}.dshContextHint{flex:1;min-width:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}";
 		const tagId = "@deepseek-ai/dsh-client-ui-model-selection/ModelSelect.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -347,7 +347,70 @@ window.__ModuleLoader__.load({
             const aliases = { none:["none"], off:["off","disabled"], minimal:["minimal"], low:["low"], medium:["medium"], high:["high"], xhigh:["xhigh","extrahigh"], max:["max","maximum"] };
             return aliases[id]?.includes(String(name).toLowerCase().replace(/[ -]/g, "")) ? t("effort.level." + id) : name;
         }
-		function ModelSelect({ locked, available, directory, load, select, t }) {
+		/** Bound `context-compaction` settings once the settings service exists. */
+		const contextSettingsHolder = { current: null, listeners: new Set() };
+		const DEFAULT_COMPACT_THRESHOLD = .8;
+		const noProjection = () => void 0;
+		/** Usage and the automatic compaction threshold of the current model. */
+		function ContextSection({ useProjection, current, compact, t }) {
+			const pressure = (typeof useProjection === "function" ? useProjection : noProjection)("contextPressure");
+			const settings = (0, react.useSyncExternalStore)((listener) => {
+				contextSettingsHolder.listeners.add(listener);
+				const inner = contextSettingsHolder.current?.subscribe(listener);
+				return () => {
+					contextSettingsHolder.listeners.delete(listener);
+					inner?.();
+				};
+			}, () => contextSettingsHolder.current?.getSnapshot() ?? null);
+			const [draft, setDraft] = (0, react.useState)(null);
+			const [compacting, setCompacting] = (0, react.useState)(false);
+			const [notice, setNotice] = (0, react.useState)(null);
+			const used = pressure?.projectedTokens ?? pressure?.pressureTokens;
+			const windowSize = pressure?.contextWindow;
+			const compactNumber = (value) => { try { return new Intl.NumberFormat(void 0, { notation: "compact", maximumFractionDigits: 1 }).format(value); } catch { return String(value); } };
+			const usage = used === void 0 || windowSize === void 0 ? t("context.unknown") : `${Math.min(100, Math.round(used / windowSize * 100))}% · ${compactNumber(used)} / ${compactNumber(windowSize)}`;
+			const key = current === null ? null : `${current.provider}/${current.model}`;
+			const thresholds = settings?.value?.thresholds ?? {};
+			const stored = key === null ? void 0 : thresholds[key];
+			const effective = stored ?? thresholds["*"] ?? DEFAULT_COMPACT_THRESHOLD;
+			const shown = draft ?? Math.round(effective * 100);
+			const writable = contextSettingsHolder.current !== null && key !== null;
+			const commit = (percent) => {
+				setDraft(null);
+				if (!writable || percent === Math.round(effective * 100)) return;
+				contextSettingsHolder.current.set("thresholds", { ...thresholds, [key]: percent / 100 }).catch((error) => setNotice(String(error?.message ?? error)));
+			};
+			const reset = () => {
+				if (!writable || stored === void 0) return;
+				const next = { ...thresholds };
+				delete next[key];
+				contextSettingsHolder.current.set("thresholds", next).catch((error) => setNotice(String(error?.message ?? error)));
+			};
+			const runCompact = () => {
+				setCompacting(true);
+				setNotice(null);
+				Promise.resolve(compact?.()).then(() => setNotice(t("context.compactStarted")), (error) => setNotice(String(error?.message ?? error))).finally(() => setCompacting(false));
+			};
+			const valueOf = (event) => Number(event.currentTarget.value);
+			return (0, react_jsx_runtime.jsxs)("div", { className: "dshContextSection", role: "group", "aria-label": t("context.title"), children: [
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshEffortHead", children: [(0, react_jsx_runtime.jsx)("span", { children: t("context.title") }), (0, react_jsx_runtime.jsx)("strong", { children: usage })] }),
+				windowSize !== void 0 && used !== void 0 && (0, react_jsx_runtime.jsx)("div", { className: "dshContextBar", "aria-hidden": true, children: (0, react_jsx_runtime.jsx)("span", { style: { width: `${Math.min(100, used / windowSize * 100)}%` } }) }),
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshEffortHead", children: [(0, react_jsx_runtime.jsx)("span", { children: t("context.threshold") }), (0, react_jsx_runtime.jsx)("strong", { children: `${shown}%` })] }),
+				(0, react_jsx_runtime.jsx)("input", { type: "range", min: 50, max: 95, step: 5, value: Math.min(95, Math.max(50, shown)), disabled: !writable, "aria-label": t("context.threshold"), "aria-valuetext": `${shown}%`,
+					onChange: (event) => setDraft(valueOf(event)),
+					onPointerUp: (event) => commit(valueOf(event)),
+					onKeyDown: (event) => event.stopPropagation(),
+					onKeyUp: (event) => { if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) commit(valueOf(event)); },
+					onBlur: (event) => { if (draft !== null) commit(valueOf(event)); } }),
+				(0, react_jsx_runtime.jsxs)("div", { className: "dshContextActions", children: [
+					(0, react_jsx_runtime.jsx)("span", { className: "dshContextHint", children: stored === void 0 ? t("context.defaultHint") : t("context.customHint") }),
+					stored !== void 0 && (0, react_jsx_runtime.jsx)("button", { type: "button", onClick: reset, children: t("context.reset") }),
+					compact !== void 0 && (0, react_jsx_runtime.jsx)("button", { type: "button", disabled: compacting, onClick: runCompact, children: compacting ? t("context.compacting") : t("context.compact") })
+				] }),
+				notice !== null && (0, react_jsx_runtime.jsx)("div", { className: "dshContextHint", role: "status", children: notice })
+			] });
+		}
+		function ModelSelect({ locked, available, directory, load, select, t, useProjection, compact }) {
 			const state = (0, react.useSyncExternalStore)((fn) => directory.subscribe(fn), () => directory.getSnapshot());
 			const [open, setOpen] = (0, react.useState)(false);
 			const [pane, setPane] = (0, react.useState)("root");
@@ -572,7 +635,7 @@ window.__ModuleLoader__.load({
 									}),
 									(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutline14, { className: ModelSelect_module_css_default.cellChevron })
 								]
-							}), reasoning !== void 0 && effortChoices.length > 0 && (0, react_jsx_runtime.jsx)(EffortSlider, { choices: effortChoices, current: ultra ? "ultra" : effectiveEffort, disabled: busy, onCommit: commitEffort, t })] }),
+							}), reasoning !== void 0 && effortChoices.length > 0 && (0, react_jsx_runtime.jsx)(EffortSlider, { choices: effortChoices, current: ultra ? "ultra" : effectiveEffort, disabled: busy, onCommit: commitEffort, t }), (0, react_jsx_runtime.jsx)(ContextSection, { useProjection, current: state.current, compact, t })] }),
 							pane === "model" && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
 								(0,react_jsx_runtime.jsx)("input",{type:"search",className:ModelSelect_module_css_default.search,value:modelQuery,"aria-label":t("search"),placeholder:t("search"),autoFocus:true,onChange:event=>setModelQuery(event.target.value),onKeyDown:event=>{if(event.key==="Escape"){event.preventDefault();setPane("root")}}}),
 								state.status === "loading" && (0, react_jsx_runtime.jsx)("div", {
@@ -735,6 +798,15 @@ window.__ModuleLoader__.load({
 			"menu.effort": "推理等级",
 			"search": "搜索模型名称、ID 或连接",
 			"effort.providerDefault": "提供方默认",
+			"context.title": "上下文",
+			"context.unknown": "尚无用量",
+			"context.threshold": "自动压缩阈值",
+			"context.defaultHint": "使用默认阈值",
+			"context.customHint": "当前模型使用自定义阈值",
+			"context.reset": "恢复默认",
+			"context.compact": "立即压缩",
+			"context.compacting": "压缩中…",
+			"context.compactStarted": "已开始压缩",
 			"status.loading": "正在刷新模型列表…",
 			"error.action": "模型操作失败：{message}",
 			"action.reload": "重新加载",
@@ -768,6 +840,15 @@ window.__ModuleLoader__.load({
 			"menu.effort": "Effort",
 			"search": "Search model name, ID, or connection",
 			"effort.providerDefault": "Default",
+			"context.title": "Context",
+			"context.unknown": "No usage yet",
+			"context.threshold": "Auto-compact at",
+			"context.defaultHint": "Default threshold",
+			"context.customHint": "Custom for this model",
+			"context.reset": "Reset",
+			"context.compact": "Compact now",
+			"context.compacting": "Compacting…",
+			"context.compactStarted": "Compaction started",
 			"status.loading": "Refreshing model list…",
 			"error.action": "Model operation failed: {message}",
 			"action.reload": "Reload",
@@ -865,6 +946,14 @@ window.__ModuleLoader__.load({
 					}
 				}), "ui-model-selection: /model contribution");
 			});
+			ctx.inject(["settingsScope"], (scope) => {
+				contextSettingsHolder.current = scope.settingsScope.bind({ namespace: "context-compaction", decode: (value) => ({ thresholds: value?.thresholds !== null && typeof value?.thresholds === "object" ? value.thresholds : {} }) });
+				for (const listener of [...contextSettingsHolder.listeners]) listener();
+				scope.effect(() => () => {
+					contextSettingsHolder.current = null;
+					for (const listener of [...contextSettingsHolder.listeners]) listener();
+				}, "ui-model-selection: context settings");
+			});
 			ctx.inject(["slots", "modelDirectories"], (scope) => {
 				const models = scope.modelDirectories;
 				const sessions = scope.sessions;
@@ -880,7 +969,14 @@ window.__ModuleLoader__.load({
 							load: () => {
 								if (available) directory.load().catch(() => {});
 							},
-							select: (selection) => available ? directory.select(selection,{saveDefault:false}).then(() => true, () => false) : Promise.resolve(false)
+							select: (selection) => available ? directory.select(selection,{saveDefault:false}).then(() => true, () => false) : Promise.resolve(false),
+							compact: available ? async () => {
+								const response = await fetch("/api/commands.execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "client-request", rpcId: `compact-${Date.now()}-${Math.random().toString(36).slice(2)}`, method: "commands.execute", payload: { args: { agentId: sessionId, line: "/compact" } } }) });
+								const value = await response.json();
+								const outcome = value?.result?.value?.result;
+								if (value?.result?.ok !== true) throw new Error(value?.result?.error?.message ?? `HTTP ${response.status}`);
+								if (outcome !== void 0 && outcome.kind !== "success") throw new Error(outcome.text ?? outcome.kind);
+							} : void 0
 						};
 					}
 				}, ModelSelect));

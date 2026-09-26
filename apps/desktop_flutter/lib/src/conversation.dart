@@ -37,6 +37,7 @@ import '../features/conversation/streaming_presentation.dart';
 import '../features/conversation/turn_activity.dart';
 import '../features/conversation/read_aloud.dart';
 import '../features/conversation/reasoning_slider.dart';
+import '../features/conversation/context_quick_settings.dart';
 import '../features/conversation/turn_stats.dart';
 import 'resource_diagnostics.dart';
 import '../features/conversation/retry_message.dart';
@@ -1873,7 +1874,7 @@ class _ModelPickerState extends State<ModelPicker> {
     return Dialog(
       child: SizedBox(
         width: 500,
-        height: 550,
+        height: 660,
         child: Padding(
           padding: const EdgeInsets.all(18),
           child: Column(
@@ -1966,6 +1967,7 @@ class _ModelPickerState extends State<ModelPicker> {
                   },
                 ),
               ),
+              ContextQuickSettings(controller: c),
               const Divider(),
               Align(
                 alignment: Alignment.centerRight,

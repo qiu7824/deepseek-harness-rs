@@ -47,13 +47,13 @@ mod office_render;
 mod open_in_app;
 mod plugin_manager;
 mod productivity;
-mod schedule_tasks;
 mod project_tasks;
 mod provider_auth;
 mod provider_auth_catalog;
 mod provider_compatibility;
 mod remote_execution_http;
 pub mod runtime_paths;
+mod schedule_tasks;
 mod sidebar_settings;
 mod skill_validation;
 mod task_execution;
@@ -3905,6 +3905,42 @@ fn compose_host_in_fiber(
     let _approval_settings_watch = (security_scope.watch)(Arc::new(move |next, _previous| {
         let (timeout, unattended) = read_approval_runtime(next);
         watched_approval.set_runtime_options(timeout, unattended);
+        async move {}.boxed()
+    }));
+    // Automatic compaction thresholds chosen from the model menu, keyed by
+    // `provider/model` (or `*`), applied live to the compaction policy.
+    let context_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("context-compaction")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
+                "thresholds".to_string(),
+                dsh_schemastery::Schema::dict(
+                    dsh_schemastery::Schema::number().min(0.3).max(0.98),
+                    None,
+                )
+                .default(dsh_schemastery::Data::Object(Default::default())),
+            )])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings context-compaction: {error}"))?;
+    let read_thresholds = |value: &dsh_schemastery::Data| {
+        let mut thresholds = std::collections::HashMap::new();
+        if let dsh_schemastery::Data::Object(object) = value
+            && let Some(dsh_schemastery::Data::Object(entries)) = object.get("thresholds")
+        {
+            for (key, value) in entries {
+                if let dsh_schemastery::Data::Number(ratio) = value {
+                    thresholds.insert(key.clone(), *ratio);
+                }
+            }
+        }
+        thresholds
+    };
+    dsh_compaction::basic::set_threshold_overrides(read_thresholds(&(context_scope.get)()));
+    let _context_settings_watch = (context_scope.watch)(Arc::new(move |next, _previous| {
+        dsh_compaction::basic::set_threshold_overrides(read_thresholds(next));
         async move {}.boxed()
     }));
     let permission_presets =

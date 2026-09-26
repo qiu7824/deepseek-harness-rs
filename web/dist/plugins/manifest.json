@@ -162,7 +162,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "c98ba71131215dd2",
+      "rev": "18848c17f5f11014",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -312,7 +312,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-model-selection",
       "url": "/plugins/ui-model-selection.js",
-      "rev": "38f8232e1021647a",
+      "rev": "2553d15c4329b371",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",

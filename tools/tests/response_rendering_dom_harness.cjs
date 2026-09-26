@@ -167,6 +167,17 @@ async function main() {
   assert.equal(selections.length, 1, 'dragging alone does not commit');
   await act(() => range.dispatchEvent(new window.MouseEvent('pointerup', { bubbles: true })));
   assert.equal(selections[1].reasoningEffort, 'custom', 'releasing the slider commits once');
+  // Context section: usage from the session projection and a compact action.
+  let compacted = 0;
+  await act(() => root.render(React.createElement(modelUi.ModelSelect, { locked: false, available: true, directory, load() {}, select: async () => true, t: translate(modelUi.zh), useProjection: key => key === 'contextPressure' ? { projectedTokens: 32000, contextWindow: 128000 } : undefined, compact: async () => { compacted++; } })));
+  if (!document.querySelector('[role=menu]')) await act(() => document.querySelector('button[aria-haspopup=menu]').click());
+  const contextSection = document.querySelector('.dshContextSection');
+  assert.ok(contextSection, 'context section is shown in the model menu');
+  assert.match(contextSection.textContent, /上下文.*25%/);
+  assert.match(contextSection.textContent, /自动压缩阈值.*80%/, 'the default threshold is shown');
+  await act(() => [...contextSection.querySelectorAll('button')].find(node => node.textContent === '立即压缩').click());
+  assert.equal(compacted, 1);
+  assert.match(contextSection.textContent, /已开始压缩/);
   await renderModel(modelUi.en); assert.match(document.querySelector('button[aria-haspopup=menu]').textContent, /MODEL_NAME_UNCHANGED.*High/);
   const permission = { currentValue: 'workspace-write', options: [{ value: 'workspace-write', name: 'workspace-write', description: 'Write inside the workspace and permitted temporary directories; wider retries require approval.' }, { value: 'custom-preset', name: 'CUSTOM_PRESET', description: 'CUSTOM_DESCRIPTION_UNCHANGED' }] };
   const commands = [];
