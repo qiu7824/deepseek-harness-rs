@@ -1,10 +1,10 @@
-"""Verify package UI boundaries, including a previously shared skin profile."""
+"""Verify package UI boundaries, including a legacy profile that still lists the retired skin center."""
 from __future__ import annotations
 import argparse,json,pathlib,re,time,urllib.request,urllib.error
 from e2e_model_management import isolated_environment,running_fixture_host
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--binary',type=pathlib.Path,required=True);p.add_argument('--workdir',type=pathlib.Path,required=True);p.add_argument('--variant',choices=['core','skin','free'],required=True);args=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--binary',type=pathlib.Path,required=True);p.add_argument('--workdir',type=pathlib.Path,required=True);p.add_argument('--variant',choices=['core','free'],required=True);args=p.parse_args()
  run=args.workdir.resolve()/str(time.time_ns());run.mkdir(parents=True);home=run/'home';env=isolated_environment(run,home)
  profile=home/'profiles/web';package=profile/'node_modules/dsh-skin-center';(package/'lib').mkdir(parents=True)
  (profile/'package.json').write_text(json.dumps({'name':'dsh-profile-web','private':True,'dependencies':{'dsh-skin-center':'bundled'},'dsh':{'profile':{'bundles':['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app']}}}))
@@ -16,7 +16,7 @@ def main():
   boot=json.loads(re.search(r'window\.__DSH_BOOT__=(.*?);</script>',html).group(1))
   assert boot['variant']==args.variant,boot['variant']
   entries=boot['entries']+boot.get('availableEntries',[])
-  if args.variant!='skin':assert all(entry['id']!='dsh-skin-center' for entry in entries)
+  assert all(entry['id']!='dsh-skin-center' for entry in entries),'retired skin center loaded from a legacy profile'
   if args.variant!='free':
    try:
     with urllib.request.urlopen(f'http://127.0.0.1:{port}/__dsh-free/models') as response:

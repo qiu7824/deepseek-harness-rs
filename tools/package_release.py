@@ -176,9 +176,7 @@ def main() -> None:
             )
 
     copy_tree(ROOT / "release" / "plugins", stage / "plugins")
-    shutil.rmtree(stage / "plugins" / "dsh-skin-center", ignore_errors=True)
     copy_tree(staged_web, stage / "web" / "dist")
-    shutil.rmtree(stage / "web" / "dist" / "skins", ignore_errors=True)
     copy_tree(ROOT / "config" / "agent-presets", stage / "config" / "agent-presets")
     (stage / "docs").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "docs" / "storage-compatibility.md", stage / "docs" / "storage-compatibility.md")
@@ -214,8 +212,6 @@ def main() -> None:
         "variant": args.variant,
         "entry": entry,
         "host": core_output,
-        "skin_payload": None,
-        "default_skin": None,
     }
     (stage / "PACKAGE.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

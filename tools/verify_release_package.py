@@ -18,7 +18,6 @@ from package_release import verify_remote_helper
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SKIN_MARKER = b"\n__DSH_SKIN_PAYLOAD_V1_4F92C3A7__\n"
 SAFE_RELEASE_COMPONENT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
 
 
@@ -165,9 +164,6 @@ def main() -> None:
                 file_bytes[prefix + "settings.defaults.json"] = package.read(
                     prefix + "settings.defaults.json"
                 )
-            skin_name = prefix + f"deepseek-harness-rs-skin{'.exe' if args.platform == 'windows' else ''}"
-            if skin_name in names:
-                file_bytes[skin_name] = package.read(skin_name)
     else:
         with tarfile.open(archive, "r:gz") as package:
             members = {member.name: member for member in package.getmembers() if member.isfile()}
@@ -186,9 +182,6 @@ def main() -> None:
                 file_bytes[prefix + "settings.defaults.json"] = read_member(
                     prefix + "settings.defaults.json"
                 )
-            skin_name = prefix + f"deepseek-harness-rs-skin{'.exe' if args.platform == 'windows' else ''}"
-            if skin_name in names:
-                file_bytes[skin_name] = read_member(skin_name)
     manifest = json.loads(manifest_bytes)
     theme = theme_bytes.decode("utf-8")
 
@@ -223,7 +216,7 @@ def main() -> None:
         for helper in ("dsh-windows-native.exe", "dsh-command-runner.exe", "dsh-windows-sandbox-setup.exe"):
             required.add(prefix + "native-sandbox/" + helper)
     if any(name.startswith(prefix + "plugins/dsh-skin-center/") for name in names):
-        raise SystemExit("core archive includes the retired skin-center distribution")
+        raise SystemExit("archive includes the retired skin-center distribution")
 
     missing = sorted(required - names)
     if missing:
@@ -266,15 +259,9 @@ def main() -> None:
 
     skin_assets = [name for name in names if name.startswith(prefix + "web/dist/skins/")]
     if skin_assets:
-        message = (
-            "core archive leaks bundled skin assets"
-            if args.variant == "core"
-            else "skin executable leaks bundled skin assets"
-        )
-        raise SystemExit(f"{message}: {skin_assets[:5]}")
-
+        raise SystemExit(f"archive leaks retired skin assets: {skin_assets[:5]}")
     if any(name.startswith(prefix + "deepseek-harness-rs-skin") for name in names):
-        raise SystemExit("core archive includes a retired skin payload")
+        raise SystemExit("archive includes a retired skin payload")
     expected_manifest = {
         "name": suffix,
         "version": version,
@@ -283,8 +270,6 @@ def main() -> None:
         "variant": args.variant,
         "entry": f"dsh-launcher{executable_suffix}",
         "host": f"deepseek-harness-rs{executable_suffix}",
-        "skin_payload": None,
-        "default_skin": None,
     }
     if manifest != expected_manifest:
         raise SystemExit(f"unexpected PACKAGE.json: {manifest}")
@@ -296,12 +281,10 @@ def main() -> None:
     )
     if forbidden_skin_paths:
         raise SystemExit(
-            f"archive leaks physical skin assets outside the embedded skin payload: {forbidden_skin_paths[:5]}"
+            f"archive leaks retired skin assets: {forbidden_skin_paths[:5]}"
         )
     if settings_entry in names or prefix + "free-model-verification.json" in names:
         raise SystemExit("core archive unexpectedly carries model-specific package defaults")
-    if manifest.get("default_skin") is not None:
-        raise SystemExit("core archive unexpectedly selects a skin")
     theme_boundaries = (
         'NO_SKIN && !["light", "dark"].includes(section.preference)',
         "if (NO_SKIN) {",

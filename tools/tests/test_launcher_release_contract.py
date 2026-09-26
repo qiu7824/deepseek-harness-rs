@@ -100,34 +100,16 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("dispatch_windows_win32_status_item_callback", tray)
         self.assertIn("restore_windows_win32_status_items", tray)
 
-    def test_retained_skin_catalog_matches_the_user_selection(self):
-        expected = {
-            "blue-fantasy",
-            "deepseek-official",
-            "harbor",
-            "miku",
-            "minecraft",
-            "trading",
-            "xp",
-        }
-        actual = {path.name for path in SKINS.iterdir() if path.is_dir()}
-        self.assertEqual(actual, expected)
-
-        catalog = SKIN_CENTER.read_text(encoding="utf-8")
-        for skin in expected:
-            self.assertIn(f'id: "{skin}"', catalog)
-        for removed in ("whale-song", "dragon-heir"):
-            self.assertNotIn(f'id: "{removed}"', catalog)
-
-    def test_core_has_no_packaged_default_skin(self):
-        official = json.loads(
-            (SKINS / "deepseek-official" / "skin.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(official["source"], "https://www.deepseek.com/harness/")
+    def test_skins_are_retired_from_packages_and_updates(self):
+        self.assertFalse(SKINS.exists())
+        self.assertFalse(SKIN_CENTER.exists())
+        self.assertFalse((ROOT / "crates" / "host" / "dsh-skin-installer").exists())
         package = PACKAGE.read_text(encoding="utf-8")
         verifier = VERIFIER.read_text(encoding="utf-8")
-        self.assertIn('"default_skin": None', package)
-        self.assertIn('manifest.get("default_skin")', verifier)
+        self.assertNotIn("default_skin", package)
+        self.assertNotIn("default_skin", verifier)
+        updater = (ROOT / "crates" / "host" / "dsh-launcher" / "src" / "updater.rs").read_text(encoding="utf-8")
+        self.assertIn('"core" | "skin" => "core".to_string(),', updater)
 
     def test_package_defaults_use_the_real_host_schema_and_preserve_user_settings(self):
         package = PACKAGE.read_text(encoding="utf-8")

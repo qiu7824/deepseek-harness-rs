@@ -1253,7 +1253,8 @@ fn package_settings_defaults() -> Result<serde_json::Map<String, serde_json::Val
 fn migrate_legacy_theme_settings(
     mut document: indexmap::IndexMap<String, dsh_schemastery::Data>,
 ) -> indexmap::IndexMap<String, dsh_schemastery::Data> {
-    const RETIRED: [&str; 9] = [
+    // Earlier themes and every skin are retired; they fall back to light.
+    const RETIRED: [&str; 16] = [
         "system",
         "catppuccin",
         "dracula",
@@ -1263,6 +1264,13 @@ fn migrate_legacy_theme_settings(
         "notion",
         "whale-song",
         "dragon-heir",
+        "blue-fantasy",
+        "deepseek-official",
+        "harbor",
+        "miku",
+        "minecraft",
+        "trading",
+        "xp",
     ];
     let Some(dsh_schemastery::Data::Object(theme)) = document.get_mut("ui-theme") else {
         return document;
@@ -1325,9 +1333,15 @@ mod theme_settings_migration_tests {
     }
 
     #[test]
-    fn current_skin_preference_is_preserved() {
-        let migrated = migrate_legacy_theme_settings(document("blue-fantasy"));
-        assert_eq!(preference(&migrated), Some("blue-fantasy"));
+    fn retired_skin_preferences_migrate_to_light_and_modes_stay() {
+        for skin in ["blue-fantasy", "deepseek-official", "xp"] {
+            let migrated = migrate_legacy_theme_settings(document(skin));
+            assert_eq!(preference(&migrated), Some("light"));
+        }
+        for mode in ["light", "dark"] {
+            let migrated = migrate_legacy_theme_settings(document(mode));
+            assert_eq!(preference(&migrated), Some(mode));
+        }
     }
 
     #[test]
@@ -4439,13 +4453,8 @@ fn compose_host_in_fiber(
             .into()
         });
     object.insert("variant".into(), serde_json::json!(variant));
-    object.insert(
-        "noSkin".to_string(),
-        serde_json::Value::Bool(
-            variant != "skin" && variant != "development"
-                || !packaged_resource("web/dist/skins").is_dir(),
-        ),
-    );
+    // Skins are retired: the theme plugin offers light and dark only.
+    object.insert("noSkin".to_string(), serde_json::Value::Bool(true));
     object.insert("apiBase".to_string(), serde_json::json!("/api"));
     object.insert(
         "provider".to_string(),

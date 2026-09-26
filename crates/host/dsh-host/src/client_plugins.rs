@@ -519,10 +519,6 @@ pub fn compose(
     boot_payload: &mut Value,
     profile: &Path,
 ) -> Result<Vec<dsh_host_webserver::RouteDisposer>, String> {
-    let skins_allowed = boot_payload
-        .get("variant")
-        .and_then(Value::as_str)
-        .is_none_or(|variant| matches!(variant, "skin" | "development"));
     let plugins = discover(profile)?.into_iter();
     let entries = boot_payload
         .get_mut("entries")
@@ -540,7 +536,9 @@ pub fn compose(
             );
             continue;
         }
-        if plugin.id == "dsh-skin-center" && !skins_allowed {
+        // Skins are retired; profiles that still list the skin center load
+        // without it.
+        if plugin.id == "dsh-skin-center" {
             continue;
         }
         for asset in &plugin.assets {
