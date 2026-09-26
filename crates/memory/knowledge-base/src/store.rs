@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -145,23 +145,7 @@ fn new_id(prefix: &str) -> String {
     )
 }
 
-pub struct KnowledgeStore {
-    path: PathBuf,
-    connection: Mutex<Connection>,
-}
-
-impl KnowledgeStore {
-    pub fn open(path: impl Into<PathBuf>) -> Result<Arc<Self>> {
-        let path = path.into();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                KnowledgeError::new("storage", format!("无法创建知识库目录：{error}"))
-            })?;
-        }
-        let connection = Connection::open(&path)?;
-        connection.execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
+const SCHEMA: &str = r#"
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS bases (
               id TEXT PRIMARY KEY,
@@ -192,12 +176,63 @@ impl KnowledgeStore {
             );
             CREATE INDEX IF NOT EXISTS chunks_document ON chunks(document_id);
             CREATE VIRTUAL TABLE IF NOT EXISTS chunk_index USING fts5(terms, tokenize = 'unicode61 remove_diacritics 0');
-            "#,
-        )?;
+            "#;
+
+/// Connections are opened per operation and closed right after, so the store
+/// never keeps the database file open between requests (Windows cannot
+/// remove or replace an open file). The in-process gate serializes them.
+pub struct KnowledgeStore {
+    path: PathBuf,
+    gate: Mutex<()>,
+}
+
+/// One open connection, held together with the store's gate.
+struct Session<'a> {
+    _gate: MutexGuard<'a, ()>,
+    connection: Connection,
+}
+
+impl std::ops::Deref for Session<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.connection
+    }
+}
+
+impl std::ops::DerefMut for Session<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+}
+
+impl KnowledgeStore {
+    /// A store at `path`; the file is created on the first write.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
-            path,
-            connection: Mutex::new(connection),
+            path: path.into(),
+            gate: Mutex::new(()),
         }))
+    }
+
+    /// Whether any knowledge base was ever created here.
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
+    }
+
+    fn connect(&self) -> Result<Session<'_>> {
+        let gate = self.gate.lock();
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                KnowledgeError::new("storage", format!("无法创建知识库目录：{error}"))
+            })?;
+        }
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.execute_batch(SCHEMA)?;
+        Ok(Session {
+            _gate: gate,
+            connection,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -224,7 +259,10 @@ impl KnowledgeStore {
         FROM bases b";
 
     pub fn bases(&self) -> Result<Vec<BaseView>> {
-        let connection = self.connection.lock();
+        if !self.exists() {
+            return Ok(Vec::new());
+        }
+        let connection = self.connect()?;
         let mut statement =
             connection.prepare(&format!("{} ORDER BY b.created_at", Self::BASE_SELECT))?;
         let rows = statement.query_map([], Self::base_row)?;
@@ -232,7 +270,10 @@ impl KnowledgeStore {
     }
 
     pub fn base(&self, id: &str) -> Result<BaseView> {
-        let connection = self.connection.lock();
+        if !self.exists() {
+            return Err(KnowledgeError::new("not_found", "知识库不存在或已删除"));
+        }
+        let connection = self.connect()?;
         connection
             .query_row(
                 &format!("{} WHERE b.id = ?1", Self::BASE_SELECT),
@@ -280,7 +321,7 @@ impl KnowledgeStore {
         let name = self.checked_name(name, None)?;
         let id = new_id("kb");
         let stamp = now();
-        self.connection.lock().execute(
+        self.connect()?.execute(
             "INSERT INTO bases (id, name, description, enabled, created_at, updated_at) VALUES (?1, ?2, ?3, 1, ?4, ?4)",
             params![id, name, description.trim().chars().take(500).collect::<String>(), stamp],
         )?;
@@ -303,7 +344,7 @@ impl KnowledgeStore {
             .map(|text| text.trim().chars().take(500).collect::<String>())
             .unwrap_or(current.description);
         let enabled = enabled.unwrap_or(current.enabled);
-        self.connection.lock().execute(
+        self.connect()?.execute(
             "UPDATE bases SET name = ?2, description = ?3, enabled = ?4, updated_at = ?5 WHERE id = ?1",
             params![id, name, description, enabled as i64, now()],
         )?;
@@ -312,7 +353,7 @@ impl KnowledgeStore {
 
     pub fn delete_base(&self, id: &str) -> Result<()> {
         self.base(id)?;
-        let mut connection = self.connection.lock();
+        let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "DELETE FROM chunk_index WHERE rowid IN (SELECT id FROM chunks WHERE base_id = ?1)",
@@ -340,7 +381,7 @@ impl KnowledgeStore {
 
     pub fn documents(&self, base_id: &str) -> Result<Vec<DocumentView>> {
         self.base(base_id)?;
-        let connection = self.connection.lock();
+        let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT id, base_id, name, source, bytes, chars, chunk_count, created_at FROM documents WHERE base_id = ?1 ORDER BY created_at DESC",
         )?;
@@ -367,7 +408,7 @@ impl KnowledgeStore {
         let sha = format!("{:x}", Sha256::digest(bytes));
         let pieces = text::chunks(&content, CHUNK_CHARS, CHUNK_OVERLAP);
         let id = new_id("doc");
-        let mut connection = self.connection.lock();
+        let mut connection = self.connect()?;
         let duplicate: Option<String> = connection
             .query_row(
                 "SELECT name FROM documents WHERE base_id = ?1 AND sha256 = ?2",
@@ -415,7 +456,10 @@ impl KnowledgeStore {
     }
 
     pub fn delete_document(&self, id: &str) -> Result<()> {
-        let mut connection = self.connection.lock();
+        if !self.exists() {
+            return Err(KnowledgeError::new("not_found", "文档不存在或已删除"));
+        }
+        let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         let removed = transaction.execute(
             "DELETE FROM chunk_index WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?1)",
@@ -442,6 +486,9 @@ impl KnowledgeStore {
         let Some(strict) = text::match_expression(query) else {
             return Ok(Vec::new());
         };
+        if !self.exists() {
+            return Ok(Vec::new());
+        }
         let limit = limit.clamp(1, 50);
         let mut hits = self.run_search(&strict, query, base_ids, limit)?;
         if hits.is_empty() && strict.contains(" AND ") {
@@ -457,7 +504,7 @@ impl KnowledgeStore {
         base_ids: Option<&[String]>,
         limit: usize,
     ) -> Result<Vec<SearchHit>> {
-        let connection = self.connection.lock();
+        let connection = self.connect()?;
         let filter = match base_ids {
             Some(ids) if !ids.is_empty() => format!(
                 " AND c.base_id IN ({})",
@@ -699,6 +746,25 @@ mod tests {
             .import_path(&base.id, &root.join("docs/guide.txt"))
             .unwrap();
         assert_eq!(single.skipped[0].reason.contains("相同内容"), true);
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reads_never_create_the_file_and_nothing_stays_open() {
+        let (store, dir) = store("handles");
+        assert!(store.bases().unwrap().is_empty());
+        assert!(store.search("任何", None, 5).unwrap().is_empty());
+        assert_eq!(store.base("kb_x").unwrap_err().code, "not_found");
+        assert!(!store.exists(), "reads leave no database behind");
+        let base = store.create_base("手册", "").unwrap();
+        store
+            .add_document(&base.id, "a.md", None, "内容".as_bytes())
+            .unwrap();
+        // Between operations the file is closed, so it can be removed while
+        // the store is alive (Windows refuses to delete open files).
+        std::fs::remove_file(store.path()).unwrap();
+        assert!(store.bases().unwrap().is_empty());
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
     }
