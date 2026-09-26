@@ -20,6 +20,7 @@ import 'workbench/plan_preview.dart';
 import '../src/resource_diagnostics.dart';
 import 'workspace_tree_row.dart';
 import 'workspace_source_dialog.dart';
+import 'knowledge/knowledge_page.dart';
 import 'schedule/schedule_page.dart';
 import 'sidebar_entries.dart';
 
@@ -418,6 +419,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                                   },
                                 ),
                               ),
+                            if (mainPanel == 'knowledge')
+                              Positioned.fill(
+                                child: KnowledgePage(
+                                  controller: c,
+                                  onClose: closePanel,
+                                ),
+                              ),
                             if (!wide)
                               Positioned(
                                 top: 10,
@@ -679,12 +687,23 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           const SizedBox(height: 12),
           DshIcon(
             LucideIcons.alarmClock,
-            label: '定时任务',
+            label: '任务',
             size: 36,
             active: mainPanel == 'schedule',
             color: colors.text,
             onPressed: () =>
                 mainPanel == 'schedule' ? closePanel() : openPanel('schedule'),
+          ),
+          const SizedBox(height: 12),
+          DshIcon(
+            LucideIcons.bookOpen,
+            label: '知识',
+            size: 36,
+            active: mainPanel == 'knowledge',
+            color: colors.text,
+            onPressed: () => mainPanel == 'knowledge'
+                ? closePanel()
+                : openPanel('knowledge'),
           ),
           const SizedBox(height: 12),
           DshIcon(
@@ -855,11 +874,20 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 SidebarEntry(
                   key: const Key('open-schedule'),
                   icon: LucideIcons.alarmClock,
-                  label: '定时任务',
+                  label: '任务',
                   active: mainPanel == 'schedule',
                   onPressed: () => mainPanel == 'schedule'
                       ? closePanel()
                       : openPanel('schedule'),
+                ),
+                SidebarEntry(
+                  key: const Key('open-knowledge'),
+                  icon: LucideIcons.bookOpen,
+                  label: '知识',
+                  active: mainPanel == 'knowledge',
+                  onPressed: () => mainPanel == 'knowledge'
+                      ? closePanel()
+                      : openPanel('knowledge'),
                 ),
                 SidebarEntry(
                   key: const Key('open-plugins'),
