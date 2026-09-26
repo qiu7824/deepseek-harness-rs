@@ -294,6 +294,7 @@ jobs:
           fi
           python tools/e2e_session_resume.py --binary "$HOST" --repo "$STAGE"
           python tools/e2e_session_workspace_resume.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-session-workspace-resume"
+          python tools/e2e_schedule.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-schedule"
           python tools/e2e_credentials_compat.py --binary "$HOST"
           python tools/e2e_all_interfaces.py --binary "$HOST"
           for capability in explicit unknown text-only; do

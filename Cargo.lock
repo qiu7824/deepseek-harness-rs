@@ -2218,6 +2218,7 @@ dependencies = [
  "dsh-sandbox-local",
  "dsh-sandbox-policy",
  "dsh-schedule",
+ "dsh-schedule-host",
  "dsh-schemastery",
  "dsh-scope",
  "dsh-session",
@@ -2965,6 +2966,26 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "dsh-schedule-host"
+version = "0.1.0-rc.8"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "cordis",
+ "dsh-agent",
+ "dsh-atomic-write",
+ "dsh-llm",
+ "dsh-tools",
+ "futures",
+ "iana-time-zone",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -47,6 +47,7 @@ mod office_render;
 mod open_in_app;
 mod plugin_manager;
 mod productivity;
+mod schedule_tasks;
 mod project_tasks;
 mod provider_auth;
 mod provider_auth_catalog;
@@ -3911,7 +3912,10 @@ fn compose_host_in_fiber(
             .map_err(|error| format!("permission-presets: {error}"))?;
     futures::executor::block_on(permission_presets.ready())
         .map_err(|error| format!("permission-presets ready: {error}"))?;
-    dsh_schedule::apply(ctx);
+    // Legacy session-log reminders stay decodable; delivery moved to the
+    // Host-owned task store, which works for cold sessions and restarts.
+    dsh_schedule::apply_projection(ctx);
+    let schedule_service = schedule_tasks::install(ctx, &data_root);
     // ---- M6 shell: the web face over the spine ----
     // The loader service anchors the plugin inventory and profile
     // composition (the Rust static registry serves empty for now).
@@ -4590,6 +4594,13 @@ fn compose_host_in_fiber(
         &system_prompt,
     )?;
     open_in_app::register(&web_server, ctx, allow_remote_host);
+    let _schedule_route = schedule_tasks::attach(
+        ctx,
+        schedule_service,
+        &api_proxy,
+        &web_server,
+        allow_remote_host,
+    );
     feedback_delivery::register(
         &web_server,
         ctx,
