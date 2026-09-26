@@ -5018,11 +5018,15 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		*/
 		const rpcIdSchema = string();
 		/** Error body: discriminated by code, per-branch details aligned to RpcErrorDetailsMap; details is required. */
-		const rpcErrorSchema = object({
-			code: string(),
+		const rpcErrorSchema = union([object({
+			code: literal("schedule-rejected"),
+			message: string(),
+			details: object({ reason: string() }).strict()
+		}).strict(), object({
+			code: string().refine(value => value !== "schedule-rejected"),
 			message: string(),
 			details: record(string(), unknown())
-		});
+		})]);
 		/**
 		* Business success/failure result schema (generic, reusable).
 		* @param value - Schema for the business value.
@@ -5559,6 +5563,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		]);
 		/** HostFrame union (payload slot of a host-stream ServerRequest). */
 		const hostFrameSchema = discriminatedUnion("type", [
+			object({
+				type: literal("host/schedule-changed"),
+				enabled: boolean().optional()
+			}).strict(),
 			object({
 				type: literal("host/session-added"),
 				sessionId: sessionIdSchema,

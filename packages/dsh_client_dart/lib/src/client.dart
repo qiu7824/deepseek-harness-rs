@@ -3,14 +3,21 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+
 import 'models.dart';
 import 'resources.dart';
 import 'display_path.dart';
 
 class DshException implements Exception {
-  DshException(this.code, this.message, {this.outcomeUnknown = false});
+  DshException(
+    this.code,
+    this.message, {
+    this.outcomeUnknown = false,
+    this.details = const {},
+  });
   final String code, message;
   final bool outcomeUnknown;
+  final Json details;
   @override
   String toString() => displayPathText(
     '$message ($code)${outcomeUnknown ? '；操作结果尚未确认，请核对任务状态后再试。' : ''}',
@@ -303,6 +310,7 @@ class DshClient {
       throw DshException(
         error['code'] as String? ?? 'unknown',
         error['message'] as String? ?? '服务拒绝了请求',
+        details: object(error['details']),
       );
     }
     if (result['ok'] != true) {
@@ -321,9 +329,10 @@ class DshClient {
       },
     ),
   );
-  Future<List<SessionSummary>> sessions() async => objects(
-    (await call('session.list'))['items'],
-  ).map(SessionSummary.fromJson).toList();
+  Future<List<SessionSummary>> sessions() async =>
+      objects((await call('session.list'))['items'])
+          .map(SessionSummary.fromJson)
+          .toList();
   Future<String> createSession(String cwd) async =>
       (await call('session.create', {'cwd': cwd}, true))['sessionId'] as String;
   Future<HistoryPage> history(
@@ -361,6 +370,12 @@ class DshClient {
       }, true);
   Future<void> cancel(String id) =>
       call('session.cancel', {'sessionId': id}, true);
+
+  Future<void> archiveSession(String id, {bool stopSchedules = false}) => call(
+    'workspace.archiveSession',
+    {'sessionId': id, if (stopSchedules) 'stopSchedules': true},
+    true,
+  );
 
   Future<bool> respond(HostFrame frame, Json value) async {
     return _respondResult(frame, {'ok': true, 'value': value});

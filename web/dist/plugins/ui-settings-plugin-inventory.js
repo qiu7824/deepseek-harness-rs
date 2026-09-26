@@ -258,7 +258,7 @@ window.__ModuleLoader__.load({
                 h("button",{type:"button",disabled:state.busy||!dirty,onClick:()=>owner.current?.discard()},"取消修改"),
                 h("button",{type:"button",disabled:state.busy,onClick:()=>void owner.current?.load()},"重新读取（保留草稿）"));
         }
-		function PluginInventorySettingsTab({ list, setEnabled, cancel, canToggle, presetName, t, configConnection }) {
+		function PluginInventorySettingsTab({ list, setEnabled, cancel, canToggle, presetName, t, configConnection, loadScheduleManager }) {
 			const sectionId = (0, react.useId)();
 			const [request, setRequest] = (0, react.useState)(0);
 			const [query, setQuery] = (0, react.useState)("");
@@ -413,7 +413,8 @@ window.__ModuleLoader__.load({
 								children: t("viewInPreset")
 							})]
 						})]] : [[t("configuration"), t(entry.enabled ? "enabledTag" : "disabledTag")], ...entry.enabled ? [[t("runtime"), phaseLabel(entry.fiberPhase, t)]] : []]
-					}),configConnection&&["dsh-time-context","@deepseek-ai/dsh-time-context"].includes(entry.moduleName)?(0,react_jsx_runtime.jsx)(TimeContextConfigCard,{connection:configConnection,entryId:entry.entryId},entry.entryId):null]})
+					}),configConnection&&["dsh-time-context","@deepseek-ai/dsh-time-context"].includes(entry.moduleName)?(0,react_jsx_runtime.jsx)(TimeContextConfigCard,{connection:configConnection,entryId:entry.entryId},entry.entryId):null,
+                        loadScheduleManager&&["dsh-schedule","@deepseek-ai/dsh-schedule"].includes(entry.moduleName)?(0,react_jsx_runtime.jsx)(ScheduleManagerEntry,{loadScheduleManager},entry.entryId):null]})
 				}, key);
 			};
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -711,15 +712,22 @@ window.__ModuleLoader__.load({
         }
         function createPluginController(ctx,request=requestPluginOperation) {
             const catalog=(window.__DSH_BOOT__?.availableEntries||window.__DSH_BOOT__?.entries||[]).filter(row=>row.manageable===true),byName=new Map(catalog.map(row=>[row.id,row]));
+            // Host Loader names and entry ids retain their persisted identities;
+            // the browser bundle graph has one canonical id for these built-ins.
+            const clientName=name=>{
+                if(byName.has(name))return name;
+                const canonical={"@deepseek-ai/dsh-schedule":"dsh-schedule","@deepseek-ai/dsh-time-context":"dsh-time-context","@deepseek-ai/dsh-auto-review":"dsh-auto-review"}[name];
+                return canonical&&byName.has(canonical)?canonical:name;
+            };
             const ordered=[],visited=new Set();
-            const visit=row=>{if(visited.has(row.id))return;visited.add(row.id);for(const id of row.inject||[])if(byName.has(id))visit(byName.get(id));ordered.push(row);};catalog.forEach(visit);
+            const visit=row=>{if(visited.has(row.id))return;visited.add(row.id);for(const id of row.inject||[])if(byName.has(clientName(id)))visit(byName.get(clientName(id)));ordered.push(row);};catalog.forEach(visit);
             let active=null,closed=false,generation=0,lastSignature="",repairPending=false;
             const failures=new Map((globalThis.__DSH_PLUGIN_FAILURES__||[]).map(row=>[row.id,row.message]));
             const aborted=()=>Object.assign(new Error("插件操作已取消"),{name:"AbortError"});
             const rawList=async()=>{const result=await ctx.remote.pluginInventory.list();if(!result.ok)throw new Error(result.error.message);return result.value;};
-            const clientEntry=name=>[...ctx.loader.entries()].find(entry=>entry.options.name===name);
-            const unavailable=snapshot=>{const missing=new Set(snapshot.entries.filter(row=>!row.enabled).map(row=>row.moduleName));let previous=-1;while(previous!==missing.size){previous=missing.size;for(const row of catalog)if((row.inject||[]).some(id=>missing.has(id)))missing.add(row.id);}return missing;};
-            const project=snapshot=>{const missing=unavailable(snapshot);return {...snapshot,entries:snapshot.entries.map(row=>byName.has(row.moduleName)?{...row,fiberPhase:missing.has(row.moduleName)?null:failures.has(row.moduleName)?"failed":["pending","loading","active","failed",null,"unloading"][clientEntry(row.moduleName)?.fiber?.state]??null}:row)};};
+            const clientEntry=name=>[...ctx.loader.entries()].find(entry=>clientName(entry.options.name)===clientName(name));
+            const unavailable=snapshot=>{const missing=new Set(snapshot.entries.filter(row=>!row.enabled).map(row=>clientName(row.moduleName)));let previous=-1;while(previous!==missing.size){previous=missing.size;for(const row of catalog)if((row.inject||[]).some(id=>missing.has(clientName(id))))missing.add(row.id);}return missing;};
+            const project=snapshot=>{const missing=unavailable(snapshot);return {...snapshot,entries:snapshot.entries.map(row=>{const name=clientName(row.moduleName);return byName.has(name)?{...row,fiberPhase:missing.has(name)?null:failures.has(name)?"failed":["pending","loading","active","failed",null,"unloading"][clientEntry(name)?.fiber?.state]??null}:row;})};};
             const repairLate=()=>{if(closed)return;if(active){repairPending=true;return;}void rawList().then(snapshot=>reconcile(snapshot)).catch(()=>{});};
             const wait=(work,signal)=>new Promise((resolve,reject)=>{
                 let settled=false,timer;
@@ -760,11 +768,11 @@ window.__ModuleLoader__.load({
             const cancel=async()=>{if(!active)return;active.abort.abort();if(active.id)await request({action:"cancel",operationId:active.id});};
             ctx.effect?.(()=>()=>{closed=true;generation++;if(active){active.abort.abort();if(active.id)void request({action:"cancel",operationId:active.id}).catch(()=>{});}},"plugin enablement lifecycle");
             return {
-                canToggle:entry=>byName.has(entry.moduleName),cancel,
-                list:async()=>{const snapshot=await rawList();const signature=JSON.stringify(snapshot.entries.map(row=>[row.entryId,row.enabled]));if(!active&&signature!==lastSignature){lastSignature=signature;void reconcile(snapshot).catch(()=>{});}return project(snapshot);},
+                canToggle:entry=>byName.has(clientName(entry.moduleName)),cancel,
+                list:async()=>{const snapshot=await rawList();const signature=JSON.stringify(snapshot.entries.map(row=>[row.entryId,row.moduleName,row.enabled]));if(!active&&signature!==lastSignature){lastSignature=signature;void reconcile(snapshot).catch(()=>{});}return project(snapshot);},
                 setEnabled:async(entry,enabled)=>{
-                    if(active)throw new Error("另一项插件启停操作正在执行");if(!byName.has(entry.moduleName))throw new Error("此组件由运行配置管理");
-                    const scope=new Set([entry.moduleName]);let count=-1;while(count!==scope.size){count=scope.size;for(const row of catalog)if((row.inject||[]).some(id=>scope.has(id)))scope.add(row.id);}const previousFailures=new Map(failures);const run={id:null,abort:new AbortController()};active=run;generation++;let clientWork=null,clientSent=false;
+                    if(active)throw new Error("另一项插件启停操作正在执行");const name=clientName(entry.moduleName);if(!byName.has(name))throw new Error("此组件由运行配置管理");
+                    const scope=new Set([name]);let count=-1;while(count!==scope.size){count=scope.size;for(const row of catalog)if((row.inject||[]).some(id=>scope.has(clientName(id))))scope.add(row.id);}const previousFailures=new Map(failures);const run={id:null,abort:new AbortController()};active=run;generation++;let clientWork=null,clientSent=false;
                     try {
                         let operation=(await request({action:enabled?"enable":"disable",spec:entry.entryId,clientAck:true})).operation;run.id=operation.operationId;
                         if(run.abort.signal.aborted)await request({action:"cancel",operationId:run.id});
@@ -785,6 +793,33 @@ window.__ModuleLoader__.load({
             };
         }
 
+        function LazyScheduleManager({loadScheduleManager}) {
+            const [loaded,setLoaded]=react.useState(null),[error,setError]=react.useState(""),[retry,setRetry]=react.useState(0);
+            react.useEffect(()=>{const abort=new AbortController();setLoaded(null);setError("");Promise.resolve().then(()=>loadScheduleManager(abort.signal)).then(value=>{if(!abort.signal.aborted)setLoaded(value);},error=>{if(!abort.signal.aborted)setError(error.message);});return()=>abort.abort();},[loadScheduleManager,retry]);
+            const chinese=(document.documentElement.lang||navigator.language||"zh").startsWith("zh");
+            if(error)return react.createElement("div",null,react.createElement("p",{role:"alert"},error),react.createElement("button",{onClick:()=>setRetry(value=>value+1)},chinese?"重试":"Retry"));
+            return loaded?react.createElement(loaded.Component,{services:loaded.services}):react.createElement("p",{role:"status"},chinese?"正在读取提醒…":"Loading reminders…");
+        }
+        function ScheduleManagerEntry({loadScheduleManager}) {
+            const [open,setOpen]=react.useState(false),chinese=(document.documentElement.lang||navigator.language||"zh").startsWith("zh");
+            return react.createElement("section",null,react.createElement("button",{type:"button","aria-expanded":open,onClick:()=>setOpen(value=>!value)},chinese?"管理提醒":"Manage reminders"),open&&react.createElement(LazyScheduleManager,{loadScheduleManager}));
+        }
+        function createScheduleManagerLoader(ctx,controller) {
+            let services;
+            return async signal=>{
+                const aborted=()=>{if(signal.aborted)throw Object.assign(new Error("Cancelled"),{name:"AbortError"});};
+                aborted();
+                const row=(window.__DSH_BOOT__?.availableEntries||window.__DSH_BOOT__?.entries||[]).find(row=>row.id==="dsh-schedule");
+                if(!row)throw new Error("Reminder management is unavailable.");
+                const url=new URL(row.url,window.location.href);
+                if(url.origin!==window.location.origin||!url.pathname.startsWith("/plugins/external/"))throw new Error("Invalid reminder module address.");
+                // Loading a display module never creates or enables a Host or client Loader entry.
+                await ctx.modules.arrive({...row,url:url.href});aborted();
+                const module=await ctx.modules.import(row.id);aborted();
+                services??=module.servicesFor(ctx,controller);
+                return {Component:module.ScheduleManager,services};
+            };
+        }
 		/** Services required by the Settings registration and generated Remote face. */
 		const inject = [
 			"modules",
@@ -792,6 +827,7 @@ window.__ModuleLoader__.load({
 			"locale",
 			"remote",
 			"connection",
+			"sessions",
 			"remote.pluginInventory"
 		];
 		/** Contribute the lazy inventory tab to the Plugins settings section. */
@@ -802,11 +838,18 @@ window.__ModuleLoader__.load({
 			}), "ui-settings-plugin-inventory: dictionaries");
 			const t = ctx.locale.bind(NS);
 			const controller = createPluginController(ctx);
+			const loadScheduleManager = createScheduleManagerLoader(ctx,controller);
+			const scheduleLabel = () => (document.documentElement.lang||navigator.language||"zh").startsWith("zh")?"提醒":"Reminders";
+			ctx.slots.inject("main",()=>ctx.slots.register({name:"main",key:"reminders"},()=>react.createElement(LazyScheduleManager,{loadScheduleManager})));
+			ctx.slots.inject("sidebar.panellist",()=>ctx.slots.register({name:"sidebar.panellist",id:"reminders",order:12,label:scheduleLabel},()=>react.createElement("span",{"aria-hidden":true},"◷")));
+			ctx.slots.inject("settings.section",()=>ctx.slots.register({name:"settings.section",id:"reminders",order:66,label:scheduleLabel},()=>react.createElement(LazyScheduleManager,{loadScheduleManager})));
+			ctx.effect(()=>ctx.on("schedule/open-manager",()=>ctx.layout?.selectPanel("reminders")),"reminders: navigation");
 			const agentPresetCopy = ctx.locale.bind("settings.agentPreset");
 			const presetName = (preset) => presetDisplayText(preset, agentPresetCopy).name;
 			const injected = () => ({
 				...controller,
 				configConnection:ctx.connection,
+				loadScheduleManager,
 				presetName
 			});
             ctx.slots.inject("plugin-center.inventory",()=>ctx.slots.register({name:"plugin-center.inventory",locale:NS,inject:injected},PluginInventorySettingsTab));
@@ -824,6 +867,8 @@ window.__ModuleLoader__.load({
 		exports.createPluginController = createPluginController;
 		exports.createTimeContextConfigController = createTimeContextConfigController;
 		exports.TimeContextConfigCard = TimeContextConfigCard;
+		exports.LazyScheduleManager = LazyScheduleManager;
+		exports.createScheduleManagerLoader = createScheduleManagerLoader;
 		exports.apply = apply;
 		exports.inject = inject;
 		return module.exports;

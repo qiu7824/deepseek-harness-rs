@@ -38,10 +38,15 @@ mod file_attachments;
 mod history_reader;
 #[path = "history_response.rs"]
 mod history_response;
-#[path = "plugin_enablement.rs"]
-mod plugin_enablement;
 #[path = "plugin_config.rs"]
 mod plugin_config;
+#[path = "plugin_enablement.rs"]
+mod plugin_enablement;
+#[path = "schedule_api.rs"]
+mod schedule_api;
+#[cfg(test)]
+#[path = "schedule_api_tests.rs"]
+mod schedule_api_tests;
 pub use plugin_enablement::{PluginClientReady, PluginOperationControl, PluginProgress};
 #[cfg(test)]
 #[path = "plugin_profile_tests.rs"]
@@ -3984,6 +3989,11 @@ impl ApiProxyService {
                 self.retire_session_for_deletion(id).await?;
             }
             // All execution is stopped before the first durable artifact is removed.
+            if let Some(schedule) = self.schedule_service() {
+                for id in &targets {
+                    schedule.purge_session(id.as_str()).await.map_err(schedule_api::rpc_error)?;
+                }
+            }
             for id in targets.iter().rev() {
                 if id != &root {
                     registry.archive_session(id).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
@@ -4133,6 +4143,36 @@ impl ApiProxyService {
             return err(request.rpc_id, Self::workspace_absent());
         };
         let session_id = dsh_session::session_id(request.payload.session_id.clone());
+        // The same gate is held from schedule delivery admission through its
+        // receipt commit. An archive cannot race a late cold restoration.
+        let _admission = self.resolver.admission(&session_id).lock_owned().await;
+        if !unarchive {
+            if let Some(schedule) = self.schedule_service() {
+                if request.payload.stop_schedules {
+                    if let Err(error) = schedule.stop_session_tasks(session_id.as_str()).await {
+                        return err(request.rpc_id, schedule_api::rpc_error(error));
+                    }
+                } else {
+                    match schedule.session_activity(session_id.as_str()).await {
+                        Ok(tasks) if !tasks.is_empty() => {
+                            return err(
+                                request.rpc_id,
+                                RpcError::AgentBusy(RpcErrorBody {
+                                    message:
+                                        "Stop this session's active reminders before archiving it."
+                                            .into(),
+                                    details: crate::api::rpc::ReasonDetails {
+                                        reason: "active-schedules".into(),
+                                    },
+                                }),
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => return err(request.rpc_id, schedule_api::rpc_error(error)),
+                    }
+                }
+            }
+        }
         let outcome = if unarchive {
             dsh_workspace::WorkspaceRegistry::unarchive_session(&registry, &session_id).await
         } else {
@@ -8399,16 +8439,22 @@ impl ApiProxyCarrier for ApiProxyService {
             "pluginInventory.getConfig" => {
                 let payload = match serde_json::from_value(request.payload) {
                     Ok(payload) => payload,
-                    Err(error) => return err(rpc_id, bad_request("pluginInventory.getConfig", error)),
+                    Err(error) => {
+                        return err(rpc_id, bad_request("pluginInventory.getConfig", error));
+                    }
                 };
-                self.plugin_inventory_get_config(RpcRequest { rpc_id, payload }).await
+                self.plugin_inventory_get_config(RpcRequest { rpc_id, payload })
+                    .await
             }
             "pluginInventory.setConfig" => {
                 let payload = match serde_json::from_value(request.payload) {
                     Ok(payload) => payload,
-                    Err(error) => return err(rpc_id, bad_request("pluginInventory.setConfig", error)),
+                    Err(error) => {
+                        return err(rpc_id, bad_request("pluginInventory.setConfig", error));
+                    }
                 };
-                self.plugin_inventory_set_config(RpcRequest { rpc_id, payload }, signal).await
+                self.plugin_inventory_set_config(RpcRequest { rpc_id, payload }, signal)
+                    .await
             }
             "pluginInventory.setEnabled" => {
                 let payload: dsh_host_plugin_inventory::PluginSetEnabledRequest =
@@ -8773,6 +8819,11 @@ impl ApiProxyCarrier for ApiProxyService {
                         }),
                     ),
                 }
+            }
+            "schedule.catalog" | "schedule.list" | "schedule.create" | "schedule.update"
+            | "schedule.delete" | "schedule.history" | "schedule.retry" => {
+                self.schedule_rpc(rpc_id, method, request.payload, signal)
+                    .await
             }
             "memory.categories" | "memory.list" | "memory.upsert" | "memory.remove" => {
                 self.memory_rpc(rpc_id, method, request.payload).await
@@ -9503,6 +9554,29 @@ impl ApiProxyCarrier for ApiProxyService {
                 )
                 .await;
             listener_disposers.push(d_session_deleted);
+            let tx_schedule = tx.clone();
+            let d_schedule = ctx
+                .on(
+                    "schedule/changed",
+                    Arc::new(move |_dispatch_ctx, args| {
+                        let tx = tx_schedule.clone();
+                        Box::pin(async move {
+                            let enabled = args
+                                .first()
+                                .and_then(|value| cordis::downcast::<serde_json::Value>(value))
+                                .and_then(|value| value.get("enabled"))
+                                .and_then(serde_json::Value::as_bool);
+                            push(
+                                &tx,
+                                crate::api::events::HostFrame::ScheduleChanged { enabled },
+                            );
+                            None
+                        })
+                    }),
+                    cordis::EventOptions::default().global(true),
+                )
+                .await;
+            listener_disposers.push(d_schedule);
             // agent/status → host/session-status. The Agent Loop already
             // publishes exact Running/Idle transitions; forwarding them is
             // what clears the browser's busy state after turn/end.

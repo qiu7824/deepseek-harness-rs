@@ -52,10 +52,24 @@ impl Fixture {
         gate: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
         external: bool,
     ) -> Self {
+        Self::for_module(MODULE, disabled, gate, external).await
+    }
+
+    async fn for_module(
+        module: &str,
+        disabled: bool,
+        gate: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+        external: bool,
+    ) -> Self {
         let root = std::env::temp_dir().join(format!("plugin-config-api-{}", uuid::Uuid::new_v4()));
         let profile = root.join("profiles/web");
+        let config = if module.ends_with("dsh-schedule") {
+            json!({"deliveryHistoryDays":7,"deliveryHistoryRecords":2})
+        } else {
+            json!({"refreshIntervalMs":600000})
+        };
         let rows = vec![
-            json!({"id":"clock","name":MODULE,"disabled":disabled,"config":{"refreshIntervalMs":600000}}),
+            json!({"id":"clock","name":module,"disabled":disabled,"config":config}),
             json!({"id":"other","name":"secret-plugin","disabled":true,"config":{"apiKey":"must-not-return"}}),
         ];
         {
@@ -74,7 +88,7 @@ impl Fixture {
         let loader = LoaderService::new(&ctx).await;
         let applied = Arc::new(AtomicUsize::new(0));
         loader.core.register(
-            MODULE,
+            module,
             Arc::new(ConfigPlugin {
                 applied: applied.clone(),
                 gate,
@@ -183,6 +197,65 @@ impl Fixture {
         );
         std::fs::remove_dir_all(self.root).unwrap();
     }
+}
+
+#[tokio::test]
+async fn disabled_schedule_config_rejects_arrays_and_preserves_profile_before_accepting_integral_numbers()
+ {
+    struct NoSessions;
+    #[async_trait]
+    impl dsh_schedule::host_service::ScheduleSessionController for NoSessions {
+        async fn acquire(
+            &self,
+            _: &str,
+            _: bool,
+        ) -> Result<
+            Box<dyn dsh_schedule::host_service::ScheduleSessionLease>,
+            dsh_schedule::host_types::ScheduleError,
+        > {
+            panic!("disabled configuration must not activate a session")
+        }
+    }
+    let fixture = Fixture::for_module("@deepseek-ai/dsh-schedule", true, None, false).await;
+    let service =
+        dsh_schedule::host_service::ScheduleService::install(&fixture.ctx, Arc::new(NoSessions));
+    service
+        .configure(dsh_schedule::host_service::Config {
+            delivery_history_days: 7,
+            delivery_history_records: 2,
+        })
+        .unwrap();
+    let base = fixture.get("clock").await;
+    let revision = base["value"]["revision"].as_str().unwrap();
+    let original = fixture.document();
+    for config in [
+        json!([]),
+        json!(null),
+        json!({"deliveryHistoryDays":0}),
+        json!({"deliveryHistoryRecords":2.5}),
+    ] {
+        let response = fixture
+            .fetch(
+                "pluginInventory.setConfig",
+                json!({"entryId":"clock","expectedRevision":revision,"config":config}),
+            )
+            .await;
+        assert_eq!(
+            response["error"]["code"], "plugin-config-invalid",
+            "{response}"
+        );
+        assert_eq!(fixture.document(), original);
+        assert_eq!(service.config().delivery_history_days, 7);
+        assert_eq!(service.config().delivery_history_records, 2);
+        assert!(!service.enabled());
+    }
+    let saved = fixture.fetch("pluginInventory.setConfig", json!({"entryId":"clock","expectedRevision":revision,"config":{"deliveryHistoryDays":30.0,"deliveryHistoryRecords":200.0}})).await;
+    assert_eq!(saved["ok"], true, "{saved}");
+    assert_eq!(service.config().delivery_history_days, 30);
+    assert_eq!(service.config().delivery_history_records, 200);
+    assert!(!service.enabled());
+    assert_eq!(fixture.applied.load(Ordering::SeqCst), 0);
+    fixture.close().await;
 }
 
 #[test]

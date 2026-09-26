@@ -46,6 +46,7 @@ dsh-skill = { path = "../../skill/skill" }
 dsh-skill-filesystem = { path = "../../skill/skill-filesystem" }
 dsh-mcp-client = { path = "../../mcp/mcp-client" }
 dsh-storage-domain = { path = "../../storage/storage-domain" }
+dsh-schedule = { path = "../../schedule/schedule" }
 dsh-subagent = { path = "../../subagent/subagent" }
 dsh-tools = { path = "../../core/tools" }
 dsh-time-context = { path = "../../context/time-context" }

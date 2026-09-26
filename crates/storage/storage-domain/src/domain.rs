@@ -22,6 +22,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value as JsonValue;
 use tokio::sync::OnceCell;
@@ -91,10 +92,11 @@ pub trait KvTable: Send + Sync {
     /// Read one record, synchronously from memory (a detached clone).
     fn get(&self, key: &str) -> Option<JsonValue>;
 
-    /// Snapshot over `[key, record]` pairs.
+    /// Snapshot over `[key, record]` pairs in insertion order. Reopened
+    /// unordered backends use stable key order for existing records.
     fn entries(&self) -> Vec<(String, JsonValue)>;
 
-    /// Snapshot over keys.
+    /// Snapshot over keys, in the same order as `entries`.
     fn keys(&self) -> Vec<String>;
 
     /// Current record count.
@@ -124,7 +126,7 @@ pub trait KvTable: Send + Sync {
 struct KvTableImpl {
     host: Arc<DomainHost>,
     table_name: String,
-    records: Mutex<HashMap<String, JsonValue>>,
+    records: Mutex<IndexMap<String, JsonValue>>,
 }
 
 impl KvTableImpl {
@@ -187,7 +189,7 @@ impl KvTable for KvTableImpl {
             .delete_record(&self.table_name, key)
             .await
             .map_err(|error| error.message)?;
-        self.records.lock().remove(key);
+        self.records.lock().shift_remove(key);
         self.host.emit_changed(DomainChanged::Deleted {
             domain: self.host.domain_name.clone(),
             table: self.table_name.clone(),
@@ -286,13 +288,26 @@ impl Domain {
             disposal: OnceCell::new(),
         });
         let mut tables = HashMap::new();
-        for (table_name, records) in table_records {
+        for (table_name, mut records) in table_records {
+            let mut ordered = IndexMap::with_capacity(records.len());
+            if let Some(keys) = host.unit.record_keys(&table_name) {
+                for key in keys {
+                    if let Some(value) = records.remove(&key) {
+                        ordered.insert(key, value);
+                    }
+                }
+            }
+            // Snapshots from unordered backends still reopen deterministically.
+            // Unknown, repeated, or incomplete order hints cannot drop records.
+            let mut remainder: Vec<_> = records.into_iter().collect();
+            remainder.sort_by(|left, right| left.0.cmp(&right.0));
+            ordered.extend(remainder);
             tables.insert(
                 table_name.clone(),
                 Arc::new(KvTableImpl {
                     host: host.clone(),
                     table_name,
-                    records: Mutex::new(records),
+                    records: Mutex::new(ordered),
                 }) as Arc<dyn KvTable>,
             );
         }

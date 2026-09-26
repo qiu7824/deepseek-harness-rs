@@ -22,7 +22,11 @@ class ShellController extends DesktopController {
   bool get connected => true;
   final restored = <String>[];
   @override
-  Future<void> archive(String id, {bool restore = false}) async {
+  Future<void> archive(
+    String id, {
+    bool restore = false,
+    bool stopSchedules = false,
+  }) async {
     if (restore) {
       restored.add(id);
       archivedSessionIds.remove(id);

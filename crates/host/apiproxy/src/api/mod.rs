@@ -14,6 +14,7 @@ pub mod llm;
 pub mod questions;
 pub mod rpc;
 pub mod rpc_map;
+pub mod schedule;
 pub mod sessions;
 pub mod settings;
 pub mod skills;

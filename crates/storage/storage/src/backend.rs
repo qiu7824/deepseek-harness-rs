@@ -89,6 +89,13 @@ pub trait KvUnit: Send + Sync {
     /// Read the full current snapshot.
     async fn load_all(&self) -> Result<KvUnitSnapshot, StorageError>;
 
+    /// Stable record order when the backend preserves insertion order.
+    /// Domain construction uses this hint only for keys present in its
+    /// validated snapshot; unordered backends may leave the default.
+    fn record_keys(&self, _table: &str) -> Option<Vec<String>> {
+        None
+    }
+
     /// Upsert one record durably. Overwrite semantics.
     async fn put_record(
         &self,

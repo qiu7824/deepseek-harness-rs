@@ -159,6 +159,15 @@ impl JsonKvUnit {
 
 #[async_trait::async_trait]
 impl KvUnit for JsonKvUnit {
+    fn record_keys(&self, table: &str) -> Option<Vec<String>> {
+        self.assert_open().ok()?;
+        self.state
+            .lock()
+            .tables
+            .get(table)
+            .map(|records| records.keys().cloned().collect())
+    }
+
     async fn load_all(&self) -> Result<KvUnitSnapshot, StorageError> {
         self.assert_open()?;
         let state = self.state.lock();
@@ -230,15 +239,9 @@ impl KvUnit for JsonKvUnit {
                 .tables
                 .get_mut(table)
                 .expect("declared table checked above");
-            match records.get(key).cloned() {
-                Some(previous) => {
-                    records.shift_remove(key);
-                    Some(previous)
-                }
-                None => None,
-            }
+            records.shift_remove_full(key)
         };
-        let Some(previous) = previous else {
+        let Some((index, key, previous)) = previous else {
             return Ok(());
         };
         if let Err(error) = self.publish().await {
@@ -247,7 +250,7 @@ impl KvUnit for JsonKvUnit {
                 .tables
                 .get_mut(table)
                 .expect("declared table checked above")
-                .insert(key.to_string(), previous);
+                .shift_insert(index, key, previous);
             return Err(error);
         }
         Ok(())

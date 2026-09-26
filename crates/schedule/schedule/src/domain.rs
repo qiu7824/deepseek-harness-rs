@@ -570,8 +570,35 @@ fn has_exact_keys(value: &Value, expected: &[&str]) -> bool {
     keys == wanted
 }
 
-/// Decode one current durable record variant by its exact discriminator.
-fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogError> {
+/// Require the original v1 members and permit only the later optional task name.
+fn has_legacy_record_keys(value: &Value, required: &[&str]) -> bool {
+    let Some(map) = value.as_object() else {
+        return false;
+    };
+    required.iter().all(|key| map.contains_key(*key))
+        && map
+            .keys()
+            .all(|key| key == "title" || required.contains(&key.as_str()))
+}
+
+/// Preserve an absent historical title and validate a present title without normalization.
+fn decode_historical_title(value: &Value) -> Result<Option<String>, ScheduleLogError> {
+    let Some(title) = value.get("title") else {
+        return Ok(None);
+    };
+    let title = title
+        .as_str()
+        .ok_or_else(|| ScheduleLogError::new("title must be a non-empty trimmed string"))?;
+    let normalized = crate::calendar::schedule_title(title)
+        .map_err(|error| ScheduleLogError::new(error.message))?;
+    if normalized != title {
+        return Err(ScheduleLogError::new("title must be a trimmed string"));
+    }
+    Ok(Some(title.to_owned()))
+}
+
+/// Decode a strict historical record while retaining an optional task name.
+pub(crate) fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogError> {
     if !is_record(value) {
         return Err(ScheduleLogError::new("schedule record must be an object"));
     }
@@ -590,12 +617,12 @@ fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogEr
     };
     match value.get("kind").and_then(Value::as_str) {
         Some("after") => {
-            if !has_exact_keys(
+            if !has_legacy_record_keys(
                 value,
                 &["id", "kind", "prompt", "afterSeconds", "scheduledAt"],
             ) {
                 return Err(ScheduleLogError::new(
-                    "after schedule must contain exactly id, kind, prompt, afterSeconds, and scheduledAt",
+                    "after schedule must contain id, kind, prompt, afterSeconds, scheduledAt, and optional title only",
                 ));
             }
             let prompt = prompt_of(value, "after")?;
@@ -608,31 +635,33 @@ fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogEr
                 })?;
             Ok(ScheduleRecord::After {
                 id: decode_id(value.get("id").expect("key"))?,
+                title: decode_historical_title(value)?,
                 prompt,
                 after_seconds,
                 scheduled_at: decode_instant(value.get("scheduledAt").expect("key"))?,
             })
         }
         Some("at") => {
-            if !has_exact_keys(value, &["id", "kind", "prompt", "scheduledAt"]) {
+            if !has_legacy_record_keys(value, &["id", "kind", "prompt", "scheduledAt"]) {
                 return Err(ScheduleLogError::new(
-                    "at schedule must contain exactly id, kind, prompt, and scheduledAt",
+                    "at schedule must contain id, kind, prompt, scheduledAt, and optional title only",
                 ));
             }
             let prompt = prompt_of(value, "at")?;
             Ok(ScheduleRecord::At {
                 id: decode_id(value.get("id").expect("key"))?,
+                title: decode_historical_title(value)?,
                 prompt,
                 scheduled_at: decode_instant(value.get("scheduledAt").expect("key"))?,
             })
         }
         Some("every") => {
-            if !has_exact_keys(
+            if !has_legacy_record_keys(
                 value,
                 &["id", "kind", "prompt", "everySeconds", "scheduledAt"],
             ) {
                 return Err(ScheduleLogError::new(
-                    "every schedule must contain exactly id, kind, prompt, everySeconds, and scheduledAt",
+                    "every schedule must contain id, kind, prompt, everySeconds, scheduledAt, and optional title only",
                 ));
             }
             let prompt = prompt_of(value, "every")?;
@@ -656,6 +685,7 @@ fn decode_schedule_record(value: &Value) -> Result<ScheduleRecord, ScheduleLogEr
             }
             Ok(ScheduleRecord::Every {
                 id: decode_id(value.get("id").expect("key"))?,
+                title: decode_historical_title(value)?,
                 prompt,
                 every_seconds,
                 scheduled_at: decode_instant(value.get("scheduledAt").expect("key"))?,
@@ -964,6 +994,7 @@ pub fn create_after_schedule_record(
     let target = now.saturating_add(delay);
     Ok(ScheduleRecord::After {
         id,
+        title: None,
         prompt: normalized_prompt.to_string(),
         after_seconds,
         scheduled_at: future_instant(target, now)?,
@@ -994,6 +1025,7 @@ pub fn create_at_schedule_record(
     };
     Ok(ScheduleRecord::At {
         id,
+        title: None,
         prompt: normalized_prompt.to_string(),
         scheduled_at: future_instant(target, now)?,
     })
@@ -1024,6 +1056,7 @@ pub fn create_every_schedule_record(
     let target = now.saturating_add(interval);
     Ok(ScheduleRecord::Every {
         id,
+        title: None,
         prompt: normalized_prompt.to_string(),
         every_seconds,
         scheduled_at: future_instant(target, now)?,

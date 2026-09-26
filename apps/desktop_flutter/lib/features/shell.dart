@@ -1112,7 +1112,28 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         },
       );
     }
-    if (action == 'archive') await c.run(() => c.archive(session.id));
+    if (action == 'archive') {
+      final owner = c.client;
+      await c.run(() async {
+        try {
+          await c.archive(session.id);
+        } on DshException catch (error) {
+          if (error.code != 'agent-busy' ||
+              error.details['reason'] != 'active-schedules') {
+            rethrow;
+          }
+          if (!mounted || !identical(owner, c.client)) return;
+          final confirmed = await confirmAction(
+            context,
+            '停止提醒并归档？',
+            '此会话仍有有效提醒。继续归档会停止这些提醒；取消后提醒保持原状。',
+            action: '停止提醒并归档',
+          );
+          if (!confirmed || !mounted || !identical(owner, c.client)) return;
+          await c.archive(session.id, stopSchedules: true);
+        }
+      });
+    }
     if (action == 'restore') {
       await c.run(() => c.archive(session.id, restore: true));
     }

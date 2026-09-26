@@ -1,0 +1,8 @@
+{
+  "name": "dsh-schedule",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Host reminders for the original conversation with recurring rules and saved delivery history",
+  "exports": { "./client": "./lib/client.js" },
+  "dsh": { "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-runtime", "@deepseek-ai/dsh-client-connection", "@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-layout"] } }
+}

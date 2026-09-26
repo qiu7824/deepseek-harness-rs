@@ -230,6 +230,11 @@ pub enum HostFrame {
     ArchivedSessionsChanged {
         archived_session_ids: Vec<SessionId>,
     },
+    #[serde(rename = "host/schedule-changed")]
+    ScheduleChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
     /// One allowlisted host cordis event forwarded verbatim; no projection,
     /// no redaction, no renaming.
     #[serde(rename = "host/remote-event")]

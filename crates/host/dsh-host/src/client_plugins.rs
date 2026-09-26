@@ -158,16 +158,9 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
             .ok_or("invalid profile dependencies")?
             .entry(name)
             .or_insert_with(|| json!("bundled"));
-        if !next.entries.iter().any(|row| {
-            row["id"] == name
-                || name == "dsh-time-context"
-                    && matches!(
-                        row["name"].as_str(),
-                        Some("dsh-time-context" | "@deepseek-ai/dsh-time-context")
-                    )
-        }) {
+        if !has_bundled_entry(&next.entries, name) {
             next.entries
-                .push(json!({"id":name,"name":name,"disabled":matches!(name,"dsh-auto-review"|"dsh-time-context")}));
+                .push(json!({"id":name,"name":name,"disabled":matches!(name,"dsh-auto-review"|"dsh-time-context"|"dsh-schedule")}));
         }
         if refresh || next.manifest != documents.manifest || next.entries != documents.entries {
             let source = entry.path();
@@ -183,6 +176,26 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
         }
     }
     profile.checkpoint()
+}
+
+fn has_bundled_entry(entries: &[Value], name: &str) -> bool {
+    entries.iter().any(|row| {
+        row["id"] == name
+            || row["name"].as_str().and_then(native_client_id) == Some(name)
+            || row["group"] == true
+                && row["config"]
+                    .as_array()
+                    .is_some_and(|children| has_bundled_entry(children, name))
+    })
+}
+
+fn native_client_id(module: &str) -> Option<&'static str> {
+    match module {
+        "dsh-schedule" | "@deepseek-ai/dsh-schedule" => Some("dsh-schedule"),
+        "dsh-time-context" | "@deepseek-ai/dsh-time-context" => Some("dsh-time-context"),
+        "dsh-auto-review" | "@deepseek-ai/dsh-experimental-auto-review" => Some("dsh-auto-review"),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -470,13 +483,35 @@ pub fn discover(profile: &Path) -> Result<Vec<ClientPlugin>, String> {
 }
 
 pub(crate) fn disabled_plugins(profile: &Path) -> std::collections::HashSet<String> {
-    read_runtime(profile)
-        .documents
-        .entries
-        .into_iter()
-        .filter(|entry| entry.get("disabled").and_then(Value::as_bool) == Some(true))
-        .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect()
+    fn collect(
+        entries: &[Value],
+        parent_disabled: bool,
+        disabled: &mut std::collections::HashSet<String>,
+    ) {
+        for entry in entries {
+            let is_disabled = parent_disabled || entry["disabled"] == true;
+            if is_disabled {
+                if let Some(id) = entry["id"].as_str() {
+                    disabled.insert(id.to_owned());
+                }
+                if let Some(id) = entry["name"].as_str().and_then(native_client_id) {
+                    disabled.insert(id.to_owned());
+                }
+            }
+            if entry["group"] == true {
+                if let Some(children) = entry["config"].as_array() {
+                    collect(children, is_disabled, disabled);
+                }
+            }
+        }
+    }
+    let mut disabled = std::collections::HashSet::new();
+    collect(
+        &read_runtime(profile).documents.entries,
+        false,
+        &mut disabled,
+    );
+    disabled
 }
 
 pub(crate) fn apply_enabled_graph(
@@ -610,6 +645,106 @@ pub fn compose(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn boot_payload_respects_custom_native_ids_and_disabled_ancestor_groups() {
+        let root =
+            std::env::temp_dir().join(format!("native-plugin-boot-{}", uuid::Uuid::new_v4()));
+        let profile_path = root.join("profiles/web");
+        let entries = vec![
+            json!({"id":"my-reminders","name":"@deepseek-ai/dsh-schedule","disabled":true}),
+            json!({"id":"optional-group","name":"group","group":true,"disabled":true,"config":[
+                {"id":"my-clock","name":"@deepseek-ai/dsh-time-context","disabled":false},
+                {"id":"nested","name":"group","group":true,"config":[
+                    {"id":"my-review","name":"@deepseek-ai/dsh-experimental-auto-review","disabled":false}
+                ]}
+            ]}),
+        ];
+        {
+            let profile = Profile::open(&profile_path).unwrap();
+            profile
+                .replace(
+                    dsh_app_boot::plugin_profile::Documents {
+                        manifest: json!({"dependencies":{}}),
+                        entries,
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        let ctx = cordis::Context::root();
+        let host = crate::compose_persistent_host_at(&ctx, &root, Some("web")).unwrap();
+        let html = host
+            .web_server
+            .apply_index_taps("<html><head></head><body></body></html>");
+        let raw = html
+            .split_once("window.__DSH_BOOT__=")
+            .unwrap()
+            .1
+            .split_once(";</script>")
+            .unwrap()
+            .0;
+        let boot: Value = serde_json::from_str(raw).unwrap();
+        for id in ["dsh-schedule", "dsh-time-context", "dsh-auto-review"] {
+            assert!(
+                boot["availableEntries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["id"] == id),
+                "{id} remains available for explicit enablement"
+            );
+            assert!(
+                !boot["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["id"] == id),
+                "{id} must not load through a disabled alias or parent group"
+            );
+        }
+        let disabled = disabled_plugins(&profile_path);
+        for id in [
+            "my-reminders",
+            "my-clock",
+            "my-review",
+            "optional-group",
+            "nested",
+        ] {
+            assert!(disabled.contains(id));
+        }
+        let response = crate::to_fetch_handler(host.api_proxy.clone()).handle(crate::CarrierRequest {
+            method:Method::POST, path:"/api/pluginInventory.getConfig".into(), query:vec![], headers:vec![("content-type".into(),"application/json".into())],
+            body:Some(json!({"type":"client-request","rpcId":"custom-plugin-id","method":"pluginInventory.getConfig","payload":{"entryId":"my-reminders"}}).to_string().into_bytes()),
+        }).await;
+        let crate::CarrierBody::Bytes(bytes) = response.into_body() else {
+            panic!("unary result required")
+        };
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(response["result"]["ok"], true, "{response}");
+        assert_eq!(response["result"]["value"]["entryId"], "my-reminders");
+        host.shutdown().await.unwrap();
+        drop(host);
+        drop(ctx);
+        assert!(
+            root.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_native_plugin_aliases_in_groups_keep_their_existing_entry() {
+        let entries = json!([{"id":"group","group":true,"config":[
+            {"id":"custom-reminders","name":"@deepseek-ai/dsh-schedule","disabled":false,"config":{"deliveryHistoryRecords":321}},
+            {"id":"custom-clock","name":"@deepseek-ai/dsh-time-context","disabled":true,"config":{"refreshIntervalMs":0}}
+        ]}]);
+        let rows = entries.as_array().unwrap();
+        assert!(has_bundled_entry(rows, "dsh-schedule"));
+        assert!(has_bundled_entry(rows, "dsh-time-context"));
+        assert!(!has_bundled_entry(rows, "dsh-auto-review"));
+    }
 
     #[test]
     fn explicit_user_package_is_not_removed_as_a_retired_bundled_plugin() {

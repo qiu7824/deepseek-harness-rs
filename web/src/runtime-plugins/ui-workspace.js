@@ -1935,7 +1935,28 @@ window.__ModuleLoader__.load({
 		* @param props - composed slot props (shell owner share + store + injected actions).
 		* @returns the region element tree.
 		*/
-		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, readSessionTitle, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, unarchiveSession, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, t }) {
+        function createArchiveController({archiveSession,unarchiveSession,generation,publish}) {
+            let alive=true,serial=0,abort=null,state={target:null,busy:false,error:""};
+            const update=patch=>{state={...state,...patch};if(alive)publish(state);};
+            const reset=()=>{serial++;abort?.abort();update({target:null,busy:false,error:""});};
+            const run=async(sessionId,archived,stopSchedules=false)=>{
+                if(!alive||state.busy)return;
+                const token=++serial,host=generation?.getSnapshot();abort?.abort();const current=new AbortController();abort=current;
+                const valid=()=>alive&&serial===token&&!current.signal.aborted&&generation?.getSnapshot()===host;
+                update({busy:true,error:""});
+                try{if(archived)await unarchiveSession(sessionId);else await archiveSession(sessionId,stopSchedules,current.signal);if(valid())update({target:null,busy:false});}
+                catch(error){if(!valid())return;if(!archived&&!stopSchedules&&error?.code==="agent-busy"&&error.details?.reason==="active-schedules")update({target:{sessionId,host},busy:false});else update({busy:false,error:error.message||String(error)});}
+            };
+            const stop=generation?.subscribe(reset);
+            return {getSnapshot:()=>state,request:(sessionId,archived)=>{if(!state.busy){reset();void run(sessionId,archived);}},confirm:()=>{const target=state.target;if(target&&target.host===generation?.getSnapshot())return run(target.sessionId,false,true);},cancel:reset,dispose:()=>{alive=false;serial++;abort?.abort();stop?.();}};
+        }
+        function ArchiveReminderDialog({state,controller,t}) {
+            if(!state.target)return null;
+            const close=()=>{if(!state.busy)controller?.cancel();};
+            return react.createElement(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:true,title:t("archive.stopSchedulesTitle"),closeLabel:t("close"),onClose:close,
+                footer:react.createElement(react.Fragment,null,react.createElement("button",{type:"button",disabled:state.busy,onClick:close},t("cancel")),react.createElement("button",{type:"button",disabled:state.busy,onClick:()=>void controller?.confirm()},t("archive.stopSchedulesConfirm")))},react.createElement("p",null,t("archive.stopSchedulesHint")));
+        }
+		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, readSessionTitle, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, unarchiveSession, archiveConnection, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, t }) {
 			const workspaces = useWorkspaces((state) => state.items);
 			const workspacePhase = useWorkspaces((state) => state.phase);
 			const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
@@ -2141,11 +2162,9 @@ window.__ModuleLoader__.load({
 				setSessionRenameTarget({ ...sessionRenameTarget, base, currentTitle: base.value ?? "" });
 				setSessionRenameConflict(false); setSessionRenameError(null);
 			};
-			const onSessionArchive = (sessionId, archived) => {
-				(archived ? unarchiveSession : archiveSession)(sessionId).catch((reason) => {
-					console.warn("session archive rejected:", reason);
-				});
-			};
+            const archiveOwner=react.useRef(null),[archiveState,setArchiveState]=react.useState({target:null,busy:false,error:""});
+            react.useEffect(()=>{const controller=createArchiveController({archiveSession,unarchiveSession,generation:archiveConnection?.generation,publish:setArchiveState});archiveOwner.current=controller;setArchiveState(controller.getSnapshot());return()=>{controller.dispose();if(archiveOwner.current===controller)archiveOwner.current=null;};},[archiveSession,unarchiveSession,archiveConnection]);
+			const onSessionArchive = (sessionId, archived) => archiveOwner.current?.request(sessionId,archived);
 			const [deleteTarget, setDeleteTarget] = (0, react.useState)(null);
 			const [deleting, setDeleting] = (0, react.useState)(false);
 			const [deleteCommittedId, setDeleteCommittedId] = (0, react.useState)(null);
@@ -2177,6 +2196,8 @@ window.__ModuleLoader__.load({
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: clsx(WorkspaceBrowser_module_css_default.root, !wide && WorkspaceBrowser_module_css_default.rail),
 				children: [
+                    archiveState.error&&react.createElement("p",{role:"alert"},archiveState.error),
+                    react.createElement(ArchiveReminderDialog,{state:archiveState,controller:archiveOwner.current,t}),
 					(0, react_jsx_runtime.jsxs)("div", {
 						className: WorkspaceBrowser_module_css_default.sectionHeader,
 						children: [
@@ -2747,6 +2768,9 @@ window.__ModuleLoader__.load({
 			"menu.archiveSession": "归档会话",
 			"menu.unarchiveSession": "恢复会话",
 			"archive.nav": "归档管理",
+			"archive.stopSchedulesTitle": "停止提醒并归档？",
+			"archive.stopSchedulesConfirm": "停止提醒并归档",
+			"archive.stopSchedulesHint": "此会话仍有待发送提醒；归档会停止这些提醒，已有消息和发送记录会保留。",
 			"archive.title": "归档会话",
 			"archive.description": "归档只会隐藏会话，完整记录仍会保留。你可以恢复或永久删除记录。",
 			"archive.empty": "暂无归档会话",
@@ -2846,6 +2870,9 @@ window.__ModuleLoader__.load({
 			"menu.archiveSession": "Archive session",
 			"menu.unarchiveSession": "Restore session",
 			"archive.nav": "Archive",
+			"archive.stopSchedulesTitle": "Stop reminders and archive?",
+			"archive.stopSchedulesConfirm": "Stop reminders and archive",
+			"archive.stopSchedulesHint": "This conversation has pending reminders. Archiving stops them; existing messages and delivery records remain.",
 			"archive.title": "Archived sessions",
 			"archive.description": "Archiving only hides a session; its complete record is retained. Restore or permanently delete it here.",
 			"archive.empty": "No archived sessions",
@@ -2967,8 +2994,9 @@ window.__ModuleLoader__.load({
 					await ctx.workspaces.insertBefore(workspaceId, beforeWorkspaceId);
 				},
 				unarchiveSession: (sessionId) => ctx.workspaces.unarchiveSession(sessionId),
-				archiveSession: async (sessionId) => {
-					await ctx.workspaces.archiveSession(sessionId);
+				archiveConnection: ctx.connection,
+				archiveSession: async (sessionId, stopSchedules = false, signal) => {
+					await ctx.workspaces.archiveSession(sessionId, stopSchedules, signal);
 				},
 				insertSessionBefore: async (workspaceId, sessionId, beforeSessionId) => {
 					await ctx.workspaces.insertSessionBefore(workspaceId, sessionId, beforeSessionId);
@@ -3014,6 +3042,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		exports.apply = apply;
+		exports.createArchiveController = createArchiveController;
 		exports.inject = inject;
 		return module.exports;
 	}

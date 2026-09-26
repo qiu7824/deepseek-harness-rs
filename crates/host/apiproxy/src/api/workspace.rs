@@ -128,6 +128,9 @@ pub struct WorkspaceInsertSessionBeforeResult {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceArchiveSessionRequest {
     pub session_id: String,
+    /// Explicitly stop active reminders before archiving this session.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stop_schedules: bool,
 }
 
 /// `workspace.archiveSession` / `unarchiveSession` /

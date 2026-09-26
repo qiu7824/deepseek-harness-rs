@@ -10,7 +10,10 @@ use sha2::{Digest, Sha256};
 
 fn supported(module: &str) -> Result<(), String> {
     match module {
-        "dsh-time-context" | "@deepseek-ai/dsh-time-context" => Ok(()),
+        "dsh-time-context"
+        | "@deepseek-ai/dsh-time-context"
+        | "dsh-schedule"
+        | "@deepseek-ai/dsh-schedule" => Ok(()),
         _ => {
             Err("PLUGIN_CONFIG_UNSUPPORTED: this plugin has no exposed typed configuration".into())
         }
@@ -174,8 +177,18 @@ async fn write_config(
     }
     // Validate disabled entries as strictly as live ones; Loader does not load
     // a disabled fiber and therefore cannot perform this check on our behalf.
-    dsh_time_context::decode_config(&request.config)
-        .map_err(|error| format!("PLUGIN_CONFIG_INVALID: {error}"))?;
+    let schedule_config = match current.module_name.as_str() {
+        "dsh-schedule" | "@deepseek-ai/dsh-schedule" => {
+            let config = dsh_schedule::host_plugin::decode_host_schedule_config(&request.config)
+                .map_err(|error| format!("PLUGIN_CONFIG_INVALID: {error}"))?;
+            Some(config)
+        }
+        _ => {
+            dsh_time_context::decode_config(&request.config)
+                .map_err(|error| format!("PLUGIN_CONFIG_INVALID: {error}"))?;
+            None
+        }
+    };
     if signal.aborted() {
         return Err("PLUGIN_CONFIG_CANCELLED: configuration was not changed".into());
     }
@@ -235,7 +248,23 @@ async fn write_config(
         }
     };
     let result = match committed {
-        Ok(()) => Ok(next),
+        Ok(()) => {
+            // Disabled entries do not run Plugin::apply. Publish their validated
+            // retention only after the same authoritative Profile commit succeeds.
+            if let Some(config) = schedule_config {
+                if let Some(service) = ctx
+                    .get_typed::<Arc<dsh_schedule::host_service::ScheduleService>>(
+                        "schedule", false,
+                    )
+                    .map(|slot| slot.as_ref().clone())
+                {
+                    service.configure(config).map_err(|error| {
+                        format!("PLUGIN_RUNTIME_RECOVERY_REQUIRED: committed reminder configuration could not be published: {error}")
+                    })?;
+                }
+            }
+            Ok(next)
+        }
         Err(error) if error.starts_with("PLUGIN_CONFIG_CANCELLED:") => {
             rollback(&entry, previous, error).await
         }

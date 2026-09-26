@@ -4452,6 +4452,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		/** Error body: discriminated by code, per-branch details aligned to RpcErrorDetailsMap; details is required. */
 		const rpcErrorSchema = discriminatedUnion("code", [
 			object({
+				code: literal("schedule-rejected"),
+				message: string(),
+				details: object({ reason: string() }).strict()
+			}).strict(),
+			object({
 				code: literal("plugin-config-unsupported"),
 				message: string(),
 				details: object({})
@@ -10349,9 +10354,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* @param sessionId - session to archive.
 			* @returns the wire result.
 			*/
-			async archiveSession(sessionId) {
-				const { result } = await this.api.workspace.archiveSession({ sessionId });
-				if (result.ok) this.installArchived(result.value.archivedSessionIds);
+			async archiveSession(sessionId, stopSchedules = false, signal) {
+				const { result } = await this.api.workspace.archiveSession({ sessionId, ...(stopSchedules ? { stopSchedules: true } : {}) }, signal);
+				if (!signal?.aborted && result.ok) this.installArchived(result.value.archivedSessionIds);
 				return result;
 			}
 			/**
@@ -10772,9 +10777,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			* echo and a remote tab's frame alike).
 			* @param sessionId - session to archive.
 			*/
-			async archiveSession(sessionId) {
-				const result = await this.manager.archiveSession(sessionId);
-				if (!result.ok) throw new Error(`session archive failed: ${result.error.code}: ${result.error.message}`);
+			async archiveSession(sessionId, stopSchedules = false, signal) {
+				const result = await this.manager.archiveSession(sessionId, stopSchedules, signal);
+				if (!result.ok) throw Object.assign(new Error(`session archive failed: ${result.error.code}: ${result.error.message}`), { code: result.error.code, details: result.error.details });
 			}
 			/**
 			* Restore a session from the registry-global archive set. The projection

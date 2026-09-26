@@ -17,12 +17,14 @@ pub fn schedule_id(value: impl Into<String>) -> ScheduleId {
     ScheduleId::new(value)
 }
 
-/// The v1 durable reminder record union.
+/// The historical v1 reminder union; records written before task names have no title.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ScheduleRecord {
     After {
         id: ScheduleId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
         prompt: String,
         #[serde(rename = "afterSeconds")]
         after_seconds: i64,
@@ -31,12 +33,16 @@ pub enum ScheduleRecord {
     },
     At {
         id: ScheduleId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
         prompt: String,
         #[serde(rename = "scheduledAt")]
         scheduled_at: String,
     },
     Every {
         id: ScheduleId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
         prompt: String,
         #[serde(rename = "everySeconds")]
         every_seconds: i64,
@@ -46,6 +52,14 @@ pub enum ScheduleRecord {
 }
 
 impl ScheduleRecord {
+    pub fn title(&self) -> Option<&str> {
+        match self {
+            ScheduleRecord::After { title, .. }
+            | ScheduleRecord::At { title, .. }
+            | ScheduleRecord::Every { title, .. } => title.as_deref(),
+        }
+    }
+
     pub fn id(&self) -> &ScheduleId {
         match self {
             ScheduleRecord::After { id, .. }

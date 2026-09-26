@@ -13,6 +13,7 @@ import '../../design/shortcuts.dart';
 import '../../src/controller.dart';
 import 'models_page.dart';
 import 'resource_page.dart';
+import 'schedule_panel.dart';
 
 const settingsPages = <({String id, String title, IconData icon})>[
   (id: 'general', title: '通用设置', icon: LucideIcons.settings),
@@ -26,6 +27,7 @@ const settingsPages = <({String id, String title, IconData icon})>[
   (id: 'skills', title: '技能与 MCP', icon: LucideIcons.briefcase),
   (id: 'discovery', title: '工具发现', icon: LucideIcons.wrench),
   (id: 'archive', title: '归档管理', icon: LucideIcons.archive),
+  (id: 'schedule', title: '全局提醒', icon: LucideIcons.clock),
   (id: 'menu', title: '小菜单设置', icon: LucideIcons.listFilter),
   (id: 'trash', title: '垃圾槽', icon: LucideIcons.trash2),
 ];
@@ -453,6 +455,7 @@ class _SettingsShellState extends State<SettingsShell> {
   }
 
   Widget body() {
+    if (page == 'schedule') return SchedulePanel(controller: c);
     if (page == 'models') {
       return ModelsPage(
         controller: c,

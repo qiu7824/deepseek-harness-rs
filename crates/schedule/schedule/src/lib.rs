@@ -9,7 +9,15 @@
 //!   runtime reads the task outcome from a shared slot after the
 //!   maintenance future resolves.
 
+pub mod calendar;
 pub mod domain;
+mod host_driver;
+pub mod host_history;
+pub mod host_plugin;
+pub mod host_service;
+mod host_store;
+pub mod host_tools;
+pub mod host_types;
 pub mod invariant;
 pub mod persistence;
 pub mod projection;

@@ -54,6 +54,8 @@ class DesktopController extends ChangeNotifier {
   Json menuSettings = {};
   Json teamSettings = {};
   Set<String> disabledPlugins = {};
+  int scheduleRevision = 0;
+  bool? scheduleEnabled;
   bool pluginEnabled(String name) => !disabledPlugins.contains(name);
   final messageChanges = ValueNotifier<int>(0);
   final composerFocus = ValueNotifier<int>(0);
@@ -282,6 +284,7 @@ class DesktopController extends ChangeNotifier {
     menuSettings = {};
     teamSettings = {};
     disabledPlugins = {};
+    scheduleEnabled = null;
     queued = [];
     jobs = [];
     clearProjections();
@@ -628,6 +631,14 @@ class DesktopController extends ChangeNotifier {
   void _onFrame(HostFrame frame) {
     if (_disposed) return;
     final payload = frame.payload, type = frame.type;
+    if (type == 'host/schedule-changed') {
+      scheduleRevision++;
+      if (payload['enabled'] is bool) {
+        scheduleEnabled = payload['enabled'] as bool;
+      }
+      emit();
+      return;
+    }
     if (type == 'session/subscribed' && frame.sessionId != null) {
       final id = frame.sessionId!, lastSeq = payload['lastSeq'];
       if (lastSeq is int && lastSeq >= -1) {
@@ -1153,12 +1164,18 @@ class DesktopController extends ChangeNotifier {
     await refreshSessions();
   }
 
-  Future<void> archive(String id, {bool restore = false}) async {
-    await _client!.call(
-      restore ? 'workspace.unarchiveSession' : 'workspace.archiveSession',
-      {'sessionId': id},
-      true,
-    );
+  Future<void> archive(
+    String id, {
+    bool restore = false,
+    bool stopSchedules = false,
+  }) async {
+    final api = _client!, epoch = _epoch;
+    if (restore) {
+      await api.call('workspace.unarchiveSession', {'sessionId': id}, true);
+    } else {
+      await api.archiveSession(id, stopSchedules: stopSchedules);
+    }
+    if (_disposed || epoch != _epoch) return;
     if (!restore && selectedId == id) newConversation();
     await refreshSessions();
   }

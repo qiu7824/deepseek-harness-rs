@@ -7,7 +7,9 @@ use dsh_session::SessionEvent;
 use dsh_session_projection::{ProjectionApply, ProjectionDefinition};
 use serde_json::Value;
 
-use crate::domain::{FoldedSchedules, apply_change, decode_schedule_change};
+use crate::domain::{
+    FoldedSchedules, apply_change, decode_schedule_change, decode_schedule_record,
+};
 use crate::types::{ScheduleId, ScheduleRecord};
 
 fn empty_state() -> Value {
@@ -25,13 +27,11 @@ fn folded_from_state(state: &Value) -> Result<FoldedSchedules, String> {
         return Err("schedule projection state carries unexpected keys".to_string());
     }
 
-    let active: Vec<ScheduleRecord> = serde_json::from_value(
+    let active = decode_records(
         object
             .get("active")
-            .cloned()
             .ok_or_else(|| "schedule projection state is missing active".to_string())?,
-    )
-    .map_err(|error| format!("schedule projection active is invalid: {error}"))?;
+    )?;
     let seen_ids: Vec<ScheduleId> = serde_json::from_value(
         object
             .get("seenIds")
@@ -69,9 +69,20 @@ fn state_from_folded(folded: &FoldedSchedules) -> Value {
 fn validate_view(value: &ArcValue) -> Result<Value, String> {
     let json = downcast::<Value>(value)
         .ok_or_else(|| "schedule projection view must be JSON".to_string())?;
-    let records: Vec<ScheduleRecord> = serde_json::from_value(json.clone())
-        .map_err(|error| format!("schedule projection view is invalid: {error}"))?;
+    let records = decode_records(json)?;
     Ok(serde_json::to_value(records).expect("schedule records serialize"))
+}
+
+fn decode_records(value: &Value) -> Result<Vec<ScheduleRecord>, String> {
+    value
+        .as_array()
+        .ok_or_else(|| "schedule projection records must be an array".to_owned())?
+        .iter()
+        .map(|record| {
+            decode_schedule_record(record)
+                .map_err(|error| format!("schedule projection record is invalid: {error}"))
+        })
+        .collect()
 }
 
 /// Projection definition sharing the Schedule domain's strict transition authority.
@@ -99,9 +110,9 @@ pub fn schedule_projection_definition() -> ProjectionDefinition {
             let folded = folded_from_state(state).expect("schedule projection state must be valid");
             arc(serde_json::to_value(folded.active).expect("schedule records serialize"))
         }),
-        // v3 removes the obsolete physical seedLength cut. Projections fold
-        // the logical child log, including inherited events, so forked state
-        // remains visible and only future schedule changes mutate the child.
-        state_version: 3,
+        // The logical child log includes inherited events. Version 4 replays
+        // earlier checkpoints so optional historical titles cannot remain lost
+        // through the old permissive checkpoint decoder.
+        state_version: 4,
     }
 }

@@ -217,9 +217,7 @@ where
                 });
                 std::task::Poll::Ready(Some(Ok(bytes)))
             }
-            std::task::Poll::Ready(Some(Err(error))) => {
-                std::task::Poll::Ready(Some(Err(error)))
-            }
+            std::task::Poll::Ready(Some(Err(error))) => std::task::Poll::Ready(Some(Err(error))),
             std::task::Poll::Ready(None) => {
                 this.finish();
                 std::task::Poll::Ready(None)
@@ -1900,7 +1898,10 @@ async fn bridge_api_request(
     let collect_after_response = bytes.len() >= 256 * 1024
         || matches!(
             parts.uri.path(),
-            "/api/session.history" | "/api/subagent.history" | "/api/session.models" | "/api/session.list"
+            "/api/session.history"
+                | "/api/subagent.history"
+                | "/api/session.models"
+                | "/api/session.list"
         );
     let response = handler
         .handle(CarrierRequest {
@@ -2315,6 +2316,11 @@ fn compose_host_in_fiber(
 
     let sessions = SessionStore::install(ctx);
     let session_projections = dsh_session_projection::SessionProjectionRegistry::install(ctx);
+    // Historical session-local reminders remain readable even while the
+    // optional Host scheduler is disabled. This registers no legacy timer.
+    session_projections
+        .register(ctx, dsh_schedule::schedule_projection_definition())
+        .map_err(|error| format!("schedule-projection: {error}"))?;
     dsh_goal::register_goal_projection(ctx).map_err(|error| format!("goal-projection: {error}"))?;
     dsh_session_stats::apply(ctx).map_err(|error| format!("session-stats: {error}"))?;
     dsh_session_turn_outline::apply(ctx)
@@ -4139,7 +4145,6 @@ fn compose_host_in_fiber(
             .map_err(|error| format!("permission-presets: {error}"))?;
     futures::executor::block_on(permission_presets.ready())
         .map_err(|error| format!("permission-presets ready: {error}"))?;
-    dsh_schedule::apply(ctx);
     // ---- M6 shell: the web face over the spine ----
     // The loader service anchors the plugin inventory and profile
     // composition (the Rust static registry serves empty for now).
@@ -4375,7 +4380,10 @@ fn compose_host_in_fiber(
             eprintln!("dsh: optional plugin profile retained without refresh: {error}");
         }
         for plugin in client_plugins::discover(&profile_dir)? {
-            if !matches!(plugin.id.as_str(), "dsh-auto-review" | "dsh-time-context") {
+            if !matches!(
+                plugin.id.as_str(),
+                "dsh-auto-review" | "dsh-time-context" | "dsh-schedule"
+            ) {
                 loader.core.register(&plugin.id, Arc::new(NoopPlugin));
             }
         }
@@ -4397,38 +4405,6 @@ fn compose_host_in_fiber(
         Arc::new(dsh_time_context::TimeContextPlugin),
     );
     ctx.register_service(loader);
-    if let Some(profile) = profile {
-        let plugin_config = data_root
-            .join("profiles")
-            .join(profile)
-            .join("plugins.json");
-        if plugin_config.is_file() {
-            let loaded = dsh_app_boot::plugin_profile::read_runtime(
-                plugin_config.parent().expect("profile directory"),
-            );
-            if let Some(issue) = &loaded.issue {
-                eprintln!("dsh: {issue}");
-            }
-            let entries = loaded.documents.entries;
-            let loader = ctx
-                .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
-                .map(|slot| slot.as_ref().clone())
-                .ok_or_else(|| "loader service missing after install".to_string())?;
-            for entry in &entries {
-                if let Err(error) = futures::executor::block_on(dsh_app_boot::mount_entries(
-                    &loader,
-                    std::slice::from_ref(entry),
-                )) {
-                    eprintln!(
-                        "dsh: optional plugin failed; other plugins remain available: {error}"
-                    );
-                }
-            }
-            if let Err(error) = futures::executor::block_on(loader.tree.await_ready()) {
-                eprintln!("dsh: optional plugin activation failed: {error}");
-            }
-        }
-    }
     let mut onboarding_properties = indexmap::IndexMap::new();
     onboarding_properties.insert(
         "welcomeNoticeVersion".to_string(),
@@ -4788,6 +4764,62 @@ fn compose_host_in_fiber(
             ..Default::default()
         },
     );
+    let schedule = dsh_schedule::host_service::ScheduleService::install(
+        ctx,
+        api_proxy.schedule_session_controller(),
+    );
+    let loader = ctx
+        .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
+        .map(|slot| slot.as_ref().clone())
+        .ok_or_else(|| "loader service missing after install".to_string())?;
+    loader.core.register(
+        "dsh-schedule",
+        Arc::new(dsh_schedule::host_plugin::HostSchedulePlugin::new(
+            schedule.clone(),
+        )),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-schedule",
+        Arc::new(dsh_schedule::host_plugin::HostSchedulePlugin::new(
+            schedule.clone(),
+        )),
+    );
+    // Optional plugins may require the storage domain, workspace registry, and
+    // shared cold-session controller. Mount only after that complete boundary.
+    if let Some(profile) = profile {
+        let plugin_config = data_root
+            .join("profiles")
+            .join(profile)
+            .join("plugins.json");
+        if plugin_config.is_file() {
+            let loaded = dsh_app_boot::plugin_profile::read_runtime(
+                plugin_config.parent().expect("profile directory"),
+            );
+            if let Some(issue) = &loaded.issue {
+                eprintln!("dsh: {issue}");
+            }
+            if let Err(error) = schedule_profile::configure(&schedule, &loaded.documents.entries) {
+                eprintln!("dsh: reminder configuration retained with an error: {error}");
+            }
+            let loader = ctx
+                .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
+                .map(|slot| slot.as_ref().clone())
+                .ok_or_else(|| "loader service missing after install".to_string())?;
+            for entry in &loaded.documents.entries {
+                if let Err(error) = futures::executor::block_on(dsh_app_boot::mount_entries(
+                    &loader,
+                    std::slice::from_ref(entry),
+                )) {
+                    eprintln!(
+                        "dsh: optional plugin failed; other plugins remain available: {error}"
+                    );
+                }
+            }
+            if let Err(error) = futures::executor::block_on(loader.tree.await_ready()) {
+                eprintln!("dsh: optional plugin activation failed: {error}");
+            }
+        }
+    }
     let runtime_route = runtime_paths.register(
         &web_server,
         agents.clone(),
@@ -5692,5 +5724,8 @@ mod model_discovery_profile_tests {
 
 #[cfg(test)]
 mod auto_review_plugin_tests;
+#[cfg(test)]
+mod schedule_plugin_tests;
+mod schedule_profile;
 #[cfg(test)]
 mod time_context_plugin_tests;
