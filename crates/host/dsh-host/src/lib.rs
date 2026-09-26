@@ -168,31 +168,36 @@ impl<F: FnOnce()> Drop for StreamCleanup<F> {
     }
 }
 
-struct CollectAfterStream<S, F: FnOnce()> {
+struct CollectAfterStream<S, N: FnOnce(), F: FnOnce()> {
     stream: Option<std::pin::Pin<Box<S>>>,
+    source_released: Option<Box<N>>,
     cleanup: Option<Arc<StreamCleanup<F>>>,
 }
 
-impl<S, F: FnOnce()> CollectAfterStream<S, F> {
+impl<S, N: FnOnce(), F: FnOnce()> CollectAfterStream<S, N, F> {
     fn finish(&mut self) {
         // Release the unencoded response before relinquishing the producer's
         // cleanup token. Previously yielded Bytes owners may still be retained
         // by the HTTP transport, including clones beyond EOF or cancellation.
         drop(self.stream.take());
+        if let Some(source_released) = self.source_released.take() {
+            source_released();
+        }
         drop(self.cleanup.take());
     }
 }
 
-impl<S, F: FnOnce()> Drop for CollectAfterStream<S, F> {
+impl<S, N: FnOnce(), F: FnOnce()> Drop for CollectAfterStream<S, N, F> {
     fn drop(&mut self) {
         self.finish();
     }
 }
 
-impl<S, B, E, F> futures::Stream for CollectAfterStream<S, F>
+impl<S, B, E, N, F> futures::Stream for CollectAfterStream<S, N, F>
 where
     S: futures::Stream<Item = Result<B, E>>,
     B: AsRef<[u8]> + Send + 'static,
+    N: FnOnce(),
     F: FnOnce() + Send + 'static,
 {
     type Item = Result<axum::body::Bytes, E>;
@@ -217,7 +222,12 @@ where
                 });
                 std::task::Poll::Ready(Some(Ok(bytes)))
             }
-            std::task::Poll::Ready(Some(Err(error))) => std::task::Poll::Ready(Some(Err(error))),
+            std::task::Poll::Ready(Some(Err(error))) => {
+                // A carrier body error terminates HTTP delivery. Release the
+                // remaining producer even if the consumer retains this body.
+                this.finish();
+                std::task::Poll::Ready(Some(Err(error)))
+            }
             std::task::Poll::Ready(None) => {
                 this.finish();
                 std::task::Poll::Ready(None)
@@ -227,17 +237,20 @@ where
     }
 }
 
-fn stream_then_collect<S, B, E, F>(
+fn stream_then_collect<S, B, E, N, F>(
     stream: S,
+    source_released: N,
     collect: F,
 ) -> impl futures::Stream<Item = Result<axum::body::Bytes, E>>
 where
     S: futures::Stream<Item = Result<B, E>>,
     B: AsRef<[u8]> + Send + 'static,
+    N: FnOnce() + Send + 'static,
     F: FnOnce() + Send + 'static,
 {
     CollectAfterStream {
         stream: Some(Box::pin(stream)),
+        source_released: Some(Box::new(source_released)),
         cleanup: Some(Arc::new(StreamCleanup {
             collect: parking_lot::Mutex::new(Some(collect)),
         })),
@@ -287,10 +300,14 @@ mod allocator_response_lifecycle_tests {
             });
             let freed_at_cleanup = freed.clone();
             let collected_at_cleanup = collected.clone();
-            let mut body = Box::pin(super::stream_then_collect(source, move || {
-                assert_eq!(freed_at_cleanup.load(Ordering::SeqCst), 1);
-                collected_at_cleanup.fetch_add(1, Ordering::SeqCst);
-            }));
+            let mut body = Box::pin(super::stream_then_collect(
+                source,
+                || {},
+                move || {
+                    assert_eq!(freed_at_cleanup.load(Ordering::SeqCst), 1);
+                    collected_at_cleanup.fetch_add(1, Ordering::SeqCst);
+                },
+            ));
             assert_eq!(body.next().await.unwrap().unwrap().as_ref(), &[1]);
             assert_eq!(freed.load(Ordering::SeqCst), 0);
             assert_eq!(collected.load(Ordering::SeqCst), 0);
@@ -343,11 +360,15 @@ mod allocator_response_lifecycle_tests {
             let observed_buffers = buffers_freed.clone();
             let observed_producer = producer_freed.clone();
             let observed_calls = calls.clone();
-            let mut body = Box::pin(super::stream_then_collect(source, move || {
-                assert_eq!(observed_producer.load(Ordering::SeqCst), 1);
-                assert_eq!(observed_buffers.load(Ordering::SeqCst), 3);
-                observed_calls.fetch_add(1, Ordering::SeqCst);
-            }));
+            let mut body = Box::pin(super::stream_then_collect(
+                source,
+                || {},
+                move || {
+                    assert_eq!(observed_producer.load(Ordering::SeqCst), 1);
+                    assert_eq!(observed_buffers.load(Ordering::SeqCst), 3);
+                    observed_calls.fetch_add(1, Ordering::SeqCst);
+                },
+            ));
             let first = body.next().await.unwrap().unwrap();
             let retained_first = first.clone();
             let second = body.next().await.unwrap().unwrap();
@@ -373,6 +394,116 @@ mod allocator_response_lifecycle_tests {
             assert_eq!(buffers_freed.load(Ordering::SeqCst), 3);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn source_notification_precedes_last_output_cleanup_on_eof_cancel_or_error() {
+        struct Buffer(Vec<u8>, Arc<AtomicUsize>);
+        impl AsRef<[u8]> for Buffer {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+        impl Drop for Buffer {
+            fn drop(&mut self) {
+                drop(std::mem::take(&mut self.0));
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        struct Producer(Arc<AtomicUsize>);
+        impl Drop for Producer {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for end in ["eof", "cancel", "error"] {
+            let buffers_freed = Arc::new(AtomicUsize::new(0));
+            let producer_freed = Arc::new(AtomicUsize::new(0));
+            let notifications = Arc::new(AtomicUsize::new(0));
+            let collections = Arc::new(AtomicUsize::new(0));
+            let producer = Producer(producer_freed.clone());
+            let mut chunks: Vec<Result<_, &'static str>> = (1..=3)
+                .map(|value| Ok(Buffer(vec![value; 64 * 1024], buffers_freed.clone())))
+                .collect();
+            if end == "error" {
+                chunks.insert(1, Err("body failed"));
+            }
+            let source = futures::stream::iter(chunks).map(move |chunk| {
+                let _still_owned = &producer;
+                chunk
+            });
+            let observed_producer = producer_freed.clone();
+            let notified = notifications.clone();
+            let notification_marker = String::from("source released");
+            let source_released = move || {
+                drop(notification_marker);
+                assert_eq!(observed_producer.load(Ordering::SeqCst), 1);
+                notified.fetch_add(1, Ordering::SeqCst);
+            };
+            let observed_buffers = buffers_freed.clone();
+            let observed_notifications = notifications.clone();
+            let collected = collections.clone();
+            let mut body = Box::pin(super::stream_then_collect(
+                source,
+                source_released,
+                move || {
+                    assert_eq!(observed_buffers.load(Ordering::SeqCst), 3);
+                    assert_eq!(observed_notifications.load(Ordering::SeqCst), 1);
+                    collected.fetch_add(1, Ordering::SeqCst);
+                },
+            ));
+            let first = body.next().await.unwrap().unwrap();
+            let retained = first.clone();
+            drop(first);
+            assert_eq!(notifications.load(Ordering::SeqCst), 0);
+            match end {
+                "eof" => {
+                    while let Some(chunk) = body.next().await {
+                        drop(chunk.unwrap());
+                    }
+                    assert!(body.next().await.is_none());
+                }
+                "error" => {
+                    assert_eq!(body.next().await.unwrap().unwrap_err(), "body failed");
+                    assert_eq!(notifications.load(Ordering::SeqCst), 1);
+                    assert!(body.next().await.is_none());
+                }
+                "cancel" => {}
+                _ => unreachable!(),
+            }
+            drop(body);
+            assert_eq!(producer_freed.load(Ordering::SeqCst), 1);
+            assert_eq!(notifications.load(Ordering::SeqCst), 1);
+            assert_eq!(buffers_freed.load(Ordering::SeqCst), 2);
+            assert_eq!(collections.load(Ordering::SeqCst), 0);
+            assert_eq!(retained.as_ref(), &[1; 64 * 1024]);
+            drop(retained);
+            assert_eq!(buffers_freed.load(Ordering::SeqCst), 3);
+            assert_eq!(collections.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn unpolled_source_notifies_before_final_cleanup_on_drop() {
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let collections = Arc::new(AtomicUsize::new(0));
+        let notified = notifications.clone();
+        let observed_notifications = notifications.clone();
+        let collected = collections.clone();
+        let source = futures::stream::iter([Ok::<_, std::convert::Infallible>(vec![1])]);
+        let body = super::stream_then_collect(
+            source,
+            move || {
+                notified.fetch_add(1, Ordering::SeqCst);
+            },
+            move || {
+                assert_eq!(observed_notifications.load(Ordering::SeqCst), 1);
+                collected.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        drop(body);
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+        assert_eq!(collections.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1938,6 +2069,10 @@ async fn bridge_api_request(
                     parts,
                     WebBody::from_stream(stream_then_collect(
                         stream,
+                        // The JSON page can be gone while Hyper still owns
+                        // output chunks. Notify its allocator owners at both
+                        // release boundaries without collecting live buffers.
+                        request_allocator_collect,
                         collect_allocator_after_response,
                     )),
                 );
