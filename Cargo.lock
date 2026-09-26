@@ -1612,7 +1612,10 @@ dependencies = [
 name = "dsh-atomic-write"
 version = "0.1.0-rc.8"
 dependencies = [
+ "libc",
+ "serde_json",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
