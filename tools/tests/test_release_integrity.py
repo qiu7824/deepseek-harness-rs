@@ -153,7 +153,10 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "web/dist/plugins/ui-model-selection.js",
             "web/dist/plugins/ui-settings-models.js",
             "web/dist/plugins/ui-schedule.js",
-            "web/dist/skins/deepseek-official/skin.json",
+            "web/dist/plugins/ui-knowledge.js",
+            "packaging/windows/installer/installer-ui.iss",
+            "packaging/windows/installer/logo-1x.bmp",
+            "packaging/windows/installer/button-2x.bmp",
         ]
         result = subprocess.run(
             ["git", "check-ignore", *required],

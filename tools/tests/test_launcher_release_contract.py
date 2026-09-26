@@ -132,6 +132,35 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn('Name: "{group}\\{#MyAppName}"', installer)
         self.assertIn('Name: "{autodesktop}\\{#MyAppName}"', installer)
 
+    def test_installers_share_the_one_screen_surface_and_default_to_drive_d(self):
+        windows = ROOT / "packaging" / "windows"
+        desktop_path = windows / "deepseek-harness-desktop-core.iss"
+        ui_path = windows / "installer" / "installer-ui.iss"
+        for path in (INSTALLER, desktop_path, ui_path):
+            self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"), f"{path.name} needs a UTF-8 BOM for Inno 6.1.2")
+        web = INSTALLER.read_text(encoding="utf-8-sig")
+        desktop = desktop_path.read_text(encoding="utf-8-sig")
+        ui = ui_path.read_text(encoding="utf-8-sig")
+        self.assertIn("DefaultDirName=D:\\Program Files (x86)\\DeepSeek Harness-rs\\{#Variant}", web)
+        self.assertIn("DefaultDirName=D:\\Program Files (x86)\\DeepSeek Harness-rs\\desktop", desktop)
+        for script in (web, desktop):
+            include = script.index('#include ArtDir + "\\installer-ui.iss"')
+            # The behaviour verifier strips [Icons] through [Code]; the include precedes it.
+            self.assertLess(include, script.index("[Icons]"))
+            for hook in ("DshIsLanding(CurPageID)", "DshApplyChoices;", "DshShowError(Failure);", "Result := CheckInstallDirectory;"):
+                self.assertIn(hook, script)
+            self.assertIn("WizardResizable=no", script)
+        for required in ("chinesesimp.DshInstallNow=立即安装", "chinesesimp.DshChooseLocation=选择安装位置", "chinesesimp.DshLaunchNow=立即体验",
+                         "function ShouldSkipPage", "BrowseForFolder(", "procedure CurInstallProgressChanged", "WizardSelectTasks('desktopicon')"):
+            self.assertIn(required, ui)
+        for piece in ("logo", "wordmark", "button"):
+            for scale in ("1x", "2x"):
+                art = windows / "installer" / f"{piece}-{scale}.bmp"
+                self.assertTrue(art.read_bytes().startswith(b"BM"), art.name)
+                self.assertIn(f'Source: "{{#ArtDir}}\\{piece}-{scale}.bmp"; Flags: dontcopy', ui)
+        verifier = (ROOT / "tools" / "verify_windows_installer_behavior.py").read_text(encoding="utf-8")
+        self.assertEqual(verifier.count("f'/DArtDir={ROOT / \"packaging/windows/installer\"}'"), 2)
+
     def test_release_pipeline_builds_only_web_core(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         installer = INSTALLER.read_text(encoding="utf-8")
