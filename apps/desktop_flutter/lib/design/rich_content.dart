@@ -287,50 +287,15 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
       selectable: true,
       styleSheet: widget.style,
       imageDirectory: null,
-      imageBuilder: (uri, title, alt) {
-        Widget failed(BuildContext context, Object error, StackTrace? stack) =>
-            Text(alt ?? '图片无法显示');
-        Widget content;
-        if (uri.scheme == 'http' || uri.scheme == 'https') {
-          content = Image.network(
-            '$uri',
-            cacheWidth: 1600,
-            fit: BoxFit.contain,
-            errorBuilder: failed,
-          );
-        } else if (uri.scheme == 'file' || uri.scheme.isEmpty) {
-          content = Image.file(
-            uri.scheme == 'file' ? File.fromUri(uri) : File(uri.path),
-            cacheWidth: 1600,
-            fit: BoxFit.contain,
-            errorBuilder: failed,
-          );
-        } else if (uri.scheme == 'data' &&
-            uri.toString().length <= 24 * 1024 * 1024) {
-          try {
-            content = Image.memory(
-              uri.data!.contentAsBytes(),
-              cacheWidth: 1600,
-              errorBuilder: failed,
-            );
-          } catch (_) {
-            content = Text(alt ?? '图片无法显示');
-          }
-        } else {
-          content = Text(alt ?? '图片无法显示');
-        }
-        return GestureDetector(
-          onSecondaryTapUp: (event) => widget.onSecondaryTapLink?.call(
-            alt ?? title ?? '图片',
-            '$uri',
-            event.globalPosition,
-          ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 600),
-            child: content,
-          ),
-        );
-      },
+      imageBuilder: (uri, title, alt) => MarkdownImage(
+        uri: uri,
+        label: alt?.isNotEmpty == true ? alt! : title ?? '图片',
+        onSecondaryTap: (position) => widget.onSecondaryTapLink?.call(
+          alt ?? title ?? '图片',
+          '$uri',
+          position,
+        ),
+      ),
       checkboxBuilder: null,
       bulletBuilder: null,
       builders: {
@@ -349,6 +314,129 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: children,
+    );
+  }
+}
+
+/// Decode local image URLs once, including drive-letter links emitted on Windows.
+/// Invalid file URLs remain a failed image instead of interrupting Markdown layout.
+String? markdownImageFilePath(Uri uri, {bool? windows}) {
+  try {
+    if (RegExp(r'^[a-zA-Z]$').hasMatch(uri.scheme) &&
+        uri.path.startsWith('/') &&
+        !uri.hasAuthority) {
+      return Uri.parse('file:///$uri').toFilePath(windows: true);
+    }
+    if (uri.scheme != 'file' && uri.scheme.isNotEmpty) return null;
+    final local = uri.host.toLowerCase() == 'localhost'
+        ? uri.replace(host: '')
+        : uri;
+    final isWindows =
+        windows ??
+        (Platform.isWindows ||
+            local.hasAuthority && local.host.isNotEmpty ||
+            RegExp(r'^/[a-zA-Z]:/').hasMatch(local.path));
+    return local.toFilePath(windows: isWindows);
+  } on UnsupportedError {
+    return null;
+  } on ArgumentError {
+    return null;
+  } on FormatException {
+    return null;
+  }
+}
+
+class MarkdownImage extends StatelessWidget {
+  const MarkdownImage({
+    super.key,
+    required this.uri,
+    required this.label,
+    this.onSecondaryTap,
+  });
+  final Uri uri;
+  final String label;
+  final ValueChanged<Offset>? onSecondaryTap;
+
+  ImageProvider? provider() {
+    if (uri.scheme == 'http' || uri.scheme == 'https') {
+      return NetworkImage('$uri');
+    }
+    final path = markdownImageFilePath(uri);
+    if (path != null) return FileImage(File(path));
+    if (uri.scheme == 'data' && '$uri'.length <= 24 * 1024 * 1024) {
+      try {
+        return MemoryImage(uri.data!.contentAsBytes());
+      } on FormatException {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  Widget image(ImageProvider provider, {bool preview = false}) => Image(
+    image: ResizeImage.resizeIfNeeded(preview ? 2400 : 1600, null, provider),
+    fit: BoxFit.contain,
+    semanticLabel: label,
+    errorBuilder: (_, _, _) => Text('$label（图片无法显示）'),
+  );
+
+  Future<void> preview(BuildContext context, ImageProvider provider) =>
+      showDialog<void>(
+        context: context,
+        builder: (context) => Dialog(
+          child: SizedBox(
+            width: 1000,
+            height: 720,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          label,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      DshIcon(
+                        LucideIcons.x,
+                        label: '关闭图片预览',
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: InteractiveViewer(
+                    minScale: .1,
+                    maxScale: 5,
+                    child: Center(child: image(provider, preview: true)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final source = provider();
+    if (source == null) return Text('$label（图片无法显示）');
+    return GestureDetector(
+      onSecondaryTapUp: (event) => onSecondaryTap?.call(event.globalPosition),
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          onTap: () => preview(context, source),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 600),
+            child: image(source),
+          ),
+        ),
+      ),
     );
   }
 }

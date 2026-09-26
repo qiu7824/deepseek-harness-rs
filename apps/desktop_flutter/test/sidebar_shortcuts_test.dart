@@ -7,6 +7,7 @@ import 'package:dsh_desktop/design/shortcuts.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
@@ -19,6 +20,15 @@ class ShellController extends DesktopController {
   ShellController() : super(InMemoryPreferences());
   @override
   bool get connected => true;
+  final restored = <String>[];
+  @override
+  Future<void> archive(String id, {bool restore = false}) async {
+    if (restore) {
+      restored.add(id);
+      archivedSessionIds.remove(id);
+      emit();
+    }
+  }
 }
 
 Future<void> control(WidgetTester tester, LogicalKeyboardKey key) async {
@@ -134,11 +144,11 @@ void main() {
       await tester.pump();
       await control(tester, LogicalKeyboardKey.keyB);
       expect(c.preferences.layout['sideOpen'], false);
-      expect(find.byTooltip('展开侧边栏'), findsOneWidget);
-      expect(find.byTooltip('新建会话'), findsOneWidget);
+      expect(find.byTooltip('展开侧边栏 · Ctrl+B'), findsOneWidget);
+      expect(find.byTooltip('新建会话 · Ctrl+N'), findsOneWidget);
       expect(find.byTooltip('添加工作区'), findsOneWidget);
       expect(find.byTooltip('ChatGPT / Codex · 已连接'), findsOneWidget);
-      expect(find.byTooltip('设置'), findsOneWidget);
+      expect(find.byTooltip('设置 · Ctrl+,'), findsOneWidget);
       await control(tester, LogicalKeyboardKey.keyK);
       expect(c.preferences.layout['sideOpen'], true);
       final search = find.byWidgetPredicate(
@@ -164,6 +174,194 @@ void main() {
       c.dispose();
       await tester.binding.setSurfaceSize(null);
       debugDefaultTargetPlatformOverride = null;
+    },
+  );
+  testWidgets(
+    'archive filters persist, include complete data and hide empty archive groups',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      final c = ShellController()
+        ..workspaces = [
+          {
+            'workspaceId': 'mixed',
+            'path': r'E:\mixed',
+            'title': '混合工作区',
+            'sessionIds': ['active', 'archived', 'blank'],
+          },
+          {
+            'workspaceId': 'active-only',
+            'path': r'E:\active',
+            'title': '活动工作区',
+            'sessionIds': ['other'],
+          },
+          {
+            'workspaceId': 'empty',
+            'path': r'E:\empty',
+            'title': '空工作区',
+            'sessionIds': [],
+          },
+        ]
+        ..sessions = [
+          SessionSummary.fromJson({
+            'sessionId': 'active',
+            'cwd': r'E:\mixed',
+            'displayTitle': '待办任务',
+          }),
+          SessionSummary.fromJson({
+            'sessionId': 'archived',
+            'cwd': r'E:\mixed',
+            'displayTitle': '归档任务',
+          }),
+          SessionSummary.fromJson({
+            'sessionId': 'blank',
+            'cwd': r'E:\mixed',
+            'displayTitle': '空白归档',
+            'blank': true,
+          }),
+          SessionSummary.fromJson({
+            'sessionId': 'other',
+            'cwd': r'E:\active',
+            'displayTitle': '其他待办',
+          }),
+          SessionSummary.fromJson({
+            'sessionId': 'loose',
+            'cwd': r'E:\loose',
+            'displayTitle': '独立归档',
+          }),
+        ]
+        ..archivedSessionIds = {'archived', 'blank', 'loose'};
+      c.preferences.layout['groupExpansion'] = {
+        'mixed': true,
+        'active-only': true,
+      };
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        c.dispose();
+        await tester.binding.setSurfaceSize(null);
+      });
+      Future<void> filter(String label) async {
+        await tester.tap(find.byTooltip('视图选项'));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.ancestor(
+            of: find.text(label),
+            matching: find.byType(CheckedPopupMenuItem<String>),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await tester.pumpWidget(DesktopApp(controller: c));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('session-active')), findsOneWidget);
+      expect(find.byKey(const ValueKey('session-archived')), findsNothing);
+      expect(find.text('空工作区'), findsOneWidget);
+      await filter('全部对话');
+      for (final id in ['active', 'archived', 'blank', 'other', 'loose']) {
+        expect(find.byKey(ValueKey('session-$id')), findsOneWidget);
+      }
+      await filter('仅显示已归档');
+      expect(c.preferences.layout['archiveFilter'], 'archived');
+      expect(c.sessions, hasLength(5));
+      expect(find.byKey(const ValueKey('session-active')), findsNothing);
+      expect(find.text('活动工作区'), findsNothing);
+      expect(find.text('空工作区'), findsNothing);
+      expect(find.byKey(const ValueKey('session-blank')), findsOneWidget);
+      await control(tester, LogicalKeyboardKey.keyK);
+      final search = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.hintText == '搜索会话',
+      );
+      await tester.enterText(search, '待办');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('session-active')), findsNothing);
+      expect(find.text('混合工作区'), findsNothing);
+      await filter('全部对话');
+      expect(find.byKey(const ValueKey('session-active')), findsOneWidget);
+      expect(find.byKey(const ValueKey('session-archived')), findsNothing);
+      await tester.enterText(search, '');
+      await tester.pumpAndSettle();
+      await filter('仅显示已归档');
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpWidget(DesktopApp(controller: c));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('session-archived')), findsOneWidget);
+      expect(find.byKey(const ValueKey('session-active')), findsNothing);
+      final pointer = await tester.startGesture(
+        tester.getCenter(find.byKey(const ValueKey('session-archived'))),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await pointer.up();
+      await tester.pumpAndSettle();
+      expect(find.text('恢复归档'), findsOneWidget);
+      expect(find.text('归档'), findsNothing);
+      await tester.tap(find.text('恢复归档'));
+      await tester.pumpAndSettle();
+      expect(c.restored, ['archived']);
+      expect(find.byKey(const ValueKey('session-archived')), findsNothing);
+      await filter('隐藏已归档');
+      expect(find.byKey(const ValueKey('session-archived')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'shortcut search retains hidden bindings and sidebar reflects custom keys',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      final c = ShellController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        c.dispose();
+        await tester.binding.setSurfaceSize(null);
+      });
+      await tester.pumpWidget(ShadApp(home: ShortcutEditor(controller: c)));
+      await tester.pumpAndSettle();
+      final search = find.descendant(
+        of: find.byKey(const Key('shortcut-search')),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(search, 'ctrl + n');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('shortcut-row-new')), findsOneWidget);
+      expect(find.byKey(const ValueKey('shortcut-row-sidebar')), findsNothing);
+      await tester.tap(find.text('Ctrl+N'));
+      await control(tester, LogicalKeyboardKey.keyB);
+      expect(find.text('此快捷键已绑定其他操作。'), findsOneWidget);
+      await control(tester, LogicalKeyboardKey.keyP);
+      await tester.enterText(search, '新建');
+      await tester.pumpAndSettle();
+      expect(find.text('Ctrl+P'), findsOneWidget);
+      await tester.enterText(search, 'does-not-exist');
+      await tester.pumpAndSettle();
+      expect(find.text('未找到匹配的快捷键'), findsOneWidget);
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      expect(shortcutLabel(configuredShortcuts(c)['new']!), 'Ctrl+P');
+      expect(shortcutLabel(configuredShortcuts(c)['sidebar']!), 'Ctrl+B');
+      await tester.pumpWidget(DesktopApp(controller: c));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('sidebar-shortcut-new')))
+            .data,
+        'Ctrl+P',
+      );
+      c.preferences.layout['shortcuts'] = {
+        'new': encodeShortcut(
+          const SingleActivator(LogicalKeyboardKey.keyO, control: true),
+        ),
+      };
+      c.emit();
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('sidebar-shortcut-new')))
+            .data,
+        'Ctrl+O',
+      );
+      await control(tester, LogicalKeyboardKey.keyB);
+      expect(find.byTooltip('新建会话 · Ctrl+O'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     },
   );
   test('custom shortcut encoding survives preferences roundtrip', () {

@@ -194,6 +194,34 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     unawaited(c.run(c.preferences.save));
   }
 
+  String get archiveFilter => switch (c.preferences.layout['archiveFilter']) {
+    'all' => 'all',
+    'archived' => 'archived',
+    _ => 'hidden',
+  };
+
+  void setArchiveFilter(String value) {
+    setState(() => c.preferences.layout['archiveFilter'] = value);
+    saveLayout();
+  }
+
+  String shortcutHint(String action, String label) =>
+      '$label · ${shortcutLabel(configuredShortcuts(c)[action]!)}';
+
+  Widget shortcutBadge(String action) => Tooltip(
+    message: shortcutHint(action, shortcutNames[action]!),
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 84),
+      child: Text(
+        shortcutLabel(configuredShortcuts(c)[action]!),
+        key: ValueKey('sidebar-shortcut-$action'),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 11, color: DshColors(context).muted),
+      ),
+    ),
+  );
+
   void startConversation() {
     final workspace = c.workspaceId;
     if (workspace != null) setGroupExpanded(workspace, true);
@@ -590,7 +618,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         children: [
           const SizedBox(height: 12),
           Tooltip(
-            message: '展开侧边栏',
+            message: shortcutHint('sidebar', '展开侧边栏'),
             child: InkWell(
               onTap: toggleSidebar,
               borderRadius: BorderRadius.circular(8),
@@ -625,7 +653,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           const SizedBox(height: 12),
           DshIcon(
             LucideIcons.circlePlus,
-            label: '新建会话',
+            label: shortcutHint('new', '新建会话'),
             size: 36,
             color: colors.text,
             onPressed: c.connected ? startConversation : null,
@@ -649,7 +677,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           const SizedBox(height: 12),
           DshIcon(
             LucideIcons.search,
-            label: '搜索会话',
+            label: shortcutHint('search', '搜索会话'),
             size: 36,
             color: colors.text,
             onPressed: openSearch,
@@ -658,7 +686,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           accountEntries(compact: true),
           DshIcon(
             LucideIcons.settings,
-            label: '设置',
+            label: shortcutHint('settings', '设置'),
             size: 36,
             color: colors.text,
             onPressed: () => settings(),
@@ -686,13 +714,25 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     final query = search.text.toLowerCase();
     final rows = <Widget>[];
     final known = <String>{};
+    final visibleSessions = c.sessions.where((session) {
+      final archived = c.archivedSessionIds.contains(session.id);
+      return switch (archiveFilter) {
+        'all' => true,
+        'archived' => archived,
+        _ => !archived,
+      };
+    }).toList();
+    bool hasVisibleContent(SessionSummary session) =>
+        !session.blank ||
+        c.archivedSessionIds.contains(session.id) ||
+        (session.id == c.selectedId && query.isEmpty);
     var groupCount = 0;
     for (final workspace in c.workspaces) {
       final id = workspace['workspaceId'] as String;
       final ids = (workspace['sessionIds'] as List? ?? []).cast<String>();
-      final entries = c.sessions
+      final entries = visibleSessions
           .where((s) => ids.contains(s.id) || s.cwd == workspace['path'])
-          .where((s) => !s.blank || (s.id == c.selectedId && query.isEmpty))
+          .where(hasVisibleContent)
           .where(
             (s) =>
                 query.isEmpty ||
@@ -700,7 +740,10 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           )
           .toList();
       known.addAll(entries.map((e) => e.id));
-      if (query.isNotEmpty && entries.isEmpty) continue;
+      if ((query.isNotEmpty || archiveFilter == 'archived') &&
+          entries.isEmpty) {
+        continue;
+      }
       rows.add(
         Padding(
           padding: EdgeInsets.only(top: groupCount++ == 0 ? 0 : 4),
@@ -725,11 +768,11 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         }
       }
     }
-    final loose = c.sessions
+    final loose = visibleSessions
         .where(
           (s) =>
               !known.contains(s.id) &&
-              (!s.blank || (s.id == c.selectedId && query.isEmpty)) &&
+              hasVisibleContent(s) &&
               (query.isEmpty ||
                   '${s.title} ${s.cwd}'.toLowerCase().contains(query)),
         )
@@ -770,7 +813,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 ),
                 DshIcon(
                   LucideIcons.panelLeftClose,
-                  label: '收起侧边栏',
+                  label: shortcutHint('sidebar', '收起侧边栏'),
                   onPressed: () {
                     setState(() => sideOpen = false);
                     saveLayout();
@@ -787,6 +830,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
               width: double.infinity,
               outline: true,
               icon: LucideIcons.circlePlus,
+              trailing: shortcutBadge('new'),
               onPressed: c.connected ? startConversation : null,
               child: const Text('新会话'),
             ),
@@ -819,7 +863,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 const Spacer(),
                 DshIcon(
                   LucideIcons.search,
-                  label: '搜索会话',
+                  label: shortcutHint('search', '搜索会话'),
                   active: showSearch,
                   onPressed: () => setState(() => showSearch = !showSearch),
                 ),
@@ -829,9 +873,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                   child: PopupMenuButton<String>(
                     tooltip: '视图选项',
                     padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 28,
-                      height: 28,
+                    constraints: const BoxConstraints(
+                      minWidth: 220,
+                      maxWidth: 280,
                     ),
                     icon: DshGlyph(
                       LucideIcons.slidersHorizontal,
@@ -839,10 +883,24 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                       color: colors.muted,
                     ),
                     onSelected: (v) {
+                      if (['hidden', 'all', 'archived'].contains(v)) {
+                        setArchiveFilter(v);
+                      }
                       if (v == 'refresh') unawaited(c.run(c.refreshSessions));
                       if (v == 'archive') settings('archive');
                     },
                     itemBuilder: (_) => [
+                      for (final entry in const {
+                        'hidden': '隐藏已归档',
+                        'all': '全部对话',
+                        'archived': '仅显示已归档',
+                      }.entries)
+                        CheckedPopupMenuItem(
+                          value: entry.key,
+                          checked: archiveFilter == entry.key,
+                          child: Text(entry.value),
+                        ),
+                      const PopupMenuDivider(),
                       const PopupMenuItem(
                         value: 'refresh',
                         child: Text('刷新会话'),
@@ -904,6 +962,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                     alignment: Alignment.centerLeft,
                     child: DshButton(
                       icon: LucideIcons.settings,
+                      trailing: shortcutBadge('settings'),
                       onPressed: () => settings(),
                       child: const Text('设置'),
                     ),
@@ -947,6 +1006,15 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                   height: 10,
                   child: CircularProgressIndicator(strokeWidth: 1.4),
                 ),
+              if (c.archivedSessionIds.contains(session.id))
+                Tooltip(
+                  message: '已归档',
+                  child: DshGlyph(
+                    LucideIcons.archive,
+                    size: 13,
+                    color: DshColors(context).muted,
+                  ),
+                ),
               if (c.pending.values.any((f) => f.sessionId == session.id))
                 const DshGlyph(
                   LucideIcons.circleHelp,
@@ -975,7 +1043,10 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         const PopupMenuItem(value: 'copy-id', child: Text('复制对话 ID')),
         const PopupMenuItem(value: 'rename', child: Text('重命名')),
         const PopupMenuItem(value: 'fork', child: Text('创建分支')),
-        const PopupMenuItem(value: 'archive', child: Text('归档')),
+        if (c.archivedSessionIds.contains(session.id))
+          const PopupMenuItem(value: 'restore', child: Text('恢复归档'))
+        else
+          const PopupMenuItem(value: 'archive', child: Text('归档')),
       ],
     );
     if (!mounted) return;
@@ -1024,6 +1095,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       );
     }
     if (action == 'archive') await c.run(() => c.archive(session.id));
+    if (action == 'restore') {
+      await c.run(() => c.archive(session.id, restore: true));
+    }
     if (action == 'fork') {
       await c.run(() async {
         final result = await c.client!.call('session.fork', {

@@ -24,6 +24,7 @@ import '../features/workbench/workbench_panel.dart' show previewUrl;
 import '../features/conversation/code_graph_view.dart';
 import '../features/workbench/project_tasks.dart';
 import 'controller.dart';
+import 'composer_clipboard.dart';
 import 'interactions.dart';
 import 'voice_input.dart';
 import '../features/conversation/feedback_controller.dart';
@@ -115,6 +116,8 @@ class _ConversationState extends State<Conversation>
   MessageFeedbackController? feedback;
   bool feedbackConnected = false;
   final attachments = <({String name, Uint8List data, String type})>[];
+  final clipboard = ComposerClipboard();
+  int attachmentEpoch = 0, importingAttachments = 0;
   @override
   Map<String, int> get resourceDiagnostics => {
     'conversationViews': 1,
@@ -126,6 +129,8 @@ class _ConversationState extends State<Conversation>
     ),
   };
   String? _session;
+  DshClient? _composerClient;
+  int _composerSelection = -1;
   bool follow = true, dropping = false;
   int revision = 0, voiceRevision = 0;
   String view = 'conversation';
@@ -241,7 +246,17 @@ class _ConversationState extends State<Conversation>
     if (c.menuSettings[view == 'project-tasks' ? 'tasks' : view] == false) {
       view = 'conversation';
     }
-    if (_session != c.selectedId) {
+    if (_session != c.selectedId ||
+        _composerClient != c.client ||
+        (_session == null && _composerSelection != c.selectionRevision)) {
+      final adoptDraft =
+          _session == null &&
+          _composerClient == c.client &&
+          c.selectionAdoptsDraft;
+      if (!adoptDraft) {
+        attachmentEpoch++;
+        importingAttachments = 0;
+      }
       navigation++;
       navigating = false;
       navigationError = null;
@@ -255,12 +270,13 @@ class _ConversationState extends State<Conversation>
       voice.cancel(notify: false);
       unawaited(readAloud.stop());
       view = 'conversation';
-      final wasDraft = _session == null;
       _session = c.selectedId;
-      if (!wasDraft || input.text.isEmpty) input.text = c.draft;
-      if (!wasDraft) attachments.clear();
+      _composerClient = c.client;
+      if (!adoptDraft || input.text.isEmpty) input.text = c.draft;
+      if (!adoptDraft) attachments.clear();
       follow = true;
     }
+    _composerSelection = c.selectionRevision;
     final next = c.window.lastSeq ?? -1;
     if (follow && revision != next) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -455,7 +471,7 @@ class _ConversationState extends State<Conversation>
   }
 
   Future<void> send({bool steer = false}) async {
-    if (c.sending || c.changingPlanMode) return;
+    if (c.sending || c.changingPlanMode || importingAttachments > 0) return;
     if (input.value.composing.isValid && !input.value.composing.isCollapsed) {
       return;
     }
@@ -501,17 +517,28 @@ class _ConversationState extends State<Conversation>
   }
 
   Future<void> addFiles(List<XFile> files) async {
+    final epoch = attachmentEpoch, owner = c.client;
+    bool valid() => mounted && epoch == attachmentEpoch && owner == c.client;
+    if (files.isEmpty) return;
+    setState(() => importingAttachments++);
     try {
+      final pending = <({String name, Uint8List data, String type})>[];
+      var pendingBytes = 0;
       for (final file in files) {
-        if (attachments.length >= 8) throw StateError('单条消息最多添加 8 个附件');
+        if (!valid()) return;
+        if (attachments.length + pending.length >= 8) {
+          throw StateError('单条消息最多添加 8 个附件');
+        }
         final length = await file.length();
+        if (!valid()) return;
         final total = attachments.fold<int>(0, (n, f) => n + f.data.length);
-        if (length + total > 16 * 1024 * 1024) {
+        if (length + pendingBytes + total > 16 * 1024 * 1024) {
           throw StateError('附件总大小不能超过 16 MiB');
         }
         final data = await file.readAsBytes();
-        if (!mounted) return;
+        if (!valid()) return;
         if (data.length +
+                pendingBytes +
                 attachments.fold<int>(0, (n, f) => n + f.data.length) >
             16 * 1024 * 1024) {
           throw StateError('附件总大小不能超过 16 MiB');
@@ -524,13 +551,76 @@ class _ConversationState extends State<Conversation>
           'gif' => 'image/gif',
           _ => 'application/octet-stream',
         };
-        setState(
-          () => attachments.add((name: file.name, data: data, type: type)),
-        );
+        pending.add((name: file.name, data: data, type: type));
+        pendingBytes += data.length;
+      }
+      if (!valid()) return;
+      if (attachments.length + pending.length > 8) {
+        throw StateError('单条消息最多添加 8 个附件');
+      }
+      // Recheck after every asynchronous read: a concurrent drop/paste may
+      // have filled the same composer while this batch was loading.
+      if (pendingBytes + attachments.fold<int>(0, (n, f) => n + f.data.length) >
+          16 * 1024 * 1024) {
+        throw StateError('附件总大小不能超过 16 MiB');
+      }
+      setState(() => attachments.addAll(pending));
+    } catch (e) {
+      if (valid()) {
+        c.error = '$e';
+        c.emit();
+      }
+    } finally {
+      if (mounted && epoch == attachmentEpoch) {
+        setState(() => importingAttachments--);
+      }
+    }
+  }
+
+  Future<void> pickFiles() async {
+    final epoch = attachmentEpoch, owner = c.client;
+    try {
+      final files = await openFiles();
+      if (mounted && epoch == attachmentEpoch && owner == c.client) {
+        await addFiles(files);
       }
     } catch (e) {
-      c.error = '$e';
-      c.emit();
+      if (mounted && epoch == attachmentEpoch && owner == c.client) {
+        c.error = '$e';
+        c.emit();
+      }
+    }
+  }
+
+  Future<void> paste() async {
+    final epoch = attachmentEpoch, owner = c.client;
+    bool valid() => mounted && epoch == attachmentEpoch && owner == c.client;
+    setState(() => importingAttachments++);
+    try {
+      final files = await clipboard.readFiles();
+      if (!valid()) return;
+      if (files != null && files.isNotEmpty) {
+        await addFiles(files);
+        return;
+      }
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      if (!valid() || data?.text == null) return;
+      final value = input.value;
+      final selection = value.selection.isValid
+          ? value.selection
+          : TextSelection.collapsed(offset: value.text.length);
+      voice.cancel();
+      input.value = value.replaced(selection, data!.text!);
+      c.setDraft(input.text);
+    } catch (e) {
+      if (valid()) {
+        c.error = '$e';
+        c.emit();
+      }
+    } finally {
+      if (mounted && epoch == attachmentEpoch) {
+        setState(() => importingAttachments--);
+      }
     }
   }
 
@@ -573,9 +663,7 @@ class _ConversationState extends State<Conversation>
                 !c.loading &&
                 !c.sending;
             final activityCount =
-                !c.readingHistory && (c.interruptible || c.compacting)
-                ? 1
-                : 0;
+                !c.readingHistory && (c.interruptible || c.compacting) ? 1 : 0;
             final messageIndices = {
               for (var i = 0; i < c.transcript.length; i++)
                 c.transcript[i].id: c.transcript.length - 1 - i + activityCount,
@@ -1253,12 +1341,23 @@ class _ConversationState extends State<Conversation>
                             file.name,
                             style: const TextStyle(fontSize: 12),
                           ),
-                          avatar: DshGlyph(
-                            file.type.startsWith('image/')
-                                ? LucideIcons.image
-                                : LucideIcons.paperclip,
-                            size: 14,
-                          ),
+                          avatar: file.type.startsWith('image/')
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Image.memory(
+                                    file.data,
+                                    width: 24,
+                                    height: 24,
+                                    cacheWidth: 48,
+                                    cacheHeight: 48,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) => const DshGlyph(
+                                      LucideIcons.image,
+                                      size: 14,
+                                    ),
+                                  ),
+                                )
+                              : const DshGlyph(LucideIcons.paperclip, size: 14),
                           onDeleted: () =>
                               setState(() => attachments.remove(file)),
                         ),
@@ -1292,34 +1391,68 @@ class _ConversationState extends State<Conversation>
                     );
                     return KeyEventResult.handled;
                   },
-                  child: TextField(
-                    key: const Key('prompt-input'),
-                    controller: input,
-                    focusNode: focus,
-                    onChanged: (text) {
-                      voice.cancel();
-                      c.setDraft(text);
-                    },
-                    style: DshTypography.composer.copyWith(color: colors.text),
-                    minLines: hero ? 2 : 1,
-                    maxLines: 8,
-                    decoration: InputDecoration(
-                      hintText:
-                          c.currentWorkspace == null && c.selectedId == null
-                          ? '选择一个工作区开始'
-                          : c.planMode?.requestedActive == true
-                          ? '描述你的任务以生成计划'
-                          : hero
-                          ? '描述你想要构建的内容'
-                          : '给智能体发消息',
-                      hintStyle: DshTypography.composer.copyWith(
-                        color: colors.muted,
+                  child: Actions(
+                    actions: {
+                      PasteTextIntent: CallbackAction<PasteTextIntent>(
+                        onInvoke: (_) {
+                          unawaited(paste());
+                          return null;
+                        },
                       ),
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      isDense: true,
-                      contentPadding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                    },
+                    child: TextField(
+                      key: const Key('prompt-input'),
+                      controller: input,
+                      focusNode: focus,
+                      contextMenuBuilder: (context, editable) {
+                        final items = editable.contextMenuButtonItems
+                            .where(
+                              (item) =>
+                                  item.type != ContextMenuButtonType.paste,
+                            )
+                            .toList();
+                        items.insert(
+                          items.length.clamp(0, 2),
+                          ContextMenuButtonItem(
+                            type: ContextMenuButtonType.paste,
+                            onPressed: () {
+                              editable.hideToolbar();
+                              unawaited(paste());
+                            },
+                          ),
+                        );
+                        return AdaptiveTextSelectionToolbar.buttonItems(
+                          anchors: editable.contextMenuAnchors,
+                          buttonItems: items,
+                        );
+                      },
+                      onChanged: (text) {
+                        voice.cancel();
+                        c.setDraft(text);
+                      },
+                      style: DshTypography.composer.copyWith(
+                        color: colors.text,
+                      ),
+                      minLines: hero ? 2 : 1,
+                      maxLines: 8,
+                      decoration: InputDecoration(
+                        hintText:
+                            c.currentWorkspace == null && c.selectedId == null
+                            ? '选择一个工作区开始'
+                            : c.planMode?.requestedActive == true
+                            ? '描述你的任务以生成计划'
+                            : hero
+                            ? '描述你想要构建的内容'
+                            : '给智能体发消息',
+                        hintStyle: DshTypography.composer.copyWith(
+                          color: colors.muted,
+                        ),
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                      ),
                     ),
                   ),
                 ),
@@ -1362,7 +1495,7 @@ class _ConversationState extends State<Conversation>
                               asset: 'assets/icons/composer-attachment.svg',
                               glyphSize: 18,
                               label: '上传文件',
-                              onPressed: () => openFiles().then(addFiles),
+                              onPressed: pickFiles,
                             ),
                             const SizedBox(width: 6),
                             PermissionControl(
@@ -1449,6 +1582,7 @@ class _ConversationState extends State<Conversation>
                                         final canSend =
                                             c.connected &&
                                             !c.sending &&
+                                            importingAttachments == 0 &&
                                             !c.changingPlanMode &&
                                             (value.text.trim().isNotEmpty ||
                                                 attachments.isNotEmpty);

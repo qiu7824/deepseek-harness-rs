@@ -69,10 +69,10 @@ void main() {
                     .bytesLoader
                 as SvgAssetLoader);
         expect(loader('expanded').theme!.currentColor, color);
-        await tester.tap(find.byTooltip('收起侧边栏'));
+        await tester.tap(find.byTooltip('收起侧边栏 · Ctrl+B'));
         await tester.pumpAndSettle();
         expect(loader('rail').theme!.currentColor, color);
-        await tester.tap(find.byTooltip('展开侧边栏'));
+        await tester.tap(find.byTooltip('展开侧边栏 · Ctrl+B'));
         await tester.pumpAndSettle();
         expect(loader('expanded').theme!.currentColor, color);
         expect(tester.takeException(), isNull);

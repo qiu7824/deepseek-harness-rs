@@ -25,6 +25,7 @@ class DesktopController extends ChangeNotifier {
   DshClient? get client => _client;
   HostInfo? host;
   List<SessionSummary> sessions = [];
+  Set<String> archivedSessionIds = {};
   List<Json> workspaces = [],
       archivedSessions = [],
       presets = [],
@@ -99,6 +100,8 @@ class DesktopController extends ChangeNotifier {
   String? error;
   int _epoch = 0, _selection = 0;
   int get selectionRevision => _selection;
+  int? _draftAdoptionRevision;
+  bool get selectionAdoptsDraft => _draftAdoptionRevision == _selection;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final List<HistoryEvent> _buffer = [];
   int _bufferBytes = 0;
@@ -267,6 +270,8 @@ class DesktopController extends ChangeNotifier {
     selectedId = null;
     historyTargetSeq = null;
     sessions = [];
+    archivedSessionIds = {};
+    archivedSessions = [];
     _sessionRevisions.clear();
     _titleSequences.clear();
     workspaces = [];
@@ -408,6 +413,7 @@ class DesktopController extends ChangeNotifier {
       final workspaces = await api.call('workspace.list');
       if (epoch != _epoch || _disposed) return;
       final archived = (workspaces['archivedSessionIds'] as List? ?? [])
+          .whereType<String>()
           .toSet();
       for (final row in result) {
         final previous = sessions.where((s) => s.id == row.id).firstOrNull;
@@ -426,7 +432,8 @@ class DesktopController extends ChangeNotifier {
           row.titleEditBase = previous.titleEditBase;
         }
       }
-      sessions = result.where((s) => !archived.contains(s.id)).toList();
+      sessions = result;
+      archivedSessionIds = archived;
       archivedSessions = result
           .where((s) => archived.contains(s.id))
           .map(
@@ -450,13 +457,14 @@ class DesktopController extends ChangeNotifier {
     }
   }
 
-  Future<void> select(String id) async {
+  Future<void> select(String id, {bool adoptDraft = false}) async {
     _clearCommandActivity();
     _historyScope?.cancel();
     _planScope?.cancel();
     _planChange = null;
     _refresh?.cancel();
     _selection++;
+    _draftAdoptionRevision = adoptDraft ? _selection : null;
     selectedId = id;
     historyTargetSeq = null;
     preset = selected?.agentPreset ?? preset;
@@ -807,6 +815,7 @@ class DesktopController extends ChangeNotifier {
     if (cwd.trim().isEmpty) throw const FormatException('请输入工作目录');
     final api = _client!, epoch = _epoch, selection = _selection;
     final ownerWorkspace = workspaceId;
+    final fromDraft = selectedId == null;
     final id =
         (await api.call('session.create', {
               'cwd': cwd.trim(),
@@ -822,7 +831,7 @@ class DesktopController extends ChangeNotifier {
     if (!current()) return null;
     await refreshSessions();
     if (!current()) return null;
-    await select(id);
+    await select(id, adoptDraft: fromDraft);
     return !_disposed &&
             epoch == _epoch &&
             _selection == selection + 1 &&
@@ -1150,7 +1159,7 @@ class DesktopController extends ChangeNotifier {
       {'sessionId': id},
       true,
     );
-    if (selectedId == id) newConversation();
+    if (!restore && selectedId == id) newConversation();
     await refreshSessions();
   }
 

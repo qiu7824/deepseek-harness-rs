@@ -152,6 +152,43 @@ void main() {
     c.dispose();
     await Future<void>.delayed(Duration.zero);
   });
+  test(
+    'archive metadata does not discard summaries and restore keeps selection',
+    () async {
+      api.liveSessions = [
+        SessionSummary.fromJson({
+          'sessionId': 'active',
+          'displayTitle': 'Active',
+        }),
+        SessionSummary.fromJson({
+          'sessionId': 'archived',
+          'displayTitle': 'Archived',
+        }),
+      ];
+      var archived = true;
+      api.handleCall = (method, payload) async {
+        if (method == 'workspace.unarchiveSession') {
+          expect(payload['sessionId'], 'archived');
+          archived = false;
+        }
+        return {
+          'items': [],
+          'archivedSessionIds': [if (archived) 'archived'],
+        };
+      };
+      await c.refreshSessions();
+      expect(c.sessions.map((session) => session.id), ['active', 'archived']);
+      expect(c.archivedSessionIds, {'archived'});
+      expect(c.archivedSessions.single['sessionId'], 'archived');
+      c.selectedId = 'archived';
+      expect(c.selected!.title, 'Archived');
+      await c.archive('archived', restore: true);
+      expect(c.selectedId, 'archived');
+      expect(c.sessions, hasLength(2));
+      expect(c.archivedSessionIds, isEmpty);
+      expect(c.archivedSessions, isEmpty);
+    },
+  );
   test('failed plan command never fabricates state, and accepted command read failure is distinguished', () async {
     await c.select('s');
     c.projectionWindow.apply('plan', {'active': true, 'pending': false}, 1);

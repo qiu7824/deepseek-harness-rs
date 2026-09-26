@@ -18,6 +18,9 @@ window.__ModuleLoader__.load({
 		*/
 		/** Browser-local order account for the hierarchy-free flat Session list. */
 		const FLAT_SESSION_ORDER_KEY = "__flat_session_order__";
+		function normalizedArchiveFilter(value) {
+			return value === "all" || value === "archived" ? value : "hidden";
+		}
 		/**
 		* Create the workspace browser viewing store handle.
 		* @returns the store handle (spec + type + identity + factory in one).
@@ -27,6 +30,7 @@ window.__ModuleLoader__.load({
 				init: () => ({
 					groupBy: "workspace",
 					orderBy: "updated",
+					archiveFilter: "hidden",
 					groupExpansion: {},
 					sessionOrderByAccount: {},
 					sessionUpdatedAtByAccount: {}
@@ -38,6 +42,9 @@ window.__ModuleLoader__.load({
 					},
 					setOrderBy: (d, mode) => {
 						d.orderBy = mode;
+					},
+					setArchiveFilter: (d, mode) => {
+						d.archiveFilter = normalizedArchiveFilter(mode);
 					},
 					setGroupExpanded: (d, key, expanded) => {
 						d.groupExpansion[key] = expanded;
@@ -97,12 +104,13 @@ window.__ModuleLoader__.load({
 		}
 		/**
 		* Ordinary sessions are visible; among blank sessions, only the current one
-		* is visible. Subagent children use their parent header catalog; archived
-		* sessions are visible nowhere, while their accounting slots remain so
-		* unarchiving restores position.
+		* is visible. Subagent children use their parent header catalog. Archive
+		* visibility is local to the browser; accounting slots remain intact.
 		*/
-		function sessionVisible(session, current, archived) {
-			return session.origin !== "subagent" && !archived.has(session.id) && (!session.blank || session.id === current);
+		function sessionVisible(session, current, archived, archiveFilter = "hidden") {
+			const mode = normalizedArchiveFilter(archiveFilter);
+			const isArchived = archived.has(session.id);
+			return session.origin !== "subagent" && (mode === "all" || isArchived === (mode === "archived")) && (isArchived || !session.blank || session.id === current);
 		}
 		/**
 		* A blank session is the selected Workspace's provisional New Session row;
@@ -148,7 +156,7 @@ window.__ModuleLoader__.load({
 		* outside every Workspace trail in the browser-local Ungrouped order, which
 		* falls back to recency before that order is initialized.
 		*/
-		function groupByWorkspace(list, workspaces, archived, ungroupedOrder) {
+		function groupByWorkspace(list, workspaces, archived, ungroupedOrder, archiveFilter = "hidden") {
 			const groups = [];
 			const accounted = /* @__PURE__ */ new Set();
 			for (const workspace of workspaces) {
@@ -157,20 +165,21 @@ window.__ModuleLoader__.load({
 					const summary = list.byId[id];
 					if (summary === void 0) continue;
 					accounted.add(id);
-					if (!sessionVisible(summary, list.current, archived)) continue;
+					if (!sessionVisible(summary, list.current, archived, archiveFilter)) continue;
 					members.push(summary);
 				}
-				groups.push(buildGroup(workspace.workspaceId, workspace.workspaceId, workspace.path, Date.parse(workspace.createdAt), workspace.title, members, "account"));
+				if (normalizedArchiveFilter(archiveFilter) !== "archived" || members.length > 0) groups.push(buildGroup(workspace.workspaceId, workspace.workspaceId, workspace.path, Date.parse(workspace.createdAt), workspace.title, members, "account"));
 			}
-			const stray = list.ids.map((id) => list.byId[id]).filter((s) => s !== void 0 && !accounted.has(s.id) && sessionVisible(s, list.current, archived));
+			const stray = list.ids.map((id) => list.byId[id]).filter((s) => s !== void 0 && !accounted.has(s.id) && sessionVisible(s, list.current, archived, archiveFilter));
 			if (stray.length > 0) groups.push(buildGroup("", void 0, void 0, void 0, UNGROUPED_LABEL, ungroupedOrder === void 0 ? stray : orderedUngrouped(stray, ungroupedOrder), ungroupedOrder === void 0 ? "recency" : "account"));
 			return groups;
 		}
-		function sessionNode(s, descendants) {
+		function sessionNode(s, descendants, archived = false) {
 			return {
 				id: s.id,
 				title: sessionTitle(s),
 				blank: s.blank,
+				archived,
 				running: s.running,
 				runningSubagentCount: descendants.get(s.id)?.runningCount ?? 0,
 				completed: s.completed === true,
@@ -184,7 +193,7 @@ window.__ModuleLoader__.load({
 		*
 		* Every group shows; sessions populate under expanded groups in the selected
 		* local order. Blank sessions are excluded except for the selected
-		* provisional New Session row; archived sessions are excluded everywhere.
+		* provisional New Session row. Archive visibility follows the local filter.
 		* Content search lives outside this derivation
 		* (see {@link deriveSearchResults}).
 		* @param list - sessions list snapshot (`current` feeds containsCurrent).
@@ -199,7 +208,7 @@ window.__ModuleLoader__.load({
 			const descendants = (0, _deepseek_ai_dsh_client_runtime_client.indexSubagentDescendants)(list.byId);
 			const currentGroup = list.current === void 0 ? void 0 : workspaces.find((w) => w.sessionIds.includes(list.current))?.workspaceId ?? "";
 			const groups = [];
-			for (const g of groupByWorkspace(list, workspaces, archived, view.ungroupedOrder)) {
+			for (const g of groupByWorkspace(list, workspaces, archived, view.ungroupedOrder, view.archiveFilter)) {
 				const expanded = expandedGroups.has(g.key);
 				groups.push({
 					key: g.key,
@@ -210,7 +219,7 @@ window.__ModuleLoader__.load({
 					sessionCount: g.sessions.length,
 					expanded,
 					containsCurrent: g.key === currentGroup,
-					sessions: expanded ? g.sessions.map((session) => sessionNode(session, descendants)) : []
+					sessions: expanded ? g.sessions.map((session) => sessionNode(session, descendants, archived.has(session.id))) : []
 				});
 			}
 			return groups;
@@ -224,17 +233,17 @@ window.__ModuleLoader__.load({
 		* @param archivedSessionIds - registry-global archive set.
 		* @returns flat rows in render order.
 		*/
-		function deriveFlat(list, archivedSessionIds) {
+		function deriveFlat(list, archivedSessionIds, archiveFilter = "hidden") {
 			const archived = new Set(archivedSessionIds);
 			const descendants = (0, _deepseek_ai_dsh_client_runtime_client.indexSubagentDescendants)(list.byId);
 			const rows = [];
 			for (const id of list.ids) {
 				const s = list.byId[id];
-				if (s === void 0 || !sessionVisible(s, list.current, archived)) continue;
+				if (s === void 0 || !sessionVisible(s, list.current, archived, archiveFilter)) continue;
 				rows.push(s);
 			}
 			rows.sort(byRecency);
-			return rows.map((session) => sessionNode(session, descendants));
+			return rows.map((session) => sessionNode(session, descendants, archived.has(session.id)));
 		}
 		/**
 		* Merge immediate title/Workspace substring matches with ranked Host content
@@ -243,12 +252,12 @@ window.__ModuleLoader__.load({
 		* @param list - session metadata authority.
 		* @param workspaces - Workspace membership and display labels.
 		* @param query - caller text; surrounding whitespace is ignored.
-		* @param archivedSessionIds - registry-global archive set (members never match).
+		* @param archivedSessionIds - registry-global archive set.
 		* @param content - ranked Host content-search page.
 		* @param limit - protocol-owned maximum merged row count.
 		* @returns bounded deduplicated flat rows and a refine-query hint bit.
 		*/
-		function deriveSearchResults(list, workspaces, query, archivedSessionIds, content, limit) {
+		function deriveSearchResults(list, workspaces, query, archivedSessionIds, content, limit, archiveFilter = "hidden") {
 			const q = query.trim().toLowerCase();
 			if (q === "") return {
 				items: [],
@@ -264,7 +273,7 @@ window.__ModuleLoader__.load({
 			const local = [];
 			for (const id of list.ids) {
 				const summary = list.byId[id];
-				if (summary === void 0 || summary.blank || !sessionVisible(summary, list.current, archived)) continue;
+				if (summary === void 0 || summary.blank && !archived.has(summary.id) || !sessionVisible(summary, list.current, archived, archiveFilter)) continue;
 				if (sessionTitle(summary).toLowerCase().includes(q) || labelOf(summary).toLowerCase().includes(q)) local.push(summary);
 			}
 			local.sort(byRecency);
@@ -278,7 +287,7 @@ window.__ModuleLoader__.load({
 			for (const summary of local) include(summary);
 			for (const item of content.items) {
 				const summary = list.byId[item.sessionId];
-				if (summary !== void 0 && !summary.blank && sessionVisible(summary, list.current, archived)) include(summary);
+				if (summary !== void 0 && (!summary.blank || archived.has(summary.id)) && sessionVisible(summary, list.current, archived, archiveFilter)) include(summary);
 			}
 			return {
 				items: ordered.slice(0, limit).map((summary) => {
@@ -773,7 +782,7 @@ window.__ModuleLoader__.load({
 				},
 				{
 					id: "archive",
-					label: t("menu.archiveSession"),
+					label: t(node.archived ? "menu.unarchiveSession" : "menu.archiveSession"),
 					icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconArchiveOutline20, { size: 16 })
 				}
 			];
@@ -830,7 +839,7 @@ window.__ModuleLoader__.load({
 									if (id === "copy-id") copyText(node.id).catch((reason) => console.warn("copy session id failed:", reason));
 									if (id === "rename") onRename(node.id, row.title);
 									if (id === "fork") onFork(node.id);
-									if (id === "archive") onArchive(node.id);
+									if (id === "archive") onArchive(node.id, node.archived);
 								},
 								portal: true,
 								closeOnPointerLeave: true,
@@ -1395,7 +1404,7 @@ window.__ModuleLoader__.load({
 			};
 		}
 		/** Grouping and ordering menu; own open state so it resets with the wide chrome. */
-		function ViewOptionsMenu({ groupBy, orderBy, onGroupPick, onOrderPick, t }) {
+		function ViewOptionsMenu({ groupBy, orderBy, archiveFilter, onGroupPick, onOrderPick, onArchiveFilterPick, t }) {
 			const [open, setOpen] = (0, react.useState)(false);
 			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
 				open,
@@ -1432,12 +1441,16 @@ window.__ModuleLoader__.load({
 					{
 						id: "updated",
 						label: t("orderBy.updated")
-					}
+					},
+					{ type: "separator", id: "archive-filter-separator" },
+					{ type: "label", id: "archive-filter", text: t("archiveFilter.label") },
+					...["hidden", "all", "archived"].map((mode) => ({ id: `archive-filter-${mode}`, label: t(`archiveFilter.${mode}`) }))
 				],
-				selectedIds: [groupBy, orderBy],
+				selectedIds: [groupBy, orderBy, `archive-filter-${normalizedArchiveFilter(archiveFilter)}`],
 				onSelect: (id) => {
 					if (id === "workspace" || id === "flat") onGroupPick(id);
 					else if (id === "manual" || id === "updated") onOrderPick(id);
+					else if (id.startsWith("archive-filter-")) onArchiveFilterPick(normalizedArchiveFilter(id.slice("archive-filter-".length)));
 					setOpen(false);
 				},
 				align: "end",
@@ -1465,7 +1478,7 @@ window.__ModuleLoader__.load({
 			return e.clientY < rect.top + rect.height / 2 ? "before" : "after";
 		}
 		/** The scrolling session tree; unmounting drops the sessions subscription and expand-all state. */
-		function SessionTree({ revealSessionId, useSessions, startSession, open, forkSession, workspaces, archivedSessionIds, onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive, insertWorkspaceBefore, insertSessionBefore, orderBy, groupExpansion, setGroupExpanded, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t }) {
+		function SessionTree({ revealSessionId, useSessions, startSession, open, forkSession, workspaces, archivedSessionIds, archiveFilter, onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive, insertWorkspaceBefore, insertSessionBefore, orderBy, groupExpansion, setGroupExpanded, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t }) {
 			const list = useSessions((s) => s);
 			const current = list.current;
 			const [expandedSessionGroups, setExpandedSessionGroups] = (0, react.useState)([]);
@@ -1541,11 +1554,13 @@ window.__ModuleLoader__.load({
 			const orderedUngroupedSessionIds = (0, react.useMemo)(() => reconciledSessionOrder(ungroupedSessionIds, sessionOrderByAccount[""]), [sessionOrderByAccount, ungroupedSessionIds]);
 			const groups = (0, react.useMemo)(() => deriveGroups(list, orderedWorkspaces, archivedSessionIds, {
 				expandedGroups,
+				archiveFilter,
 				...sessionOrderByAccount[""] === void 0 ? {} : { ungroupedOrder: sessionOrderByAccount[""] }
 			}), [
 				list,
 				orderedWorkspaces,
 				archivedSessionIds,
+				archiveFilter,
 				expandedGroups,
 				sessionOrderByAccount
 			]);
@@ -1740,10 +1755,10 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** The flat "In one list" body: every session is one draggable top-level row. */
-		function FlatList({ useSessions, open, forkSession, onSessionRename, onSessionArchive, archivedSessionIds, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t }) {
+		function FlatList({ useSessions, open, forkSession, onSessionRename, onSessionArchive, archivedSessionIds, archiveFilter, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t }) {
 			const list = useSessions((s) => s);
-			const baseRows = (0, react.useMemo)(() => deriveFlat(list, archivedSessionIds), [list, archivedSessionIds]);
-			const sessionIds = (0, react.useMemo)(() => baseRows.map((row) => row.id), [baseRows]);
+			const baseRows = (0, react.useMemo)(() => deriveFlat(list, archivedSessionIds, archiveFilter), [list, archivedSessionIds, archiveFilter]);
+			const sessionIds = (0, react.useMemo)(() => deriveFlat(list, archivedSessionIds, "all").map((row) => row.id), [list, archivedSessionIds]);
 			const previousOrderBy = (0, react.useRef)(orderBy);
 			(0, react.useEffect)(() => {
 				if (list.phase !== "ready") return;
@@ -1793,7 +1808,7 @@ window.__ModuleLoader__.load({
 				const sourceIndex = rows.findIndex((row) => row.id === activeDrag.sessionId);
 				const anchorIndex = anchor === void 0 ? rows.length : rows.findIndex((row) => row.id === anchor);
 				if (sourceIndex !== -1 && (anchorIndex === sourceIndex || anchorIndex === sourceIndex + 1)) return;
-				const nextOrder = rows.map((row) => row.id).filter((id) => id !== activeDrag.sessionId);
+				const nextOrder = reconciledSessionOrder(sessionIds, sessionOrderByAccount[FLAT_SESSION_ORDER_KEY]).filter((id) => id !== activeDrag.sessionId);
 				const insertAt = anchor === void 0 ? nextOrder.length : nextOrder.indexOf(anchor);
 				nextOrder.splice(insertAt === -1 ? nextOrder.length : insertAt, 0, activeDrag.sessionId);
 				setSessionOrder(FLAT_SESSION_ORDER_KEY, nextOrder.map((id) => id));
@@ -1858,7 +1873,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** Flat search body: local metadata matches plus the current Host result page. */
-		function SearchResults({ useSessions, open, workspaces, archivedSessionIds, query, remote, resultLimit, t }) {
+		function SearchResults({ useSessions, open, workspaces, archivedSessionIds, archiveFilter, query, remote, resultLimit, t }) {
 			const list = useSessions((s) => s);
 			const currentRemote = remote.query === query ? remote : {
 				query,
@@ -1866,11 +1881,12 @@ window.__ModuleLoader__.load({
 				items: [],
 				hasMore: false
 			};
-			const results = (0, react.useMemo)(() => deriveSearchResults(list, workspaces, query, archivedSessionIds, currentRemote, resultLimit), [
+			const results = (0, react.useMemo)(() => deriveSearchResults(list, workspaces, query, archivedSessionIds, currentRemote, resultLimit, archiveFilter), [
 				list,
 				workspaces,
 				query,
 				archivedSessionIds,
+				archiveFilter,
 				currentRemote,
 				resultLimit
 			]);
@@ -1919,13 +1935,14 @@ window.__ModuleLoader__.load({
 		* @param props - composed slot props (shell owner share + store + injected actions).
 		* @returns the region element tree.
 		*/
-		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, readSessionTitle, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, t }) {
+		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, readSessionTitle, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, unarchiveSession, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, t }) {
 			const workspaces = useWorkspaces((state) => state.items);
 			const workspacePhase = useWorkspaces((state) => state.phase);
 			const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
 			const directoryFlowAvailable = useDirectoryFlow((occupied) => occupied);
 			const groupBy = useStore((s) => s.groupBy);
 			const orderBy = useStore((s) => s.orderBy);
+			const archiveFilter = useStore((s) => normalizedArchiveFilter(s.archiveFilter));
 			const groupExpansion = useStore((s) => s.groupExpansion);
 			const sessionOrderByAccount = useStore((s) => s.sessionOrderByAccount);
 			const sessionUpdatedAtByAccount = useStore((s) => s.sessionUpdatedAtByAccount);
@@ -2124,8 +2141,8 @@ window.__ModuleLoader__.load({
 				setSessionRenameTarget({ ...sessionRenameTarget, base, currentTitle: base.value ?? "" });
 				setSessionRenameConflict(false); setSessionRenameError(null);
 			};
-			const onSessionArchive = (sessionId) => {
-				archiveSession(sessionId).catch((reason) => {
+			const onSessionArchive = (sessionId, archived) => {
+				(archived ? unarchiveSession : archiveSession)(sessionId).catch((reason) => {
 					console.warn("session archive rejected:", reason);
 				});
 			};
@@ -2231,6 +2248,8 @@ window.__ModuleLoader__.load({
 								children: [wide && (0, react_jsx_runtime.jsx)(ViewOptionsMenu, {
 									groupBy,
 									orderBy,
+									archiveFilter,
+									onArchiveFilterPick: actions.setArchiveFilter,
 									onGroupPick: (mode) => {
 										actions.setGroupBy(mode);
 									},
@@ -2299,6 +2318,7 @@ window.__ModuleLoader__.load({
 							open: openSearchResult,
 							workspaces,
 							archivedSessionIds,
+							archiveFilter,
 							query: normalizedQuery,
 							remote: remoteSearch,
 							resultLimit: searchResultLimit,
@@ -2310,6 +2330,7 @@ window.__ModuleLoader__.load({
 							onSessionRename,
 							onSessionArchive,
 							archivedSessionIds,
+							archiveFilter,
 							orderBy,
 							sessionOrderByAccount,
 							sessionUpdatedAtByAccount,
@@ -2330,6 +2351,7 @@ window.__ModuleLoader__.load({
 							syncSessionOrderAccount: actions.syncSessionOrderAccount,
 							setSessionOrder: actions.setSessionOrder,
 							archivedSessionIds,
+							archiveFilter,
 							startSession,
 							open,
 							insertWorkspaceBefore,
@@ -2688,6 +2710,10 @@ window.__ModuleLoader__.load({
 			"orderBy.label": "排序方式",
 			"orderBy.manual": "手动排序",
 			"orderBy.updated": "最近更新",
+			"archiveFilter.label": "归档会话",
+			"archiveFilter.hidden": "隐藏已归档",
+			"archiveFilter.all": "全部对话",
+			"archiveFilter.archived": "仅显示已归档",
 			"sessions.expand": "展开其余 {n} 个会话",
 			"sessions.collapse": "收起",
 			"empty.none": "暂无会话",
@@ -2719,6 +2745,7 @@ window.__ModuleLoader__.load({
 			"delete.pending": "正在删除工作区…",
 			"menu.fork": "分叉会话",
 			"menu.archiveSession": "归档会话",
+			"menu.unarchiveSession": "恢复会话",
 			"archive.nav": "归档管理",
 			"archive.title": "归档会话",
 			"archive.description": "归档只会隐藏会话，完整记录仍会保留。你可以恢复或永久删除记录。",
@@ -2782,6 +2809,10 @@ window.__ModuleLoader__.load({
 			"orderBy.label": "Order by",
 			"orderBy.manual": "Manual",
 			"orderBy.updated": "Last updated",
+			"archiveFilter.label": "Archived sessions",
+			"archiveFilter.hidden": "Hide archived",
+			"archiveFilter.all": "All conversations",
+			"archiveFilter.archived": "Archived only",
 			"sessions.expand": "Show {n} more sessions",
 			"sessions.collapse": "Show less",
 			"empty.none": "No sessions yet",
@@ -2813,6 +2844,7 @@ window.__ModuleLoader__.load({
 			"delete.pending": "Deleting workspace…",
 			"menu.fork": "Fork session",
 			"menu.archiveSession": "Archive session",
+			"menu.unarchiveSession": "Restore session",
 			"archive.nav": "Archive",
 			"archive.title": "Archived sessions",
 			"archive.description": "Archiving only hides a session; its complete record is retained. Restore or permanently delete it here.",
@@ -2934,6 +2966,7 @@ window.__ModuleLoader__.load({
 				insertWorkspaceBefore: async (workspaceId, beforeWorkspaceId) => {
 					await ctx.workspaces.insertBefore(workspaceId, beforeWorkspaceId);
 				},
+				unarchiveSession: (sessionId) => ctx.workspaces.unarchiveSession(sessionId),
 				archiveSession: async (sessionId) => {
 					await ctx.workspaces.archiveSession(sessionId);
 				},

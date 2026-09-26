@@ -5,7 +5,9 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:dsh_client/dsh_client.dart';
 
 import '../../design/primitives.dart';
+import '../../design/select.dart';
 import '../../src/controller.dart';
+import 'learning_panel.dart';
 
 class SettingsResourcePage extends StatefulWidget {
   const SettingsResourcePage({
@@ -24,25 +26,53 @@ class SettingsResourcePage extends StatefulWidget {
 }
 
 class _SettingsResourcePageState extends State<SettingsResourcePage> {
-  DshClient get api => widget.controller.client!;
+  DshClient? boundApi;
+  bool get staleConnection =>
+      boundApi == null || widget.controller.client != boundApi;
+  DshClient get api {
+    if (staleConnection) throw StateError('连接已变化，请关闭后重新打开设置。');
+    return boundApi!;
+  }
+
   final scope = RequestScope(), search = TextEditingController();
   Json data = {};
   bool loading = true, busy = false;
-  String? error;
+  String? error, notice;
+  int loadGeneration = 0;
   @override
   void initState() {
     super.initState();
+    boundApi = widget.controller.client;
+    widget.controller.addListener(connectionChanged);
     load();
+  }
+
+  void connectionChanged() {
+    if (staleConnection && mounted) {
+      scope.cancel();
+      loadGeneration++;
+      setState(() {
+        loading = false;
+        error = '连接已变化，请关闭后重新打开设置。';
+      });
+    }
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(connectionChanged);
     scope.cancel();
     search.dispose();
     super.dispose();
   }
 
   Future<void> load() async {
+    if (staleConnection) {
+      connectionChanged();
+      return;
+    }
+    final generation = ++loadGeneration;
+    if (mounted) setState(() => loading = true);
     try {
       Json result;
       switch (widget.page) {
@@ -59,7 +89,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             _ => 'memory.list',
           }, scope: scope);
       }
-      if (mounted) {
+      if (mounted && generation == loadGeneration) {
         setState(() {
           data = result;
           loading = false;
@@ -67,7 +97,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         });
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && generation == loadGeneration) {
         setState(() {
           error = '$e';
           loading = false;
@@ -77,7 +107,12 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
   }
 
   Future<void> action(Future<void> Function() work) async {
-    setState(() => busy = true);
+    if (busy || !mounted || staleConnection) return;
+    setState(() {
+      busy = true;
+      error = null;
+      notice = null;
+    });
     try {
       await work();
       await load();
@@ -125,13 +160,13 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             DshIcon(
               LucideIcons.refreshCw,
               label: '刷新',
-              onPressed: loading ? null : load,
+              onPressed: loading || busy ? null : load,
             ),
             if (widget.page == 'skills')
               DshButton(
                 outline: true,
                 icon: LucideIcons.plus,
-                onPressed: () => editSkill(),
+                onPressed: loading || busy ? null : () => editSkill(),
                 child: const Text('添加技能'),
               ),
           ],
@@ -156,6 +191,11 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         const SizedBox(height: 12),
         if (error != null)
           Text(error!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+        if (notice != null)
+          Text(
+            notice!,
+            style: TextStyle(color: DshColors(context).blue, fontSize: 12),
+          ),
         if (busy) const LinearProgressIndicator(minHeight: 2),
         Expanded(
           child: loading
@@ -163,11 +203,15 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
               : ListView.builder(
                   itemCount:
                       entries.length +
+                      (widget.page == 'memory' ? 1 : 0) +
                       (widget.page == 'skills' ? 1 : 0) +
                       (widget.footer != null ? 1 : 0) +
                       (widget.page == 'discovery' ? 1 : 0),
                   itemBuilder: (context, i) {
                     if (i < entries.length) return row(entries[i]);
+                    if (widget.page == 'memory' && i == entries.length) {
+                      return LearningPanel(controller: widget.controller);
+                    }
                     if (widget.page == 'skills' && i == entries.length) {
                       return serverList();
                     }
@@ -179,6 +223,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         if (entries.isEmpty &&
             !loading &&
             widget.footer == null &&
+            widget.page != 'memory' &&
             widget.page != 'skills' &&
             widget.page != 'discovery')
           const Padding(
@@ -286,7 +331,15 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                 DshIcon(
                   LucideIcons.pencil,
                   label: '编辑技能',
-                  onPressed: () => editSkill(row),
+                  onPressed: busy ? null : () => editSkill(row),
+                ),
+              if (row['managed'] == true)
+                DshIcon(
+                  LucideIcons.trash2,
+                  label: '移除技能',
+                  onPressed: busy
+                      ? null
+                      : () => removeCapability(row, skill: true),
                 ),
             ],
             'presets' => [
@@ -304,36 +357,40 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             'memory' => [
               DshSwitch(
                 value: row['enabled'] == true,
-                onChanged: (v) => action(() async {
-                  await api.call('memory.upsert', {
-                    'entry': {...row, 'enabled': v},
-                    'expectedRevision': row['revision'],
-                  }, true);
-                }),
+                onChanged: busy
+                    ? null
+                    : (v) => action(() async {
+                        await api.call('memory.upsert', {
+                          'entry': {...row, 'enabled': v},
+                          'expectedRevision': row['revision'],
+                        }, true);
+                      }),
               ),
               DshIcon(
                 LucideIcons.pencil,
                 label: '编辑记忆',
-                onPressed: () => editMemory(row),
+                onPressed: busy ? null : () => editMemory(row),
               ),
               DshIcon(
                 LucideIcons.trash2,
                 label: '删除记忆',
-                onPressed: () async {
-                  if (await confirmAction(
-                    context,
-                    '删除记忆',
-                    title,
-                    action: '删除',
-                  )) {
-                    await action(() async {
-                      await api.call('memory.remove', {
-                        'id': row['id'],
-                        'expectedRevision': row['revision'],
-                      }, true);
-                    });
-                  }
-                },
+                onPressed: busy
+                    ? null
+                    : () async {
+                        if (await confirmAction(
+                          context,
+                          '删除记忆',
+                          title,
+                          action: '删除',
+                        )) {
+                          await action(() async {
+                            await api.call('memory.remove', {
+                              'id': row['id'],
+                              'expectedRevision': row['revision'],
+                            }, true);
+                          });
+                        }
+                      },
               ),
             ],
             _ => <Widget>[],
@@ -448,13 +505,18 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
           ),
           DshButton(
             outline: true,
-            onPressed: editServer,
+            onPressed: loading || busy ? null : () => editServer(),
             icon: LucideIcons.plus,
             child: const Text('添加服务器'),
           ),
         ],
       ),
-      for (final server in objects(data['servers']))
+      for (final server in objects(data['servers']).where(
+        (server) =>
+            '${server['name']} ${server['command']} ${server['endpoint']}'
+                .toLowerCase()
+                .contains(search.text.toLowerCase()),
+      ))
         ListTile(
           contentPadding: EdgeInsets.zero,
           title: Text(
@@ -462,29 +524,57 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             style: const TextStyle(fontSize: 14),
           ),
           subtitle: Text(
-            '${server['error'] ?? server['status'] ?? server['transport']}',
+            '${server['error'] ?? const {'connected': '已连接', 'disabled': '已停用', 'error': '连接失败', 'pending': '等待连接'}[server['status']] ?? server['transport']} · ${server['toolCount'] ?? 0} 个工具${server['hasSecrets'] == true ? ' · 已配置凭证' : ''}',
             style: const TextStyle(fontSize: 12),
           ),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
+          trailing: Wrap(
             children: [
               DshButton(
-                onPressed: () => action(() async {
-                  await api.call('capabilities.serverTest', {
-                    'name': server['name'],
-                  }, true);
-                }),
+                onPressed: busy
+                    ? null
+                    : () => action(() async {
+                        final result = await api.call(
+                          'capabilities.serverTest',
+                          {'name': server['name']},
+                          true,
+                        );
+                        if (result['status'] == 'error' ||
+                            result['error'] != null) {
+                          throw DshException(
+                            'mcp-connection',
+                            '${result['error'] ?? '连接失败'}',
+                          );
+                        }
+                        if (mounted) {
+                          setState(
+                            () => notice =
+                                '${server['name']} 连接成功，可用工具 ${result['toolCount'] ?? 0} 个',
+                          );
+                        }
+                      }),
                 child: const Text('测试'),
+              ),
+              DshIcon(
+                LucideIcons.pencil,
+                label: '编辑 MCP 服务器',
+                onPressed: busy ? null : () => editServer(server),
+              ),
+              DshIcon(
+                LucideIcons.trash2,
+                label: '移除 MCP 服务器',
+                onPressed: busy ? null : () => removeCapability(server),
               ),
               DshSwitch(
                 value: server['enabled'] == true,
-                onChanged: (v) => action(() async {
-                  await api.call('capabilities.serverToggle', {
-                    'name': server['name'],
-                    'enabled': v,
-                    'expectedRevision': data['revision'],
-                  }, true);
-                }),
+                onChanged: busy
+                    ? null
+                    : (v) => action(() async {
+                        await api.call('capabilities.serverToggle', {
+                          'name': server['name'],
+                          'enabled': v,
+                          'expectedRevision': data['revision'],
+                        }, true);
+                      }),
               ),
             ],
           ),
@@ -501,16 +591,18 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
           contentPadding: EdgeInsets.zero,
           title: const Text('按需发现工具', style: TextStyle(fontSize: 14)),
           value: config['enabled'] == true,
-          onChanged: (v) => action(() async {
-            await api.request(
-              '/__dsh-tool-discovery',
-              body: {
-                'configuration': {...config, 'enabled': v},
-                'expectedRevision': data['revision'],
-              },
-              mutation: true,
-            );
-          }),
+          onChanged: busy
+              ? null
+              : (v) => action(() async {
+                  await api.request(
+                    '/__dsh-tool-discovery',
+                    body: {
+                      'configuration': {...config, 'enabled': v},
+                      'expectedRevision': data['revision'],
+                    },
+                    mutation: true,
+                  );
+                }),
         ),
         if (data['restartRequired'] == true)
           const Text(
@@ -534,6 +626,8 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
   }
 
   Future<void> editSkill([Json? skill]) async {
+    if (busy || loading) return;
+    final revision = data['revision'];
     var content = '';
     if (skill != null) {
       await action(() async {
@@ -543,24 +637,25 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
       if (error != null) return;
     }
     if (!mounted) return;
-    final result = await showDialog<Json>(
+    final saved = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (_) => TextResourceEditor(
         title: skill == null ? '添加技能' : '编辑技能',
         name: skill?['name'] as String? ?? '',
         content: content,
+        nameReadOnly: skill != null,
+        onSave: (value) async {
+          await api.call('capabilities.skillSave', {
+            'name': value['name'],
+            'content': value['content'],
+            'overwrite': skill != null,
+            'expectedRevision': revision,
+          }, true);
+        },
       ),
     );
-    if (result != null) {
-      await action(() async {
-        await api.call('capabilities.skillSave', {
-          'name': result['name'],
-          'content': result['content'],
-          'overwrite': skill != null,
-          'expectedRevision': data['revision'],
-        }, true);
-      });
-    }
+    if (saved == true && mounted) await load();
   }
 
   Future<void> viewPreset(Json preset) async {
@@ -593,41 +688,77 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
   }
 
   Future<void> editMemory(Json row) async {
-    final result = await showDialog<Json>(
+    if (busy || loading) return;
+    final saved = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (_) => TextResourceEditor(
         title: '编辑记忆',
         name: '${row['title']}',
         content: '${row['content']}',
+        onSave: (value) async {
+          await api.call('memory.upsert', {
+            'entry': {
+              ...row,
+              'title': value['name'],
+              'content': value['content'],
+            },
+            'expectedRevision': row['revision'],
+          }, true);
+        },
       ),
     );
-    if (result != null) {
-      await action(() async {
-        await api.call('memory.upsert', {
-          'entry': {
-            ...row,
-            'title': result['name'],
-            'content': result['content'],
-          },
-          'expectedRevision': row['revision'],
-        }, true);
-      });
+    if (saved == true && mounted) await load();
+  }
+
+  Future<void> editServer([Json? server]) async {
+    if (busy || loading) return;
+    final revision = data['revision'];
+    final result = await showDialog<Json>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => McpServerDialog(
+        initial: server,
+        onSave: (value) {
+          if (server == null &&
+              objects(data['servers'])
+                  .any((entry) => entry['name'] == value['name'])) {
+            throw DshException('duplicate', '同名 MCP 服务器已存在，请使用编辑。');
+          }
+          return api.call('capabilities.serverSave', {
+            'server': value,
+            'expectedRevision': revision,
+          }, true);
+        },
+      ),
+    );
+    if (result != null && mounted) {
+      await load();
+      if (mounted && (result['status'] == 'error' || result['error'] != null)) {
+        setState(() => error = '配置已保存，连接失败：${result['error'] ?? '连接失败'}');
+      }
     }
   }
 
-  Future<void> editServer() async {
-    final result = await showDialog<Json>(
-      context: context,
-      builder: (_) => const McpServerDialog(),
-    );
-    if (result != null) {
-      await action(() async {
-        await api.call('capabilities.serverSave', {
-          'server': result,
-          'expectedRevision': data['revision'],
-        }, true);
-      });
+  Future<void> removeCapability(Json entry, {bool skill = false}) async {
+    if (busy || loading) return;
+    final revision = data['revision'];
+    if (!await confirmAction(
+          context,
+          '移除${skill ? '技能' : 'MCP 服务器'}“${entry['name']}”？',
+          skill ? '技能文件将移入本机回收目录。' : '移除服务器配置并断开连接，其工具将不再可用。',
+          action: '移除',
+        ) ||
+        !mounted) {
+      return;
     }
+    await action(() async {
+      await api.call(
+        skill ? 'capabilities.skillRemove' : 'capabilities.serverRemove',
+        {'name': entry['name'], 'expectedRevision': revision},
+        true,
+      );
+    });
   }
 }
 
@@ -638,9 +769,12 @@ class TextResourceEditor extends StatefulWidget {
     required this.name,
     required this.content,
     this.readOnly = false,
+    this.nameReadOnly = false,
+    this.onSave,
   });
   final String title, name, content;
-  final bool readOnly;
+  final bool readOnly, nameReadOnly;
+  final Future<void> Function(Json)? onSave;
   @override
   State<TextResourceEditor> createState() => _TextResourceEditorState();
 }
@@ -648,6 +782,8 @@ class TextResourceEditor extends StatefulWidget {
 class _TextResourceEditorState extends State<TextResourceEditor> {
   late final name = TextEditingController(text: widget.name),
       content = TextEditingController(text: widget.content);
+  bool busy = false;
+  String? error;
   @override
   void dispose() {
     name.dispose();
@@ -655,58 +791,91 @@ class _TextResourceEditorState extends State<TextResourceEditor> {
     super.dispose();
   }
 
+  Future<void> save() async {
+    if (busy || widget.readOnly) return;
+    final value = {'name': name.text.trim(), 'content': content.text};
+    if (widget.onSave == null) {
+      Navigator.pop(context, value);
+      return;
+    }
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      await widget.onSave!(value);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) setState(() => error = '$e');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => Dialog(
-    child: SizedBox(
-      width: 780,
-      height: 600,
-      child: Padding(
-        padding: const EdgeInsets.all(22),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(widget.title, style: const TextStyle(fontSize: 17)),
-            const SizedBox(height: 18),
-            DshField(controller: name, hint: '名称'),
-            const SizedBox(height: 12),
-            Expanded(
-              child: TextField(
-                controller: content,
-                readOnly: widget.readOnly,
-                expands: true,
-                maxLines: null,
-                minLines: null,
-                style: const TextStyle(
-                  fontFamily: 'Consolas',
-                  fontSize: 12,
-                  height: 1.5,
-                ),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: '内容',
+  Widget build(BuildContext context) => PopScope(
+    canPop: !busy,
+    child: Dialog(
+      child: SizedBox(
+        width: 780,
+        height: 600,
+        child: Padding(
+          padding: const EdgeInsets.all(22),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.title, style: const TextStyle(fontSize: 17)),
+              const SizedBox(height: 18),
+              DshField(
+                controller: name,
+                hint: '名称',
+                enabled: !busy && !widget.readOnly && !widget.nameReadOnly,
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: TextField(
+                  controller: content,
+                  readOnly: busy || widget.readOnly,
+                  expands: true,
+                  maxLines: null,
+                  minLines: null,
+                  style: const TextStyle(
+                    fontFamily: 'Consolas',
+                    fontSize: 12,
+                    height: 1.5,
+                  ),
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: '内容',
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                DshButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('关闭'),
-                ),
-                if (!widget.readOnly)
-                  DshButton(
-                    primary: true,
-                    onPressed: () => Navigator.pop(context, {
-                      'name': name.text,
-                      'content': content.text,
-                    }),
-                    child: const Text('保存'),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(
+                    error!,
+                    style: const TextStyle(color: Colors.red, fontSize: 12),
                   ),
-              ],
-            ),
-          ],
+                ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  DshButton(
+                    onPressed: busy ? null : () => Navigator.pop(context),
+                    child: const Text('关闭'),
+                  ),
+                  if (!widget.readOnly)
+                    DshButton(
+                      primary: true,
+                      onPressed: busy ? null : save,
+                      child: Text(busy ? '保存中…' : '保存'),
+                    ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     ),
@@ -714,73 +883,215 @@ class _TextResourceEditorState extends State<TextResourceEditor> {
 }
 
 class McpServerDialog extends StatefulWidget {
-  const McpServerDialog({super.key});
+  const McpServerDialog({super.key, this.initial, this.onSave});
+  final Json? initial;
+  final Future<Json> Function(Json)? onSave;
   @override
   State<McpServerDialog> createState() => _McpServerDialogState();
 }
 
 class _McpServerDialogState extends State<McpServerDialog> {
-  final name = TextEditingController(),
-      command = TextEditingController(),
-      args = TextEditingController();
+  late final name = TextEditingController(
+        text: widget.initial?['name'] as String? ?? '',
+      ),
+      command = TextEditingController(
+        text: widget.initial?['command'] as String? ?? '',
+      ),
+      args = TextEditingController(
+        text: jsonEncode(widget.initial?['args'] ?? []),
+      ),
+      cwd = TextEditingController(
+        text: widget.initial?['cwd'] as String? ?? '',
+      ),
+      endpoint = TextEditingController(
+        text: widget.initial?['endpoint'] as String? ?? '',
+      ),
+      env = TextEditingController(),
+      headers = TextEditingController();
+  late String transport = widget.initial?['transport'] as String? ?? 'stdio';
+  late bool enabled = widget.initial?['enabled'] == true;
+  bool busy = false;
   String? error;
   @override
   void dispose() {
     name.dispose();
     command.dispose();
     args.dispose();
+    cwd.dispose();
+    endpoint.dispose();
+    env.dispose();
+    headers.dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('添加 MCP 服务器', style: TextStyle(fontSize: 17)),
-    content: SizedBox(
-      width: 480,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          DshField(controller: name, hint: '名称'),
-          const SizedBox(height: 12),
-          DshField(controller: command, hint: '可执行程序'),
-          const SizedBox(height: 12),
-          DshField(controller: args, hint: '参数 JSON 数组，例如 ["server.js"]'),
-          if (error != null)
-            Text(error!, style: const TextStyle(color: Colors.red)),
-        ],
-      ),
+  Map<String, String>? parseSecrets(TextEditingController field, String label) {
+    if (field.text.trim().isEmpty) return null;
+    final value = jsonDecode(field.text);
+    if (value is! Map || value.values.any((entry) => entry is! String)) {
+      throw FormatException('$label必须为字符串键值组成的 JSON 对象');
+    }
+    return Map<String, String>.from(value);
+  }
+
+  Future<void> save() async {
+    if (busy) return;
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      if (!RegExp(r'^[a-zA-Z0-9_-]{1,32}$').hasMatch(name.text.trim())) {
+        throw const FormatException('名称须为 1–32 个字母、数字、下划线或连字符');
+      }
+      final parsedArgs = args.text.trim().isEmpty
+          ? <String>[]
+          : jsonDecode(args.text);
+      if (parsedArgs is! List || parsedArgs.any((entry) => entry is! String)) {
+        throw const FormatException('参数必须为字符串组成的 JSON 数组');
+      }
+      if (transport == 'stdio' && command.text.trim().isEmpty) {
+        throw const FormatException('请填写可执行程序');
+      }
+      if (transport == 'http') {
+        final uri = Uri.tryParse(endpoint.text.trim());
+        if (uri == null ||
+            !['http', 'https'].contains(uri.scheme) ||
+            uri.host.isEmpty) {
+          throw const FormatException('请填写有效的 HTTP 或 HTTPS 服务器地址');
+        }
+      }
+      final envValue = parseSecrets(env, '环境变量'),
+          headerValue = parseSecrets(headers, '请求头');
+      final value = <String, dynamic>{
+        'name': name.text.trim(),
+        'transport': transport,
+        'command': command.text.trim(),
+        'args': parsedArgs,
+        'cwd': cwd.text.trim(),
+        'endpoint': endpoint.text.trim(),
+        'enabled': enabled,
+        'env': ?envValue,
+        'headers': ?headerValue,
+      };
+      final result = widget.onSave == null
+          ? value
+          : await widget.onSave!(value);
+      if (mounted) Navigator.pop(context, result);
+    } catch (e) {
+      if (mounted) setState(() => error = '$e');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Widget field(
+    TextEditingController controller,
+    String label, {
+    String? hint,
+    int lines = 1,
+    bool secret = false,
+    bool locked = false,
+  }) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 13)),
+        const SizedBox(height: 6),
+        DshField(
+          key: ValueKey('mcp-$label'),
+          controller: controller,
+          hint: hint,
+          maxLines: lines,
+          secret: secret,
+          enabled: !busy && !locked,
+        ),
+      ],
     ),
-    actions: [
-      DshButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('取消'),
+  );
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !busy,
+    child: AlertDialog(
+      title: Text(
+        widget.initial == null ? '添加 MCP 服务器' : '编辑 MCP 服务器',
+        style: const TextStyle(fontSize: 17),
       ),
-      DshButton(
-        primary: true,
-        onPressed: () {
-          try {
-            final parsed = args.text.trim().isEmpty
-                ? <String>[]
-                : jsonDecode(args.text);
-            if (name.text.isEmpty ||
-                command.text.isEmpty ||
-                parsed is! List ||
-                parsed.any((e) => e is! String)) {
-              throw const FormatException('请填写名称、程序和有效的参数数组');
-            }
-            Navigator.pop(context, {
-              'name': name.text,
-              'transport': 'stdio',
-              'command': command.text,
-              'args': parsed,
-              'enabled': false,
-            });
-          } catch (e) {
-            setState(() => error = '$e');
-          }
-        },
-        child: const Text('保存'),
+      content: SizedBox(
+        width: 520,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              field(name, '名称', locked: widget.initial != null),
+              DshSelect<String>(
+                options: const {'stdio': '本地命令（stdio）', 'http': 'HTTP / HTTPS'},
+                value: transport,
+                onChanged: busy
+                    ? null
+                    : (value) => setState(() => transport = value),
+              ),
+              const SizedBox(height: 16),
+              if (transport == 'stdio') ...[
+                field(command, '可执行程序', hint: 'npx / python / 可执行文件路径'),
+                field(args, '参数（JSON 数组）', hint: '["server.js"]', lines: 2),
+                field(cwd, '工作目录', hint: '留空使用运行目录'),
+                field(
+                  env,
+                  '环境变量（JSON 对象）',
+                  hint: widget.initial == null
+                      ? '{"API_KEY":"..."}'
+                      : '留空保留已有值；{} 清空',
+                  secret: true,
+                ),
+              ] else ...[
+                field(endpoint, '服务器地址', hint: 'https://example.com/mcp'),
+                field(
+                  headers,
+                  '请求头（JSON 对象）',
+                  hint: widget.initial == null
+                      ? '{"Authorization":"Bearer ..."}'
+                      : '留空保留已有值；{} 清空',
+                  secret: true,
+                ),
+              ],
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('启用服务器', style: TextStyle(fontSize: 13)),
+                value: enabled,
+                onChanged: busy
+                    ? null
+                    : (value) => setState(() => enabled = value),
+              ),
+              Text(
+                '保存并启用将启动本地命令或连接服务器；凭证保存在本机。',
+                style: TextStyle(fontSize: 12, color: DshColors(context).muted),
+              ),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(
+                    error!,
+                    style: const TextStyle(color: Colors.red, fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
-    ],
+      actions: [
+        DshButton(
+          onPressed: busy ? null : () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        DshButton(
+          primary: true,
+          onPressed: busy ? null : save,
+          child: Text(busy ? '保存中…' : '保存'),
+        ),
+      ],
+    ),
   );
 }

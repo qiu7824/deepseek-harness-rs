@@ -71,6 +71,18 @@ class ShortcutEditor extends StatefulWidget {
 class _ShortcutEditorState extends State<ShortcutEditor> {
   late final bindings = configuredShortcuts(widget.controller);
   String? capturing, error;
+  String query = '';
+  Iterable<MapEntry<String, String>> get visibleShortcuts {
+    final filter = query.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+    return shortcutNames.entries.where((entry) {
+      final searchable =
+          '${entry.value} ${entry.key} ${shortcutLabel(bindings[entry.key]!)}'
+              .toLowerCase()
+              .replaceAll(RegExp(r'\s+'), '');
+      return searchable.contains(filter);
+    });
+  }
+
   KeyEventResult capture(FocusNode node, KeyEvent event) {
     if (capturing == null || event is! KeyDownEvent) {
       return KeyEventResult.ignored;
@@ -139,6 +151,7 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
     onKeyEvent: capture,
     autofocus: true,
     child: AlertDialog(
+      scrollable: true,
       title: const Text('快捷键', style: TextStyle(fontSize: 17)),
       content: SizedBox(
         width: 470,
@@ -146,13 +159,29 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            DshField(
+              key: const Key('shortcut-search'),
+              hint: '搜索操作或组合键',
+              onChanged: (value) => setState(() {
+                query = value;
+                capturing = null;
+                error = null;
+              }),
+            ),
+            const SizedBox(height: 12),
             const Text(
               '点击组合键后按下新组合；Esc 取消绑定。终端内优先使用终端快捷键。',
               style: TextStyle(fontSize: 12, height: 1.6),
             ),
             const SizedBox(height: 12),
-            for (final entry in shortcutNames.entries)
+            if (visibleShortcuts.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('未找到匹配的快捷键'),
+              ),
+            for (final entry in visibleShortcuts)
               Padding(
+                key: ValueKey('shortcut-row-${entry.key}'),
                 padding: const EdgeInsets.symmetric(vertical: 5),
                 child: Row(
                   children: [

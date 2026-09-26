@@ -190,7 +190,75 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** Render the read-only plugin inventory: agent presets first, then the global plane. */
-		function PluginInventorySettingsTab({ list, setEnabled, cancel, canToggle, presetName, t }) {
+		function timeContextDraft(config) {
+            return {timeZone:String(config?.timeZone??""),refreshIntervalMs:config?.refreshIntervalMs===undefined?"":String(config.refreshIntervalMs)};
+        }
+        function timeContextSignature(config) {
+            if(config===undefined)config={};
+            return JSON.stringify(config&&typeof config==="object"&&!Array.isArray(config)?Object.keys(config).sort().map(key=>[key,config[key]]):config);
+        }
+        function timeContextConfig(draft) {
+            const config={};
+            const zone=draft.timeZone.trim(),interval=draft.refreshIntervalMs.trim();
+            if(zone)config.timeZone=zone;
+            if(interval){const value=Number(interval);if(!Number.isSafeInteger(value)||value<0)throw new Error("刷新间隔须为非负安全整数（毫秒）");config.refreshIntervalMs=value;}
+            return config;
+        }
+        function createTimeContextConfigController(connection,entryId,publish) {
+            let active=true,serial=0,abort;
+            const generation=connection.generation.getSnapshot();
+            let state={snapshot:null,draft:timeContextDraft(),busy:false,error:""};
+            const valid=token=>active&&serial===token&&connection.generation.getSnapshot()===generation;
+            const update=patch=>{state={...state,...patch};if(active)publish(state);};
+            const call=async(method,payload,signal)=>{
+                const response=await connection.rpc.call("/api",method,payload,signal);
+                if(!response.ok)throw new Error(response.error?.message||"配置操作失败");
+                const value=response.value;
+                if(value?.entryId!==entryId||typeof value.revision!=="string")throw new Error("配置响应与当前插件不匹配");
+                return value;
+            };
+            return {
+                getSnapshot:()=>state,
+                edit:(field,value)=>{if(!state.busy)update({draft:{...state.draft,[field]:value},error:""});},
+                discard:()=>{if(!state.busy)update({draft:timeContextDraft(state.snapshot?.config),error:""});},
+                load:async()=>{
+                    if(!active||state.busy||connection.generation.getSnapshot()!==generation)return;
+                    const token=++serial;abort=new AbortController();update({busy:true,error:""});
+                    try {const snapshot=await call("pluginInventory.getConfig",{entryId},abort.signal);if(valid(token))update({snapshot,draft:state.snapshot?state.draft:timeContextDraft(snapshot.config),busy:false});}
+                    catch(error){if(valid(token))update({busy:false,error:error.message});}
+                },
+                save:async()=>{
+                    if(!active||state.busy||!state.snapshot||connection.generation.getSnapshot()!==generation)return;
+                    let config;try{config=timeContextConfig(state.draft);}catch(error){update({error:error.message});return;}
+                    if(timeContextSignature(config)===timeContextSignature(state.snapshot.config))return;
+                    const token=++serial;abort=new AbortController();update({busy:true,error:""});
+                    try {const snapshot=await call("pluginInventory.setConfig",{entryId,expectedRevision:state.snapshot.revision,config},abort.signal);if(valid(token))update({snapshot,draft:timeContextDraft(snapshot.config),busy:false});}
+                    catch(error){if(valid(token))update({busy:false,error:error.message});}
+                },
+                dispose:()=>{active=false;serial++;abort?.abort();},
+            };
+        }
+        function TimeContextConfigCard({connection,entryId}) {
+            const generation=react.useSyncExternalStore(connection.generation.subscribe,connection.generation.getSnapshot);
+            const owner=react.useRef(null),[state,setState]=react.useState({snapshot:null,draft:timeContextDraft(),busy:true,error:""});
+            react.useEffect(()=>{
+                const controller=createTimeContextConfigController(connection,entryId,next=>{if(owner.current===controller)setState(next);});
+                owner.current=controller;setState(controller.getSnapshot());void controller.load();
+                return()=>{controller.dispose();if(owner.current===controller)owner.current=null;};
+            },[connection,entryId,generation]);
+            let invalid="",dirty=JSON.stringify(state.draft)!==JSON.stringify(timeContextDraft(state.snapshot?.config));
+            try{dirty=timeContextSignature(timeContextConfig(state.draft))!==timeContextSignature(state.snapshot?.config);}catch(error){invalid=error.message;}
+            const h=react.createElement,field=(name,label,placeholder)=>h("label",{style:{display:"grid",gap:6,marginTop:10}},label,h("input",{type:"text",value:state.draft[name],placeholder,disabled:state.busy,onChange:event=>owner.current?.edit(name,event.target.value),"aria-label":label}));
+            return h("section",{"aria-label":"时间上下文配置","aria-busy":state.busy},
+                h("p",null,"默认每十分钟更新时间；间隔为 0 时在每个适用步骤更新。"),
+                field("refreshIntervalMs","刷新间隔（毫秒）","600000"),field("timeZone","备用时区（IANA）","留空使用系统时区"),
+                h("p",null,"留空使用默认值，保存配置保持当前启停状态。"),
+                (invalid||state.error)&&h("p",{role:"alert"},invalid||state.error),
+                h("button",{type:"button",disabled:state.busy||!state.snapshot||!dirty||!!invalid,onClick:()=>void owner.current?.save()},"保存配置"),
+                h("button",{type:"button",disabled:state.busy||!dirty,onClick:()=>owner.current?.discard()},"取消修改"),
+                h("button",{type:"button",disabled:state.busy,onClick:()=>void owner.current?.load()},"重新读取（保留草稿）"));
+        }
+		function PluginInventorySettingsTab({ list, setEnabled, cancel, canToggle, presetName, t, configConnection }) {
 			const sectionId = (0, react.useId)();
 			const [request, setRequest] = (0, react.useState)(0);
 			const [query, setQuery] = (0, react.useState)("");
@@ -330,7 +398,7 @@ window.__ModuleLoader__.load({
 						kind,
 						label: stateText
 					})] }),
-					children: (0, react_jsx_runtime.jsx)(CardFacts, {
+					children: (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment,{children:[(0, react_jsx_runtime.jsx)(CardFacts, {
 						moduleName: entry.moduleName,
 						moduleLabel: t("moduleLabel"),
 						entryId: entry.entryId,
@@ -345,7 +413,7 @@ window.__ModuleLoader__.load({
 								children: t("viewInPreset")
 							})]
 						})]] : [[t("configuration"), t(entry.enabled ? "enabledTag" : "disabledTag")], ...entry.enabled ? [[t("runtime"), phaseLabel(entry.fiberPhase, t)]] : []]
-					})
+					}),configConnection&&["dsh-time-context","@deepseek-ai/dsh-time-context"].includes(entry.moduleName)?(0,react_jsx_runtime.jsx)(TimeContextConfigCard,{connection:configConnection,entryId:entry.entryId},entry.entryId):null]})
 				}, key);
 			};
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -723,6 +791,7 @@ window.__ModuleLoader__.load({
 			"slots",
 			"locale",
 			"remote",
+			"connection",
 			"remote.pluginInventory"
 		];
 		/** Contribute the lazy inventory tab to the Plugins settings section. */
@@ -737,6 +806,7 @@ window.__ModuleLoader__.load({
 			const presetName = (preset) => presetDisplayText(preset, agentPresetCopy).name;
 			const injected = () => ({
 				...controller,
+				configConnection:ctx.connection,
 				presetName
 			});
             ctx.slots.inject("plugin-center.inventory",()=>ctx.slots.register({name:"plugin-center.inventory",locale:NS,inject:injected},PluginInventorySettingsTab));
@@ -752,6 +822,8 @@ window.__ModuleLoader__.load({
 		//#endregion
 		exports.NS = NS;
 		exports.createPluginController = createPluginController;
+		exports.createTimeContextConfigController = createTimeContextConfigController;
+		exports.TimeContextConfigCard = TimeContextConfigCard;
 		exports.apply = apply;
 		exports.inject = inject;
 		return module.exports;

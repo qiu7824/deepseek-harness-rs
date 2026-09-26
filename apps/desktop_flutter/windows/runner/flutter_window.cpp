@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "clipboard_reader.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +26,23 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  clipboard_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "dsh/clipboard",
+          &flutter::StandardMethodCodec::GetInstance());
+  clipboard_channel_->SetMethodCallHandler([this](const auto& call, auto result) {
+    if (call.method_name() != "read") { result->NotImplemented(); return; }
+    auto contents = ReadClipboardAttachments(GetHandle());
+    if (!contents.error.empty()) {
+      result->Error(contents.error, "Unable to read clipboard attachments");
+      return;
+    }
+    flutter::EncodableList files;
+    for (auto& path : contents.files) files.emplace_back(std::move(path));
+    result->Success(flutter::EncodableValue(flutter::EncodableMap{
+        {flutter::EncodableValue("png"), flutter::EncodableValue(std::move(contents.png))},
+        {flutter::EncodableValue("files"), flutter::EncodableValue(std::move(files))}}));
+  });
   theme_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       flutter_controller_->engine()->messenger(), "dsh/window-theme",
       &flutter::StandardMethodCodec::GetInstance());
@@ -128,6 +146,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  if (clipboard_channel_) clipboard_channel_->SetMethodCallHandler(nullptr);
+  clipboard_channel_.reset();
   if (theme_channel_) theme_channel_->SetMethodCallHandler(nullptr);
   theme_channel_.reset();
   voice_recognizer_.Shutdown();

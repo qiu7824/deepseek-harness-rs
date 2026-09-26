@@ -56,7 +56,7 @@
     {
       "id": "@deepseek-ai/dsh-client-runtime",
       "url": "/plugins/client-runtime.js",
-      "rev": "789084abf725ee16",
+      "rev": "530feabd24481b55",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-typert-registry",
@@ -150,7 +150,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-plugin-inventory",
       "url": "/plugins/ui-settings-plugin-inventory.js",
-      "rev": "3130dfb95a2a8334",
+      "rev": "bcd7b7f297c421dc",
       "inject": [
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-runtime",
@@ -222,7 +222,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-workspace",
       "url": "/plugins/ui-workspace.js",
-      "rev": "5940cf2c94d32151",
+      "rev": "998f4c2e6c4524b3",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",

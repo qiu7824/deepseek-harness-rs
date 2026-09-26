@@ -5,7 +5,7 @@ const dom = new JSDOM('<main id="root"></main>', { pretendToBeVisual: true, url:
 Object.assign(global, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true });
 const React = require(path.join(modules, 'react')), jsx = require(path.join(modules, 'react/jsx-runtime'));
 const root = require(path.join(modules, 'react-dom/client')).createRoot(document.getElementById('root'));
-const directory = path.resolve(__dirname, '../../web/src/runtime-plugins');
+const directory = process.env.DSH_RUNTIME_PLUGIN_DIRECTORY || path.resolve(__dirname, '../../web/src/runtime-plugins');
 const source = fs.readFileSync(path.join(directory, 'ui-workspace.js'), 'utf8');
 const context = { sessionTitle: summary => summary.title || summary.id, assertNever: value => { throw Error(value); } };
 let start = source.indexOf('function sessionNode('), end = source.indexOf('\n\t\t/**', start);

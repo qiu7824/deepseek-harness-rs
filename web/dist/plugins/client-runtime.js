@@ -4452,6 +4452,61 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		/** Error body: discriminated by code, per-branch details aligned to RpcErrorDetailsMap; details is required. */
 		const rpcErrorSchema = discriminatedUnion("code", [
 			object({
+				code: literal("plugin-config-unsupported"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-not-found"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-ambiguous"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-runtime-conflict"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-unavailable"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-cancelled"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-conflict"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-invalid"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-apply-failed"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-commit-failed"),
+				message: string(),
+				details: object({})
+			}),
+			object({
+				code: literal("plugin-config-recovery-required"),
+				message: string(),
+				details: object({})
+			}),
+			object({
 				code: literal("bad-request"),
 				message: string(),
 				details: object({ issues: array(custom()) })
@@ -10770,7 +10825,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				const workspace = this.manager.getSnapshot();
 				const sessions = this.sessions.list.getSnapshot();
 				const baselinesReady = workspace.phase === "ready" && sessions.phase === "ready";
-				if (sessions.current !== void 0 && workspace.archivedSessionIds.includes(sessions.current)) this.sessions.clear();
+				if (sessions.current !== void 0 && workspace.archivedSessionIds.includes(sessions.current) && !this.list.getSnapshot().archivedSessionIds.includes(sessions.current)) this.sessions.clear();
 				this.list.set({
 					items: workspace.items,
 					archivedSessionIds: workspace.archivedSessionIds,
