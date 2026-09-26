@@ -15,15 +15,17 @@ pub use coordinator::{
     MAX_WRITE_BATCH_DELAY_MS, PersistenceBackend, PersistenceCoordinator,
     PersistenceCoordinatorOptions, SessionFormatUnsupportedError,
     SessionPersistenceCorruptionError, SessionWriterLease, StoredEventNormalizer, StoredPrefix,
-    StoredSuffix, session_format_version_refusal,
+    StoredPreparation, StoredSuffix, session_format_version_refusal,
 };
-pub use history_window::{HistoryWindowSelection, HistoryWindowTooLarge, select_history_window};
+pub use history_window::{
+    HistoryWindowEvent, HistoryWindowSelection, HistoryWindowTooLarge, select_history_window,
+};
 pub use index::{
-    NonpackedEventVisitor, SessionEventChunk, SessionInspection, SessionListMetadata,
-    SessionLocation, SessionPersistence, SessionPersistenceApi, SessionPersistenceSnapshot,
-    SessionRawArtifact, SessionReadForwardWindowRequest, SessionReadFromResult,
-    SessionReadWindowRequest, SessionReadWindowResult, SessionStorageMetadata,
-    SessionUserMessageEvents,
+    HistoryWindowSink, NonpackedEventVisitor, SessionEventChunk, SessionInspection,
+    SessionListMetadata, SessionLocation, SessionPersistence, SessionPersistenceApi,
+    SessionPersistenceSnapshot, SessionRawArtifact, SessionReadForwardWindowRequest,
+    SessionReadFromResult, SessionReadWindowRequest, SessionReadWindowResult,
+    SessionStorageMetadata, SessionUserMessageEvents,
 };
 pub use preparations::{
     DiscardOutcome, PreparationEntry, PreparedSource, PreparedSourceLoader,

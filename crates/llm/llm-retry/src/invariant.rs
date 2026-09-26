@@ -15,9 +15,67 @@ use dsh_llm::LlmFailure;
 use dsh_session::{Session, SessionEvent};
 use dsh_timeout::MAX_TIMER_DELAY_MS;
 
-use crate::history::provider_for_open_step;
-
 const PACKAGE_NAME: &str = "@deepseek-ai/dsh-llm-retry";
+
+struct RetryFact {
+    type_: &'static str,
+    data: serde_json::Value,
+}
+
+/// Only facts used to check retry correlation. Historical prompts, schemas,
+/// failure prose and arbitrary event payloads never enter this projection.
+#[derive(Default)]
+struct RetryEvidence {
+    facts: Vec<RetryFact>,
+    provider: Option<String>,
+}
+
+impl RetryEvidence {
+    fn observe(&mut self, event: &SessionEvent) {
+        let kind = match event.type_.as_str() {
+            "request/header" => {
+                self.provider = event
+                    .data
+                    .pointer("/header/config/provider")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                return;
+            }
+            "turn/start" => "turn/start",
+            "turn/end" => "turn/end",
+            "step/start" => "step/start",
+            "step/end" => "step/end",
+            "llm/retry" => "llm/retry",
+            "llm/retry-started" => "llm/retry-started",
+            _ => return,
+        };
+        let mut data = serde_json::Map::new();
+        for name in ["turn", "step", "retryId", "retry", "provider", "policyKey"] {
+            if let Some(value) = event.data.get(name) {
+                data.insert(name.into(), value.clone());
+            }
+        }
+        self.facts.push(RetryFact {
+            type_: kind,
+            data: serde_json::Value::Object(data),
+        });
+    }
+
+    fn provider_for_open_step(&self, turn: u64, step: u64) -> Option<&str> {
+        let start = self.facts.iter().rposition(|event| {
+            event.type_ == "step/start"
+                && event.data["turn"].as_u64() == Some(turn)
+                && event.data["step"].as_u64() == Some(step)
+        })?;
+        if self.facts[start + 1..]
+            .iter()
+            .any(|event| matches!(event.type_, "step/end" | "turn/end"))
+        {
+            return None;
+        }
+        self.provider.as_deref()
+    }
+}
 
 /// Cordis companion plugin name (TS `name`).
 pub const NAME: &str = "llm-retry-invariant";
@@ -70,13 +128,22 @@ async fn install_inner(ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>) {
 
     let event_fail = Arc::clone(&fail);
     let event: Arc<Listener> = Arc::new(move |_ctx, args: Vec<ArcValue>| {
+        let event = downcast::<SessionEvent>(&args[1]).expect("event arg");
+        if !matches!(event.type_.as_str(), "llm/retry" | "llm/retry-started") {
+            return Box::pin(async { None });
+        }
         let session = downcast::<Session>(&args[0]).cloned().expect("session arg");
-        let event = downcast::<SessionEvent>(&args[1])
-            .cloned()
-            .expect("event arg");
+        let event = event.clone();
         let fail = Arc::clone(&event_fail);
         Box::pin(async move {
-            let history = session.events();
+            let mut history = RetryEvidence::default();
+            if let Err(error) = session.visit_events(0, Some(event.seq.get()), |prior| {
+                history.observe(prior);
+                Ok(true)
+            }) {
+                fail(&format!("could not read retry protocol history: {error}"));
+                return None;
+            }
             match event.type_.as_str() {
                 "llm/retry" => validate_retry(&history, &event, &fail),
                 "llm/retry-started" => validate_started(&history, &event, &fail),
@@ -136,7 +203,7 @@ fn validate_failure(value: &serde_json::Value, fail: &Arc<dyn Fn(&str) + Send + 
 /// Validate one retry record against the currently open request step (TS
 /// `validateRetry`).
 fn validate_retry(
-    history: &[SessionEvent],
+    history: &RetryEvidence,
     event: &SessionEvent,
     fail: &Arc<dyn Fn(&str) + Send + Sync>,
 ) {
@@ -204,6 +271,7 @@ fn validate_retry(
         return;
     };
     let turn_boundary = history
+        .facts
         .iter()
         .rev()
         .find(|prior| prior.type_ == "turn/start" || prior.type_ == "turn/end");
@@ -223,6 +291,7 @@ fn validate_retry(
         ));
     }
     let step_boundary = history
+        .facts
         .iter()
         .rev()
         .find(|prior| prior.type_ == "step/start" || prior.type_ == "step/end");
@@ -247,7 +316,7 @@ fn validate_retry(
             boundary_step.map(|s| s.to_string()).unwrap_or_default()
         ));
     }
-    let routed_provider = provider_for_open_step(history, turn, step);
+    let routed_provider = history.provider_for_open_step(turn, step);
     if routed_provider.as_deref() != provider {
         fail(&format!(
             "llm/retry provider {} does not match the failed request provider {}",
@@ -256,7 +325,7 @@ fn validate_retry(
         ));
     }
 
-    let prior_policy_retry = history.iter().rev().find(|prior| {
+    let prior_policy_retry = history.facts.iter().rev().find(|prior| {
         prior.type_ == "llm/retry"
             && prior.data.get("turn").and_then(|value| value.as_u64()) == Some(turn)
             && prior.data.get("step").and_then(|value| value.as_u64()) == Some(step)
@@ -278,7 +347,7 @@ fn validate_retry(
         }
     }
     if prior_policy_retry.is_none()
-        && history.iter().any(|prior| {
+        && history.facts.iter().any(|prior| {
             (prior.type_ == "llm/retry" || prior.type_ == "llm/retry-started")
                 && prior.data.get("retryId") == data.get("retryId")
         })
@@ -290,7 +359,7 @@ fn validate_retry(
 /// Validate one wait-complete transition against its scheduled attempt (TS
 /// `validateStarted`).
 fn validate_started(
-    history: &[SessionEvent],
+    history: &RetryEvidence,
     event: &SessionEvent,
     fail: &Arc<dyn Fn(&str) + Send + Sync>,
 ) {
@@ -301,7 +370,7 @@ fn validate_started(
         return;
     }
     let retry = data.get("retry").and_then(|value| value.as_u64());
-    let scheduled = history.iter().rev().find(|prior| {
+    let scheduled = history.facts.iter().rev().find(|prior| {
         prior.type_ == "llm/retry"
             && prior.data.get("retryId").and_then(|value| value.as_str()) == retry_id
             && prior.data.get("retry").and_then(|value| value.as_u64()) == retry
@@ -315,7 +384,7 @@ fn validate_started(
     {
         fail("llm/retry-started turn/step must match its scheduled attempt");
     }
-    if history.iter().any(|prior| {
+    if history.facts.iter().any(|prior| {
         prior.type_ == "llm/retry-started"
             && prior.data.get("retryId") == data.get("retryId")
             && prior.data.get("retry") == data.get("retry")
@@ -327,13 +396,411 @@ fn validate_started(
 /// Validate every retry record already present in one loaded session (TS
 /// `validateSession`).
 fn validate_session(session: &Session, fail: &Arc<dyn Fn(&str) + Send + Sync>) {
-    let events = session.events();
-    for (index, event) in events.iter().enumerate() {
-        let history = &events[..index];
+    let mut history = RetryEvidence::default();
+    if let Err(error) = session.visit_events(0, None, |event| {
         match event.type_.as_str() {
-            "llm/retry" => validate_retry(history, event, fail),
-            "llm/retry-started" => validate_started(history, event, fail),
+            "llm/retry" => validate_retry(&history, event, fail),
+            "llm/retry-started" => validate_started(&history, event, fail),
             _ => {}
         }
+        history.observe(event);
+        Ok(true)
+    }) {
+        fail(&format!("could not read retry protocol history: {error}"));
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    use serde_json::json;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy)]
+    struct AllocationCount {
+        active: bool,
+        live: usize,
+        peak: usize,
+    }
+    thread_local! {
+        static ALLOCATION_COUNT: Cell<AllocationCount> = const {
+            Cell::new(AllocationCount { active:false, live:0, peak:0 })
+        };
+    }
+    struct CountAlloc;
+    fn allocation_change(added: usize, removed: usize) {
+        let _ = ALLOCATION_COUNT.try_with(|count| {
+            let mut value = count.get();
+            if value.active {
+                value.live = value.live.saturating_sub(removed).saturating_add(added);
+                value.peak = value.peak.max(value.live);
+                count.set(value);
+            }
+        });
+    }
+    unsafe impl GlobalAlloc for CountAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                allocation_change(layout.size(), 0);
+            }
+            ptr
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc_zeroed(layout) };
+            if !ptr.is_null() {
+                allocation_change(layout.size(), 0);
+            }
+            ptr
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            allocation_change(0, layout.size());
+            unsafe {
+                System.dealloc(ptr, layout);
+            }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            let next = unsafe { System.realloc(ptr, layout, size) };
+            if !next.is_null() {
+                allocation_change(size, layout.size());
+            }
+            next
+        }
+    }
+    #[global_allocator]
+    static ALLOCATOR: CountAlloc = CountAlloc;
+
+    fn protocol_event(kind: &str, data: serde_json::Value) -> SessionEvent {
+        SessionEvent {
+            type_: kind.into(),
+            seq: dsh_session::SessionSeq::new(0).unwrap(),
+            time: 0,
+            data,
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        }
+    }
+
+    fn retry_event(provider: &str, policy: &str, id: &str, retry: u64) -> SessionEvent {
+        protocol_event(
+            "llm/retry",
+            json!({"turn":1,"step":1,"retryId":id,"retry":retry,"provider":provider,
+                "policyKey":policy,"mode":"normal","maxRetries":8,"delayMs":1,
+                "failure":{"message":"temporary failure","code":"TRANSIENT"}}),
+        )
+    }
+
+    fn checked_errors(history: &RetryEvidence, event: &SessionEvent) -> Vec<String> {
+        let errors = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let observed = errors.clone();
+        let fail: Arc<dyn Fn(&str) + Send + Sync> =
+            Arc::new(move |error| observed.lock().push(error.into()));
+        match event.type_.as_str() {
+            "llm/retry" => validate_retry(history, event, &fail),
+            "llm/retry-started" => validate_started(history, event, &fail),
+            _ => unreachable!(),
+        }
+        let reported = errors.lock().clone();
+        reported
+    }
+
+    fn open_step_evidence() -> RetryEvidence {
+        let mut history = RetryEvidence::default();
+        for event in [
+            protocol_event("turn/start", json!({"turn":1})),
+            protocol_event("step/start", json!({"turn":1,"step":1})),
+            protocol_event(
+                "request/header",
+                json!({"header":{"config":{"provider":"account-a"}}}),
+            ),
+        ] {
+            history.observe(&event);
+        }
+        history
+    }
+
+    #[test]
+    fn projected_provider_matches_full_history_at_each_protocol_boundary() {
+        let mut history = Vec::new();
+        let mut evidence = RetryEvidence::default();
+        for event in [
+            protocol_event(
+                "request/header",
+                json!({"header":{"config":{"provider":"a"}}}),
+            ),
+            protocol_event("turn/start", json!({"turn":1})),
+            protocol_event("step/start", json!({"turn":1,"step":1})),
+            protocol_event(
+                "request/header",
+                json!({"header":{"config":{"provider":"b"}}}),
+            ),
+            protocol_event("request/header", json!({"header":{"config":{}}})),
+            protocol_event(
+                "request/header",
+                json!({"header":{"config":{"provider":"c"}}}),
+            ),
+            protocol_event("step/end", json!({"turn":1,"step":1})),
+            protocol_event("step/start", json!({"turn":1,"step":2})),
+            protocol_event("turn/end", json!({"turn":1})),
+            protocol_event("turn/start", json!({"turn":2})),
+            protocol_event("step/start", json!({"turn":2,"step":1})),
+        ] {
+            evidence.observe(&event);
+            history.push(event);
+            for (turn, step) in [(1, 1), (1, 2), (2, 1), (2, 2)] {
+                assert_eq!(
+                    evidence.provider_for_open_step(turn, step),
+                    crate::history::provider_for_open_step(&history, turn, step).as_deref(),
+                    "boundary {} for {turn}/{step}",
+                    history.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn projected_retry_keeps_provider_policy_chain_ownership_and_sequence() {
+        let mut history = open_step_evidence();
+        let first = retry_event("account-a", "policy-a", "retry-a", 1);
+        assert!(checked_errors(&history, &first).is_empty());
+        history.observe(&first);
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-a", "policy-a", "retry-a", 2)
+            )
+            .is_empty()
+        );
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-a", "policy-a", "changed-id", 2)
+            )
+            .iter()
+            .any(|error| error.contains("preserve retryId"))
+        );
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-a", "policy-a", "retry-a", 3)
+            )
+            .iter()
+            .any(|error| error.contains("must equal provider policy retry 2"))
+        );
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-a", "policy-b", "retry-a", 1)
+            )
+            .iter()
+            .any(|error| error.contains("already owned by another chain"))
+        );
+        history.observe(&protocol_event(
+            "request/header",
+            json!({"header":{"config":{"provider":"account-b"}}}),
+        ));
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-b", "policy-a", "retry-b", 1)
+            )
+            .is_empty()
+        );
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-a", "policy-a", "retry-a", 2)
+            )
+            .iter()
+            .any(|error| error.contains("does not match the failed request provider"))
+        );
+        history.observe(&protocol_event("step/end", json!({"turn":1,"step":1})));
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-b", "policy-a", "retry-b", 1)
+            )
+            .iter()
+            .any(|error| error.contains("inside an open step"))
+        );
+        history.observe(&protocol_event("turn/end", json!({"turn":1})));
+        assert!(
+            checked_errors(
+                &history,
+                &retry_event("account-b", "policy-a", "retry-b", 1)
+            )
+            .iter()
+            .any(|error| error.contains("inside an open turn"))
+        );
+    }
+
+    #[test]
+    fn projected_started_keeps_attempt_pairing_and_duplicate_detection() {
+        let mut history = open_step_evidence();
+        let started = protocol_event(
+            "llm/retry-started",
+            json!({"turn":1,"step":1,"retryId":"retry-a","retry":1}),
+        );
+        assert!(
+            checked_errors(&history, &started)
+                .iter()
+                .any(|error| error.contains("pairs no prior scheduled attempt"))
+        );
+        history.observe(&retry_event("account-a", "policy-a", "retry-a", 1));
+        assert!(checked_errors(&history, &started).is_empty());
+        let mut mismatched = started.clone();
+        mismatched.data["step"] = json!(2);
+        assert!(
+            checked_errors(&history, &mismatched)
+                .iter()
+                .any(|error| error.contains("turn/step must match"))
+        );
+        history.observe(&started);
+        assert!(
+            checked_errors(&history, &started)
+                .iter()
+                .any(|error| error.contains("repeats one scheduled attempt"))
+        );
+    }
+
+    #[test]
+    fn live_validation_prefix_excludes_current_and_later_events() {
+        let session =
+            Session::create(dsh_session::session_id("retry-prefix"), None, None, None).unwrap();
+        for event in [
+            protocol_event("turn/start", json!({"turn":1})),
+            protocol_event("step/start", json!({"turn":1,"step":1})),
+            protocol_event(
+                "request/header",
+                json!({"header":{"config":{"provider":"account-a"}}}),
+            ),
+        ] {
+            session.append(&event.type_, event.data, None).unwrap();
+        }
+        let retry = retry_event("account-a", "policy-a", "retry-a", 1);
+        let appended = session.append(&retry.type_, retry.data, None).unwrap();
+        session
+            .append("step/end", json!({"turn":1,"step":1}), None)
+            .unwrap();
+        session.append("turn/end", json!({"turn":1}), None).unwrap();
+        let mut history = RetryEvidence::default();
+        session
+            .visit_events(0, Some(appended.seq.get()), |event| {
+                history.observe(event);
+                Ok(true)
+            })
+            .unwrap();
+        assert!(checked_errors(&history, &appended).is_empty());
+    }
+
+    #[test]
+    fn many_large_headers_keep_only_current_provider_with_bounded_extra_peak() {
+        let mut event = SessionEvent {
+            type_: "request/header".into(),
+            seq: dsh_session::SessionSeq::new(0).unwrap(),
+            time: 0,
+            data: json!({"header":{"config":{"provider":"account-a","model":"model"},"tools":[{"name":"probe","description":"x".repeat(1024*1024),"parameters":{"type":"object"}}]},"reason":"change"}),
+            ignorable: None,
+            surface_op: None,
+            source_event_seqs: None,
+        };
+        let mut evidence = RetryEvidence::default();
+        ALLOCATION_COUNT.with(|count| {
+            count.set(AllocationCount {
+                active: true,
+                live: 0,
+                peak: 0,
+            })
+        });
+        for index in 0..512 {
+            event.seq = dsh_session::SessionSeq::new(index).unwrap();
+            evidence.observe(&event);
+        }
+        let peak = ALLOCATION_COUNT.with(|count| {
+            let mut value = count.get();
+            value.active = false;
+            count.set(value);
+            value.peak
+        });
+        assert!(
+            peak < 64 * 1024,
+            "header evidence duplicated historical payloads: peak={peak}"
+        );
+        assert!(
+            evidence.facts.is_empty(),
+            "headers are not retained as history records"
+        );
+        assert_eq!(evidence.provider.as_deref(), Some("account-a"));
+        event.data["header"]["config"]["provider"] = json!("account-b");
+        evidence.observe(&event);
+        assert_eq!(evidence.provider.as_deref(), Some("account-b"));
+        println!("retry header evidence extra peak bytes: {peak}");
+    }
+
+    #[test]
+    fn archived_retry_protocol_keeps_route_chain_and_started_pairing() {
+        let session =
+            Session::create(dsh_session::session_id("retry-archive"), None, None, None).unwrap();
+        for (kind, data) in [
+            ("turn/start", json!({"turn":1})),
+            ("step/start", json!({"turn":1,"step":1})),
+            (
+                "request/header",
+                json!({"header":{"config":{"provider":"account-a","model":"model"}},"reason":"initial"}),
+            ),
+            (
+                "request/phase",
+                json!({"turn":1,"step":1,"phase":"streaming","detail":"unrelated payload".repeat(4096)}),
+            ),
+            (
+                "llm/retry",
+                json!({"turn":1,"step":1,"retryId":"retry-a","retry":1,"provider":"account-a","policyKey":"normal-policy","mode":"normal","maxRetries":2,"delayMs":1,"failure":{"message":"temporary failure","code":"TRANSIENT"}}),
+            ),
+            (
+                "llm/retry-started",
+                json!({"turn":1,"step":1,"retryId":"retry-a","retry":1}),
+            ),
+        ] {
+            session.append(kind, data, None).unwrap();
+        }
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let archived = Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            session.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        let errors = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let observed = errors.clone();
+        let fail: Arc<dyn Fn(&str) + Send + Sync> =
+            Arc::new(move |error| observed.lock().push(error.into()));
+        validate_session(&archived, &fail);
+        let reported = errors.lock().clone();
+        assert!(reported.is_empty(), "{reported:?}");
+        archived
+            .append(
+                "llm/retry-started",
+                json!({"turn":1,"step":1,"retryId":"retry-a","retry":1}),
+                None,
+            )
+            .unwrap();
+        validate_session(&archived, &fail);
+        assert!(
+            errors
+                .lock()
+                .iter()
+                .any(|error| error.contains("repeats one scheduled attempt"))
+        );
     }
 }

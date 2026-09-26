@@ -126,6 +126,31 @@ pub fn plan_mode_at_last_header(events: &[SessionEvent]) -> Option<bool> {
     last_header.map(|header| fold_plan_mode(events, header + 1))
 }
 
+#[derive(Default, Clone, Copy)]
+struct PlanTrace {
+    observed: u64,
+    active: bool,
+    open_turn: bool,
+    told: Option<bool>,
+}
+
+fn read_plan_trace(session: &Session) -> Result<PlanTrace, String> {
+    let trace = session.derived_cache::<parking_lot::Mutex<PlanTrace>>();
+    let mut trace = trace.lock();
+    session.visit_events(trace.observed, None, |event| {
+        match event.type_.as_str() {
+            "plan/mode" => trace.active = event.data["active"].as_bool().unwrap_or(false),
+            "turn/start" => trace.open_turn = true,
+            "turn/end" => trace.open_turn = false,
+            "request/header" => trace.told = Some(trace.active),
+            _ => {}
+        }
+        trace.observed = event.seq.get() + 1;
+        Ok(true)
+    })?;
+    Ok(*trace)
+}
+
 /// What [`PlanModeController::set`] did (TS outcome union).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetOutcome {
@@ -272,7 +297,10 @@ impl PlanModeController {
                         let Some(session) = store.get(&dsh_session::session_id(session_id)) else {
                             return String::new();
                         };
-                        if fold_plan_mode(&session.events(), session.events().len()) {
+                        if read_plan_trace(&session)
+                            .expect("plan Session archive must remain readable")
+                            .active
+                        {
                             section.clone()
                         } else {
                             String::new()
@@ -417,7 +445,7 @@ impl PlanModeController {
                                             }
                                             SetOutcome::Cancelled => "Plan mode entry cancelled.".to_string(),
                                             SetOutcome::Noop => {
-                                                if fold_plan_mode(&agent.session().events(), agent.session().events().len()) {
+                                                if read_plan_trace(agent.session()).expect("plan Session archive must remain readable").active {
                                                     "Leaving plan mode (applies from the next step).".to_string()
                                                 } else {
                                                     "Plan mode is already inactive.".to_string()
@@ -510,8 +538,10 @@ impl PlanModeController {
                                 "{EXIT_PLAN_MODE} requires a calling agent (no session to switch)"
                             ))
                         })?;
-                        let events = agent.session().events();
-                        if !fold_plan_mode(&events, events.len()) {
+                        if !read_plan_trace(agent.session())
+                            .map_err(dsh_tools::ToolBodyError::plain)?
+                            .active
+                        {
                             return Err(dsh_tools::ToolBodyError::plain(format!(
                                 "{EXIT_PLAN_MODE} is only available in plan mode"
                             )));
@@ -658,8 +688,9 @@ impl PlanModeController {
     /// Read the logged plan state and any selected state awaiting the next
     /// accepted in-turn pre-step.
     pub fn get(&self, agent: &Arc<dyn Agent>) -> PlanRead {
-        let events = agent.session().events();
-        let active = fold_plan_mode(&events, events.len());
+        let active = read_plan_trace(agent.session())
+            .expect("plan Session archive must remain readable")
+            .active;
         let pending = self
             .pending_intents
             .lock()
@@ -680,7 +711,7 @@ impl PlanModeController {
     /// Select whether plan mode should be active (TS `set`).
     pub fn set(&self, agent: &Arc<dyn Agent>, active: bool) -> SetOutcome {
         let session = agent.session();
-        let events = session.events();
+        let trace = read_plan_trace(session).expect("plan Session archive must remain readable");
         let pending = self
             .pending_intents
             .lock()
@@ -688,11 +719,11 @@ impl PlanModeController {
             .copied();
         let target = pending
             .map(|pending| pending.active)
-            .unwrap_or_else(|| fold_plan_mode(&events, events.len()));
+            .unwrap_or(trace.active);
         if active == target {
             return SetOutcome::Noop;
         }
-        if has_open_turn(&events) {
+        if trace.open_turn {
             self.pending_intents.lock().insert(
                 session.identity(),
                 PendingIntent {
@@ -700,7 +731,7 @@ impl PlanModeController {
                     narrate: true,
                 },
             );
-            return if fold_plan_mode(&events, events.len()) == active {
+            return if trace.active == active {
                 SetOutcome::Cancelled
             } else {
                 SetOutcome::Queued
@@ -708,7 +739,7 @@ impl PlanModeController {
         }
         // No open turn: commit now. Delete only after append succeeds so a
         // failed durable write leaves the selection retryable.
-        if active == fold_plan_mode(&events, events.len()) {
+        if active == trace.active {
             self.pending_intents.lock().remove(&session.identity());
             return SetOutcome::Cancelled;
         }
@@ -733,8 +764,7 @@ impl PlanModeController {
         let Some(pending) = pending else {
             return Ok(());
         };
-        let events = session.events();
-        if pending.active == fold_plan_mode(&events, events.len()) {
+        if pending.active == read_plan_trace(session)?.active {
             self.pending_intents.lock().remove(&session.identity());
             return Ok(());
         }
@@ -752,7 +782,9 @@ impl PlanModeController {
     /// Build a user-switch notice when the last logged header described the
     /// other mode.
     fn narration(&self, session: &Session, target: bool) -> Option<UserMessage> {
-        let told = plan_mode_at_last_header(&session.events())?;
+        let told = read_plan_trace(session)
+            .expect("plan Session archive must remain readable")
+            .told?;
         if told == target {
             return None;
         }

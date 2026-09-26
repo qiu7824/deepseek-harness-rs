@@ -111,6 +111,24 @@ pub fn request_messages(history: &[SessionEvent], turn: u64) -> Vec<UserMessage>
 /// and timestamp (TS `validateReading`; failures carry the exact TS
 /// messages).
 pub fn validate_reading(history: &[SessionEvent], event: &SessionEvent) -> Result<(), String> {
+    validate_reading_context(
+        preparation_position(history),
+        derive_browser_time_zone_context(&request_messages(
+            history,
+            preparation_position(history)
+                .map(|position| position.0)
+                .unwrap_or(0),
+        ))
+        .map_err(|error| error.message()),
+        event,
+    )
+}
+
+fn validate_reading_context(
+    position: Result<(u64, u64), &'static str>,
+    browser: Result<BrowserTimeZoneContext, String>,
+    event: &SessionEvent,
+) -> Result<(), String> {
     let message: UserMessage = serde_json::from_value(event.data.clone())
         .map_err(|_| "time-context messages must contain exactly one text block".to_string())?;
     let text = match message.content.as_slice() {
@@ -130,7 +148,7 @@ pub fn validate_reading(history: &[SessionEvent], event: &SessionEvent) -> Resul
         return Err("time-context turn and step must be positive safe integers".to_string());
     }
     let (turn, step) = (turn.expect("checked"), step.expect("checked"));
-    let (expected_turn, expected_step) = preparation_position(history)?;
+    let (expected_turn, expected_step) = position?;
     if turn != expected_turn || step != expected_step {
         return Err(format!(
             "time-context reading names turn {turn}/step {step}, expected turn {expected_turn}/step {expected_step}"
@@ -156,8 +174,7 @@ pub fn validate_reading(history: &[SessionEvent], event: &SessionEvent) -> Resul
     }
 
     let rendered_browser_context = captures[4].to_string();
-    let browser_context = derive_browser_time_zone_context(&request_messages(history, turn))
-        .map_err(|error| error.message())?;
+    let browser_context = browser?;
     if rendered_browser_context != render_browser_time_zone_context(&browser_context) {
         return Err(
             "time-context browser-zone text does not match current-turn user messages".to_string(),
@@ -204,17 +221,97 @@ pub fn validate_reading(history: &[SessionEvent], event: &SessionEvent) -> Resul
     Ok(())
 }
 
+#[derive(Default)]
+struct ReadingTrace {
+    turn: Option<u64>,
+    step: Option<u64>,
+    request_started: bool,
+    zones: std::collections::BTreeSet<String>,
+    zone_error: Option<String>,
+}
+
+impl ReadingTrace {
+    fn position(&self) -> Result<(u64, u64), &'static str> {
+        let turn = self
+            .turn
+            .ok_or("time-context reading must be appended inside an open turn")?;
+        let step = self
+            .step
+            .ok_or("time-context reading must follow step/start")?;
+        if self.request_started {
+            return Err("time-context reading must precede request/header");
+        }
+        Ok((turn, step))
+    }
+    fn browser(&self) -> Result<BrowserTimeZoneContext, String> {
+        if let Some(error) = &self.zone_error {
+            return Err(error.clone());
+        }
+        let zones: Vec<_> = self.zones.iter().cloned().collect();
+        Ok(match zones.as_slice() {
+            [] => BrowserTimeZoneContext::Missing,
+            [zone] => BrowserTimeZoneContext::Resolved {
+                time_zone: zone.clone(),
+            },
+            _ => BrowserTimeZoneContext::Mixed { time_zones: zones },
+        })
+    }
+    fn observe(&mut self, event: &SessionEvent) {
+        match event.type_.as_str() {
+            "turn/start" => {
+                self.turn = event.data["turn"].as_u64();
+                self.step = None;
+                self.request_started = false;
+                self.zones.clear();
+                self.zone_error = None;
+            }
+            "step/start" => {
+                self.step = event.data["step"].as_u64();
+                self.request_started = false;
+            }
+            "step/end" => {
+                self.step = None;
+                self.request_started = false;
+            }
+            "turn/end" => {
+                self.turn = None;
+                self.step = None;
+                self.request_started = false;
+            }
+            "request/header" => self.request_started = true,
+            "user/message" => {
+                if let Ok(message) = serde_json::from_value::<UserMessage>(event.data.clone()) {
+                    match derive_browser_time_zone_context(&[message]) {
+                        Ok(BrowserTimeZoneContext::Resolved { time_zone }) => {
+                            self.zones.insert(time_zone);
+                        }
+                        Err(error) if self.zone_error.is_none() => {
+                            self.zone_error = Some(error.message())
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn validate(&self, event: &SessionEvent) -> Result<(), String> {
+        if event.type_ == "user/message" && is_reading_source(&event.data) {
+            validate_reading_context(self.position(), self.browser(), event)?;
+        }
+        Ok(())
+    }
+}
+
 /// Validate all package-owned readings already present in one session (TS
 /// `validateSession`).
 pub fn validate_session(session: &Session) -> Result<(), String> {
-    let events = session.events();
-    for (index, event) in events.iter().enumerate() {
-        if event.type_ != "user/message" || !is_reading_source(&event.data) {
-            continue;
-        }
-        validate_reading(&events[..index], event)?;
-    }
-    Ok(())
+    let mut trace = ReadingTrace::default();
+    session.visit_events(0, None, |event| {
+        trace.validate(event)?;
+        trace.observe(event);
+        Ok(true)
+    })
 }
 
 /// Build the installer registered under [`PACKAGE_NAME`] (TS `install`).
@@ -230,21 +327,26 @@ pub fn installer() -> InvariantInstaller {
                 // of re-reading `session.events()` inside the pre-hook
                 // (mirrors the session-invariant companion design).
                 let histories: Arc<
-                    parking_lot::Mutex<std::collections::HashMap<String, Vec<SessionEvent>>>,
+                    parking_lot::Mutex<std::collections::HashMap<String, ReadingTrace>>,
                 > = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
 
                 let seed = |session: &Session,
                             histories: &parking_lot::Mutex<
-                    std::collections::HashMap<String, Vec<SessionEvent>>,
+                    std::collections::HashMap<String, ReadingTrace>,
                 >,
                             fail: &Arc<dyn Fn(&str) + Send + Sync>| {
-                    if let Err(message) = validate_session(session) {
+                    let mut trace = ReadingTrace::default();
+                    if let Err(message) = session.visit_events(0, None, |event| {
+                        trace.validate(event)?;
+                        trace.observe(event);
+                        Ok(true)
+                    }) {
                         fail(&message);
+                        return;
                     }
-                    let events: Vec<SessionEvent> = session.events().iter().cloned().collect();
                     histories
                         .lock()
-                        .insert(session.id().as_str().to_string(), events);
+                        .insert(session.id().as_str().to_string(), trace);
                 };
 
                 // Seed every attached session.
@@ -275,6 +377,29 @@ pub fn installer() -> InvariantInstaller {
                 ctx.on(
                     "session/created",
                     created_listener,
+                    EventOptions::default().global(true),
+                )
+                .await;
+
+                let committed = histories.clone();
+                ctx.on(
+                    "session/event",
+                    Arc::new(move |_, args| {
+                        let histories = committed.clone();
+                        Box::pin(async move {
+                            if let (Some(session), Some(event)) = (
+                                args.first().and_then(downcast::<Session>),
+                                args.get(1).and_then(downcast::<SessionEvent>),
+                            ) {
+                                histories
+                                    .lock()
+                                    .entry(session.id().to_string())
+                                    .or_default()
+                                    .observe(event);
+                            }
+                            None
+                        })
+                    }),
                     EventOptions::default().global(true),
                 )
                 .await;
@@ -319,10 +444,9 @@ pub fn installer() -> InvariantInstaller {
                         let history = histories
                             .entry(session.id().as_str().to_string())
                             .or_default();
-                        if let Err(message) = validate_reading(history, &event) {
+                        if let Err(message) = history.validate(&event) {
                             fail(&message);
                         }
-                        history.push(event);
                         None
                     })
                 });

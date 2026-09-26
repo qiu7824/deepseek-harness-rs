@@ -52,26 +52,34 @@ pub fn event_delta(event: &SessionEvent) -> i64 {
     }
 }
 
-fn event_for_seq<'a>(events: &'a [SessionEvent], seq: u64) -> Result<&'a SessionEvent, String> {
-    events.get(seq as usize).filter(|event| event.seq == seq).ok_or_else(|| {
-        format!(
-            "tool-pairing balance: surface seq {seq} has no matching session event (corrupt surface)"
-        )
-    })
-}
-
-fn extend_cache(
-    events: &[SessionEvent],
-    cache: &mut BalanceCache,
-    seqs: &[u64],
-) -> Result<(), String> {
+fn extend_cache(session: &Session, cache: &mut BalanceCache, seqs: &[u64]) -> Result<(), String> {
     let processed = cache.cut_balanced.len() - 1;
     let tail = &seqs[processed.min(seqs.len())..];
+    let positions: HashMap<_, _> = tail
+        .iter()
+        .enumerate()
+        .map(|(index, seq)| (*seq, index))
+        .collect();
+    let mut deltas = vec![None; tail.len()];
+    if let Some(first) = tail.iter().min() {
+        session.visit_events(
+            *first,
+            tail.iter().max().and_then(|seq| seq.checked_add(1)),
+            |event| {
+                if let Some(index) = positions.get(&event.seq.get()) {
+                    deltas[*index] = Some(event_delta(event));
+                }
+                Ok(true)
+            },
+        )?;
+    }
     // Validate the unseen tail before mutating the live cache.
     let mut pending_cuts: Vec<bool> = Vec::new();
     let mut in_progress = cache.in_progress_tool_calls;
-    for seq in tail {
-        in_progress += event_delta(event_for_seq(events, *seq)?);
+    for (seq, delta) in tail.iter().zip(deltas) {
+        in_progress += delta.ok_or_else(|| format!(
+            "tool-pairing balance: surface seq {seq} has no matching session event (corrupt surface)"
+        ))?;
         if in_progress < 0 {
             return Err(format!(
                 "tool-pairing balance: tool/result at surface seq {seq} has no matching tool-call (corrupt surface)"
@@ -103,7 +111,7 @@ fn with_balance_cache<T>(
         };
     }
     if cached.cut_balanced.len() - 1 < seqs.len() {
-        session.with_events(|events| extend_cache(events, &mut cached, &seqs))?;
+        extend_cache(session, &mut cached, &seqs)?;
     }
     read(&cached)
 }

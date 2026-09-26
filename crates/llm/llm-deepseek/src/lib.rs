@@ -602,8 +602,9 @@ fn http_failure(
     body: &[u8],
     provider_name: &str,
 ) -> LlmFailure {
-    let detail = serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok();
+    let detail = value
+        .as_ref()
         .and_then(|value| {
             ["/error/message", "/message", "/detail"]
                 .into_iter()
@@ -616,18 +617,33 @@ fn http_failure(
                 })
         })
         .map(|detail| detail.chars().take(4_096).collect::<String>());
+    let classification = value
+        .as_ref()
+        .map(|value| {
+            [
+                "/error/code",
+                "/error/type",
+                "/code",
+                "/type",
+                "/error/message",
+                "/message",
+                "/detail",
+                "/error",
+            ]
+            .into_iter()
+            .filter_map(|path| value.pointer(path).and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+        })
+        .unwrap_or_default();
     let status_number = status.as_u16();
     let code = match status_number {
         401 | 403 => "AUTH",
         429 => "RATE_LIMIT",
-        400 => {
-            let text = detail.as_deref().unwrap_or_default().to_ascii_lowercase();
-            if text.contains("context") && (text.contains("length") || text.contains("window")) {
-                dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE
-            } else {
-                "INVALID_REQUEST"
-            }
+        _ if dsh_llm::is_context_window_exceeded_error(&classification) => {
+            dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE
         }
+        400 | 413 => "INVALID_REQUEST",
         500..=599 => "SERVER",
         _ => "HTTP_ERROR",
     };
@@ -651,6 +667,87 @@ fn http_failure(
         status: Some(u64::from(status_number)),
         provider_retry_after_ms,
         request_id,
+    }
+}
+
+#[cfg(test)]
+mod context_error_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn http_overflow_uses_structured_error_fields_and_size_status() {
+        for (status, body) in [
+            (
+                400,
+                json!({"error":{"code":"context_length_exceeded","message":"request rejected"}}),
+            ),
+            (413, json!({"error":{"type":"context_window_exceeded"}})),
+            (
+                400,
+                json!({"error":{"message":"input is too long for this model"}}),
+            ),
+            (
+                413,
+                json!({"error":{"message":"request too large for model context"}}),
+            ),
+        ] {
+            let failure = http_failure(
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                &Default::default(),
+                &serde_json::to_vec(&body).unwrap(),
+                "test",
+            );
+            assert_eq!(
+                failure.code,
+                dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_provider_fields_and_configuration_errors_do_not_compact() {
+        for body in [
+            json!({"error":{"message":"context window size must be positive"}}),
+            json!({"error":{"message":"input exceeds maximum allowed value"}}),
+            json!({"error":{"message":"invalid request"},"debug":"context_length_exceeded"}),
+        ] {
+            let failure = http_failure(
+                reqwest::StatusCode::BAD_REQUEST,
+                &Default::default(),
+                &serde_json::to_vec(&body).unwrap(),
+                "test",
+            );
+            assert_eq!(failure.code, "INVALID_REQUEST", "{body}");
+        }
+        for (status, code) in [(401, "AUTH"), (403, "AUTH"), (429, "RATE_LIMIT")] {
+            let failure = http_failure(
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                &Default::default(),
+                br#"{"error":{"code":"context_length_exceeded"}}"#,
+                "test",
+            );
+            assert_eq!(failure.code, code);
+        }
+    }
+
+    #[test]
+    fn upload_size_errors_and_nested_diagnostics_do_not_trigger_context_compaction() {
+        for body in [
+            json!({"error":{"code":"file_too_large","message":"uploaded file exceeds the maximum size"}}),
+            json!({"error":{"code":"file_too_large","limits":{"maximum context length":128000}}}),
+            json!({"error":{"type":"invalid_request_error","debug":"context_length_exceeded"}}),
+            json!({"detail":{"debug":"request too large for model context"}}),
+        ] {
+            let failure = http_failure(
+                reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+                &Default::default(),
+                &serde_json::to_vec(&body).unwrap(),
+                "test",
+            );
+            assert_eq!(failure.code, "INVALID_REQUEST", "{body}");
+        }
     }
 }
 

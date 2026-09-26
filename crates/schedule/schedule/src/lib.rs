@@ -126,9 +126,11 @@ pub fn apply(ctx: &Context) {
                                     if payload.status == AgentStatus::Idle
                                         && agent
                                             .session()
-                                            .events()
-                                            .iter()
-                                            .any(|event| event.type_ == "schedule/change")
+                                            .find_event_rev(|event| {
+                                                event.type_ == "schedule/change"
+                                            })
+                                            .expect("schedule Session archive must remain readable")
+                                            .is_some()
                                     {
                                         runtime.request_drive();
                                     }

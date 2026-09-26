@@ -15,7 +15,7 @@ use cordis::{
 };
 use dsh_invariants::{InvariantInstaller, InvariantRegistry};
 use dsh_llm::{GenerateOptions, is_agent_loop_request};
-use dsh_session::{SessionStore, fold_request_header, session_id};
+use dsh_session::{SessionStore, session_id};
 use parking_lot::Mutex;
 
 /// Full package name owning these invariants.
@@ -72,22 +72,26 @@ pub fn installer() -> InvariantInstaller {
                                     ));
                                     unreachable!()
                                 };
-                                let events = session.events();
-                                if !events.iter().any(|event| event.type_ == "step/start") {
+                                let has_step = session
+                                    .find_event_rev(|event| event.type_ == "step/start")
+                                    .unwrap_or_else(|error| {
+                                        (fail)(&format!("could not inspect loop session: {error}"));
+                                        unreachable!()
+                                    })
+                                    .is_some();
+                                if !has_step {
                                     (fail)(
                                         "a loop-built request with no step/start in its session log",
                                     );
                                 }
-                                let Some(header) = fold_request_header(&events, None) else {
+                                let Some(header) = session.request_header() else {
                                     (fail)(
                                         "a loop-built request with no request/header event in its session log",
                                     );
                                     unreachable!()
                                 };
                                 let expected = session.derive_messages().expect("deriveMessages");
-                                if serde_json::to_value(&options.messages).expect("messages")
-                                    != serde_json::to_value(&expected).expect("expected")
-                                {
+                                if options.messages.as_slice() != expected.as_slice() {
                                     (fail)(&format!(
                                         "llm request for session \"{}\" diverges from the dispatch-time durable derivation (log-reconstruction desync)",
                                         session.id().as_str()

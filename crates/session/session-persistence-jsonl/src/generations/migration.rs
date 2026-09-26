@@ -325,6 +325,12 @@ fn migrate_v3_impl(
         );
     }
     let (summary, catalogs) = transform.ok_or("missing V3 source header")?.finish()?;
+    let source_events = summary.source_offsets.len() as u64;
+    // Publication validation needs only the completed header/counts. Release
+    // the per-source coordinate maps before the target scanner allocates its
+    // own validation state.
+    drop(summary.source_offsets);
+    drop(summary.source_cuts);
     for row in catalogs {
         check_cancel(cancelled)?;
         writer.record(
@@ -358,7 +364,7 @@ fn migrate_v3_impl(
         published: true,
         source_sha256: Some(source.sha256()),
         target_sha256: target.sha256(),
-        source_events: Some(summary.source_offsets.len() as u64),
+        source_events: Some(source_events),
         validation,
     };
     drop(target);

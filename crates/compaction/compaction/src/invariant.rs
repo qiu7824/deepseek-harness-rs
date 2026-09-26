@@ -226,10 +226,11 @@ pub fn installer() -> InvariantInstaller {
                 {
                     for session in store.list() {
                         let mut trace = SessionTrace::default();
-                        for event in session.events().iter() {
-                            if let Err(message) = apply_compaction_event(&mut trace, event) {
-                                fail(&message);
-                            }
+                        if let Err(message) = session.visit_events(0, None, |event| {
+                            apply_compaction_event(&mut trace, event)?;
+                            Ok(true)
+                        }) {
+                            fail(&message);
                         }
                         traces
                             .lock()

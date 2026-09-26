@@ -1,0 +1,15 @@
+{
+  "name": "dsh-time-context",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Optional current time and time-zone context for eligible agent steps",
+  "exports": {
+    "./client": "./lib/client.js"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  }
+}

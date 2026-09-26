@@ -53,44 +53,46 @@ impl RuntimeContextProjection {
     /// Restore projection state once, then follow authoritative session
     /// events.
     pub fn new(ctx: &Context, session: &Session) -> Self {
-        let initial = {
-            let events = session.events();
-            let surface_nodes: Vec<u64> = session
-                .surface()
-                .map(|surface| surface.nodes)
-                .unwrap_or_default();
-            let mut retained: Option<Option<Retained>> = None;
-            for index in (0..events.len()).rev() {
-                let event = &events[index];
-                if event.type_ != "user/message" {
-                    continue;
-                }
-                let Ok(message) =
-                    serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone())
-                else {
-                    continue;
-                };
-                if !is_owned(&message) {
-                    continue;
-                }
-                if retained.is_none() {
-                    retained = Some(None);
-                }
-                if surface_nodes.contains(&event.seq.get()) {
-                    retained = Some(Some(Retained {
-                        seq: event.seq.get(),
-                        text: text_of(&message),
-                    }));
-                    break;
-                }
+        let projection = Self::restore(session).expect("runtime context restoration");
+        projection.attach(ctx, session);
+        projection
+    }
+
+    pub(crate) fn restore(session: &Session) -> Result<Self, String> {
+        let surface_nodes: std::collections::HashSet<u64> =
+            session.surface()?.nodes.into_iter().collect();
+        let mut retained: Option<Option<Retained>> = None;
+        session.visit_events(0, None, |event| {
+            if event.type_ != "user/message" {
+                return Ok(true);
             }
-            retained
-        };
-        let projection = Self {
-            retained: Arc::new(Mutex::new(initial)),
-        };
+            let source = serde_json::from_value::<MessageSource>(event.data["source"].clone());
+            if !source.is_ok_and(|source| source.plugin_name() == Some(SOURCE)) {
+                return Ok(true);
+            }
+            let Ok(message) = serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone())
+            else {
+                return Ok(true);
+            };
+            if retained.is_none() {
+                retained = Some(None);
+            }
+            if surface_nodes.contains(&event.seq.get()) {
+                retained = Some(Some(Retained {
+                    seq: event.seq.get(),
+                    text: text_of(&message),
+                }));
+            }
+            Ok(true)
+        })?;
+        Ok(Self {
+            retained: Arc::new(Mutex::new(retained)),
+        })
+    }
+
+    pub(crate) fn attach(&self, ctx: &Context, session: &Session) {
         let session_identity = session.identity();
-        let retained_cell = Arc::clone(&projection.retained);
+        let retained_cell = Arc::clone(&self.retained);
         let listener: Arc<cordis::Listener> = Arc::new(move |_listener_ctx, args| {
             let subject = downcast_arc::<Session>(&args[0]).map(|arc| arc.as_ref().clone());
             let event = downcast_arc::<SessionEvent>(&args[1]).map(|arc| arc.as_ref().clone());
@@ -139,7 +141,6 @@ impl RuntimeContextProjection {
         })
         .join()
         .expect("session/event listener registration");
-        projection
     }
 
     /// Create an uncommitted snapshot only when the retained value differs.
@@ -188,5 +189,104 @@ impl RuntimeContextProjection {
             vec![ContentBlock::Text { text: snapshot }],
             source,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsh_session::{SurfaceIntent, SurfaceOp};
+
+    fn snapshot(session: &Session, text: &str) -> u64 {
+        let projection = RuntimeContextProjection::restore(session).unwrap();
+        let message = projection.project(text, &[]).unwrap();
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(message).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap()
+            .seq
+            .get()
+    }
+
+    fn archive(session: &Session) -> Session {
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            session.inherited_event_count(),
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn archived_runtime_context_keeps_the_latest_snapshot_still_on_the_surface() {
+        let session = Session::create(
+            dsh_session::session_id("runtime-context-archive"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let kept = snapshot(&session, "kept context");
+        let shadowed = snapshot(&session, "shadowed context");
+        let replacement = create_user_message(
+            vec![ContentBlock::Text {
+                text: "checkpoint".into(),
+            }],
+            MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
+        );
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(&replacement).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Replace {
+                        start: shadowed,
+                        end: shadowed,
+                    },
+                    source_event_seqs: Some(vec![shadowed]),
+                }),
+            )
+            .unwrap();
+        let restored = archive(&session);
+        let projection = RuntimeContextProjection::restore(&restored).unwrap();
+        assert!(projection.project("kept context", &[]).is_none());
+        assert!(projection.project("shadowed context", &[]).is_some());
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(replacement).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Replace {
+                        start: kept,
+                        end: kept,
+                    },
+                    source_event_seqs: Some(vec![kept]),
+                }),
+            )
+            .unwrap();
+        let cleared = RuntimeContextProjection::restore(&archive(&session)).unwrap();
+        assert!(
+            cleared.project("", &[]).is_some(),
+            "an overwritten snapshot needs an explicit clear notice"
+        );
     }
 }

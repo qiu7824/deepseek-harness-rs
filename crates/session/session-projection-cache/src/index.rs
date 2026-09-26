@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -35,6 +35,14 @@ use dsh_session_projection::{ProjectionCheckpoint, ProjectionSnapshot, SessionPr
 use dsh_storage_domain::{Domain, DomainFacility, KvTable};
 
 use crate::spec::{CheckpointIdentity, CheckpointRecord, projection_cache_domain_spec, rows_of};
+
+const LIST_PROJECTION_KEYS: &[&str] = &[
+    "title",
+    "modelSelection",
+    "sessionListMetadata",
+    "tokenUsage",
+    "subagentTiming",
+];
 
 struct CancelProjectionRead(Arc<AtomicBool>);
 impl Drop for CancelProjectionRead {
@@ -291,8 +299,9 @@ impl SessionProjectionCache {
             &identity_of(meta, dsh_session::SessionLogOffset::ZERO),
         )?;
         let rows = rows_of(Some(&record));
-        let values = self.registry().view_checkpoint(&rows);
-        if values.is_empty() {
+        let registry = self.registry();
+        let values = registry.view_checkpoint(&rows);
+        if values.is_empty() || registry.keys().iter().any(|key| !values.contains_key(key)) {
             return None;
         }
         let as_of_seq = rows
@@ -303,29 +312,57 @@ impl SessionProjectionCache {
         Some(ProjectionSnapshot { as_of_seq, values })
     }
 
+    /// A partial listing checkpoint is not a complete conversation snapshot.
+    /// All registered sidebar fields must share one cut for title edit preconditions.
+    pub fn cached_list_snapshot(&self, meta: &SessionHeader) -> Option<ProjectionSnapshot> {
+        if meta.is_seeded {
+            return None;
+        }
+        let record = self.record_for(
+            &meta.id,
+            &identity_of(meta, dsh_session::SessionLogOffset::ZERO),
+        )?;
+        let registry = self.registry();
+        let definitions = registry.definitions_for_keys(LIST_PROJECTION_KEYS);
+        let mut rows = rows_of(Some(&record));
+        rows.retain(|key, _| definitions.iter().any(|definition| definition.key == *key));
+        if definitions.is_empty() || rows.len() != definitions.len() {
+            return None;
+        }
+        let as_of_seq = rows.values().next()?.seq;
+        if rows.values().any(|row| row.seq != as_of_seq) {
+            return None;
+        }
+        let values = registry.view_checkpoint(&rows);
+        if values.len() != definitions.len() {
+            return None;
+        }
+        Some(ProjectionSnapshot { as_of_seq, values })
+    }
+
     /// Durably checkpoint one live session NOW (TS `write`). NOT fail-soft
     /// — callers on the fail-soft paths contain it.
     pub async fn write(&self, session: &Session) -> Result<(), String> {
-        let rows = self.checkpoint_for_write(session);
+        let rows = self.checkpoint_for_write(session)?;
         self.write_checkpoint(session, &rows).await
     }
 
     /// Capture the checkpoint cut and reset its dirty window synchronously.
     /// TS async functions execute this prefix before their first `await`; the
     /// detached Rust path must do the same before yielding to the executor.
-    fn checkpoint_for_write(&self, session: &Session) -> ProjectionCheckpoint {
+    fn checkpoint_for_write(&self, session: &Session) -> Result<ProjectionCheckpoint, String> {
         let attached = self
             .ctx
             .get_typed::<Arc<SessionStore>>("sessions", false)
             .and_then(|store| store.get(session.id()))
             .is_some_and(|live| live.ptr_eq(session));
         let rows = if attached {
-            self.registry().checkpoint(session)
+            self.registry().try_checkpoint(session)?
         } else {
-            self.registry().checkpoint_detached(session)
+            self.registry().try_checkpoint_detached(session)?
         };
         self.mark_clean(session);
-        rows
+        Ok(rows)
     }
 
     /// Persist a checkpoint whose cut and dirty-window reset already happened.
@@ -435,7 +472,13 @@ impl SessionProjectionCache {
     /// Share serialized reconstruction for the same cold Session. The next
     /// waiter rechecks the persisted checkpoint instead of repeating the fold.
     pub async fn cold_snapshot(&self, id: &SessionId) -> Result<ProjectionSnapshot, String> {
-        let lock = {
+        let lock = self.cold_lock(id);
+        let _read = lock.lock().await;
+        self.cold_snapshot_inner(id).await
+    }
+
+    fn cold_lock(&self, id: &SessionId) -> Arc<tokio::sync::Mutex<()>> {
+        {
             let mut reads = self.cold_reads.lock();
             reads.retain(|_, weak| weak.strong_count() > 0);
             match reads.get(id.as_str()).and_then(std::sync::Weak::upgrade) {
@@ -446,9 +489,141 @@ impl SessionProjectionCache {
                     lock
                 }
             }
-        };
+        }
+    }
+
+    /// Sidebar summaries must not rebuild every conversation projection or
+    /// expand packed token streams. Keep title/model/status and child metrics,
+    /// while leaving the remaining units absent until that task is opened.
+    pub async fn cold_list_snapshot(&self, id: &SessionId) -> Result<ProjectionSnapshot, String> {
+        let lock = self.cold_lock(id);
         let _read = lock.lock().await;
-        self.cold_snapshot_inner(id).await
+        let mut before = self
+            .persistence
+            .read_snapshot(id)
+            .await?
+            .ok_or("list projection source disappeared")?;
+        // Resolve the existing V0 compatibility edge before capturing the
+        // stable generation used by all subsequent list reads.
+        if before.header.version == dsh_session::LEGACY_SESSION_FORMAT_VERSION {
+            self.persistence.read_list_metadata(id).await?;
+            before = self
+                .persistence
+                .read_snapshot(id)
+                .await?
+                .ok_or("list projection source disappeared after legacy preparation")?;
+        }
+        let metadata = self.persistence.read_list_metadata(id).await?;
+        if before.header != metadata.meta {
+            return Err("list projection source identity changed".into());
+        }
+        let registry = self.registry();
+        let definitions = registry.definitions_for_keys(LIST_PROJECTION_KEYS);
+        let states = Arc::new(Mutex::new(
+            definitions
+                .into_iter()
+                .map(|definition| {
+                    let state = (definition.init)(&metadata.meta);
+                    (definition, state)
+                })
+                .collect::<Vec<_>>(),
+        ));
+        let folding = states.clone();
+        let last_nonpacked = Arc::new(AtomicI64::new(-1));
+        let observed = last_nonpacked.clone();
+        self.persistence
+            .visit_nonpacked_events(
+                id,
+                Arc::new(move |events| {
+                    let mut states = folding.lock();
+                    for event in events {
+                        observed.store(event.seq.get() as i64, Ordering::Relaxed);
+                        for (definition, state) in states.iter_mut() {
+                            *state = (definition.apply)(state, event);
+                        }
+                    }
+                    Ok(true)
+                }),
+            )
+            .await?;
+        // Usage samples and completed-turn boundaries are never packed. An
+        // interrupted turn may end inside a packed delta run, however, and
+        // its timing `through` must reflect that last durable event too.
+        let timing_has_active_tail = states.lock().iter().any(|(definition, state)| {
+            definition.key == "subagentTiming"
+                && downcast::<JsonValue>(state).is_some_and(|value| value.get("active").is_some())
+        });
+        if timing_has_active_tail && last_nonpacked.load(Ordering::Relaxed) < metadata.last_seq {
+            let (seq, time) = self
+                .persistence
+                .read_last_event_metadata(id)
+                .await?
+                .filter(|(seq, _)| *seq as i64 == metadata.last_seq)
+                .ok_or("list timing tail metadata is unavailable or changed")?;
+            let event = SessionEvent {
+                seq: dsh_session::SessionSeq::new(seq)?,
+                time,
+                type_: "list/tail-time".into(),
+                data: JsonValue::Null,
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            };
+            for (definition, state) in states.lock().iter_mut() {
+                if definition.key == "subagentTiming" {
+                    *state = (definition.apply)(state, &event);
+                }
+            }
+        }
+        if self.persistence.read_snapshot(id).await?.as_ref() != Some(&before) {
+            return Err("list projection source changed while reading".into());
+        }
+        let (snapshot, rows) = {
+            let states = states.lock();
+            let identity = identity_of(&metadata.meta, metadata.inherited_event_count);
+            let record = self.record_for(id, &identity);
+            let mut rows = rows_of(record.as_ref());
+            rows.retain(|_, row| row.seq <= metadata.last_seq);
+            let mut values = serde_json::Map::new();
+            for (definition, state) in states.iter() {
+                let mut stored = downcast::<JsonValue>(state)
+                    .ok_or("list projection checkpoint must be JSON")?
+                    .clone();
+                if definition.key == dsh_session_title::SESSION_LIST_METADATA_KEY {
+                    if stored["updatedAt"].is_null() {
+                        stored["updatedAt"] = JsonValue::from(metadata.meta.created_at);
+                    }
+                }
+                let state = arc(stored.clone());
+                values.insert(
+                    definition.key.clone(),
+                    (definition.schema)(&(definition.view)(&state))?,
+                );
+                rows.insert(
+                    definition.key.clone(),
+                    dsh_session_projection::ProjectionCheckpointRow {
+                        ver: definition.state_version,
+                        seq: metadata.last_seq,
+                        val: stored,
+                    },
+                );
+            }
+            (
+                ProjectionSnapshot {
+                    as_of_seq: metadata.last_seq,
+                    values,
+                },
+                rows,
+            )
+        };
+        self.put_soft(
+            id,
+            &identity_of(&metadata.meta, metadata.inherited_event_count),
+            &rows,
+            "cold-list write-back",
+        )
+        .await;
+        Ok(snapshot)
     }
 
     /// Native logs use streamed replay; unsupported historical recovery paths
@@ -627,7 +802,15 @@ impl SessionProjectionCache {
 
     /// One fail-soft durable checkpoint (TS `flushSoft`).
     fn spawn_flush(self: &Arc<Self>, session: &Session, trigger: &'static str) {
-        let rows = self.checkpoint_for_write(session);
+        let rows = match self.checkpoint_for_write(session) {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.ctx.named_logger(Some("session-projection-cache")).warn(vec![arc(
+                    format!("session projection cache: {trigger} checkpoint for \"{}\" failed (cache stays stale): {error}", session.id())
+                )]);
+                return;
+            }
+        };
         let identity = session.identity();
         {
             let mut flushes = self.flushes.lock();
@@ -728,6 +911,7 @@ pub fn identity_of(
         "unseeded projection-cache identity inherited event count must be 0"
     );
     CheckpointIdentity {
+        format_version: Some(header.version),
         created_at: header.created_at,
         cwd: header.cwd.clone(),
         is_seeded: header.is_seeded,
@@ -738,7 +922,9 @@ pub fn identity_of(
 /// Whether a stored record's bound identity names the caller's lifecycle
 /// (TS `identityMatches`).
 pub fn identity_matches(stored: &CheckpointIdentity, expected: &CheckpointIdentity) -> bool {
-    stored.created_at == expected.created_at
+    stored.format_version.is_some()
+        && stored.format_version == expected.format_version
+        && stored.created_at == expected.created_at
         && stored.cwd == expected.cwd
         && stored.is_seeded == expected.is_seeded
         && stored.inherited_event_count == expected.inherited_event_count
@@ -889,5 +1075,29 @@ mod compatibility_tests {
 
         assert!(super::identity_matches(&exact, &exact));
         assert!(!super::identity_matches(&exact, &different));
+    }
+
+    #[test]
+    fn adjacent_format_migration_invalidates_projection_offsets() {
+        let mut header = SessionHeader {
+            version: 3,
+            id: session_id("format-identity"),
+            created_at: 7,
+            cwd: Some("D:/workspace".into()),
+            parent_session: None,
+            is_seeded: false,
+            origin: None,
+            delegation_depth: None,
+            agent_preset: None,
+        };
+        let old = super::identity_of(&header, SessionLogOffset::ZERO);
+        header.version = 4;
+        let new = super::identity_of(&header, SessionLogOffset::ZERO);
+        assert_eq!(old.created_at, new.created_at);
+        assert_eq!(old.inherited_event_count, new.inherited_event_count);
+        assert!(
+            !super::identity_matches(&old, &new),
+            "V3 to V4 may renumber events without changing the session lifecycle"
+        );
     }
 }

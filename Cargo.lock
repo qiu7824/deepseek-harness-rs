@@ -1612,7 +1612,9 @@ dependencies = [
 name = "dsh-atomic-write"
 version = "0.1.0-rc.8"
 dependencies = [
+ "libc",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2250,6 +2252,7 @@ dependencies = [
  "dsh-task-runtime",
  "dsh-terminal",
  "dsh-terminal-bash",
+ "dsh-time-context",
  "dsh-timeout-policy",
  "dsh-token-meter",
  "dsh-tool-ask-user",
@@ -2629,6 +2632,7 @@ dependencies = [
  "futures",
  "indexmap",
  "parking_lot",
+ "regex",
  "serde",
  "serde_json",
  "tokio",

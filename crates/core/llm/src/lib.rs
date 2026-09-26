@@ -43,7 +43,7 @@ pub use content::{
 };
 pub use error::{
     CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, HarnessError, INVALID_CREDENTIAL_CODE,
-    QUOTA_EXCEEDED_CODE, error_chain,
+    QUOTA_EXCEEDED_CODE, error_chain, is_context_window_exceeded_error,
 };
 pub use invariant::{
     LlmInvariantPlugin, NAME as LLM_INVARIANT_NAME, PACKAGE_NAME as LLM_INVARIANT_PACKAGE_NAME,

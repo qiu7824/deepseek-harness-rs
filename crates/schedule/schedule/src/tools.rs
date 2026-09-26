@@ -17,7 +17,7 @@ use dsh_tools::{ToolCallKind, ToolCallView, ToolDefinition, ToolOutputDefinition
 
 use crate::domain::{
     MIN_EVERY_INTERVAL_SECONDS, allocate_schedule_id, create_after_schedule_record,
-    create_at_schedule_record, create_every_schedule_record, fold_schedule_events, schedule_view,
+    create_at_schedule_record, create_every_schedule_record, schedule_view,
 };
 use crate::persistence::flush_schedule_persistence;
 use crate::transaction::run_schedule_transaction;
@@ -83,11 +83,7 @@ fn input_error(error: &crate::domain::ScheduleInputError) -> ScheduleToolError {
 /// Fold only after a successful preflight, mapping corruption to a stable
 /// value.
 fn fold_for_tool(agent: &dyn Agent) -> Result<crate::domain::FoldedSchedules, ScheduleToolError> {
-    fold_schedule_events(
-        &agent.session().events(),
-        agent.session().inherited_event_count().get() as usize,
-    )
-    .map_err(|_| corrupt_log_error())
+    crate::domain::fold_session_schedules(agent.session()).map_err(|_| corrupt_log_error())
 }
 
 /// Require one persistence checkpoint without leaking the backend failure.
@@ -161,6 +157,36 @@ fn validate_create_args(args: &serde_json::Value) -> Option<ScheduleToolError> {
     None
 }
 
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+
+    #[test]
+    fn tool_validation_accepts_one_minute_but_rejects_shorter_or_fractional_intervals() {
+        for seconds in [60, 61, 300] {
+            assert!(
+                validate_create_args(
+                    &serde_json::json!({"prompt":"remind me","every_seconds":seconds})
+                )
+                .is_none()
+            );
+        }
+        for seconds in [0, 59] {
+            assert!(matches!(
+                validate_create_args(
+                    &serde_json::json!({"prompt":"remind me","every_seconds":seconds})
+                ),
+                Some(ScheduleToolError::FrequencyTooHigh { .. })
+            ));
+        }
+        assert!(matches!(
+            validate_create_args(&serde_json::json!({"prompt":"remind me","every_seconds":60.5})),
+            Some(ScheduleToolError::InvalidRule { .. })
+        ));
+        assert!(CREATE_DESCRIPTION.contains("at least 60."));
+    }
+}
+
 fn parse_at_input(value: &serde_json::Value) -> Option<AtInput> {
     if let Some(text) = value.as_str() {
         return Some(AtInput::Instant(text.to_string()));
@@ -173,7 +199,7 @@ fn parse_at_input(value: &serde_json::Value) -> Option<AtInput> {
     }))
 }
 
-const CREATE_DESCRIPTION: &str = "Create one reminder in the current session. Supply a non-empty prompt and exactly one selector: a positive safe-integer after_seconds delay, at as a strict offset date-time or local date/time object, or safe-integer every_seconds of at least 300. Fixed-rate reminders stay creation-aligned, skip missed occurrences, and batch one latest occurrence per overdue rule. Delivery is session-local: the reminder runs on time only while this session is live and otherwise becomes overdue until the session is resumed.";
+const CREATE_DESCRIPTION: &str = "Create one reminder in the current session. Supply a non-empty prompt and exactly one selector: a positive safe-integer after_seconds delay, at as a strict offset date-time or local date/time object, or safe-integer every_seconds of at least 60. Fixed-rate reminders stay creation-aligned, skip missed occurrences, and batch one latest occurrence per overdue rule. Delivery is session-local: the reminder runs on time only while this session is live and otherwise becomes overdue until the session is resumed.";
 
 const LIST_DESCRIPTION: &str = "List every active reminder in the current session in creation order, including its exact id, UTC target, scheduled or overdue state, and session-local delivery mode.";
 
@@ -251,7 +277,7 @@ pub fn register_schedule_tools(
                     },
                     "every_seconds": {
                         "type": "number",
-                        "description": "Fixed-rate safe-integer interval in seconds, at least 300."
+                        "description": "Fixed-rate safe-integer interval in seconds, at least 60."
                     },
                     "at": {
                         "description": "Absolute target as strict offset RFC 3339 or local date/time with an explicit IANA zone.",

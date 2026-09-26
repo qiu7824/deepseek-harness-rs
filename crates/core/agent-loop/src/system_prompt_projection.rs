@@ -50,15 +50,18 @@ pub(crate) fn project(
     starts_series: bool,
 ) -> Result<Vec<SystemPromptCommit>, String> {
     let surface = session.surface()?;
-    let nodes = session.with_events(|events| -> Result<Vec<(u64, Option<String>)>, String> {
-        let mut nodes = Vec::new();
-        for seq in &surface.nodes {
-            let Some(event) = events
-                .get(*seq as usize)
-                .filter(|event| event.type_ == "system/message")
-            else {
-                continue;
-            };
+    let positions: std::collections::HashMap<u64, usize> = surface
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, seq)| (*seq, index))
+        .collect();
+    let mut nodes = vec![None; surface.nodes.len()];
+    session.visit_events(0, None, |event| {
+        if event.type_ == "system/message"
+            && let Some(index) = positions.get(&event.seq.get())
+        {
+            let seq = event.seq.get();
             let system: Message = serde_json::from_value(event.data["message"].clone())
                 .map_err(|error| format!("invalid system node at {seq}: {error}"))?;
             if system.role != Role::System {
@@ -69,10 +72,11 @@ pub(crate) fn project(
                 [ContentBlock::Text { text }] => Some(text.clone()),
                 _ => None,
             };
-            nodes.push((*seq, text));
+            nodes[*index] = Some((seq, text));
         }
-        Ok(nodes)
+        Ok(true)
     })?;
+    let nodes: Vec<_> = nodes.into_iter().flatten().collect();
     let Some((head, head_text)) = nodes.first() else {
         return Ok(vec![SystemPromptCommit {
             message: message(rendered),

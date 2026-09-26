@@ -427,9 +427,13 @@ impl Service {
                 Box::pin(async move {
                     let path = args.get("file_path").and_then(serde_json::Value::as_str).ok_or_else(|| ToolBodyError::plain("file_path is required"))?;
                     if path.trim().is_empty() { return Err(ToolBodyError::plain("file_path must be a non-empty string")); }
-                    let reference = exec.agent.as_ref().and_then(|agent| agent.session().with_events(|events| {
-                        events.iter().find_map(|event| dsh_attachment::find_image_reference(&event.data, path))
-                    }));
+                    let mut reference = None;
+                    if let Some(agent) = exec.agent.as_ref() {
+                        agent.session().visit_events(0, None, |event| {
+                            reference = dsh_attachment::find_image_reference(&event.data, path);
+                            Ok(reference.is_none())
+                        }).map_err(ToolBodyError::plain)?;
+                    }
                     if let Some(reference) = reference {
                         let store = service.ctx.get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false)
                             .ok_or_else(|| ToolBodyError::plain("Attachment store unavailable"))?;

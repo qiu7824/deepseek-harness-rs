@@ -105,6 +105,20 @@ pub fn collect_allocator_on_park() {
     });
 }
 
+#[cfg(windows)]
+pub fn collect_allocator_on_unpark() {
+    use std::sync::atomic::Ordering;
+    let epoch = ALLOCATOR_COLLECT_EPOCH.load(Ordering::Acquire);
+    LAST_ALLOCATOR_COLLECT_EPOCH.with(|last| {
+        // A response may have been freed by another worker after this owner
+        // parked. Reclaim those remote frees before starting its next task.
+        if last.get() != epoch {
+            unsafe { libmimalloc_sys::mi_collect(true) };
+            last.set(epoch);
+        }
+    });
+}
+
 struct CollectAfterBytesInner<B: AsRef<[u8]>, F: FnOnce()> {
     bytes: Option<B>,
     collect: parking_lot::Mutex<Option<F>>,
@@ -142,14 +156,112 @@ where
     futures::stream::once(async move { Ok(bytes) })
 }
 
+struct StreamCleanup<F: FnOnce()> {
+    collect: parking_lot::Mutex<Option<F>>,
+}
+
+impl<F: FnOnce()> Drop for StreamCleanup<F> {
+    fn drop(&mut self) {
+        if let Some(collect) = self.collect.get_mut().take() {
+            collect();
+        }
+    }
+}
+
+struct CollectAfterStream<S, F: FnOnce()> {
+    stream: Option<std::pin::Pin<Box<S>>>,
+    cleanup: Option<Arc<StreamCleanup<F>>>,
+}
+
+impl<S, F: FnOnce()> CollectAfterStream<S, F> {
+    fn finish(&mut self) {
+        // Release the unencoded response before relinquishing the producer's
+        // cleanup token. Previously yielded Bytes owners may still be retained
+        // by the HTTP transport, including clones beyond EOF or cancellation.
+        drop(self.stream.take());
+        drop(self.cleanup.take());
+    }
+}
+
+impl<S, F: FnOnce()> Drop for CollectAfterStream<S, F> {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+impl<S, B, E, F> futures::Stream for CollectAfterStream<S, F>
+where
+    S: futures::Stream<Item = Result<B, E>>,
+    B: AsRef<[u8]> + Send + 'static,
+    F: FnOnce() + Send + 'static,
+{
+    type Item = Result<axum::body::Bytes, E>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let Some(stream) = this.stream.as_mut() else {
+            return std::task::Poll::Ready(None);
+        };
+        match stream.as_mut().poll_next(cx) {
+            std::task::Poll::Ready(Some(Ok(bytes))) => {
+                let cleanup = this.cleanup.as_ref().expect("live stream cleanup").clone();
+                let bytes = axum::body::Bytes::from_owner(CollectAfterBytesInner {
+                    bytes: Some(bytes),
+                    // CollectAfterBytesInner drops its actual storage before
+                    // this token. The last Bytes clone, not source EOF, owns
+                    // the output allocation's release boundary.
+                    collect: parking_lot::Mutex::new(Some(move || drop(cleanup))),
+                });
+                std::task::Poll::Ready(Some(Ok(bytes)))
+            }
+            std::task::Poll::Ready(Some(Err(error))) => {
+                std::task::Poll::Ready(Some(Err(error)))
+            }
+            std::task::Poll::Ready(None) => {
+                this.finish();
+                std::task::Poll::Ready(None)
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+fn stream_then_collect<S, B, E, F>(
+    stream: S,
+    collect: F,
+) -> impl futures::Stream<Item = Result<axum::body::Bytes, E>>
+where
+    S: futures::Stream<Item = Result<B, E>>,
+    B: AsRef<[u8]> + Send + 'static,
+    F: FnOnce() + Send + 'static,
+{
+    CollectAfterStream {
+        stream: Some(Box::pin(stream)),
+        cleanup: Some(Arc::new(StreamCleanup {
+            collect: parking_lot::Mutex::new(Some(collect)),
+        })),
+    }
+}
+
 #[cfg(windows)]
 fn collect_allocator_after_response() {
-    // The response byte buffer has reached body EOS or was dropped. Collect
-    // the current HTTP worker, notify every Tokio worker through the park
+    // The producer and the final output buffer owner have been released.
+    // Collect this release thread, notify every Tokio worker through the park
     // epoch. mi_collect operates on the calling thread's heap; it does not
     // collect every worker or the blocking pool from this thread.
     unsafe { libmimalloc_sys::mi_collect(true) };
     request_allocator_collect();
+}
+
+#[cfg(windows)]
+fn collect_allocator_after_history_scan() {
+    // Native readers execute in Tokio's blocking pool, which does not run
+    // worker park hooks. Purge their finished scan buffers on their own heap;
+    // the returned, still-live page remains allocated until HTTP serialization.
+    unsafe { libmimalloc_sys::mi_collect(true) };
 }
 
 #[cfg(test)]
@@ -158,6 +270,112 @@ mod allocator_response_lifecycle_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use futures::StreamExt;
+
+    #[tokio::test]
+    async fn streamed_history_frees_unencoded_values_before_cleanup_on_eof_or_cancel() {
+        struct OwnedPage(Arc<AtomicUsize>);
+        impl Drop for OwnedPage {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for cancel in [false, true] {
+            let freed = Arc::new(AtomicUsize::new(0));
+            let collected = Arc::new(AtomicUsize::new(0));
+            let page = OwnedPage(freed.clone());
+            let source = futures::stream::iter([vec![1], vec![2]]).map(move |chunk| {
+                let _still_owned = &page;
+                Ok::<_, std::convert::Infallible>(chunk)
+            });
+            let freed_at_cleanup = freed.clone();
+            let collected_at_cleanup = collected.clone();
+            let mut body = Box::pin(super::stream_then_collect(source, move || {
+                assert_eq!(freed_at_cleanup.load(Ordering::SeqCst), 1);
+                collected_at_cleanup.fetch_add(1, Ordering::SeqCst);
+            }));
+            assert_eq!(body.next().await.unwrap().unwrap().as_ref(), &[1]);
+            assert_eq!(freed.load(Ordering::SeqCst), 0);
+            assert_eq!(collected.load(Ordering::SeqCst), 0);
+            if !cancel {
+                assert_eq!(body.next().await.unwrap().unwrap().as_ref(), &[2]);
+                assert_eq!(body.next().await, None);
+                assert_eq!(collected.load(Ordering::SeqCst), 1);
+                assert_eq!(body.next().await, None);
+            }
+            drop(body);
+            assert_eq!(freed.load(Ordering::SeqCst), 1);
+            assert_eq!(collected.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_cleanup_waits_for_every_output_owner_after_eof_or_cancel() {
+        struct Buffer(Vec<u8>, Arc<AtomicUsize>);
+        impl AsRef<[u8]> for Buffer {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+        impl Drop for Buffer {
+            fn drop(&mut self) {
+                drop(std::mem::take(&mut self.0));
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        struct Producer(Arc<AtomicUsize>);
+        impl Drop for Producer {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for cancel in [false, true] {
+            let buffers_freed = Arc::new(AtomicUsize::new(0));
+            let producer_freed = Arc::new(AtomicUsize::new(0));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let producer = Producer(producer_freed.clone());
+            let source = futures::stream::iter([
+                Buffer(vec![1; 64 * 1024], buffers_freed.clone()),
+                Buffer(vec![2; 64 * 1024], buffers_freed.clone()),
+                Buffer(vec![3; 64 * 1024], buffers_freed.clone()),
+            ])
+            .map(move |chunk| {
+                let _still_owned = &producer;
+                Ok::<_, std::convert::Infallible>(chunk)
+            });
+            let observed_buffers = buffers_freed.clone();
+            let observed_producer = producer_freed.clone();
+            let observed_calls = calls.clone();
+            let mut body = Box::pin(super::stream_then_collect(source, move || {
+                assert_eq!(observed_producer.load(Ordering::SeqCst), 1);
+                assert_eq!(observed_buffers.load(Ordering::SeqCst), 3);
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+            }));
+            let first = body.next().await.unwrap().unwrap();
+            let retained_first = first.clone();
+            let second = body.next().await.unwrap().unwrap();
+            let retained_second = second.clone();
+            drop(first);
+            drop(second);
+            if !cancel {
+                let last = body.next().await.unwrap().unwrap();
+                assert_eq!(last.as_ref(), &[3; 64 * 1024]);
+                drop(last);
+                assert!(body.next().await.is_none());
+            }
+            drop(body);
+            assert_eq!(producer_freed.load(Ordering::SeqCst), 1);
+            assert_eq!(buffers_freed.load(Ordering::SeqCst), 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(retained_first.as_ref(), &[1; 64 * 1024]);
+            assert_eq!(retained_second.as_ref(), &[2; 64 * 1024]);
+            drop(retained_first);
+            assert_eq!(buffers_freed.load(Ordering::SeqCst), 2);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            drop(retained_second);
+            assert_eq!(buffers_freed.load(Ordering::SeqCst), 3);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
 
     #[tokio::test]
     async fn collection_runs_after_storage_is_freed_and_last_body_clone_is_dropped() {
@@ -1682,7 +1900,7 @@ async fn bridge_api_request(
     let collect_after_response = bytes.len() >= 256 * 1024
         || matches!(
             parts.uri.path(),
-            "/api/session.history" | "/api/session.models"
+            "/api/session.history" | "/api/subagent.history" | "/api/session.models" | "/api/session.list"
         );
     let response = handler
         .handle(CarrierRequest {
@@ -1713,6 +1931,16 @@ async fn bridge_api_request(
         CarrierBody::Stream(stream) => {
             use futures::StreamExt;
             let stream = stream.map(|item| item.map_err(|message| std::io::Error::other(message)));
+            #[cfg(windows)]
+            if collect_after_response {
+                return WebResponse::from_parts(
+                    parts,
+                    WebBody::from_stream(stream_then_collect(
+                        stream,
+                        collect_allocator_after_response,
+                    )),
+                );
+            }
             WebBody::from_stream(stream)
         }
     };
@@ -4147,7 +4375,7 @@ fn compose_host_in_fiber(
             eprintln!("dsh: optional plugin profile retained without refresh: {error}");
         }
         for plugin in client_plugins::discover(&profile_dir)? {
-            if plugin.id != "dsh-auto-review" {
+            if !matches!(plugin.id.as_str(), "dsh-auto-review" | "dsh-time-context") {
                 loader.core.register(&plugin.id, Arc::new(NoopPlugin));
             }
         }
@@ -4159,6 +4387,14 @@ fn compose_host_in_fiber(
     loader.core.register(
         "@deepseek-ai/dsh-experimental-auto-review",
         Arc::new(dsh_experimental_auto_review::AutoReviewPlugin),
+    );
+    loader.core.register(
+        "dsh-time-context",
+        Arc::new(dsh_time_context::TimeContextPlugin),
+    );
+    loader.core.register(
+        "@deepseek-ai/dsh-time-context",
+        Arc::new(dsh_time_context::TimeContextPlugin),
     );
     ctx.register_service(loader);
     if let Some(profile) = profile {
@@ -4484,6 +4720,8 @@ fn compose_host_in_fiber(
     let api_proxy = ApiProxyService::install(
         ctx,
         ApiProxyDefaults {
+            #[cfg(windows)]
+            history_read_cleanup: Some(Arc::new(collect_allocator_after_history_scan)),
             initialize_session: Some(Arc::new({
                 let teams = agent_teams.clone();
                 move |agent| {
@@ -5454,3 +5692,5 @@ mod model_discovery_profile_tests {
 
 #[cfg(test)]
 mod auto_review_plugin_tests;
+#[cfg(test)]
+mod time_context_plugin_tests;

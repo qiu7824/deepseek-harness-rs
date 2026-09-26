@@ -84,125 +84,160 @@ fn fold(team: &str, events: &[SessionEvent]) -> Result<Board, String> {
         ..Default::default()
     };
     for event in events {
-        if !event.type_.starts_with("team/") || event.data["teamId"] != team {
-            continue;
-        }
-        if event.data["version"] != 1 {
-            return Err("unsupported team record version".into());
-        }
-        match event.type_.as_str() {
-            "team/config" => {
-                let config: SessionConfig = serde_json::from_value(event.data["config"].clone())
-                    .map_err(|_| "invalid collaboration configuration")?;
-                if config.revision != state.config.as_ref().map_or(1, |old| old.revision + 1)
-                    || !matches!(config.mode.as_str(), "off" | "auto" | "custom")
-                {
-                    return Err("invalid collaboration configuration revision or mode".into());
-                }
-                if config.mode == "custom" && config.profile.is_none() {
-                    return Err("custom collaboration profile missing".into());
-                }
-                if let Some(profile) = &config.profile {
-                    Config {
-                        profiles: vec![profile.clone()],
-                        ..Default::default()
-                    }
-                    .validate()?;
-                }
-                state.config = Some(config);
-            }
-            "team/member" => {
-                let member: Member = serde_json::from_value(event.data["member"].clone())
-                    .map_err(|_| "invalid team member record")?;
-                if let Some(role) = &member.role {
-                    role.validate()?;
-                }
-                if !name(&member.name)
-                    || member.name == "lead"
-                    || !matches!(member.phase.as_str(), "provisioning" | "active" | "failed")
-                {
-                    return Err("invalid team member identity or phase".into());
-                }
-                if state
-                    .members
-                    .get(&member.name)
-                    .is_some_and(|old| old.id != member.id)
-                {
-                    return Err("team member identity changed".into());
-                }
-                if state
-                    .members
-                    .values()
-                    .any(|old| old.name != member.name && old.id == member.id)
-                {
-                    return Err("duplicate teammate identity".into());
-                }
-                if state.members.get(&member.name).is_some_and(|old| {
-                    old.provider != member.provider
-                        || old.context != member.context
-                        || old.role != member.role
-                        || old.creation_request != member.creation_request
-                        || (old.phase == "failed" && member.phase != "failed")
-                        || (old.phase == "active" && member.phase == "provisioning")
-                }) {
-                    return Err("invalid teammate lifecycle transition".into());
-                }
-                state.members.insert(member.name.clone(), member);
-            }
-            "team/task" => {
-                let task: Task = serde_json::from_value(event.data["task"].clone())
-                    .map_err(|_| "invalid team task record")?;
-                if task.revision != state.tasks.get(&task.id).map_or(1, |old| old.revision + 1) {
-                    return Err("noncontiguous team task revision".into());
-                }
-                state.tasks.insert(task.id.clone(), task);
-            }
-            "team/message/queued" => {
-                let mail: Mail = serde_json::from_value(event.data["message"].clone())
-                    .map_err(|_| "invalid team message record")?;
-                if state.messages.iter().any(|old| old.id == mail.id) {
-                    return Err("duplicate team message identity".into());
-                }
-                let sender = if mail.sender_id == team {
-                    Some("lead")
-                } else {
-                    state
-                        .members
-                        .values()
-                        .find(|member| member.id == mail.sender_id && member.phase == "active")
-                        .map(|member| member.name.as_str())
-                };
-                let target = mail.target_id == team
-                    || state
-                        .members
-                        .values()
-                        .any(|member| member.id == mail.target_id && member.phase == "active");
-                if sender != Some(mail.sender_name.as_str()) || !target {
-                    return Err("queued message does not belong to this team".into());
-                }
-                state.messages.push(mail);
-            }
-            "team/message/delivered" | "team/message/cancelled" => {
-                let id = event.data["messageId"]
-                    .as_str()
-                    .ok_or("invalid delivery receipt")?;
-                if !state
-                    .messages
-                    .iter()
-                    .any(|mail| mail.id == id && event.data["targetId"] == mail.target_id)
-                {
-                    return Err("delivery receipt has no matching queued target".into());
-                }
-                if event.type_ == "team/message/cancelled" {
-                    state.cancelled.insert(id.into());
-                } else {
-                    state.delivered.insert(id.into());
-                }
-            }
-            _ => {}
-        }
+        apply_team_event(team, &mut state, event)?;
     }
     Ok(state)
+}
+
+fn fold_session(team: &str, session: &dsh_session::Session) -> Result<Board, String> {
+    let mut state = Board {
+        team_id: team.into(),
+        ..Default::default()
+    };
+    session.visit_events(0, None, |event| {
+        apply_team_event(team, &mut state, event)?;
+        Ok(true)
+    })?;
+    Ok(state)
+}
+
+fn matching_session_event(
+    session: &dsh_session::Session,
+    last: bool,
+    matches: &impl Fn(&SessionEvent) -> bool,
+) -> Result<Option<SessionEvent>, String> {
+    if last {
+        return session.find_event_rev(matches);
+    }
+    let mut found = None;
+    session.visit_events(0, None, |event| {
+        if matches(event) {
+            found = Some(event.clone());
+        }
+        Ok(found.is_none())
+    })?;
+    Ok(found)
+}
+
+fn apply_team_event(team: &str, state: &mut Board, event: &SessionEvent) -> Result<(), String> {
+    if !event.type_.starts_with("team/") || event.data["teamId"] != team {
+        return Ok(());
+    }
+    if event.data["version"] != 1 {
+        return Err("unsupported team record version".into());
+    }
+    match event.type_.as_str() {
+        "team/config" => {
+            let config: SessionConfig = serde_json::from_value(event.data["config"].clone())
+                .map_err(|_| "invalid collaboration configuration")?;
+            if config.revision != state.config.as_ref().map_or(1, |old| old.revision + 1)
+                || !matches!(config.mode.as_str(), "off" | "auto" | "custom")
+            {
+                return Err("invalid collaboration configuration revision or mode".into());
+            }
+            if config.mode == "custom" && config.profile.is_none() {
+                return Err("custom collaboration profile missing".into());
+            }
+            if let Some(profile) = &config.profile {
+                Config {
+                    profiles: vec![profile.clone()],
+                    ..Default::default()
+                }
+                .validate()?;
+            }
+            state.config = Some(config);
+        }
+        "team/member" => {
+            let member: Member = serde_json::from_value(event.data["member"].clone())
+                .map_err(|_| "invalid team member record")?;
+            if let Some(role) = &member.role {
+                role.validate()?;
+            }
+            if !name(&member.name)
+                || member.name == "lead"
+                || !matches!(member.phase.as_str(), "provisioning" | "active" | "failed")
+            {
+                return Err("invalid team member identity or phase".into());
+            }
+            if state
+                .members
+                .get(&member.name)
+                .is_some_and(|old| old.id != member.id)
+            {
+                return Err("team member identity changed".into());
+            }
+            if state
+                .members
+                .values()
+                .any(|old| old.name != member.name && old.id == member.id)
+            {
+                return Err("duplicate teammate identity".into());
+            }
+            if state.members.get(&member.name).is_some_and(|old| {
+                old.provider != member.provider
+                    || old.context != member.context
+                    || old.role != member.role
+                    || old.creation_request != member.creation_request
+                    || (old.phase == "failed" && member.phase != "failed")
+                    || (old.phase == "active" && member.phase == "provisioning")
+            }) {
+                return Err("invalid teammate lifecycle transition".into());
+            }
+            state.members.insert(member.name.clone(), member);
+        }
+        "team/task" => {
+            let task: Task = serde_json::from_value(event.data["task"].clone())
+                .map_err(|_| "invalid team task record")?;
+            if task.revision != state.tasks.get(&task.id).map_or(1, |old| old.revision + 1) {
+                return Err("noncontiguous team task revision".into());
+            }
+            state.tasks.insert(task.id.clone(), task);
+        }
+        "team/message/queued" => {
+            let mail: Mail = serde_json::from_value(event.data["message"].clone())
+                .map_err(|_| "invalid team message record")?;
+            if state.messages.iter().any(|old| old.id == mail.id) {
+                return Err("duplicate team message identity".into());
+            }
+            let sender = if mail.sender_id == team {
+                Some("lead")
+            } else {
+                state
+                    .members
+                    .values()
+                    .find(|member| member.id == mail.sender_id && member.phase == "active")
+                    .map(|member| member.name.as_str())
+            };
+            let target = mail.target_id == team
+                || state
+                    .members
+                    .values()
+                    .any(|member| member.id == mail.target_id && member.phase == "active");
+            if sender != Some(mail.sender_name.as_str()) || !target {
+                return Err("queued message does not belong to this team".into());
+            }
+            state.messages.push(mail);
+        }
+        "team/message/delivered" | "team/message/cancelled" => {
+            let id = event.data["messageId"]
+                .as_str()
+                .ok_or("invalid delivery receipt")?;
+            if !state
+                .messages
+                .iter()
+                .any(|mail| mail.id == id && event.data["targetId"] == mail.target_id)
+            {
+                return Err("delivery receipt has no matching queued target".into());
+            }
+            if event.type_ == "team/message/cancelled" {
+                state.cancelled.insert(id.into());
+            } else {
+                state.delivered.insert(id.into());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn ready(state: &Board, task: &Task) -> bool {
@@ -336,7 +371,7 @@ impl AgentTeams {
         self.append(&caller,"team/config",json!({"config":SessionConfig{revision:1,mode:defaults.default_mode,profile:defaults.profiles.into_iter().find(|profile|profile.id==defaults.default_profile),explicit:false}})).await
     }
     pub fn manages_cancellation(&self, caller: &Arc<dyn Agent>) -> bool {
-        let Ok(board) = fold(caller.id().as_str(), &caller.session().events()) else {
+        let Ok(board) = fold_session(caller.id().as_str(), caller.session()) else {
             return false;
         };
         self.effective_config(&board).mode != "off"
@@ -533,7 +568,7 @@ impl AgentTeams {
         if session.header().origin.as_deref() == Some("subagent") {
             return String::new();
         }
-        let Ok(board) = fold(id, &session.events()) else {
+        let Ok(board) = fold_session(id, &session) else {
             return "Collaboration state cannot be read; report the error before delegation."
                 .into();
         };
@@ -547,27 +582,70 @@ impl AgentTeams {
             config.revision
         )
     }
-    async fn events(
+    async fn matching_event(
         &self,
         id: &str,
-    ) -> Result<(dsh_session::SessionHeader, Arc<Vec<SessionEvent>>), String> {
+        last: bool,
+        matches: impl Fn(&SessionEvent) -> bool + Send + Sync + 'static,
+    ) -> Result<(dsh_session::SessionHeader, Option<SessionEvent>), String> {
         if let Some(session) = self.sessions.get(&session_id(id)) {
-            return Ok((session.header().clone(), session.events()));
+            let found = matching_session_event(&session, last, &matches)?;
+            return Ok((session.header().clone(), found));
         }
-        let snapshot = self.persistence.read_from(&session_id(id), 0).await?;
-        Ok((snapshot.meta, Arc::new(snapshot.events)))
+        let id = session_id(id);
+        let before = self
+            .persistence
+            .read_snapshot(&id)
+            .await?
+            .ok_or("team session does not exist")?;
+        let found = Arc::new(std::sync::Mutex::new(None));
+        let for_visit = found.clone();
+        self.persistence
+            .visit_nonpacked_events(
+                &id,
+                Arc::new(move |events| {
+                    let mut found = for_visit
+                        .lock()
+                        .map_err(|_| "team history query poisoned")?;
+                    for event in events {
+                        if matches(event) {
+                            *found = Some(event.clone());
+                            if !last {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Ok(true)
+                }),
+            )
+            .await?;
+        if self.persistence.read_snapshot(&id).await?.as_ref() != Some(&before) {
+            return Err("team history changed during query".into());
+        }
+        let found = found
+            .lock()
+            .map_err(|_| "team history query poisoned")?
+            .take();
+        Ok((before.header, found))
     }
     pub async fn read(&self, id: &str) -> Result<Board, String> {
-        let (header, events) = self.events(id).await?;
+        let header = if let Some(session) = self.sessions.get(&session_id(id)) {
+            session.header().clone()
+        } else {
+            self.persistence
+                .read_snapshot(&session_id(id))
+                .await?
+                .ok_or("team session does not exist")?
+                .header
+        };
         if header.origin.as_deref() != Some("subagent") {
-            return fold(id, &events);
+            return self.read_board(id).await;
         }
         let parent = header
             .parent_session
             .as_ref()
             .ok_or("team member has no parent")?;
-        let (_, events) = self.events(parent.as_str()).await?;
-        let board = fold(parent.as_str(), &events)?;
+        let board = self.read_board(parent.as_str()).await?;
         if !board
             .members
             .values()
@@ -576,6 +654,48 @@ impl AgentTeams {
             return Err("session is not a registered teammate".into());
         }
         Ok(board)
+    }
+    async fn read_board(&self, id: &str) -> Result<Board, String> {
+        if let Some(session) = self.sessions.get(&session_id(id)) {
+            return fold_session(id, &session);
+        }
+        let before = self
+            .persistence
+            .read_snapshot(&session_id(id))
+            .await?
+            .ok_or("team session does not exist")?;
+        let state = Arc::new(std::sync::Mutex::new(Board {
+            team_id: id.into(),
+            ..Default::default()
+        }));
+        let for_visit = state.clone();
+        let team = id.to_string();
+        self.persistence
+            .visit_nonpacked_events(
+                &session_id(id),
+                Arc::new(move |events| {
+                    let mut state = for_visit.lock().map_err(|_| "team replay state poisoned")?;
+                    for event in events {
+                        apply_team_event(&team, &mut state, event)?;
+                    }
+                    Ok(true)
+                }),
+            )
+            .await?;
+        if self
+            .persistence
+            .read_snapshot(&session_id(id))
+            .await?
+            .as_ref()
+            != Some(&before)
+        {
+            return Err("team history changed during replay".into());
+        }
+        let result = state
+            .lock()
+            .map_err(|_| "team replay state poisoned")?
+            .clone();
+        Ok(result)
     }
     pub async fn view(&self, id: &str) -> Result<Value, String> {
         let board = self.read(id).await?;
@@ -625,20 +745,20 @@ impl AgentTeams {
                     .unwrap_or_default()
             );
             if member.phase == "active" && status != "running" {
-                if let Ok((_, events)) = self.events(&member.id).await {
-                    if let Some(end) = events.iter().rev().find(|e| e.type_ == "turn/end") {
-                        let reason = &end.data["reason"];
-                        view["members"][&member.name]["lastOutcome"] = reason.clone();
-                        if reason["kind"] == "error" {
-                            view["members"][&member.name]["status"] = json!("failed");
-                            view["members"][&member.name]["error"] =
-                                reason["error"]["message"].clone();
-                        } else if matches!(
-                            reason["kind"].as_str(),
-                            Some("aborted" | "interrupted" | "blocked" | "max-tokens")
-                        ) {
-                            view["members"][&member.name]["status"] = json!("blocked");
-                        }
+                if let Ok((_, Some(end))) = self
+                    .matching_event(&member.id, true, |event| event.type_ == "turn/end")
+                    .await
+                {
+                    let reason = &end.data["reason"];
+                    view["members"][&member.name]["lastOutcome"] = reason.clone();
+                    if reason["kind"] == "error" {
+                        view["members"][&member.name]["status"] = json!("failed");
+                        view["members"][&member.name]["error"] = reason["error"]["message"].clone();
+                    } else if matches!(
+                        reason["kind"].as_str(),
+                        Some("aborted" | "interrupted" | "blocked" | "max-tokens")
+                    ) {
+                        view["members"][&member.name]["status"] = json!("blocked");
                     }
                 }
             }
@@ -700,24 +820,28 @@ impl AgentTeams {
             .ok_or_else(|| "unknown or inactive teammate".into())
     }
     async fn delivered_to_target(&self, mail: &Mail, team: &str) -> Result<bool, String> {
-        let (_, events) = self.events(&mail.target_id).await?;
-        Ok(events.iter().any(|event| {
-            let messages: Vec<&Value> = if event.type_ == "user/message" {
-                vec![&event.data]
-            } else if event.type_ == "agent/inbox/spliced" {
-                event.data["inserted"]
-                    .as_array()
-                    .map(|messages| messages.iter().collect())
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            };
-            messages.into_iter().any(|message| {
-                message["source"]["kind"] == "team-message"
-                    && message["source"]["teamId"] == team
-                    && message["source"]["messageId"] == mail.id
+        let team = team.to_string();
+        let message_id = mail.id.clone();
+        let (_, event) = self
+            .matching_event(&mail.target_id, false, move |event| {
+                let messages: Vec<&Value> = if event.type_ == "user/message" {
+                    vec![&event.data]
+                } else if event.type_ == "agent/inbox/spliced" {
+                    event.data["inserted"]
+                        .as_array()
+                        .map(|messages| messages.iter().collect())
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                };
+                messages.into_iter().any(|message| {
+                    message["source"]["kind"] == "team-message"
+                        && message["source"]["teamId"] == team
+                        && message["source"]["messageId"] == message_id
+                })
             })
-        }))
+            .await?;
+        Ok(event.is_some())
     }
     async fn dispatch(
         &self,
@@ -788,17 +912,17 @@ impl AgentTeams {
             let mut updated = member.clone();
             let marker = format!("Team member identity: {}", member.id);
             let accepted = self
-                .events(&member.id)
+                .matching_event(&member.id, false, move |event| {
+                    matches!(event.type_.as_str(), "user/message" | "agent/inbox/spliced")
+                        && serde_json::to_string(&event.data)
+                            .is_ok_and(|data| data.contains(&marker))
+                })
                 .await
                 .ok()
-                .is_some_and(|(header, events)| {
+                .is_some_and(|(header, event)| {
                     header.parent_session.as_ref() == Some(lead.id())
                         && header.origin.as_deref() == Some("subagent")
-                        && events.iter().any(|event| {
-                            matches!(event.type_.as_str(), "user/message" | "agent/inbox/spliced")
-                                && serde_json::to_string(&event.data)
-                                    .is_ok_and(|data| data.contains(&marker))
-                        })
+                        && event.is_some()
                 });
             updated.phase = if accepted { "active" } else { "failed" }.into();
             if !accepted {
@@ -1551,6 +1675,96 @@ mod tests {
         let state = fold("fork", &[original, current.clone()]).unwrap();
         assert_eq!(state.tasks.keys().cloned().collect::<Vec<_>>(), ["own"]);
         assert!(fold("fork", &[current.clone(), current]).is_err());
+    }
+    #[test]
+    fn archived_board_keeps_team_scope_and_revision_validation() {
+        let events = vec![
+            event(0, "team/task", "parent", json!({"task":task("inherited")})),
+            event(
+                1,
+                "assistant/chunk",
+                "fork",
+                json!({"opaque":"x".repeat(128 * 1024)}),
+            ),
+            event(2, "team/task", "fork", json!({"task":task("own")})),
+        ];
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        for event in &events {
+            builder.push(event).unwrap();
+        }
+        let header = dsh_session::snapshot_session_header(&session_id("fork"), None).unwrap();
+        let session = dsh_session::Session::from_event_archive(
+            header.id.clone(),
+            builder.finish().unwrap(),
+            &header,
+            dsh_session::SessionLogOffset::ZERO,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(fold_session("fork", &session).unwrap()).unwrap(),
+            serde_json::to_value(fold("fork", &events).unwrap()).unwrap()
+        );
+        session
+            .append("team/task", events[2].data.clone(), None)
+            .unwrap();
+        assert!(fold_session("fork", &session).is_err());
+    }
+
+    #[test]
+    fn archived_queries_keep_first_admission_and_latest_outcome() {
+        let events = vec![
+            event(0, "agent/inbox/spliced", "child", json!({"marker":"first"})),
+            event(
+                1,
+                "assistant/chunk",
+                "child",
+                json!({"marker":"noise", "text":"x".repeat(1024 * 1024)}),
+            ),
+            event(
+                2,
+                "turn/end",
+                "child",
+                json!({"turn":1,"reason":{"kind":"error"}}),
+            ),
+            event(3, "agent/inbox/spliced", "child", json!({"marker":"later"})),
+            event(
+                4,
+                "turn/end",
+                "child",
+                json!({"turn":2,"reason":{"kind":"stop"}}),
+            ),
+        ];
+        let mut archive =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        for event in &events {
+            archive.push(event).unwrap();
+        }
+        let header = dsh_session::snapshot_session_header(&session_id("child"), None).unwrap();
+        let session = dsh_session::Session::from_event_archive(
+            header.id.clone(),
+            archive.finish().unwrap(),
+            &header,
+            dsh_session::SessionLogOffset::ZERO,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            matching_session_event(&session, false, &|event| event.type_
+                == "agent/inbox/spliced")
+            .unwrap(),
+            Some(events[0].clone())
+        );
+        assert_eq!(
+            matching_session_event(&session, true, &|event| event.type_ == "turn/end").unwrap(),
+            Some(events[4].clone())
+        );
+        assert!(
+            matching_session_event(&session, false, &|event| event.type_ == "model/selection")
+                .unwrap()
+                .is_none()
+        );
     }
     #[test]
     fn task_graph_requires_completed_dependencies_and_rejects_cycles() {

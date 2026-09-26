@@ -30,6 +30,12 @@ pub struct CheckpointRow {
 /// session lifecycle from another under the same id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointIdentity {
+    #[serde(
+        rename = "formatVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub format_version: Option<u64>,
     #[serde(rename = "createdAt")]
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +72,11 @@ pub fn checkpoint_record_schema() -> dsh_storage_domain::RecordSchema {
                 "checkpoint identity createdAt must be a non-negative integer".to_string()
             })?;
         let _ = created_at;
+        if let Some(version) = identity.get("formatVersion")
+            && version.as_u64().is_none()
+        {
+            return Err("checkpoint identity formatVersion must be a non-negative integer".into());
+        }
         if let Some(cwd) = identity.get("cwd")
             && !cwd.is_string()
         {
@@ -213,5 +224,42 @@ mod tests {
     fn impossible_unseeded_lineage_is_invalid() {
         let value = serde_json::json!({"identity":{"createdAt":7,"isSeeded":false,"inheritedEventCount":12},"rows":{}});
         assert!(checkpoint_record_schema()(&value).is_err());
+    }
+
+    #[test]
+    fn format_version_is_optional_for_old_records_but_required_for_cache_reuse() {
+        let legacy = serde_json::json!({"identity":{"createdAt":7,"cwd":"workspace"},"rows":{}});
+        checkpoint_record_schema()(&legacy).unwrap();
+        let record: CheckpointRecord = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(record.identity.format_version, None);
+        assert!(!crate::index::identity_matches(
+            &record.identity,
+            &record.identity
+        ));
+        let mut versioned = legacy.clone();
+        versioned["identity"]["formatVersion"] = serde_json::json!(4);
+        checkpoint_record_schema()(&versioned).unwrap();
+        let current: CheckpointRecord = serde_json::from_value(versioned.clone()).unwrap();
+        assert!(!crate::index::identity_matches(
+            &record.identity,
+            &current.identity
+        ));
+        assert!(crate::index::identity_matches(
+            &current.identity,
+            &current.identity
+        ));
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!("4"),
+            serde_json::json!(-1),
+            serde_json::json!(3.5),
+        ] {
+            versioned["identity"]["formatVersion"] = invalid;
+            assert!(checkpoint_record_schema()(&versioned).is_err());
+        }
+        assert_eq!(
+            record.identity.format_version, None,
+            "old records are read without rewriting their identity"
+        );
     }
 }

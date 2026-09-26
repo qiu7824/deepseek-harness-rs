@@ -46,12 +46,15 @@ pub fn installer() -> InvariantInstaller {
             Box::pin(async move {
                 // Late registration: validate every already-loaded session.
                 if let Some(store) = ctx
-                    .get_typed::<Arc<Arc<SessionStore>>>("sessions", false)
+                    .get_typed::<Arc<SessionStore>>("sessions", false)
                     .map(|slot| slot.as_ref().clone())
                 {
                     for session in store.list() {
-                        for event in session.events().iter() {
+                        if let Err(error) = session.visit_events(0, None, |event| {
                             validate_event(event, &|message| fail(message));
+                            Ok(true)
+                        }) {
+                            fail(&error);
                         }
                     }
                 }
@@ -105,5 +108,35 @@ impl Plugin for SandboxPolicyInvariantPlugin {
     async fn apply(&self, ctx: &Context, _config: ArcValue) -> Result<(), PluginError> {
         apply(ctx);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn late_installation_validates_already_loaded_session_modes() {
+        let ctx = Context::root();
+        let sessions = SessionStore::install(&ctx);
+        let session = sessions.create(&ctx, None, None).await.unwrap();
+        session
+            .append(
+                "sandbox/mode",
+                serde_json::json!({"mode":"unrecognized-mode"}),
+                None,
+            )
+            .unwrap();
+        let errors = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let observed = errors.clone();
+        let fail: Arc<dyn Fn(&str) + Send + Sync> =
+            Arc::new(move |message| observed.lock().push(message.into()));
+        (installer().install)(&ctx, fail).await;
+        assert!(
+            errors
+                .lock()
+                .iter()
+                .any(|message| message.contains("unknown mode"))
+        );
     }
 }

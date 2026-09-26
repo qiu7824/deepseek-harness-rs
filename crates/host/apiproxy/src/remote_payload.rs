@@ -5,6 +5,8 @@ pub(crate) fn normalize(method: &str, payload: Value) -> Result<Value, serde_jso
     if !matches!(
         method,
         "pluginInventory.setEnabled"
+            | "pluginInventory.getConfig"
+            | "pluginInventory.setConfig"
             | "messageFeedback.put"
             | "messageFeedback.list"
             | "messageFeedback.delete"
@@ -33,6 +35,8 @@ mod tests {
     fn generated_remote_requests_and_flat_rpcs_have_identical_business_payloads() {
         for method in [
             "pluginInventory.setEnabled",
+            "pluginInventory.getConfig",
+            "pluginInventory.setConfig",
             "messageFeedback.put",
             "messageFeedback.list",
             "messageFeedback.delete",

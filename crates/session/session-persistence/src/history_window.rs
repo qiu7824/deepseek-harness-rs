@@ -6,6 +6,44 @@
 
 use dsh_session::SessionEvent;
 
+/// The event metadata needed to select a history page. Persistence readers can
+/// retain this metadata without retaining or reconstructing message payloads.
+pub trait HistoryWindowEvent {
+    fn history_seq(&self) -> u64;
+    fn history_type(&self) -> &str;
+    fn history_surface_append(&self) -> Option<bool>;
+    fn history_source_start(&self) -> Option<u64>;
+    fn history_turn(&self) -> Option<u64>;
+    fn history_failed(&self) -> bool;
+}
+
+impl HistoryWindowEvent for SessionEvent {
+    fn history_seq(&self) -> u64 {
+        self.seq.get()
+    }
+    fn history_type(&self) -> &str {
+        &self.type_
+    }
+    fn history_surface_append(&self) -> Option<bool> {
+        self.surface_op.as_ref().map(|op| op.is_append())
+    }
+    fn history_source_start(&self) -> Option<u64> {
+        self.source_event_seqs
+            .as_ref()
+            .and_then(|seqs| seqs.iter().copied().min())
+    }
+    fn history_turn(&self) -> Option<u64> {
+        self.data.get("turn").and_then(serde_json::Value::as_u64)
+    }
+    fn history_failed(&self) -> bool {
+        self.data
+            .get("reason")
+            .and_then(|reason| reason.get("kind"))
+            .and_then(serde_json::Value::as_str)
+            == Some("error")
+    }
+}
+
 /// A contiguous, message-aligned event window inside the supplied slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryWindowSelection {
@@ -20,15 +58,18 @@ impl HistoryWindowSelection {
     }
 }
 
-fn is_closed_failed_stream_tail(events: &[SessionEvent]) -> bool {
-    let Some(index) = events.iter().rposition(|event| event.type_ == "turn/end") else {
+fn is_closed_failed_stream_tail(events: &[impl HistoryWindowEvent]) -> bool {
+    let Some(index) = events
+        .iter()
+        .rposition(|event| event.history_type() == "turn/end")
+    else {
         return false;
     };
     // Model selection and seed markers may follow a failed turn. They do not
     // reopen its stream; later conversation activity does.
     if events[index + 1..].iter().any(|event| {
         matches!(
-            event.type_.as_str(),
+            event.history_type(),
             "turn/start"
                 | "step/start"
                 | "assistant/chunk"
@@ -41,18 +82,11 @@ fn is_closed_failed_stream_tail(events: &[SessionEvent]) -> bool {
         return false;
     }
     let last = &events[index];
-    let failed_turn = last.data.get("turn").and_then(serde_json::Value::as_u64);
-    last.type_ == "turn/end"
-        && last
-            .data
-            .get("reason")
-            .and_then(|reason| reason.get("kind"))
-            .and_then(serde_json::Value::as_str)
-            == Some("error")
+    let failed_turn = last.history_turn();
+    last.history_failed()
         && failed_turn.is_some()
         && events.iter().any(|event| {
-            event.type_ == "assistant/chunk"
-                && event.data.get("turn").and_then(serde_json::Value::as_u64) == failed_turn
+            event.history_type() == "assistant/chunk" && event.history_turn() == failed_turn
         })
 }
 
@@ -66,35 +100,33 @@ pub struct HistoryWindowTooLarge {
 
 /// Select one backwards page without allocating or cloning events.
 pub fn select_history_window(
-    events: &[SessionEvent],
+    events: &[impl HistoryWindowEvent],
     before_seq: Option<u64>,
     max_messages: u64,
     max_events: usize,
 ) -> Result<HistoryWindowSelection, HistoryWindowTooLarge> {
     let end = before_seq
-        .map(|before| events.partition_point(|event| event.seq.get() < before))
+        .map(|before| events.partition_point(|event| event.history_seq() < before))
         .unwrap_or(events.len());
     let mut count = 0_u64;
     let mut cut_seq = 0_u64;
     for event in events[..end].iter().rev() {
-        if !matches!(event.type_.as_str(), "user/message" | "assistant/message")
-            || !event.surface_op.as_ref().is_none_or(|op| op.is_append())
+        if !matches!(event.history_type(), "user/message" | "assistant/message")
+            || !event.history_surface_append().unwrap_or(true)
         {
             continue;
         }
         count += 1;
         let group_start = event
-            .source_event_seqs
-            .as_ref()
-            .and_then(|sources| sources.iter().copied().min())
-            .unwrap_or(event.seq.get())
-            .min(event.seq.get());
+            .history_source_start()
+            .unwrap_or(event.history_seq())
+            .min(event.history_seq());
         if count >= max_messages {
             cut_seq = group_start;
             break;
         }
     }
-    let start = events[..end].partition_point(|event| event.seq.get() < cut_seq);
+    let start = events[..end].partition_point(|event| event.history_seq() < cut_seq);
     let selection = HistoryWindowSelection {
         start,
         end,
@@ -109,12 +141,9 @@ pub fn select_history_window(
         if max_messages <= 1
             && max_events > 0
             && (events[..end].last().is_some_and(|event| {
-                event.type_ == "assistant/message"
-                    && event.surface_op.as_ref().is_some_and(|op| op.is_append())
-                    && event
-                        .source_event_seqs
-                        .as_ref()
-                        .is_some_and(|seqs| !seqs.is_empty())
+                event.history_type() == "assistant/message"
+                    && event.history_surface_append() == Some(true)
+                    && event.history_source_start().is_some()
             }) || is_closed_failed_stream_tail(&events[..end]))
         {
             return Ok(HistoryWindowSelection {
@@ -129,8 +158,8 @@ pub fn select_history_window(
             && !events[end.saturating_sub(max_events)..end]
                 .iter()
                 .any(|event| {
-                    matches!(event.type_.as_str(), "user/message" | "assistant/message")
-                        && event.surface_op.as_ref().is_none_or(|op| op.is_append())
+                    matches!(event.history_type(), "user/message" | "assistant/message")
+                        && event.history_surface_append().unwrap_or(true)
                 })
         {
             return Ok(HistoryWindowSelection {

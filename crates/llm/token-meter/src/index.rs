@@ -115,11 +115,15 @@ impl TokenMeter {
         // ordinary read latency without creating state for sessions no
         // consumer has read.
         let event_meter = Arc::clone(&meter);
-        let event_listener: Arc<Listener> = Arc::new(move |_ctx, args: Vec<ArcValue>| {
+        let event_listener: Arc<Listener> = Arc::new(move |ctx, args: Vec<ArcValue>| {
+            let ctx = ctx.clone();
             let session = downcast::<Session>(&args[0]).cloned().expect("session arg");
             let meter = Arc::clone(&event_meter);
             Box::pin(async move {
-                meter.sync_tracked(&session);
+                if let Err(error) = meter.sync_tracked(&session) {
+                    ctx.named_logger(Some("token-meter"))
+                        .warn(vec![cordis::arc(error)]);
+                }
                 None
             })
         });
@@ -155,25 +159,32 @@ impl TokenMeter {
         session: &Session,
         request_header: Option<EpochHeader>,
     ) -> TokenMeasurement {
+        self.try_measure(session, request_header)
+            .expect("token meter history is unreadable or invalid")
+    }
+
+    pub fn try_measure(
+        &self,
+        session: &Session,
+        request_header: Option<EpochHeader>,
+    ) -> Result<TokenMeasurement, String> {
         let mut states = self.states.lock();
         let state = states
             .entry(session.identity())
             .or_insert_with(Self::fresh_state);
-        self.sync_state(session, state);
+        self.sync_state(session, state)?;
         let header = request_header.or_else(|| state.header.clone());
         let pricing = header.as_ref().and_then(|header| {
             self.llm.as_ref().and_then(|llm| {
                 llm.image_request_pricing(&header.config.provider, &header.config.model)
             })
         });
-        let surface = price_surface(&state.surface, pricing.as_ref())
-            .unwrap_or_else(|error| panic!("{error}"));
+        let surface = price_surface(&state.surface, pricing.as_ref())?;
         let anchor = state.anchor.as_ref();
 
         let (baseline, surface_delta_tokens) = match anchor {
             Some(anchor) if optional_header_equals(anchor.header.as_ref(), header.as_ref()) => {
-                let anchored = price_surface(&anchor.nodes, pricing.as_ref())
-                    .unwrap_or_else(|error| panic!("{error}"));
+                let anchored = price_surface(&anchor.nodes, pricing.as_ref())?;
                 let anchor_surface_tokens = anchored.surface_tokens + anchor.assistant_tokens;
                 let estimated_anchor_tokens =
                     estimate_header(header.as_ref()) + anchor_surface_tokens;
@@ -210,14 +221,14 @@ impl TokenMeter {
             TokenMeasurementBaseline::Estimated { tokens } => *tokens,
             TokenMeasurementBaseline::Usage { tokens, .. } => *tokens,
         };
-        TokenMeasurement {
+        Ok(TokenMeasurement {
             log_revision: state.consumed_events,
             baseline,
             surface_delta_tokens,
             total_tokens: (baseline_tokens as i64 + surface_delta_tokens).max(0) as u64,
             surface_tokens: surface.surface_tokens,
             nodes: surface.nodes,
-        }
+        })
     }
 
     /// Heuristically price one model-visible message (TS `estimateMessage`).
@@ -236,30 +247,30 @@ impl TokenMeter {
     }
 
     /// Eagerly catch up only a session already observed by a consumer.
-    fn sync_tracked(&self, session: &Session) {
+    fn sync_tracked(&self, session: &Session) -> Result<(), String> {
         let mut states = self.states.lock();
         let Some(state) = states.get_mut(&session.identity()) else {
-            return;
+            return Ok(());
         };
-        self.sync_state(session, state);
+        self.sync_state(session, state)
     }
 
     /// Catch one replay state up to the current durable tail (TS `_sync`).
-    fn sync_state(&self, session: &Session, state: &mut ReplayState) {
-        let events = session.events_from(state.consumed_events);
-        for event in &events {
-            if let Err(error) = self.fold_event(session, state, event) {
-                panic!("{error}");
-            }
-            state.consumed_events += 1;
-        }
+    fn sync_state(&self, session: &Session, state: &mut ReplayState) -> Result<(), String> {
+        session.with_event_reader(|reader| {
+            reader.visit(state.consumed_events, None, |event| {
+                self.fold_event(reader, state, event)?;
+                state.consumed_events = event.seq.get() + 1;
+                Ok(true)
+            })
+        })
     }
 
     /// Validate and prepare every fallible part before mutating replay state
     /// (TS `_foldEvent`).
     fn fold_event(
         &self,
-        session: &Session,
+        reader: &dsh_session::SessionEventReader<'_>,
         state: &mut ReplayState,
         event: &SessionEvent,
     ) -> Result<(), String> {
@@ -339,7 +350,7 @@ impl TokenMeter {
                         )
                     })?;
                 let provider_assistant_tokens =
-                    self.estimate_provider_assistant(session, event, event_tokens)?;
+                    self.estimate_provider_assistant(reader, event, event_tokens)?;
                 let _ = header;
                 next_anchor = Some(MeasurementAnchor {
                     header: next_header.clone(),
@@ -370,7 +381,7 @@ impl TokenMeter {
     /// usage anchor (TS `_estimateProviderAssistant`).
     fn estimate_provider_assistant(
         &self,
-        session: &Session,
+        reader: &dsh_session::SessionEventReader<'_>,
         event: &SessionEvent,
         durable_event_tokens: u64,
     ) -> Result<u64, String> {
@@ -392,14 +403,12 @@ impl TokenMeter {
                     event.seq
                 ));
             }
-            let source = session
-                .event_at(dsh_session::SessionSeq::new(*seq).map_err(|error| error.to_string())?)
-                .ok_or_else(|| {
-                    format!(
-                        "token meter: assistant/message at seq {} cites missing source seq {seq}",
-                        event.seq
-                    )
-                })?;
+            let source = reader.read(*seq)?.ok_or_else(|| {
+                format!(
+                    "token meter: assistant/message at seq {} cites missing source seq {seq}",
+                    event.seq
+                )
+            })?;
             if source.type_ != "assistant/chunk" {
                 return Err(format!(
                     "token meter: assistant/message at seq {} source seq {seq} is not assistant/chunk",
@@ -567,6 +576,127 @@ mod route_image_pricing_tests {
                 client_time_zone: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn archive_replay_preserves_provider_chunk_pricing_and_live_tail() {
+        let session = Session::create(session_id("archive-meter"), None, None, None).unwrap();
+        session
+            .append(
+                "request/header",
+                serde_json::json!({"header":{
+                    "config":{"provider":"test","model":"fixture"}
+                }}),
+                None,
+            )
+            .unwrap();
+        session
+            .append("turn/start", serde_json::json!({"turn":1}), None)
+            .unwrap();
+        session
+            .append("step/start", serde_json::json!({"turn":1,"step":1}), None)
+            .unwrap();
+        let text = "exact provider output".to_string();
+        let chunks = [
+            dsh_llm::StreamChunk::BlockStart {
+                index: 0,
+                block_type: "text".into(),
+            },
+            dsh_llm::StreamChunk::TextDelta {
+                index: 0,
+                text: text.clone(),
+            },
+            dsh_llm::StreamChunk::BlockEnd {
+                index: 0,
+                block: ContentBlock::Text { text: text.clone() },
+            },
+        ];
+        let mut sources = Vec::new();
+        for chunk in chunks {
+            sources.push(
+                session
+                    .append(
+                        "assistant/chunk",
+                        serde_json::json!({"turn":1,"step":1,"chunk":chunk}),
+                        None,
+                    )
+                    .unwrap()
+                    .seq
+                    .get(),
+            );
+        }
+        let message = dsh_llm::create_assistant_message(
+            vec![ContentBlock::Text { text }],
+            dsh_llm::ModelMessageSource {
+                provider: "test".into(),
+                model: "fixture".into(),
+                replay_state: None,
+            },
+        );
+        session
+            .append(
+                "assistant/message",
+                serde_json::json!({"turn":1,"step":1,"message":message,
+            "usage":{"inputTokens":100,"outputTokens":16,"totalTokens":116}}),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: Some(sources),
+                }),
+            )
+            .unwrap();
+        session
+            .append("step/end", serde_json::json!({"turn":1,"step":1}), None)
+            .unwrap();
+        session
+            .append(
+                "turn/end",
+                serde_json::json!({"turn":1,"reason":{"kind":"completed"}}),
+                None,
+            )
+            .unwrap();
+        session
+            .append(
+                "plugin:noise",
+                serde_json::json!({"body":"x".repeat(128 * 1024)}),
+                None,
+            )
+            .unwrap();
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let restored = Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            dsh_session::SessionLogOffset::ZERO,
+            vec![],
+        )
+        .unwrap();
+        let ctx = Context::root();
+        let meter = TokenMeter::install(&ctx, TokenMeterConfig::default());
+        let mut expected = meter.try_measure(&session, None).unwrap();
+        expected.log_revision = restored.seq().get();
+        assert_eq!(meter.try_measure(&restored, None).unwrap(), expected);
+        let before = expected.surface_tokens;
+        restored
+            .append(
+                "user/message",
+                serde_json::to_value(image_message()).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
+        let current = meter.try_measure(&restored, None).unwrap();
+        assert!(current.surface_tokens > before);
+        assert_eq!(current.log_revision, restored.seq().get());
+        ctx.fiber.dispose().await;
     }
 
     #[tokio::test]

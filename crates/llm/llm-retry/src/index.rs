@@ -271,8 +271,7 @@ async fn recover(
     }
 
     let policy_key = retry_policy_key(policy);
-    let events = agent.session().events();
-    let prior_policy_retry = events.iter().rev().find(|event| {
+    let prior_policy_retry = match agent.session().find_event_rev(|event| {
         event.type_ == "llm/retry"
             && event.data.get("turn").and_then(|value| value.as_u64()) == Some(*turn)
             && event.data.get("step").and_then(|value| value.as_u64()) == Some(*step)
@@ -280,8 +279,17 @@ async fn recover(
                 == Some(provider.as_str())
             && event.data.get("policyKey").and_then(|value| value.as_str())
                 == Some(policy_key.as_str())
-    });
+    }) {
+        Ok(event) => event,
+        Err(error) => {
+            signal.abort_with(dsh_agent::AgentCancelCause::Hook {
+                reason: format!("Retry history could not be read: {error}"),
+            });
+            return None;
+        }
+    };
     let previous_retry = prior_policy_retry
+        .as_ref()
         .and_then(|event| event.data.get("retry").and_then(|value| value.as_u64()))
         .unwrap_or(0);
     if policy.mode() == "normal" && previous_retry >= policy.max_retries().expect("normal policy") {

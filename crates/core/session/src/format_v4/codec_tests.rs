@@ -61,6 +61,53 @@ fn reference_ranges_preserve_plain_order_and_compress_only_monotonic_runs() {
 }
 
 #[test]
+fn physical_reference_scan_preserves_ranges_and_still_validates_them() {
+    fn scan(refs: Value) -> Result<Vec<Value>, String> {
+        let header = format!("{}\n", physical(false));
+        let mut scanner = V4LogScanner::new(
+            header.as_bytes(),
+            V4Recovery::Strict,
+            V4Vocabulary::default(),
+        )?;
+        let mut output = Vec::new();
+        for seq in 0..10 {
+            scanner.write_with_physical_references(
+                format!("{}\n", row(seq)).as_bytes(),
+                |value| {
+                    output.push(value);
+                    Ok(())
+                },
+            )?;
+        }
+        let line = format!("{}\n", references(10, refs));
+        for chunk in line.as_bytes().chunks(7) {
+            scanner.write_with_physical_references(chunk, |value| {
+                output.push(value);
+                Ok(())
+            })?;
+        }
+        assert_eq!(scanner.finish()?.decoded.event_count, 11);
+        Ok(output)
+    }
+    let rows = scan(json!([[0.0, 7.0], 9.0])).unwrap();
+    assert_eq!(rows[10]["sourceEventSeqs"], json!([[0, 7], 9]));
+    assert_eq!(
+        scan(json!([7, 1, 2, 3])).unwrap()[10]["sourceEventSeqs"],
+        json!([7, 1, 2, 3])
+    );
+    for refs in [
+        json!([[0, 10]]),
+        json!([[0, 1], [1, 2]]),
+        json!([4, [0, 2]]),
+        json!([0, 0]),
+        json!([[-1, 2]]),
+        json!([1.5]),
+    ] {
+        assert!(scan(refs).is_err());
+    }
+}
+
+#[test]
 fn range_bounds_duplicates_and_mixed_order_are_refused() {
     for refs in [
         json!([[3, 1]]),

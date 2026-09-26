@@ -513,15 +513,14 @@ pub fn capture_delegated_policy_overrides(parent: &dyn Agent) -> DelegatedPolicy
     } else {
         None
     };
-    let permission_preset = parent.session().with_events(|events| {
-        events
-            .iter()
-            .rev()
-            .find(|e| e.type_ == "permission/preset")
-            .and_then(|e| e.data["preset"].as_str())
-            .filter(|preset| *preset == "auto")
-            .map(str::to_owned)
-    });
+    let permission_preset = parent
+        .session()
+        .find_event_rev(|e| e.type_ == "permission/preset")
+        .expect("delegated permission Session archive must remain readable")
+        .as_ref()
+        .and_then(|e| e.data["preset"].as_str())
+        .filter(|preset| *preset == "auto")
+        .map(str::to_owned);
     DelegatedPolicyOverrides {
         permission_preset,
         sandbox_mode,

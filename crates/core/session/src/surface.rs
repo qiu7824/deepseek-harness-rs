@@ -582,6 +582,17 @@ impl StreamingSurfaceFold {
             replacements: self.replacements,
         }
     }
+
+    /// Transfer the validated current surface into a resident Session
+    /// without keeping historical message payloads or replaying the log.
+    pub(crate) fn into_manager(self) -> SurfaceManager {
+        SurfaceManager {
+            state: self.state,
+            last_processed_seq: self.expected_seq.checked_sub(1),
+            base_seq: 0,
+            pending: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -698,6 +709,47 @@ mod streaming_tests {
 }
 
 impl SurfaceManager {
+    /// Current state when the owner eagerly commits every admitted event.
+    pub(crate) fn current_nodes(&self) -> &[u64] {
+        &self.state.nodes
+    }
+
+    pub(crate) fn current_generation(&self) -> u64 {
+        self.state.replace_generation
+    }
+
+    /// Validate one candidate against an indexed log. Only a tool-result
+    /// rewrite needs its original payload; every other relationship is
+    /// already represented by the current surface positions.
+    pub(crate) fn validate_indexed(
+        &mut self,
+        expected_seq: u64,
+        event: &SessionEvent,
+        mut read: impl FnMut(u64) -> Result<Option<SessionEvent>, String>,
+    ) -> Result<(), String> {
+        let original = match &event.surface_op {
+            Some(SurfaceOp::Replace { start, .. }) if event.type_ == "tool/result" => read(*start)?,
+            _ => None,
+        };
+        let base_seq = original.as_ref().map_or(0, |event| event.seq.get());
+        let events = original.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+        let plan = plan_surface_event(&self.state, event, expected_seq, events, base_seq)?;
+        self.pending = Some(PendingPlan {
+            event: event.clone(),
+            expected_seq,
+            plan,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn commit_indexed(&mut self, event: &SessionEvent) {
+        let pending = self.pending.take().expect("event validated before commit");
+        assert_eq!(pending.expected_seq, event.seq.get());
+        assert_eq!(&pending.event, event);
+        apply_surface_plan(&mut self.state, pending.plan);
+        self.last_processed_seq = Some(event.seq.get());
+    }
+
     pub(crate) fn project_message(&self, seq: u64, message: Message) -> Message {
         match self.state.omitted.get(&seq) {
             Some(selected) => crate::image_offload::project(message, selected),

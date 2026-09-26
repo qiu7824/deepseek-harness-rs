@@ -348,7 +348,19 @@ pub async fn apply(ctx: &Context, config: Config) -> Result<Disposer, String> {
                     })
                     .collect();
                 let digest = digest_catalog_entries(&entries);
-                let history = catalog_history(&payload.agent);
+                let history = match catalog_history(payload.agent.session()) {
+                    Ok(history) => history,
+                    Err(error) => {
+                        payload
+                            .agent
+                            .ctx()
+                            .named_logger(Some("tool-skill"))
+                            .warn(vec![arc(format!(
+                                "Skill catalog history is unreadable: {error}"
+                            ))]);
+                        return Some(arc(PreStepDecision::Reject));
+                    }
+                };
                 let existing = catalog_message(&decision_messages(&decision));
                 if history.visible_digest.as_deref() == Some(digest.as_str()) {
                     return Some(match existing {
@@ -615,45 +627,122 @@ fn digest_catalog_entries(entries: &[SkillCatalogEntry]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn catalog_history(agent: &Arc<dyn dsh_agent::Agent>) -> CatalogHistory {
-    let visible: HashSet<u64> = agent
-        .session()
-        .surface()
-        .map(|surface| surface.nodes.into_iter().collect())
-        .unwrap_or_default();
-    let events = agent.session().events();
-    let mut published = false;
-    for event in events.iter().rev() {
-        if event.type_ != "user/message" {
-            continue;
-        }
-        // Unreadable durable records are "not this plugin's catalog": the
-        // typed enum rejects malformed seeds at deserialization.
-        let source: MessageSource = match serde_json::from_value(event.data["source"].clone()) {
-            Ok(source) => source,
-            Err(_) => continue,
-        };
-        let MessageSource::SkillCatalog { entries, .. } = source else {
-            continue;
-        };
-        let digest = digest_catalog_entries(&entries);
-        published = true;
-        if visible.contains(&event.seq.get()) {
-            return CatalogHistory {
-                visible_digest: Some(digest),
-                published,
+fn catalog_history(session: &dsh_session::Session) -> Result<CatalogHistory, String> {
+    session.with_surface_reader(|reader, nodes| {
+        let visible: HashSet<u64> = nodes.iter().copied().collect();
+        let mut published = false;
+        for seq in (0..reader.len()).rev() {
+            let event = reader
+                .read(seq)?
+                .ok_or("skill catalog history is incomplete")?;
+            if event.type_ != "user/message" {
+                continue;
+            }
+            // Unreadable durable records are "not this plugin's catalog": the
+            // typed enum rejects malformed seeds at deserialization.
+            let source: MessageSource = match serde_json::from_value(event.data["source"].clone()) {
+                Ok(source) => source,
+                Err(_) => continue,
             };
+            let MessageSource::SkillCatalog { entries, .. } = source else {
+                continue;
+            };
+            let digest = digest_catalog_entries(&entries);
+            published = true;
+            if visible.contains(&event.seq.get()) {
+                return Ok(CatalogHistory {
+                    visible_digest: Some(digest),
+                    published,
+                });
+            }
         }
-    }
-    CatalogHistory {
-        visible_digest: None,
-        published,
-    }
+        Ok(CatalogHistory {
+            visible_digest: None,
+            published,
+        })
+    })
 }
 
 struct CatalogHistory {
     visible_digest: Option<String>,
     published: bool,
+}
+
+#[cfg(test)]
+mod archived_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn archived_catalog_preserves_latest_visible_entries_across_live_tail() {
+        let session = dsh_session::Session::create(
+            dsh_session::session_id("catalog-archive"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let initial = vec![SkillCatalogEntry {
+            name: "first".into(),
+            description: "first catalog".into(),
+        }];
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(render_catalog_message(&initial)).unwrap(),
+                Some(dsh_session::SurfaceIntent {
+                    surface_op: dsh_session::SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
+        session
+            .append(
+                "assistant/chunk",
+                serde_json::json!({"opaque":"x".repeat(128 * 1024)}),
+                None,
+            )
+            .unwrap();
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let restored = dsh_session::Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            dsh_session::SessionLogOffset::ZERO,
+            vec![],
+        )
+        .unwrap();
+        let original = catalog_history(&restored).unwrap();
+        assert!(original.published);
+        assert_eq!(
+            original.visible_digest,
+            Some(digest_catalog_entries(&initial))
+        );
+        let updated = vec![SkillCatalogEntry {
+            name: "second".into(),
+            description: "updated catalog".into(),
+        }];
+        restored
+            .append(
+                "user/message",
+                serde_json::to_value(render_catalog_update(&updated)).unwrap(),
+                Some(dsh_session::SurfaceIntent {
+                    surface_op: dsh_session::SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            catalog_history(&restored).unwrap().visible_digest,
+            Some(digest_catalog_entries(&updated))
+        );
+    }
 }
 
 struct ExistingCatalog {

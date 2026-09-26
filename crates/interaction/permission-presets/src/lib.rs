@@ -32,16 +32,14 @@ use cordis::{
 };
 use dsh_commands::{CommandDefinition, CommandInputDescriptor, CommandResult, CommandRuntime};
 use dsh_sandbox::SandboxMode;
-use dsh_sandbox_policy::{effective_sandbox_mode, set_sandbox_mode};
+use dsh_sandbox_policy::set_sandbox_mode;
 use dsh_session::{Session, SessionEvent, SessionStore};
 use dsh_session_projection::{ProjectionDefinition, SessionProjectionRegistry};
 use dsh_settings::{
     SettingsNamespace, SettingsSectionHooks, install_settings_section, settings_namespace,
 };
 use dsh_shell::ShellExecutor;
-use dsh_user_approval::{
-    ApprovalPolicy, ApprovalService, effective_approval_policy, set_approval_policy,
-};
+use dsh_user_approval::{ApprovalPolicy, ApprovalService, set_approval_policy};
 use indexmap::IndexMap;
 use schemastery::{Data, Schema};
 use serde::Serialize;
@@ -56,7 +54,7 @@ type AutoAdmission = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 fn auto_spec() -> PresetSpec {
     PresetSpec {
         sandbox: SandboxMode::DangerFullAccess,
-        approval: ApprovalPolicy::Never,
+        approval: ApprovalPolicy::Ask,
         name: Some("Auto review · EXP".into()),
         description: Some(
             "逐调用模型审查；获准动作以完全访问执行。实验功能可能误判，并消耗额外 token。".into(),
@@ -200,6 +198,68 @@ pub fn fold_knobs(events: &[SessionEvent]) -> KnobState {
         }
     }
     state
+}
+
+fn read_session_knobs(session: &Session) -> Result<(KnobState, bool), String> {
+    let mut state = EMPTY_KNOBS;
+    let mut seeded = false;
+    session.visit_events(0, None, |event| {
+        if let Some(next) = apply_knob_event(&state, event) {
+            state = next;
+        }
+        seeded |= event.type_ == "session/end-seed";
+        Ok(true)
+    })?;
+    Ok((state, seeded))
+}
+
+#[cfg(test)]
+mod archive_knob_tests {
+    use super::*;
+
+    #[test]
+    fn archived_knobs_preserve_independent_policy_values_and_seed_boundary() {
+        let session = Session::create(
+            dsh_session::session_id("permission-archive"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        session
+            .append(
+                "permission/preset",
+                serde_json::json!({"preset":"auto"}),
+                None,
+            )
+            .unwrap();
+        set_sandbox_mode(&session, SandboxMode::DangerFullAccess).unwrap();
+        set_approval_policy(&session, ApprovalPolicy::Ask).unwrap();
+        set_sandbox_mode(&session, SandboxMode::ReadOnly).unwrap();
+        let before = fold_knobs(&session.events());
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let archived = Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            session.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        let (state, seeded) = read_session_knobs(&archived).unwrap();
+        assert_eq!(state, before);
+        assert!(seeded);
+        assert_eq!(state.preset.as_deref(), Some("auto"));
+        assert_eq!(state.sandbox, Some(SandboxMode::ReadOnly));
+        assert_eq!(state.approval, Some(ApprovalPolicy::Ask));
+    }
 }
 
 /// Serialize a [`KnobState`] into the projection unit's plain-JSON state.
@@ -620,7 +680,7 @@ impl PermissionPresetService {
                                 let agent = invocation.agent.clone();
                                 Box::pin(async move {
                                     if name.is_empty() {
-                                        let current = service.current(&session.events());
+                                        let current = service.try_current(&session)?;
                                         return Ok(CommandResult::Success {
                                             text: Some(format!(
                                                 "current preset {current} (available: {})",
@@ -708,12 +768,15 @@ impl PermissionPresetService {
             tools.guard(
                 &self.ctx,
                 Arc::new(move |execution| {
-                    let auto = execution.permission_preset.as_deref() == Some(AUTO_PRESET)
-                        || execution.agent.as_ref().is_some_and(|agent| {
-                            agent.session().with_events(|events| {
-                                effective_permission_preset(events).as_deref() == Some(AUTO_PRESET)
-                            })
-                        });
+                    let mut auto = execution.permission_preset.as_deref() == Some(AUTO_PRESET);
+                    if !auto && let Some(agent) = &execution.agent {
+                        match read_session_knobs(agent.session()) {
+                            Ok((state, _)) => auto = state.preset.as_deref() == Some(AUTO_PRESET),
+                            Err(error) => {
+                                return Some(format!("permission history unavailable: {error}"));
+                            }
+                        }
+                    }
                     if !auto {
                         return None;
                     }
@@ -786,6 +849,11 @@ impl PermissionPresetService {
         self.derive(&fold_knobs(events))
     }
 
+    /// Resolve current knobs without materializing the event log or hiding I/O failure.
+    pub fn try_current(&self, session: &Session) -> Result<String, String> {
+        read_session_knobs(session).map(|(state, _)| self.derive(&state))
+    }
+
     /// Resolve the preset for one folded knob state (TS `derive`).
     fn derive(&self, state: &KnobState) -> String {
         let sandbox = state.sandbox.unwrap_or(self.shell_default);
@@ -793,7 +861,9 @@ impl PermissionPresetService {
             .approval
             .unwrap_or(self.approval.config().policy.unwrap_or(ApprovalPolicy::Ask));
         let matches = |spec: &PresetSpec| spec.sandbox == sandbox && spec.approval == approval;
-        if state.preset.as_deref() == Some(AUTO_PRESET) && matches(&auto_spec()) {
+        // Delegated children and saved unattended sessions pin `never` while
+        // retaining the same independent per-call review requirement.
+        if state.preset.as_deref() == Some(AUTO_PRESET) && sandbox == auto_spec().sandbox {
             return AUTO_PRESET.into();
         }
         if let Some(preset) = &state.preset {
@@ -897,19 +967,20 @@ impl PermissionPresetService {
         set_approval: Arc<dyn Fn(ApprovalPolicy) -> Result<(), String> + Send + Sync>,
     ) -> Result<(), String> {
         let spec = self.resolve(name)?;
-        if self.current(&session.events()) != name {
+        let (mut state, _) = read_session_knobs(session)?;
+        if self.derive(&state) != name {
             session.append(
                 "permission/preset",
                 serde_json::json!({ "preset": name }),
                 None,
             )?;
+            state = read_session_knobs(session)?.0;
         }
-        let events = session.events();
-        if spec.sandbox != effective_sandbox_mode(&events).unwrap_or(self.shell_default) {
+        if spec.sandbox != state.sandbox.unwrap_or(self.shell_default) {
             set_sandbox_mode(session, spec.sandbox)?;
         }
         let approval_default = self.approval.config().policy.unwrap_or(ApprovalPolicy::Ask);
-        if spec.approval != effective_approval_policy(&events).unwrap_or(approval_default) {
+        if spec.approval != state.approval.unwrap_or(approval_default) {
             set_approval(spec.approval)?;
         }
         Ok(())
@@ -918,14 +989,13 @@ impl PermissionPresetService {
     /// Fill every missing permission fact before a session is published
     /// (TS `pinInitialPermission`).
     pub fn pin_initial_permission(&self, session: &Session) -> Result<(), String> {
-        let events = session.events();
-        let selected = effective_permission_preset(&events);
+        let (state, seeded) = read_session_knobs(session)?;
+        let selected = state.preset.clone();
         if selected.as_deref() == Some(AUTO_PRESET) {
             self.admit_auto()?;
         }
-        let sandbox = effective_sandbox_mode(&events);
-        let approval = effective_approval_policy(&events);
-        let seeded = events.iter().any(|event| event.type_ == "session/end-seed");
+        let sandbox = state.sandbox;
+        let approval = state.approval;
         if selected.is_none() && sandbox.is_none() && approval.is_none() && !seeded {
             let name = self.default_preset();
             let spec = self.resolve(&name)?;

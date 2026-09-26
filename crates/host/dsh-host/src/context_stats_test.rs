@@ -180,10 +180,18 @@ async fn composed_host_history_exposes_context_insights_and_budget_provenance() 
         })).unwrap()),
     }).await;
     let status = response.status();
-    let value: serde_json::Value = match response.into_body() {
-        CarrierBody::Bytes(bytes) => serde_json::from_slice(&bytes).expect("JSON history RPC"),
-        CarrierBody::Stream(_) => panic!("history must be a unary response"),
+    let bytes = match response.into_body() {
+        CarrierBody::Bytes(bytes) => bytes,
+        CarrierBody::Stream(mut stream) => {
+            use futures::StreamExt;
+            let mut bytes = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                bytes.extend(chunk.expect("JSON history chunk"));
+            }
+            bytes
+        }
     };
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON history RPC");
     host.shutdown().await.expect("drain host");
     std::fs::remove_dir_all(directory).expect("remove temporary home");
 

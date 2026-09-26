@@ -111,6 +111,38 @@ pub struct SessionReadWindowResult {
     pub oversized_event_count: Option<usize>,
 }
 
+/// An owned projection over a revision-stable history window. The inspection
+/// pass sees every source event before the consuming pass starts, so consumers
+/// can resolve later provenance without retaining the window's payloads.
+/// All output remains provisional until the read and `finish` succeed.
+pub trait HistoryWindowSink: Send {
+    fn inspect(&mut self, event: &SessionEvent) -> Result<(), String>;
+    fn push(&mut self, event: SessionEvent) -> Result<(), String>;
+    /// The boolean reports a safely shortened window whose omitted events
+    /// remain reachable through the projected events' pagination cursors.
+    fn finish(self: Box<Self>) -> Result<(Vec<SessionEvent>, bool), String>;
+}
+
+/// Compatibility adapter for backends whose window is already materialized.
+pub fn project_history_window(
+    mut window: SessionReadWindowResult,
+    mut sink: Box<dyn HistoryWindowSink>,
+) -> Result<SessionReadWindowResult, String> {
+    if window.oversized_event_count.is_some() {
+        return Ok(window);
+    }
+    for event in &window.events {
+        sink.inspect(event)?;
+    }
+    for event in std::mem::take(&mut window.events) {
+        sink.push(event)?;
+    }
+    let (events, reduced) = sink.finish()?;
+    window.events = events;
+    window.has_more |= reduced;
+    Ok(window)
+}
+
 /// Fixed-size session-list metadata, folded without retaining event payloads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionListMetadata {
@@ -301,6 +333,16 @@ pub trait SessionPersistenceApi: Send + Sync {
         })
     }
 
+    /// Read only the last durable event's sequence and timestamp without
+    /// migrating or recovering the artifact. `None` also permits backends
+    /// that do not expose this bounded metadata capability.
+    async fn read_last_event_metadata(
+        &self,
+        _id: &SessionId,
+    ) -> Result<Option<(u64, i64)>, String> {
+        Ok(None)
+    }
+
     /// Read a bounded, message-aligned forward page for indexed jumps.
     /// Backends should override this to stop decoding when the page is full.
     async fn read_forward_window(
@@ -332,6 +374,17 @@ pub trait SessionPersistenceApi: Send + Sync {
             has_more,
             oversized_event_count: None,
         })
+    }
+
+    /// Project a bounded forward window with an inspection pass followed by
+    /// owned events. Streaming backends override this to avoid a raw page.
+    async fn read_forward_window_with_sink(
+        &self,
+        id: &SessionId,
+        request: SessionReadForwardWindowRequest,
+        sink: Box<dyn HistoryWindowSink>,
+    ) -> Result<SessionReadWindowResult, String> {
+        project_history_window(self.read_forward_window(id, request).await?, sink)
     }
 
     /// Visit a stored log in bounded forward chunks. Backends may override
@@ -447,6 +500,17 @@ pub trait SessionPersistenceApi: Send + Sync {
                 }
             }
         }
+    }
+
+    /// Project the same message-aligned window as `read_window`, without
+    /// requiring streaming backends to retain its source event payloads.
+    async fn read_window_with_sink(
+        &self,
+        id: &SessionId,
+        request: SessionReadWindowRequest,
+        sink: Box<dyn HistoryWindowSink>,
+    ) -> Result<SessionReadWindowResult, String> {
+        project_history_window(self.read_window(id, request).await?, sink)
     }
 
     /// Fixed-size list metadata. Backends override this to avoid retaining a

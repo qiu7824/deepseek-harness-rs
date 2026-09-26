@@ -98,3 +98,47 @@ pub struct PluginSetEnabledRequest {
 pub struct PluginSetEnabledResult {
     pub entry: PluginInventoryEntry,
 }
+
+/// Read one explicitly supported plugin's persisted Profile configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginGetConfigRequest {
+    pub entry_id: String,
+}
+
+/// A missing `config` field preserves the distinction from explicit JSON null.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginConfigSnapshot {
+    pub entry_id: String,
+    pub module_name: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_config"
+    )]
+    pub config: Option<serde_json::Value>,
+    pub revision: String,
+}
+
+fn present_config<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+fn required_config<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<serde_json::Value, D::Error> {
+    serde_json::Value::deserialize(deserializer)
+}
+
+/// Compare-and-write one supported plugin's config; enablement is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSetConfigRequest {
+    pub entry_id: String,
+    pub expected_revision: String,
+    #[serde(deserialize_with = "required_config")]
+    pub config: serde_json::Value,
+}

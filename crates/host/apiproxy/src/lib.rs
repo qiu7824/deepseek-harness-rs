@@ -10,6 +10,7 @@ mod cancelled_requests;
 pub mod capabilities;
 pub mod fetch;
 mod interactions;
+mod history_transport;
 mod learning_preview;
 pub mod native_path_opener;
 mod pending_subagent_prompts;

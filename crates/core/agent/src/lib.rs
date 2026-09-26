@@ -19,7 +19,7 @@ pub mod registry;
 pub mod runtime_types;
 pub mod types;
 
-pub use consumed_work::{ConsumedWork, fold_consumed_work};
+pub use consumed_work::{ConsumedWork, ConsumedWorkFold, fold_consumed_work};
 pub use dispatch::{AgentEventDispatch, agent_carrier, assemble_context_for, emit_agent_event};
 pub use inbox::{Inbox, InboxNotifications};
 pub use model_selection::{

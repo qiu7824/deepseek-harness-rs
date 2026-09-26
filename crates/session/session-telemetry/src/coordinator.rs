@@ -222,18 +222,37 @@ impl SessionTelemetryCoordinator {
             .get(&session.identity())
             .map(|seq| *seq as i64)
             .unwrap_or(session.first_live_seq().get() as i64 - 1);
-        let events = session.events();
-        for event in events.iter() {
-            if through_seq.is_some_and(|through| event.seq.get() > through) {
-                break;
-            }
-            self.contain(|| {
-                if event.seq.get() as i64 <= cursor {
-                    self.track(session, event);
-                } else {
-                    self.capture_event(session, event);
+        let end = through_seq.map_or(session.seq().get(), |through| {
+            through.saturating_add(1).min(session.seq().get())
+        });
+        let prefix_end = (cursor + 1).max(0) as u64;
+        let replayed = session.visit_events(0, Some(prefix_end.min(end)), |event| {
+            self.contain(|| self.track(session, event));
+            Ok(true)
+        });
+        if let Err(error) = replayed {
+            self.ctx
+                .named_logger(Some("telemetry"))
+                .warn(vec![cordis::arc(format!(
+                    "capture history failed: {error}"
+                ))]);
+            return;
+        }
+        // Backend/waterfall callbacks can read the Session again, so release
+        // its read boundary before handing off each independently owned row.
+        for seq in prefix_end.min(end)..end {
+            match session.read_event(seq) {
+                Ok(Some(event)) => self.contain(|| self.capture_event(session, &event)),
+                Ok(None) => break,
+                Err(error) => {
+                    self.ctx
+                        .named_logger(Some("telemetry"))
+                        .warn(vec![cordis::arc(format!(
+                            "capture history failed: {error}"
+                        ))]);
+                    break;
                 }
-            });
+            }
         }
     }
 

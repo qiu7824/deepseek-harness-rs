@@ -92,13 +92,12 @@ pub fn validate_goal_round_event(
 }
 
 pub fn validate_session(session: &Session) -> Result<(), String> {
-    let events = session.events();
     let mut state = empty_goal_fold_state();
-    for event in events.iter() {
+    session.visit_events(0, None, |event| {
         validate_goal_round_state(&state, event)?;
         apply_goal_event(&mut state, event)?;
-    }
-    Ok(())
+        Ok(true)
+    })
 }
 
 fn seed_session(
@@ -106,15 +105,13 @@ fn seed_session(
     states: &Mutex<HashMap<usize, GoalFoldState>>,
     fail: &Arc<dyn Fn(&str) + Send + Sync>,
 ) {
-    let events = session.events();
     let mut state = empty_goal_fold_state();
-    for event in events.iter() {
-        if let Err(error) = validate_goal_round_state(&state, event) {
-            fail(&error);
-        }
-        if let Err(error) = apply_goal_event(&mut state, event) {
-            fail(&error);
-        }
+    if let Err(error) = session.visit_events(0, None, |event| {
+        validate_goal_round_state(&state, event)?;
+        apply_goal_event(&mut state, event)?;
+        Ok(true)
+    }) {
+        fail(&error);
     }
     states.lock().insert(session_key(session), state);
 }

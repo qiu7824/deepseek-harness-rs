@@ -116,7 +116,9 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
         .filter(|path| path.is_dir())
         .or_else(|| {
             let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../release/plugins");
-            (cfg!(debug_assertions) && checkout.is_dir()).then_some(checkout)
+            // Unit test executables live under target/*/deps, including
+            // optimized tests, and consume the checked-in bundled fixtures.
+            (cfg!(any(debug_assertions, test)) && checkout.is_dir()).then_some(checkout)
         })
     else {
         return profile.checkpoint();
@@ -156,9 +158,16 @@ pub fn materialize_bundled(profile: &Path) -> Result<(), String> {
             .ok_or("invalid profile dependencies")?
             .entry(name)
             .or_insert_with(|| json!("bundled"));
-        if !next.entries.iter().any(|row| row["id"] == name) {
+        if !next.entries.iter().any(|row| {
+            row["id"] == name
+                || name == "dsh-time-context"
+                    && matches!(
+                        row["name"].as_str(),
+                        Some("dsh-time-context" | "@deepseek-ai/dsh-time-context")
+                    )
+        }) {
             next.entries
-                .push(json!({"id":name,"name":name,"disabled":name=="dsh-auto-review"}));
+                .push(json!({"id":name,"name":name,"disabled":matches!(name,"dsh-auto-review"|"dsh-time-context")}));
         }
         if refresh || next.manifest != documents.manifest || next.entries != documents.entries {
             let source = entry.path();

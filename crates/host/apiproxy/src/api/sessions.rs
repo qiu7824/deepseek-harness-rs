@@ -303,32 +303,96 @@ pub struct SessionHistoryRequest {
     pub max_messages: Option<u64>,
 }
 
+fn history_chunk_key(
+    event: &SessionEvent,
+) -> Option<(u64, u64, u64, &str, Option<&str>, Option<&str>)> {
+    if event.type_ != "assistant/chunk" {
+        return None;
+    }
+    let chunk = event.data.get("chunk")?;
+    let kind = chunk.get("type")?.as_str()?;
+    if !matches!(kind, "text-delta" | "reasoning-delta" | "tool-call-delta") {
+        return None;
+    }
+    Some((
+        event.data.get("turn")?.as_u64()?,
+        event.data.get("step")?.as_u64()?,
+        chunk.get("index")?.as_u64()?,
+        kind,
+        chunk.get("id").and_then(serde_json::Value::as_str),
+        chunk.get("name").and_then(serde_json::Value::as_str),
+    ))
+}
+
+pub(crate) struct HistoryTransportCoalescer {
+    completed_sources: std::collections::HashSet<u64>,
+    strip_provenance: bool,
+    pending: Option<SessionEvent>,
+}
+
+impl HistoryTransportCoalescer {
+    pub(crate) fn new(
+        completed_sources: std::collections::HashSet<u64>,
+        strip_provenance: bool,
+    ) -> Self {
+        Self {
+            completed_sources,
+            strip_provenance,
+            pending: None,
+        }
+    }
+
+    /// Emit the previous event only once no later delta can extend it.
+    pub(crate) fn push(&mut self, mut event: SessionEvent) -> Option<SessionEvent> {
+        if event.type_ == "assistant/chunk" && self.completed_sources.contains(&event.seq.get()) {
+            return None;
+        }
+        if self.strip_provenance && event.type_ == "assistant/message" {
+            event.source_event_seqs = None;
+        }
+        if let Some(event_key) = history_chunk_key(&event)
+            && let Some(previous) = self.pending.as_mut()
+            && history_chunk_key(previous) == Some(event_key)
+        {
+            let field = if event_key.3 == "tool-call-delta" {
+                "argumentsDelta"
+            } else {
+                "text"
+            };
+            let delta = event.data["chunk"]
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if let Some(serde_json::Value::String(existing)) = previous.data["chunk"].get_mut(field)
+            {
+                existing.push_str(delta);
+                previous.data["__historyEndSeq"] = serde_json::Value::from(
+                    event
+                        .data
+                        .get("__historyEndSeq")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(event.seq.get()),
+                );
+                previous.time = event.time;
+                return None;
+            }
+        }
+        self.pending.replace(event)
+    }
+
+    pub(crate) fn finish(self) -> Option<SessionEvent> {
+        self.pending
+    }
+}
+
 /// Coalesce transport-only Assistant text/reasoning delta runs. The durable
 /// log remains unchanged; the last event's seq/time stay authoritative so
 /// forward cursors and live stitching remain contiguous.
+#[cfg(test)]
 fn coalesce_history_transport_events_inner(
     events: Vec<SessionEvent>,
     strip_provenance: bool,
 ) -> Vec<SessionEvent> {
-    fn key(event: &SessionEvent) -> Option<(u64, u64, u64, &str, Option<&str>, Option<&str>)> {
-        if event.type_ != "assistant/chunk" {
-            return None;
-        }
-        let chunk = event.data.get("chunk")?;
-        let kind = chunk.get("type")?.as_str()?;
-        if !matches!(kind, "text-delta" | "reasoning-delta" | "tool-call-delta") {
-            return None;
-        }
-        Some((
-            event.data.get("turn")?.as_u64()?,
-            event.data.get("step")?.as_u64()?,
-            chunk.get("index")?.as_u64()?,
-            kind,
-            chunk.get("id").and_then(serde_json::Value::as_str),
-            chunk.get("name").and_then(serde_json::Value::as_str),
-        ))
-    }
-
     let raw_start = events.first().map(|event| {
         event
             .data
@@ -349,50 +413,14 @@ fn coalesce_history_transport_events_inner(
         .flat_map(|event| event.source_event_seqs.iter().flatten().copied())
         .collect();
     let mut compact: Vec<SessionEvent> = Vec::new();
-    for mut event in events {
-        if event.type_ == "assistant/chunk" && completed_sources.contains(&event.seq.get()) {
-            continue;
+    let mut coalescer = HistoryTransportCoalescer::new(completed_sources, strip_provenance);
+    for event in events {
+        if let Some(closed) = coalescer.push(event) {
+            compact.push(closed);
         }
-        if strip_provenance
-            && event.type_ == "assistant/message"
-            && event.source_event_seqs.is_some()
-        {
-            event.source_event_seqs = None;
-        }
-        let Some(event_key) = key(&event) else {
-            compact.push(event);
-            continue;
-        };
-        let Some(previous) = compact.last_mut() else {
-            compact.push(event);
-            continue;
-        };
-        if key(previous) != Some(event_key) {
-            compact.push(event);
-            continue;
-        }
-        let field = if event_key.3 == "tool-call-delta" {
-            "argumentsDelta"
-        } else {
-            "text"
-        };
-        let delta = event.data["chunk"]
-            .get(field)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if let Some(serde_json::Value::String(existing)) = previous.data["chunk"].get_mut(field) {
-            existing.push_str(delta);
-            previous.data["__historyEndSeq"] = serde_json::Value::from(
-                event
-                    .data
-                    .get("__historyEndSeq")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(event.seq.get()),
-            );
-            previous.time = event.time;
-        } else {
-            compact.push(event);
-        }
+    }
+    if let Some(last) = coalescer.finish() {
+        compact.push(last);
     }
     if let (Some(first), Some(raw_start)) = (compact.first_mut(), raw_start) {
         first.data["__historyStartSeq"] = serde_json::Value::from(raw_start);
@@ -404,10 +432,12 @@ fn coalesce_history_transport_events_inner(
     compact
 }
 
+#[cfg(test)]
 pub(crate) fn coalesce_history_transport_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
     coalesce_history_transport_events_inner(events, true)
 }
 
+#[cfg(test)]
 pub(crate) fn coalesce_history_transport_slice(events: &[SessionEvent]) -> Vec<SessionEvent> {
     coalesce_history_transport_events_inner(events.to_vec(), true)
 }

@@ -29,25 +29,32 @@ pub struct Config {
 fn visible_baseline(
     session: &dsh_session::Session,
 ) -> Option<(String, Vec<AgentInstructionChange>)> {
-    session.events().iter().rev().find_map(|event| {
-        if event.type_ != "user/message" {
-            return None;
-        }
-        let message = serde_json::from_value::<UserMessage>(event.data.clone()).ok()?;
-        let MessageSource::AgentInstructions {
-            baseline,
-            baseline_identity,
-            changes,
-            ..
-        } = message.source
-        else {
-            return None;
-        };
-        if !baseline.unwrap_or(false) {
-            return None;
-        }
-        Some((baseline_identity?, changes))
-    })
+    let mut baseline = None;
+    session
+        .find_event_rev(|event| {
+            baseline = (|| {
+                if event.type_ != "user/message" {
+                    return None;
+                }
+                let message = serde_json::from_value::<UserMessage>(event.data.clone()).ok()?;
+                let MessageSource::AgentInstructions {
+                    baseline,
+                    baseline_identity,
+                    changes,
+                    ..
+                } = message.source
+                else {
+                    return None;
+                };
+                if !baseline.unwrap_or(false) {
+                    return None;
+                }
+                Some((baseline_identity?, changes))
+            })();
+            baseline.is_some()
+        })
+        .expect("agent-instructions Session archive must remain readable");
+    baseline
 }
 
 fn baseline_identity(cwd: &std::path::Path, files: &[InstructionFile]) -> String {

@@ -40,6 +40,12 @@ fn open_turn(events: &[SessionEvent]) -> Option<u64> {
     None
 }
 
+fn read_open_turn(reader: &dsh_session::SessionEventReader<'_>) -> Result<Option<u64>, String> {
+    Ok(reader
+        .find_rev(|event| matches!(event.type_.as_str(), "turn/start" | "turn/end"))?
+        .and_then(|event| open_turn(std::slice::from_ref(&event))))
+}
+
 async fn existing_files(
     fs: &dyn FileSystem,
     cwd: &str,
@@ -149,7 +155,7 @@ impl Plugin for PresentPlugin {
                     Box::pin(async move {
                         let agent=execution.agent.as_ref().ok_or_else(||failure("present requires an agent Session"))?;
                         let session=agent.session().clone();
-                        let turn=session.with_events(open_turn).ok_or_else(||failure("present requires an open turn"))?;
+                        let turn=session.with_event_reader(read_open_turn).map_err(failure)?.ok_or_else(||failure("present requires an open turn"))?;
                         let cwd=session.header().cwd.as_deref().ok_or_else(||failure("present requires a workspace"))?;
                         let signal=execution.signal.lock().clone();
                         let files=existing_files(fs.as_ref(),cwd,&arguments["files"],signal).await?;
@@ -168,7 +174,7 @@ impl Plugin for PresentPlugin {
                     if let (Some(execution),Some(result))=(execution,result) {
                         let delivery=pending.lock().remove(&execution.token);
                         if let Some(delivery)=delivery.filter(|_|!result.is_error && !(execution.signal.lock())()) {
-                            if let Err(error)=delivery.session.append_if("deliverables/presented",json!({"turn":delivery.turn,"callId":execution.call_id,"files":delivery.files}),None,|events|open_turn(events)==Some(delivery.turn)) {
+                            if let Err(error)=delivery.session.append_if_read("deliverables/presented",json!({"turn":delivery.turn,"callId":execution.call_id,"files":delivery.files}),None,|reader|Ok(read_open_turn(reader)?==Some(delivery.turn))) {
                                 listener_ctx.named_logger(Some("present")).warn(vec![cordis::arc(format!("Could not record file delivery: {error}"))]);
                             }
                         }

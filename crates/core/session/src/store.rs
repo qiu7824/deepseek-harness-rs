@@ -33,9 +33,9 @@ use serde_json::{Map, Value as JsonValue};
 use crate::json::snapshot_json_value;
 use crate::surface::{SurfaceManager, derive_event_message};
 use crate::types::{
-    CreateSessionOptions, EpochHeader, LEGACY_SESSION_FORMAT_VERSION, RequestContext,
-    SESSION_FORMAT_VERSION, SessionEvent, SessionHeader, SessionId, SessionLogOffset, SessionSeq,
-    SurfaceIntent, end_seed_data, session_id, snapshot_session_header, validate_session_header,
+    CreateSessionOptions, EpochHeader, LEGACY_SESSION_FORMAT_VERSION, RequestContext, SessionEvent,
+    SessionHeader, SessionId, SessionLogOffset, SessionSeq, SurfaceIntent, end_seed_data,
+    session_id, snapshot_session_header, validate_session_header,
 };
 
 /// Store attachment keyed by session identity (TS `attachments` WeakMap).
@@ -324,6 +324,7 @@ pub(crate) struct SessionState {
     // Full snapshots share the durable log. Append only copies when a
     // consumer still owns a previous immutable snapshot.
     log: Arc<Vec<SessionEvent>>,
+    archive: Option<Arc<crate::event_archive::EventArchive>>,
     surface: SurfaceManager,
     header_fold: Option<EpochHeader>,
     header_fold_seq: usize,
@@ -332,6 +333,139 @@ pub(crate) struct SessionState {
     derived: Arc<Vec<Message>>,
     derived_nodes: usize,
     derived_generation: u64,
+}
+
+impl SessionState {
+    fn prefix_len(&self) -> usize {
+        self.archive.as_ref().map_or(0, |archive| archive.len())
+    }
+
+    fn len(&self) -> usize {
+        self.prefix_len() + self.log.len()
+    }
+
+    fn read_event(&self, index: usize) -> Result<Option<SessionEvent>, String> {
+        let prefix = self.prefix_len();
+        if index < prefix {
+            return self.archive.as_ref().unwrap().read(index);
+        }
+        Ok(self.log.get(index - prefix).cloned())
+    }
+
+    fn visit(
+        &self,
+        start: usize,
+        end: usize,
+        mut visitor: impl FnMut(&SessionEvent) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let prefix = self.prefix_len();
+        let mut keep_going = true;
+        if let Some(archive) = &self.archive {
+            archive.visit(start.min(prefix)..end.min(prefix), |event| {
+                keep_going = visitor(event)?;
+                Ok(keep_going)
+            })?;
+        }
+        if keep_going && end > prefix {
+            for event in &self.log[start.saturating_sub(prefix)..end - prefix] {
+                if !visitor(event)? {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self, start: usize, end: usize) -> Arc<Vec<SessionEvent>> {
+        if self.archive.is_none() && start == 0 && end == self.log.len() {
+            return self.log.clone();
+        }
+        let mut events = Vec::with_capacity(end - start);
+        self.visit(start, end, |event| {
+            events.push(event.clone());
+            Ok(true)
+        })
+        .expect("private Session event archive must remain readable");
+        Arc::new(events)
+    }
+
+    fn validate_next(&mut self, event: &SessionEvent) -> Result<(), String> {
+        let prefix = self.prefix_len();
+        let length = self.len();
+        let archive = &self.archive;
+        let log = &self.log;
+        self.surface.validate_indexed(length as u64, event, |seq| {
+            let index = seq as usize;
+            if index < prefix {
+                archive.as_ref().unwrap().read(index)
+            } else {
+                Ok(log.get(index - prefix).cloned())
+            }
+        })
+    }
+
+    fn push_validated(&mut self, event: SessionEvent) {
+        self.surface.commit_indexed(&event);
+        Arc::make_mut(&mut self.log).push(event);
+    }
+}
+
+/// A coherent, read-only event prefix available inside a Session read or
+/// conditional append. Events are owned only for the duration of each read;
+/// cold payloads are never promoted to a whole-history cache.
+pub struct SessionEventReader<'a> {
+    state: &'a SessionState,
+}
+
+impl SessionEventReader<'_> {
+    pub fn len(&self) -> u64 {
+        self.state.len() as u64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn read(&self, seq: u64) -> Result<Option<SessionEvent>, String> {
+        let Ok(index) = usize::try_from(seq) else {
+            return Ok(None);
+        };
+        self.state.read_event(index)
+    }
+
+    pub fn derive_event_message(&self, event: &SessionEvent) -> Option<Message> {
+        derive_event_message(event)
+            .map(|message| self.state.surface.project_message(event.seq.get(), message))
+    }
+
+    pub fn visit(
+        &self,
+        from_seq: u64,
+        to_seq_exclusive: Option<u64>,
+        visitor: impl FnMut(&SessionEvent) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let end = to_seq_exclusive.unwrap_or(self.len()).min(self.len()) as usize;
+        let start = from_seq.min(end as u64) as usize;
+        self.state.visit(start, end, visitor)
+    }
+
+    pub fn find_rev(
+        &self,
+        mut predicate: impl FnMut(&SessionEvent) -> bool,
+    ) -> Result<Option<SessionEvent>, String> {
+        if let Some(event) = self.state.log.iter().rev().find(|event| predicate(event)) {
+            return Ok(Some(event.clone()));
+        }
+        if let Some(archive) = &self.state.archive {
+            for index in (0..archive.len()).rev() {
+                let event = archive.read(index)?.expect("index is in captured prefix");
+                if predicate(&event) {
+                    return Ok(Some(event));
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// An event-sourced session: an append-only log of [`SessionEvent`]s.
@@ -389,6 +523,97 @@ impl Session {
             true,
             Some(inherited_event_count),
         )
+    }
+
+    /// Restore a complete, dense cold prefix without retaining its bodies
+    /// in the resident event vector. Full snapshots remain explicit reads
+    /// of the same immutable events, including every historical chunk.
+    pub fn from_event_archive(
+        id: SessionId,
+        archive: crate::event_archive::EventArchive,
+        header: &SessionHeader,
+        inherited_event_count: SessionLogOffset,
+        closers: Vec<SessionEvent>,
+    ) -> Result<Session, String> {
+        let header = validate_session_header(
+            &id,
+            &serde_json::to_value(header).map_err(|error| error.to_string())?,
+        )?;
+        if (!header.is_seeded && inherited_event_count != SessionLogOffset::ZERO)
+            || inherited_event_count.get() > archive.len() as u64
+        {
+            return Err("invalid inherited prefix for Session event archive".into());
+        }
+        let mut surface = crate::StreamingSurfaceFold::default();
+        let mut last_type = None;
+        let mut header_fold = None;
+        let mut context_fold = None;
+        archive.visit(0..archive.len(), |event| {
+            let index = event.seq.get() as usize;
+            let value = serde_json::to_value(event).map_err(|error| error.to_string())?;
+            assert_session_event_envelope(&value, index)?;
+            drop(value);
+            assert_supported_request_header(
+                &event.type_,
+                &event.data,
+                &format!("seed event at index {index}"),
+            )?;
+            surface.push(event)?;
+            header_fold = crate::request_header::fold_request_header(
+                std::slice::from_ref(event),
+                header_fold.take(),
+            );
+            if event.type_ == "request/context" {
+                context_fold = serde_json::from_value::<RequestContext>(event.data.clone()).ok();
+            }
+            last_type = Some(event.type_.clone());
+            Ok(true)
+        })?;
+        let prefix_len = archive.len();
+        let mut state = SessionState {
+            archive: Some(Arc::new(archive)),
+            surface: surface.into_manager(),
+            header_fold,
+            header_fold_seq: prefix_len,
+            context_fold,
+            context_fold_seq: prefix_len,
+            ..Default::default()
+        };
+        for event in closers {
+            last_type = Some(event.type_.clone());
+            state.validate_next(&event)?;
+            state.push_validated(event);
+        }
+        let first_live_seq = SessionLogOffset::new(state.len() as u64)?;
+        let inherited_marker =
+            header.is_seeded && inherited_event_count.get() == state.len() as u64;
+        if inherited_marker || last_type.as_deref() != Some("session/end-seed") {
+            let event = SessionEvent {
+                type_: "session/end-seed".into(),
+                seq: SessionSeq::new(state.len() as u64)?,
+                time: now_ms(),
+                data: if inherited_marker {
+                    serde_json::json!({"inherited":true})
+                } else {
+                    end_seed_data()
+                },
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            };
+            state.validate_next(&event)?;
+            state.push_validated(event);
+        }
+        Ok(Session {
+            inner: Arc::new(SessionInner {
+                id,
+                header,
+                first_live_seq,
+                inherited_event_count,
+                state: Mutex::new(state),
+                derived_caches: Mutex::new(HashMap::new()),
+            }),
+        })
     }
 
     fn construct(
@@ -459,10 +684,9 @@ impl Session {
                     ));
                 }
                 state
-                    .surface
-                    .validate_next(&state.log, &snapshot)
+                    .validate_next(&snapshot)
                     .map_err(|error| format!("invalid seed event at index {index}: {error}"))?;
-                Arc::make_mut(&mut state.log).push(snapshot);
+                state.push_validated(snapshot);
             }
         }
         let first_live_seq = SessionLogOffset::new(state.log.len() as u64)?;
@@ -512,10 +736,9 @@ impl Session {
                 source_event_seqs: None,
             };
             state
-                .surface
-                .validate_next(&state.log, &event)
+                .validate_next(&event)
                 .expect("the end-seed marker carries no surface metadata");
-            Arc::make_mut(&mut state.log).push(event);
+            state.push_validated(event);
         }
         Ok(Session {
             inner: Arc::new(SessionInner {
@@ -597,13 +820,10 @@ impl Session {
         let state = self.inner.state.lock();
         let end = to_seq_exclusive
             .map(|value| value.get() as usize)
-            .unwrap_or(state.log.len())
-            .min(state.log.len());
+            .unwrap_or(state.len())
+            .min(state.len());
         let start = (from_seq.get() as usize).min(end);
-        if start == 0 && end == state.log.len() {
-            return Arc::clone(&state.log);
-        }
-        Arc::new(state.log[start..end].to_vec())
+        state.snapshot(start, end)
     }
 
     /// Return this Session's child-owned events after its inherited prefix.
@@ -617,13 +837,64 @@ impl Session {
         self.snapshot_events(SessionLogOffset::ZERO, None)
     }
 
-    /// Read the current log while holding its short-lived read boundary.
-    /// The callback must not re-enter this Session. Bounded page selectors
-    /// use this to avoid pinning an Arc snapshot that makes append clone the
-    /// whole log while generation and history reads overlap.
+    /// Compatibility boundary for consumers that require a complete slice.
+    /// Cold prefixes are explicitly materialized here; resident consumers
+    /// should use `with_event_reader` or `visit_events` instead. The callback
+    /// must not re-enter this Session.
     pub fn with_events<R>(&self, read: impl FnOnce(&[SessionEvent]) -> R) -> R {
         let state = self.inner.state.lock();
-        read(&state.log)
+        if state.archive.is_none() {
+            read(&state.log)
+        } else {
+            read(&state.snapshot(0, state.len()))
+        }
+    }
+
+    /// Read a coherent prefix through bounded indexed/visitor operations.
+    /// The callback must not re-enter this Session.
+    pub fn with_event_reader<R>(&self, read: impl FnOnce(&SessionEventReader<'_>) -> R) -> R {
+        let state = self.inner.state.lock();
+        read(&SessionEventReader { state: &state })
+    }
+
+    /// Read one coherent surface and indexed event prefix without expanding
+    /// the cold log. The callback must not re-enter this Session.
+    pub fn with_surface_reader<R>(
+        &self,
+        read: impl FnOnce(&SessionEventReader<'_>, &[u64]) -> R,
+    ) -> R {
+        let state = self.inner.state.lock();
+        read(
+            &SessionEventReader { state: &state },
+            state.surface.current_nodes(),
+        )
+    }
+
+    /// Visit a coherent half-open range without materializing an immutable
+    /// full-history snapshot. Return false to stop at the current event.
+    /// The callback must not re-enter this Session.
+    pub fn visit_events(
+        &self,
+        from_seq: u64,
+        to_seq_exclusive: Option<u64>,
+        visitor: impl FnMut(&SessionEvent) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        self.with_event_reader(|reader| reader.visit(from_seq, to_seq_exclusive, visitor))
+    }
+
+    /// Read only the latest matching event. The predicate must not re-enter
+    /// this Session; the returned event is independently owned.
+    pub fn find_event_rev(
+        &self,
+        predicate: impl FnMut(&SessionEvent) -> bool,
+    ) -> Result<Option<SessionEvent>, String> {
+        self.with_event_reader(|reader| reader.find_rev(predicate))
+    }
+
+    /// Fallible indexed access for consumers that can propagate archive I/O
+    /// failures instead of using the historical infallible snapshot API.
+    pub fn read_event(&self, seq: u64) -> Result<Option<SessionEvent>, String> {
+        self.with_event_reader(|reader| reader.read(seq))
     }
 
     /// Whether one existing event belongs to this Session rather than its parent.
@@ -638,7 +909,8 @@ impl Session {
             return Vec::new();
         };
         let state = self.inner.state.lock();
-        state.log.get(start..).unwrap_or_default().to_vec()
+        let events = state.snapshot(start.min(state.len()), state.len());
+        Arc::try_unwrap(events).unwrap_or_else(|events| events.as_ref().clone())
     }
 
     /// Clone the prefix through the last event matching `predicate`, while
@@ -649,22 +921,35 @@ impl Session {
         predicate: impl Fn(&SessionEvent) -> bool,
     ) -> Vec<SessionEvent> {
         let state = self.inner.state.lock();
-        let Some(last) = state.log.iter().rposition(predicate) else {
-            return Vec::new();
-        };
-        state.log[..=last].to_vec()
+        let mut last = None;
+        state
+            .visit(0, state.len(), |event| {
+                if predicate(event) {
+                    last = Some(event.seq.get() as usize);
+                }
+                Ok(true)
+            })
+            .expect("private Session event archive must remain readable");
+        last.map_or_else(Vec::new, |last| {
+            let events = state.snapshot(0, last + 1);
+            Arc::try_unwrap(events).unwrap_or_else(|events| events.as_ref().clone())
+        })
     }
 
     /// Clone one event by durable sequence without materializing the full
     /// immutable [`Self::events`] snapshot.
     pub fn event_at(&self, seq: SessionSeq) -> Option<SessionEvent> {
         let index = seq.get() as usize;
-        self.inner.state.lock().log.get(index).cloned()
+        self.inner
+            .state
+            .lock()
+            .read_event(index)
+            .expect("private Session event archive must remain readable")
     }
 
     /// The next event's sequence number — always the log length.
     pub fn seq(&self) -> SessionLogOffset {
-        SessionLogOffset::new(self.inner.state.lock().log.len() as u64)
+        SessionLogOffset::new(self.inner.state.lock().len() as u64)
             .expect("a Rust Vec length fits the public Session wire")
     }
 
@@ -672,23 +957,24 @@ impl Session {
     /// call; TS returns the live manager view).
     pub fn surface(&self) -> Result<crate::surface::SessionSurface, String> {
         let state = &mut *self.inner.state.lock();
-        let nodes = state.surface.nodes(&state.log)?;
-        let replace_generation = state.surface.replace_generation(&state.log)?;
+        let nodes = state.surface.current_nodes().to_vec();
+        let replace_generation = state.surface.current_generation();
         Ok(crate::surface::SessionSurface {
             nodes,
             replace_generation,
         })
     }
 
-    /// Read one coherent surface and event prefix. The callback must not
-    /// re-enter this session; no events are cloned by this boundary.
+    /// Compatibility boundary for a complete event slice and its coherent
+    /// surface. Cold prefixes are explicitly materialized; bounded readers
+    /// should use `with_surface_reader`. The callback must not re-enter.
     pub fn with_surface_events<R>(
         &self,
         read: impl FnOnce(&[SessionEvent], &[u64]) -> R,
     ) -> Result<R, String> {
         let state = &mut *self.inner.state.lock();
-        let nodes = state.surface.nodes(&state.log)?;
-        Ok(read(&state.log, &nodes))
+        let nodes = state.surface.current_nodes().to_vec();
+        Ok(read(&state.snapshot(0, state.len()), &nodes))
     }
 
     /// Append one typed event to the log and notify observers via the
@@ -699,8 +985,13 @@ impl Session {
         data: JsonValue,
         intent: Option<SurfaceIntent>,
     ) -> Result<SessionEvent, String> {
-        self.append_if(type_, data, intent, |_| true)?
-            .ok_or_else(|| "unconditional session append was rejected".to_string())
+        self.append_core(
+            type_,
+            data,
+            intent,
+            None::<fn(&SessionEventReader<'_>) -> Result<bool, String>>,
+        )?
+        .ok_or_else(|| "unconditional session append was rejected".to_string())
     }
 
     /// Append only when `condition` accepts the exact durable prefix while
@@ -715,6 +1006,41 @@ impl Session {
     ) -> Result<Option<SessionEvent>, String>
     where
         F: FnOnce(&[SessionEvent]) -> bool,
+    {
+        self.append_core(
+            type_,
+            data,
+            intent,
+            Some(|reader: &SessionEventReader<'_>| {
+                Ok(condition(&reader.state.snapshot(0, reader.state.len())))
+            }),
+        )
+    }
+
+    /// Atomically evaluate a condition through bounded event reads before
+    /// appending. This is the cold-prefix-safe conditional append boundary.
+    pub fn append_if_read<F>(
+        &self,
+        type_: &str,
+        data: JsonValue,
+        intent: Option<SurfaceIntent>,
+        condition: F,
+    ) -> Result<Option<SessionEvent>, String>
+    where
+        F: FnOnce(&SessionEventReader<'_>) -> Result<bool, String>,
+    {
+        self.append_core(type_, data, intent, Some(condition))
+    }
+
+    fn append_core<F>(
+        &self,
+        type_: &str,
+        data: JsonValue,
+        intent: Option<SurfaceIntent>,
+        condition: Option<F>,
+    ) -> Result<Option<SessionEvent>, String>
+    where
+        F: FnOnce(&SessionEventReader<'_>) -> Result<bool, String>,
     {
         let data_snapshot = snapshot_json_value(&data).ok_or_else(|| {
             format!("session event \"{type_}\" carries non-JSON-serializable data")
@@ -750,12 +1076,14 @@ impl Session {
         }
         let _guard = AppendGuard(entry.clone());
         let mut state = self.inner.state.lock();
-        if !condition(&state.log) {
-            return Ok(None);
+        if let Some(condition) = condition {
+            if !condition(&SessionEventReader { state: &state })? {
+                return Ok(None);
+            }
         }
         let event = SessionEvent {
             type_: type_.to_string(),
-            seq: SessionSeq::new(state.log.len() as u64)?,
+            seq: SessionSeq::new(state.len() as u64)?,
             time: now_ms(),
             data: data_snapshot,
             ignorable: matches!(
@@ -768,7 +1096,7 @@ impl Session {
         };
         {
             let state = &mut *state;
-            state.surface.validate_next(&state.log, &event)?;
+            state.validate_next(&event)?;
         }
         if let Some(entry) = &entry {
             // The append guard serializes writers while pre-commit hooks read
@@ -782,7 +1110,7 @@ impl Session {
                 "session/event",
                 &args,
             );
-            Arc::make_mut(&mut self.inner.state.lock().log).push(event.clone());
+            self.inner.state.lock().push_validated(event.clone());
             invoke_contained_session_observers(
                 &entry.emit_ctx,
                 "session/event",
@@ -791,7 +1119,7 @@ impl Session {
                 &listeners,
             );
         } else {
-            Arc::make_mut(&mut state.log).push(event.clone());
+            state.push_validated(event.clone());
         }
         Ok(Some(event))
     }
@@ -799,11 +1127,19 @@ impl Session {
     /// The [`EpochHeader`] in force after the log's last header event.
     pub fn request_header(&self) -> Option<EpochHeader> {
         let state = &mut *self.inner.state.lock();
-        if state.header_fold_seq < state.log.len() {
-            let new_events = &state.log[state.header_fold_seq..];
-            state.header_fold =
-                crate::request_header::fold_request_header(new_events, state.header_fold.clone());
-            state.header_fold_seq = state.log.len();
+        if state.header_fold_seq < state.len() {
+            let mut fold = state.header_fold.clone();
+            state
+                .visit(state.header_fold_seq, state.len(), |event| {
+                    fold = crate::request_header::fold_request_header(
+                        std::slice::from_ref(event),
+                        fold.take(),
+                    );
+                    Ok(true)
+                })
+                .expect("private Session event archive must remain readable");
+            state.header_fold = fold;
+            state.header_fold_seq = state.len();
         }
         state.header_fold.clone()
     }
@@ -812,14 +1148,18 @@ impl Session {
     /// `request/context` event.
     pub fn request_context(&self) -> Option<RequestContext> {
         let state = &mut *self.inner.state.lock();
-        if state.context_fold_seq < state.log.len() {
-            for event in &state.log[state.context_fold_seq..] {
-                if event.type_ == "request/context" {
-                    state.context_fold =
-                        serde_json::from_value::<RequestContext>(event.data.clone()).ok();
-                }
-            }
-            state.context_fold_seq = state.log.len();
+        if state.context_fold_seq < state.len() {
+            let mut fold = state.context_fold.clone();
+            state
+                .visit(state.context_fold_seq, state.len(), |event| {
+                    if event.type_ == "request/context" {
+                        fold = serde_json::from_value::<RequestContext>(event.data.clone()).ok();
+                    }
+                    Ok(true)
+                })
+                .expect("private Session event archive must remain readable");
+            state.context_fold = fold;
+            state.context_fold_seq = state.len();
         }
         state.context_fold.clone()
     }
@@ -828,8 +1168,8 @@ impl Session {
     /// message-producing events maintained by `surfaceOp` markers.
     pub fn derive_messages(&self) -> Result<Arc<Vec<Message>>, String> {
         let state = &mut *self.inner.state.lock();
-        let nodes = state.surface.nodes(&state.log)?;
-        let generation = state.surface.replace_generation(&state.log)?;
+        let nodes = state.surface.current_nodes().to_vec();
+        let generation = state.surface.current_generation();
         if generation != state.derived_generation {
             state.derived = Arc::new(Vec::new());
             state.derived_nodes = 0;
@@ -837,14 +1177,14 @@ impl Session {
         }
         if state.derived_nodes < nodes.len() {
             let start = state.derived_nodes;
-            let additions = nodes[start..]
-                .iter()
-                .filter_map(|seq| state.log.get(*seq as usize))
-                .filter_map(|event| {
-                    derive_event_message(event)
-                        .map(|message| state.surface.project_message(event.seq.get(), message))
-                })
-                .collect::<Vec<_>>();
+            let mut additions = Vec::new();
+            for seq in &nodes[start..] {
+                if let Some(event) = state.read_event(*seq as usize)?
+                    && let Some(message) = derive_event_message(&event)
+                {
+                    additions.push(state.surface.project_message(event.seq.get(), message));
+                }
+            }
             Arc::make_mut(&mut state.derived).extend(additions);
             state.derived_nodes = nodes.len();
         }
@@ -854,7 +1194,6 @@ impl Session {
     /// Instance face of the pure per-node `deriveEventMessage` export.
     pub fn derive_event_message(&self, event: &SessionEvent) -> Option<Message> {
         let state = &mut *self.inner.state.lock();
-        state.surface.nodes(&state.log).ok()?;
         derive_event_message(event)
             .map(|message| state.surface.project_message(event.seq.get(), message))
     }
@@ -1617,5 +1956,120 @@ mod ownership_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn archived_restore_keeps_every_event_and_validates_live_surface_rewrites() {
+        let mut seed = vec![record(0)];
+        seed.push(serde_json::from_value(serde_json::json!({
+            "seq":1,"time":1700000000000i64,"type":"tool/result","surfaceOp":"append",
+            "data":{"turn":1,"step":1,"message":{
+                "id":"result-1","role":"tool","source":{"kind":"tool","callId":"call-1"},
+                "toolCallId":"call-1","isError":false,"content":[{"type":"text","text":"original"}]
+            }},"sourceEventSeqs":[0]
+        })).unwrap());
+        for (offset, kind) in [
+            "assistant/chunk",
+            "todo/write",
+            "goal/change",
+            "agent/inbox/spliced",
+            "session/title",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            seed.push(SessionEvent {
+                type_: kind.into(),
+                seq: SessionSeq::new(offset as u64 + 2).unwrap(),
+                time: 1700000000001,
+                data: serde_json::json!({"opaque":[kind,{"exact":"历史\n"}]}),
+                surface_op: None,
+                source_event_seqs: None,
+                ignorable: None,
+            });
+        }
+        let mut builder =
+            crate::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        for event in &seed {
+            builder.push(event).unwrap();
+        }
+        let header = snapshot_session_header(&session_id("archive-preservation"), None).unwrap();
+        let restored = Session::from_event_archive(
+            header.id.clone(),
+            builder.finish().unwrap(),
+            &header,
+            SessionLogOffset::ZERO,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(restored.first_live_seq().get(), seed.len() as u64);
+        assert_eq!(restored.seq().get(), seed.len() as u64 + 1);
+        let mut replayed = Vec::new();
+        restored
+            .visit_events(0, Some(seed.len() as u64), |event| {
+                replayed.push(event.clone());
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(replayed, seed);
+        assert_eq!(restored.read_event(1).unwrap(), Some(seed[1].clone()));
+        assert_eq!(
+            restored
+                .find_event_rev(|event| event.type_ == "todo/write")
+                .unwrap(),
+            Some(seed[3].clone())
+        );
+        assert_eq!(&restored.events()[..seed.len()], seed.as_slice());
+
+        let mut rewritten = seed[1].data.clone();
+        rewritten["message"]["content"][0]["text"] = "rewritten".into();
+        let intent = SurfaceIntent {
+            surface_op: crate::SurfaceOp::Replace { start: 1, end: 1 },
+            source_event_seqs: Some(vec![1]),
+        };
+        let mut invalid = rewritten.clone();
+        invalid["message"]["id"] = "different-id".into();
+        let before = restored.seq();
+        assert!(
+            restored
+                .append("tool/result", invalid, Some(intent.clone()))
+                .is_err()
+        );
+        assert_eq!(restored.seq(), before);
+        let appended = restored
+            .append("tool/result", rewritten, Some(intent))
+            .unwrap();
+        assert_eq!(appended.seq.get(), before.get());
+        assert_eq!(
+            restored.surface().unwrap().nodes,
+            vec![0, appended.seq.get()]
+        );
+        let messages = restored.derive_messages().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[1].content,
+            vec![dsh_llm::ContentBlock::Text {
+                text: "rewritten".into()
+            }]
+        );
+        assert_eq!(restored.read_event(1).unwrap(), Some(seed[1].clone()));
+
+        assert!(
+            restored
+                .append_if_read(
+                    "session/title",
+                    serde_json::json!({"title":"next"}),
+                    None,
+                    |reader| {
+                        assert_eq!(reader.len(), appended.seq.get() + 1);
+                        Ok(reader
+                            .find_rev(|event| event.type_ == "session/title")?
+                            .is_none())
+                    }
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(restored.seq().get(), appended.seq.get() + 1);
     }
 }

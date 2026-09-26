@@ -12,11 +12,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dsh_agent::{Agent, fold_consumed_work};
+use dsh_agent::{Agent, ConsumedWorkFold};
 use dsh_llm::{ContentBlock, MessageSource, create_user_message};
 use dsh_session::{SessionEvent, SessionId, TurnEndReason, session_id};
 
-use crate::assistant_output::final_assistant_output;
+use crate::assistant_output::AssistantOutputFold;
 use crate::child_agent::{
     ChildComposition, append_delegated_policy_overrides, apply_child_composition,
     capture_delegated_policy_overrides, child_session_meta, resolve_child_agent_options,
@@ -273,10 +273,30 @@ fn read_result(
     cancelled: bool,
     structured: Option<&crate::structured::StructuredAttachment>,
 ) -> SubagentResult {
-    let events = child.session().events();
-    let own: &[SessionEvent] = &events[boundary.min(events.len())..];
-    let last_end = fold_consumed_work(own).end;
-    let output = final_assistant_output(own).unwrap_or_default();
+    let mut work = ConsumedWorkFold::default();
+    let mut output = AssistantOutputFold::default();
+    if let Err(error) = child
+        .session()
+        .visit_events(boundary as u64, None, |event| {
+            work.push(event);
+            output.push(event);
+            Ok(true)
+        })
+    {
+        child
+            .ctx()
+            .named_logger(Some("subagent"))
+            .warn(vec![cordis::arc(format!(
+                "result history read failed: {error}"
+            ))]);
+        return SubagentResult {
+            output: vec![],
+            structured: None,
+            stop_reason: SubagentStopReason::Error,
+        };
+    }
+    let last_end = work.finish().end;
+    let output = output.collect().unwrap_or_default();
     let recorded = to_stop_reason(
         last_end
             .as_ref()

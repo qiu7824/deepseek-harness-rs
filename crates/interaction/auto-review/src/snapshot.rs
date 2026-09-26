@@ -1,6 +1,6 @@
 //! Reviewer authority comes from provenance, never from assistant or tool prose.
 use dsh_agent::Agent;
-use dsh_session::SessionEvent;
+use dsh_session::SessionEventReader;
 use dsh_tools::ToolExecution;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -47,9 +47,9 @@ pub(crate) fn capture(agent: &dyn Agent, exec: &ToolExecution) -> Result<Snapsho
         .filter(|s| !s.is_empty())
         .ok_or("review requires a working directory")?
         .clone();
-    agent.session().with_surface_events(|events, nodes| {
+    agent.session().with_surface_reader(|reader, nodes| {
         capture_locked(
-            events,
+            reader,
             nodes,
             &cwd,
             meta.parent_session.as_ref().map(|id| id.as_str()),
@@ -57,10 +57,10 @@ pub(crate) fn capture(agent: &dyn Agent, exec: &ToolExecution) -> Result<Snapsho
             inherited,
             exec,
         )
-    })?
+    })
 }
 fn capture_locked(
-    events: &[SessionEvent],
+    reader: &SessionEventReader<'_>,
     nodes: &[u64],
     cwd: &str,
     parent: Option<&str>,
@@ -68,38 +68,36 @@ fn capture_locked(
     inherited: u64,
     exec: &ToolExecution,
 ) -> Result<Snapshot, String> {
-    let header = &events
-        .iter()
-        .rev()
-        .find(|e| e.type_ == "request/header")
-        .ok_or("missing request header")?
-        .data["header"];
+    let header_event = reader
+        .find_rev(|event| event.type_ == "request/header")?
+        .ok_or("missing request header")?;
+    let header = &header_event.data["header"];
     let provider = id(&header["config"], "provider")?.to_owned();
     let model = id(&header["config"], "model")?.to_owned();
-    let mut native: HashMap<Key, Vec<&SessionEvent>> = HashMap::new();
-    let mut starts: HashMap<Key, &SessionEvent> = HashMap::new();
-    let mut by_parent: HashMap<Key, Vec<&SessionEvent>> = HashMap::new();
+    let mut native: HashMap<Key, Vec<u64>> = HashMap::new();
+    let mut starts: HashMap<Key, u64> = HashMap::new();
+    let mut by_parent: HashMap<Key, Vec<u64>> = HashMap::new();
     let mut current = None;
     let mut descriptor_seen = false;
     let mut initial = None;
-    for event in events {
+    reader.visit(0, None, |event| {
         match event.type_.as_str() {
             "turn/start" | "turn/end" | "step/end" => current = None,
             "step/start" => current = Some(step(&event.data)?),
             "tool/call" => native
                 .entry(key(step(&event.data)?, id(&event.data, "callId")?))
                 .or_default()
-                .push(event),
+                .push(event.seq.get()),
             "tool/ptc-dispatch-start" => {
                 let position = current.ok_or("PTC start has no owning step")?;
                 let call = key(position, id(&event.data, "subCallId")?);
-                if starts.insert(call, event).is_some() {
+                if starts.insert(call, event.seq.get()).is_some() {
                     return Err("ambiguous nested call identity".into());
                 }
                 by_parent
                     .entry(key(position, id(&event.data, "parentCallId")?))
                     .or_default()
-                    .push(event);
+                    .push(event.seq.get());
             }
             _ => {}
         }
@@ -116,7 +114,8 @@ fn capture_locked(
                 initial = Some(event.seq.get());
             }
         }
-    }
+        Ok(true)
+    })?;
     let current = current.ok_or("pending action has no open step")?;
     let root_key = key(current, exec.root_call_id.as_str());
     let calls = native
@@ -125,12 +124,18 @@ fn capture_locked(
     if calls.len() != 1 {
         return Err("ambiguous pending root action".into());
     }
-    let root = calls[0];
+    let root = reader
+        .read(calls[0])?
+        .ok_or("pending root action is unavailable")?;
     let nested = if exec.parent.is_some() {
         Some(
-            *starts
-                .get(&key(current, exec.call_id.as_str()))
-                .ok_or("pending nested action is not logged")?,
+            reader
+                .read(
+                    *starts
+                        .get(&key(current, exec.call_id.as_str()))
+                        .ok_or("pending nested action is not logged")?,
+                )?
+                .ok_or("pending nested action is unavailable")?,
         )
     } else {
         None
@@ -140,9 +145,7 @@ fn capture_locked(
     let mut visible = HashSet::new();
     let mut passed = false;
     for &seq in nodes {
-        let event = events
-            .get(seq as usize)
-            .ok_or("invalid surface coordinate")?;
+        let event = reader.read(seq)?.ok_or("invalid surface coordinate")?;
         if event.type_ == "user/message" {
             let source = &event.data["source"];
             if source["kind"] == "tool" {
@@ -199,13 +202,16 @@ fn capture_locked(
             if calls.len() > 1 {
                 return Err("ambiguous native call identity".into());
             }
-            let Some(call) = calls.first() else {
+            let Some(call_seq) = calls.first() else {
                 if position == current && !passed || !children.is_empty() {
                     return Err("unstarted visible action before pending call".into());
                 }
                 unstarted = true;
                 continue;
             };
+            let call = reader
+                .read(*call_seq)?
+                .ok_or("started action is unavailable")?;
             if unstarted
                 || call.data["name"] != block["name"]
                 || call.data["arguments"] != block["arguments"]
@@ -216,10 +222,16 @@ fn capture_locked(
             if !is_current || nested.is_some() {
                 history.push(fact("native", &call.data));
             }
-            for nested_call in children {
-                if nested.is_some_and(|pending| pending.seq == nested_call.seq) {
+            for &nested_seq in children {
+                if nested
+                    .as_ref()
+                    .is_some_and(|pending| pending.seq.get() == nested_seq)
+                {
                     continue;
                 }
+                let nested_call = reader
+                    .read(nested_seq)?
+                    .ok_or("nested action is unavailable")?;
                 history.push(fact("ptc-inner", &nested_call.data));
             }
             if is_current {
@@ -288,4 +300,123 @@ fn capture_locked(
         model,
         text,
     })
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    use dsh_session::{Session, SurfaceIntent, SurfaceOp};
+    use std::sync::Arc;
+
+    #[test]
+    fn archived_review_snapshot_keeps_exact_bytes_order_and_parent_authority() {
+        let session =
+            Session::create(dsh_session::session_id("review-archive"), None, None, None).unwrap();
+        let schema = dsh_llm::ToolSchema {
+            name: "effect".into(),
+            description: "Scoped effect".into(),
+            parameters: json!({"type":"object","additionalProperties":false}),
+            defer_loading: None,
+        };
+        session
+            .append(
+                "subagent/descriptor",
+                json!({"version":5,"provider":"spawn","mode":"continuable","label":"child"}),
+                None,
+            )
+            .unwrap();
+        session
+            .append("turn/start", json!({"turn":1}), None)
+            .unwrap();
+        session
+            .append("step/start", json!({"turn":1,"step":1}), None)
+            .unwrap();
+        session.append("request/header", json!({"header":{"config":{"provider":"fixture","model":"model"},"tools":[schema.clone()]},"reason":"initial"}), None).unwrap();
+        for (name, source, text) in [
+            ("initial", json!({"kind":"user"}), "Parent task"),
+            (
+                "parent",
+                json!({"kind":"agent-message","senderSessionId":"parent-session"}),
+                "Parent continuation",
+            ),
+            (
+                "human",
+                json!({"kind":"user","rpcId":"human-input"}),
+                "Human instruction",
+            ),
+        ] {
+            session.append("user/message", json!({"id":name,"role":"user","content":[{"type":"text","text":text}],"source":source}), Some(SurfaceIntent {
+                surface_op:SurfaceOp::Append, source_event_seqs:None,
+            })).unwrap();
+        }
+        session.append("assistant/message", json!({"turn":1,"step":1,"message":{"id":"assistant","role":"assistant","content":[{"type":"text","text":"ASSISTANT_NOT_AUTHORITY"},{"type":"tool-call","id":"root","name":"effect","arguments":"{}"}],"source":{"kind":"model","provider":"fixture","model":"model"}}}), Some(SurfaceIntent {
+            surface_op:SurfaceOp::Append, source_event_seqs:None,
+        })).unwrap();
+        session
+            .append(
+                "tool/call",
+                json!({"turn":1,"step":1,"callId":"root","name":"effect","arguments":"{}"}),
+                None,
+            )
+            .unwrap();
+        let exec = ToolExecution {
+            schema: Some(schema),
+            permission_preset: Some("auto".into()),
+            token: 1,
+            call_id: dsh_llm::call_id("root"),
+            root_call_id: dsh_llm::call_id("root"),
+            name: "effect".into(),
+            arguments: json!({}),
+            agent: None,
+            parent: None,
+            signal: parking_lot::Mutex::new(Arc::new(|| false)),
+        };
+        let snapshot = |session: &Session| {
+            session
+                .with_surface_reader(|reader, nodes| {
+                    capture_locked(
+                        reader,
+                        nodes,
+                        "workspace",
+                        Some("parent-session"),
+                        true,
+                        0,
+                        &exec,
+                    )
+                })
+                .unwrap()
+        };
+        let before = snapshot(&session);
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let archived = Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            session.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        let after = snapshot(&archived);
+        assert_eq!(after.provider, before.provider);
+        assert_eq!(after.model, before.model);
+        assert_eq!(after.text.as_bytes(), before.text.as_bytes());
+        assert!(after.text.contains("direct-parent-instruction"));
+        assert!(after.text.contains("human-instruction"));
+        assert!(!after.text.contains("ASSISTANT_NOT_AUTHORITY"));
+        assert!(
+            after.text.find("Parent task").unwrap()
+                < after.text.find("Parent continuation").unwrap()
+        );
+        assert!(
+            after.text.find("Parent continuation").unwrap()
+                < after.text.find("Human instruction").unwrap()
+        );
+    }
 }

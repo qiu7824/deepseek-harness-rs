@@ -1319,7 +1319,7 @@ impl JsonlSessionPersistence {
             .await;
         }
         if crate::format::compression_of(&path) != JsonlCompression::Zstd {
-            let whole = self.read_from(id, 0).await?;
+            let whole = self.read_prefix(path, Some(id)).await?;
             let blank = !whole.events.iter().any(|event| event.type_ == "turn/start");
             let updated_at = whole
                 .events
@@ -1346,7 +1346,7 @@ impl JsonlSessionPersistence {
             unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|error| error.to_string())?;
         let scan = scan_zstd_frames(&buffer)?;
         if scan.torn_start.is_some() || scan.frames.is_empty() {
-            let whole = self.read_from(id, 0).await?;
+            let whole = self.read_prefix(path, Some(id)).await?;
             let blank = !whole.events.iter().any(|event| event.type_ == "turn/start");
             let updated_at = whole
                 .events
@@ -1754,6 +1754,38 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         })
     }
 
+    async fn read_forward_window_with_sink(
+        &self,
+        id: &SessionId,
+        request: SessionReadForwardWindowRequest,
+        sink: Box<dyn dsh_session_persistence::HistoryWindowSink>,
+    ) -> Result<SessionReadWindowResult, String> {
+        if request.max_events == 0 {
+            return Err("forward window max_events must be positive".into());
+        }
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        let path = self.upgrade_to_current(&path, id).await?;
+        if crate::native_reader::is_native(&path)? {
+            return crate::native_reader::run(&path, id, move |path, id| {
+                crate::native_reader::forward_window_with_sink(
+                    path,
+                    id,
+                    request,
+                    &|| false,
+                    Some(sink),
+                )
+            })
+            .await;
+        }
+        dsh_session_persistence::index::project_history_window(
+            self.read_forward_window(id, request).await?,
+            sink,
+        )
+    }
+
     async fn visit_event_chunks(
         &self,
         id: &SessionId,
@@ -1857,6 +1889,67 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         Ok(())
     }
 
+    async fn read_last_event_metadata(&self, id: &SessionId) -> Result<Option<(u64, i64)>, String> {
+        let before = self
+            .read_snapshot(id)
+            .await?
+            .ok_or("session tail source disappeared")?;
+        let path = self
+            .find_log(id)
+            .await?
+            .ok_or("session tail source disappeared")?;
+        let value = if crate::native_reader::is_native(&path)? {
+            crate::native_reader::run(&path, id, |path, id| {
+                let mut last = None;
+                crate::native_reader::visit(path, id, &|| false, |event| {
+                    last = Some((event.seq.get(), event.time));
+                    Ok(())
+                })?;
+                Ok(last)
+            })
+            .await?
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+                let mut last = None;
+                if crate::format::compression_of(&path) == JsonlCompression::Zstd {
+                    let mapping = unsafe { memmap2::MmapOptions::new().map(&file) }
+                        .map_err(|error| error.to_string())?;
+                    let scan = scan_zstd_frames(&mapping)?;
+                    if scan.torn_start.is_some() || scan.frames.is_empty() {
+                        return Err("incomplete compressed session tail".to_string());
+                    }
+                    for frame in scan.frames.iter().skip(1).rev() {
+                        visit_zstd_frame_tail(&mapping[frame.start..frame.end], 1, &mut |event| {
+                            last = Some((event.seq.get(), event.time));
+                            Ok(true)
+                        })?;
+                        if last.is_some() {
+                            break;
+                        }
+                    }
+                } else {
+                    let mut reader = std::io::BufReader::new(file);
+                    let mut header = String::new();
+                    std::io::BufRead::read_line(&mut reader, &mut header)
+                        .map_err(|error| error.to_string())?;
+                    crate::packed_stream::visit_tail_reader(reader, 1, &mut |event| {
+                        last = Some((event.seq.get(), event.time));
+                        Ok(true)
+                    })
+                    .map_err(|error| format!("invalid session tail: {error:?}"))?;
+                }
+                Ok(last)
+            })
+            .await
+            .map_err(|error| error.to_string())??
+        };
+        if self.read_snapshot(id).await?.as_ref() != Some(&before) {
+            return Err("session tail source changed while reading".into());
+        }
+        Ok(value)
+    }
+
     async fn visit_nonpacked_events(
         &self,
         id: &SessionId,
@@ -1871,7 +1964,14 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             return crate::native_reader::run(&path, id, move |path, id| {
                 let mut active = true;
                 crate::native_reader::visit(path, id, &|| false, |event| {
-                    if active && event.type_ != "assistant/chunk" {
+                    if active
+                        && (event.type_ != "assistant/chunk"
+                            || event
+                                .data
+                                .pointer("/chunk/type")
+                                .and_then(serde_json::Value::as_str)
+                                == Some("usage"))
+                    {
                         active = visitor(std::slice::from_ref(&event))?;
                     }
                     Ok(())
@@ -1900,9 +2000,17 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             .ok_or_else(|| format!("invalid {format_name} session header"))?;
         self.assert_stored_identity(&path, &meta, Some(id)).await?;
         if crate::format::compression_of(&path) == JsonlCompression::Zstd {
-            stream_zstd_nonpacked_events(&path, |event| visitor(std::slice::from_ref(&event)))
+            tokio::task::spawn_blocking(move || {
+                stream_zstd_nonpacked_events(&path, |event| visitor(std::slice::from_ref(&event)))
+            })
+            .await
+            .map_err(|error| error.to_string())?
         } else {
-            stream_jsonl_nonpacked_events(&path, |event| visitor(std::slice::from_ref(&event)))
+            tokio::task::spawn_blocking(move || {
+                stream_jsonl_nonpacked_events(&path, |event| visitor(std::slice::from_ref(&event)))
+            })
+            .await
+            .map_err(|error| error.to_string())?
         }
     }
 
@@ -1914,7 +2022,10 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
         let Some(path) = self.find_log(id).await? else {
             return Err(format!("session \"{}\" not found", id.as_str()));
         };
-        let path = self.upgrade_to_current(&path, id).await?;
+        // Cold-list projections read V3 in place. Migrating while seeding the
+        // message rail would change the authority header after list metadata
+        // was captured and invalidate the same snapshot we are rebuilding.
+        let path = self.upgrade_v0(&path, id).await?;
         if crate::native_reader::is_native(&path)? {
             return crate::native_reader::run(&path, id, |path, id| {
                 let mut events = Vec::new();
@@ -1933,7 +2044,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             })
             .await;
         }
-        let from_whole = |whole: dsh_session_persistence::SessionReadFromResult| {
+        let from_whole = |whole: StoredPrefix<JsonlTornMarker>| {
             let last_seq = whole
                 .events
                 .last()
@@ -1951,7 +2062,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             }
         };
         if crate::format::compression_of(&path) != JsonlCompression::Zstd {
-            return Ok(from_whole(self.read_from(id, 0).await?));
+            return Ok(from_whole(self.read_prefix(&path, Some(id)).await?));
         }
         let before = file_revision(&std::fs::metadata(&path).map_err(|error| error.to_string())?);
         let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
@@ -1960,7 +2071,7 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
             unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|error| error.to_string())?;
         let scan = scan_zstd_frames(&mapping)?;
         if scan.frames.is_empty() || scan.torn_start.is_some() {
-            return Ok(from_whole(self.read_from(id, 0).await?));
+            return Ok(from_whole(self.read_prefix(&path, Some(id)).await?));
         }
         let header = scan.frames[0];
         let header_plaintext = decompress_zstd_frame(&mapping[header.start..header.end])?;
@@ -2091,6 +2202,29 @@ impl dsh_session_persistence::SessionPersistenceApi for JsonlSessionPersistence 
                 }
             }
         }
+    }
+
+    async fn read_window_with_sink(
+        &self,
+        id: &SessionId,
+        request: SessionReadWindowRequest,
+        sink: Box<dyn dsh_session_persistence::HistoryWindowSink>,
+    ) -> Result<SessionReadWindowResult, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Err(format!("session \"{}\" not found", id.as_str()));
+        };
+        let path = self.upgrade_to_current(&path, id).await?;
+        if crate::native_reader::is_native(&path)? {
+            return crate::native_reader::run(&path, id, move |path, id| {
+                crate::native_reader::window_with_sink(path, id, request, &|| false, Some(sink))
+            })
+            .await;
+        }
+        dsh_session_persistence::index::project_history_window(
+            self.read_window(id, request).await?,
+            sink,
+        )
     }
 
     async fn read_list_metadata(
@@ -2363,6 +2497,22 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
         };
         let path = self.upgrade_to_current(&path, id).await?;
         Ok(Some(self.read_prefix(&path, Some(id)).await?))
+    }
+
+    async fn prepare_stored(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<dsh_session_persistence::StoredPreparation<JsonlTornMarker>>, String> {
+        self.ensure_root_encoding().await?;
+        let Some(path) = self.find_log(id).await? else {
+            return Ok(None);
+        };
+        let path = self.upgrade_to_current(&path, id).await?;
+        let prepared = crate::native_reader::run(&path, id, crate::native_reader::prepare).await?;
+        if let Some(prepared) = &prepared {
+            self.assert_stored_identity(&path, prepared.session.header(), Some(id)).await?;
+        }
+        Ok(prepared)
     }
 
     async fn read_stored_revision(

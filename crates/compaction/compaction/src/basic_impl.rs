@@ -81,28 +81,25 @@ impl BasicCompactionEngine {
         };
         let shadowed_seqs = initial_surface.nodes[start_index..=end_index].to_vec();
         if start_index == 0
-            && agent.session.with_events(|events| {
-                initial_surface
-                    .nodes
-                    .first()
-                    .and_then(|seq| events.get(*seq as usize))
-                    .is_some_and(|event| event.type_ == "system/message")
-            })
+            && agent
+                .session
+                .read_event(start)
+                .map_err(|error| {
+                    ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
+                })?
+                .is_some_and(|event| event.type_ == "system/message")
         {
             return Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Commit,
                 "the protected system head cannot be included in a compaction range",
             ));
         }
-        let open_turn = agent.session.with_events(|events| {
-            events
-                .iter()
-                .fold(None, |open, event| match event.type_.as_str() {
-                    "turn/start" => event.data.get("turn").and_then(|value| value.as_u64()),
-                    "turn/end" => None,
-                    _ => open,
-                })
-        });
+        let open_turn = agent
+            .session
+            .find_event_rev(|event| matches!(event.type_.as_str(), "turn/start" | "turn/end"))
+            .map_err(|error| ManualCompactionError::new(ManualCompactionErrorCode::Commit, error))?
+            .filter(|event| event.type_ == "turn/start")
+            .and_then(|event| event.data.get("turn").and_then(|value| value.as_u64()));
         if manual && open_turn.is_some() {
             return Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Busy,
@@ -190,14 +187,14 @@ impl BasicCompactionEngine {
         // Use the same per-message heuristic as the context projections. The
         // summary input also contains a protected system head; only replaced
         // surface nodes are deducted, and message count is a separate metric.
-        let shadowed_token_count = agent.session.with_events(|events| {
-            shadowed_seqs
-                .iter()
-                .filter_map(|seq| events.get(*seq as usize))
-                .filter_map(dsh_session::derive_event_message)
-                .map(|message| self.meter.estimate_message(&message))
-                .fold(0u64, u64::saturating_add)
-        });
+        let shadowed_token_count =
+            map_surface_events(&agent.session, &shadowed_seqs, |_, event| {
+                Ok(dsh_session::derive_event_message(event)
+                    .map(|message| self.meter.estimate_message(&message))
+                    .unwrap_or(0))
+            })?
+            .into_iter()
+            .fold(0u64, u64::saturating_add);
         let mut summary_data = serde_json::json!({
             "compactionId": compaction.as_str(),
             "summary": summary,

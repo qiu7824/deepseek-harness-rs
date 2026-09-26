@@ -59,7 +59,11 @@ async fn bundled_auto_review_defaults_off_and_plugin_disable_migrates_live_sessi
         session.with_events(|e| permissions.current(e)),
         "danger-full-access"
     );
-    assert_eq!(knobs(), before);
+    assert_eq!(knobs(), before + 1);
+    assert_eq!(
+        permissions.approval().effective_policy(&session),
+        dsh_user_approval::ApprovalPolicy::Never
+    );
     assert!(!permissions.names().contains(&"auto"));
     toggle(true).await.unwrap();
     assert_eq!(

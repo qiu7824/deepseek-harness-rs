@@ -276,6 +276,10 @@ impl Fixture {
 #[tokio::test]
 async fn native_review_executes_only_allowed_body_and_keeps_reason_ui_only() {
     let f = Fixture::new(false).await;
+    f.permissions
+        .approval()
+        .set_policy(&f.agent.agent, ApprovalPolicy::Never)
+        .unwrap();
     f.send();
     f.idle().await;
     assert_eq!(f.runs.load(Ordering::SeqCst), 1);
@@ -314,6 +318,10 @@ async fn native_review_executes_only_allowed_body_and_keeps_reason_ui_only() {
 #[tokio::test]
 async fn nested_calls_are_reviewed_once_and_have_durable_start_and_result() {
     let f = Fixture::new(true).await;
+    f.permissions
+        .approval()
+        .set_policy(&f.agent.agent, ApprovalPolicy::Never)
+        .unwrap();
     *f.adapter.reply.lock() =
         r#"{"risk":"high","decision":"deny","reason":"NESTED_UI_REASON"}"#.into();
     f.send();
@@ -586,4 +594,203 @@ fn validate_native(session: &dsh_session::Session) {
     }
     decoder.finish().unwrap();
     validator.finish().unwrap();
+}
+
+fn answer(
+    f: &Fixture,
+    event: &str,
+    outcome: dsh_user_approval::ApprovalOutcome,
+    calls: Arc<AtomicUsize>,
+) {
+    let listener: Arc<cordis::Listener> = Arc::new(move |_, _| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { Some(arc(outcome)) })
+    });
+    f.ctx.events.register(
+        &f.ctx,
+        "review approval test",
+        event,
+        listener,
+        &cordis::EventOptions::default().global(true),
+    );
+}
+
+#[tokio::test]
+async fn reviewer_denial_can_be_overridden_only_by_a_fresh_human_for_native_and_nested_calls() {
+    use dsh_user_approval::ApprovalOutcome;
+    for code in [false, true] {
+        let f = Fixture::new(code).await;
+        assert_eq!(
+            f.permissions
+                .approval()
+                .effective_policy(f.agent.agent.session()),
+            ApprovalPolicy::Ask
+        );
+        *f.adapter.reply.lock() =
+            r#"{"risk":"high","decision":"deny","reason":"HUMAN_REVIEW_DETAIL"}"#.into();
+        let automatic = Arc::new(AtomicUsize::new(0));
+        let human = Arc::new(AtomicUsize::new(0));
+        answer(
+            &f,
+            "approval/request",
+            ApprovalOutcome::AllowedAlways,
+            automatic.clone(),
+        );
+        answer(
+            &f,
+            "approval/human-request",
+            ApprovalOutcome::AllowedAlways,
+            human.clone(),
+        );
+        f.send();
+        f.idle().await;
+        f.send();
+        f.idle().await;
+        assert_eq!(f.runs.load(Ordering::SeqCst), 2);
+        assert_eq!(automatic.load(Ordering::SeqCst), 0);
+        assert_eq!(human.load(Ordering::SeqCst), 2);
+        let events = f.agent.agent.session().events();
+        let asked: Vec<_> = events
+            .iter()
+            .filter(|e| e.type_ == "approval/asked")
+            .collect();
+        assert_eq!(asked.len(), 2);
+        assert!(asked.iter().all(|e| {
+            e.data["rememberable"] == false
+                && e.data["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("HUMAN_REVIEW_DETAIL")
+        }));
+        assert!(
+            events
+                .iter()
+                .filter(|e| e.type_ == "approval/decided")
+                .all(|e| e.data["outcome"] == "allowed-once")
+        );
+        assert!(
+            !f.adapter
+                .main_requests
+                .lock()
+                .iter()
+                .any(|body| body.contains("HUMAN_REVIEW_DETAIL"))
+        );
+        validate_native(f.agent.agent.session());
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+async fn denied_review_stays_closed_without_human_approval_or_under_never_policy() {
+    use dsh_user_approval::ApprovalOutcome;
+    for policy in [ApprovalPolicy::Ask, ApprovalPolicy::Never] {
+        let f = Fixture::new(false).await;
+        f.permissions
+            .approval()
+            .set_policy(&f.agent.agent, policy)
+            .unwrap();
+        *f.adapter.reply.lock() = r#"{"risk":"medium","decision":"deny"}"#.into();
+        let automatic = Arc::new(AtomicUsize::new(0));
+        answer(
+            &f,
+            "approval/request",
+            ApprovalOutcome::AllowedOnce,
+            automatic.clone(),
+        );
+        f.send();
+        f.idle().await;
+        assert_eq!(f.runs.load(Ordering::SeqCst), 0);
+        assert_eq!(automatic.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            f.agent
+                .agent
+                .session()
+                .with_events(|events| f.permissions.current(events)),
+            AUTO_PRESET
+        );
+        let events = f.agent.agent.session().events();
+        let result = events.iter().find(|e| e.type_ == "tool/result").unwrap();
+        let expected = if policy == ApprovalPolicy::Never {
+            "AUTO_REVIEW_DENIED"
+        } else {
+            "USER_APPROVAL_UNAVAILABLE"
+        };
+        assert_eq!(result.data["error"]["code"], expected);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.type_ == "approval/asked")
+                .count(),
+            usize::from(policy == ApprovalPolicy::Ask)
+        );
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+async fn malformed_review_is_a_failure_without_manual_fallback() {
+    let f = Fixture::new(false).await;
+    *f.adapter.reply.lock() = "invalid JSON".into();
+    let human = Arc::new(AtomicUsize::new(0));
+    answer(
+        &f,
+        "approval/human-request",
+        dsh_user_approval::ApprovalOutcome::AllowedOnce,
+        human.clone(),
+    );
+    f.send();
+    f.idle().await;
+    assert_eq!(human.load(Ordering::SeqCst), 0);
+    assert_eq!(f.runs.load(Ordering::SeqCst), 0);
+    let events = f.agent.agent.session().events();
+    let result = events.iter().find(|e| e.type_ == "tool/result").unwrap();
+    assert_eq!(result.data["error"]["code"], "AUTO_REVIEW_FAILED");
+    assert!(
+        result.data["message"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("failed; its body was not executed")
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn reviewer_denial_preserves_downstream_security_denial() {
+    let f = Fixture::new(false).await;
+    *f.adapter.reply.lock() = r#"{"risk":"medium","decision":"deny"}"#.into();
+    let listener: Arc<cordis::Listener> = Arc::new(|_, _| {
+        Box::pin(async {
+            Some(arc(PreToolDecision::Deny {
+                reason: "Independent security gate".into(),
+            }))
+        })
+    });
+    f.ctx.events.register(
+        &f.ctx,
+        "independent deny",
+        "tools/pre-execute",
+        listener,
+        &cordis::EventOptions::default().global(true),
+    );
+    let human = Arc::new(AtomicUsize::new(0));
+    answer(
+        &f,
+        "approval/human-request",
+        dsh_user_approval::ApprovalOutcome::AllowedOnce,
+        human.clone(),
+    );
+    f.send();
+    f.idle().await;
+    assert_eq!(human.load(Ordering::SeqCst), 0);
+    assert_eq!(f.runs.load(Ordering::SeqCst), 0);
+    assert!(
+        f.agent
+            .agent
+            .session()
+            .events()
+            .iter()
+            .any(|e| e.type_ == "tool/result"
+                && e.data["message"]["content"][0]["text"] == "Error: Independent security gate")
+    );
+    f.close().await;
 }

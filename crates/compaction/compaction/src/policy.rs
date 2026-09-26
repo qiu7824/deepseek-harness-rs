@@ -138,7 +138,40 @@ impl BasicCompactionEngine {
         &self,
         agent: &CompactionAgentContext,
     ) -> Result<(String, String), ManualCompactionError> {
-        let header = fold_request_header(&agent.session.events(), None);
+        let config = self.target_config(agent)?;
+        Ok((config.provider, config.model))
+    }
+
+    fn target_config(
+        &self,
+        agent: &CompactionAgentContext,
+    ) -> Result<dsh_llm::LlmCallConfig, ManualCompactionError> {
+        // A persisted explicit selection remains authoritative even when a
+        // later request snapshot still describes the preceding model.
+        let mut selected = None;
+        agent
+            .session
+            .find_event_rev(|event| {
+                if event.type_ != "model/selection" {
+                    return false;
+                }
+                selected =
+                    serde_json::from_value::<dsh_llm::LlmCallConfig>(event.data.clone()).ok();
+                selected.is_some()
+            })
+            .map_err(|error| {
+                ManualCompactionError::new(ManualCompactionErrorCode::Summary, error)
+            })?;
+        if let Some(selected) = selected {
+            return Ok(dsh_llm::LlmCallConfig {
+                execution_mode: selected.execution_mode,
+                provider: selected.provider,
+                model: selected.model,
+                reasoning_effort: selected.reasoning_effort,
+                ..Default::default()
+            });
+        }
+        let header = agent.session.request_header();
         let provider = header
             .as_ref()
             .map(|h| h.config.provider.clone())
@@ -149,12 +182,19 @@ impl BasicCompactionEngine {
             .map(|h| h.config.model.clone())
             .filter(|s| !s.is_empty())
             .or_else(|| agent.model.clone());
-        provider.zip(model).ok_or_else(|| {
-            ManualCompactionError::new(
-                ManualCompactionErrorCode::Summary,
-                "No model selected for compaction",
-            )
-        })
+        provider
+            .zip(model)
+            .map(|(provider, model)| dsh_llm::LlmCallConfig {
+                provider,
+                model,
+                ..Default::default()
+            })
+            .ok_or_else(|| {
+                ManualCompactionError::new(
+                    ManualCompactionErrorCode::Summary,
+                    "No model selected for compaction",
+                )
+            })
     }
 
     async fn compact_pressure(
@@ -184,15 +224,17 @@ impl BasicCompactionEngine {
             .map_err(|e| ManualCompactionError::new(ManualCompactionErrorCode::Summary, e))?;
         let measure = || {
             self.meter
-                .measure(&agent.session, None)
-                .total_tokens
-                .saturating_add(extra_tokens)
+                .try_measure(&agent.session, None)
+                .map(|measurement| measurement.total_tokens.saturating_add(extra_tokens))
+                .map_err(|error| {
+                    ManualCompactionError::new(ManualCompactionErrorCode::Summary, error)
+                })
         };
         let threshold = spec
             .as_ref()
             .map(|s| s.threshold_tokens)
             .unwrap_or(u64::MAX);
-        if trigger == CompactionTrigger::Pressure && measure() < threshold {
+        if trigger == CompactionTrigger::Pressure && measure()? < threshold {
             return Ok(None);
         }
         if Self::cancelled(signal) {
@@ -215,7 +257,7 @@ impl BasicCompactionEngine {
                 self.sessions.flush(&agent.session).await.map_err(|e| {
                     ManualCompactionError::new(ManualCompactionErrorCode::Persistence, e)
                 })?;
-                if trigger == CompactionTrigger::Pressure && measure() < threshold {
+                if trigger == CompactionTrigger::Pressure && measure()? < threshold {
                     return Ok(None);
                 }
             }

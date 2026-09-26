@@ -84,17 +84,17 @@ impl SessionFeedbackService {
             data["requestId"] = json!(id);
         }
         let mut conflict = false;
-        let written = session.append_if("feedback/record", data.clone(), None, |events| {
+        let written = session.append_if_read("feedback/record", data.clone(), None, |reader| {
             if let Some(id) = &request.request_id {
-                if let Some(previous) = events.iter().rev().find(|event| {
+                if let Some(previous) = reader.find_rev(|event| {
                     event.type_ == "feedback/record"
                         && event.data["requestId"].as_str() == Some(id.as_str())
-                }) {
+                })? {
                     conflict = previous.data != data;
-                    return false;
+                    return Ok(false);
                 }
             }
-            true
+            Ok(true)
         });
         match written {
             Err(_) => fail("feedback-record-failed", "Could not record feedback"),

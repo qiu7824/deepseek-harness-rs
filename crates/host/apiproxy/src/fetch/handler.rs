@@ -38,8 +38,8 @@ use crate::api::rpc::{
     RpcResult, ServerRequest, ServerRequestType, WireRpcResult, rpc_id,
 };
 
-/// The response body: plain bytes for unary answers, or a byte stream for
-/// SSE channels.
+/// The response body: plain bytes or a byte stream. A streaming body may carry
+/// one JSON response or an SSE channel; content-type distinguishes the protocol.
 pub enum Body {
     Bytes(Vec<u8>),
     Stream(Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send>>),
@@ -209,26 +209,144 @@ fn error_response(rpc_id: RpcId, error: RpcError) -> CarrierResponse {
 }
 
 /// Complete the impl's narrow form into a ServerResponse full form.
-fn full_response(narrow: RpcResponse<serde_json::Value>) -> CarrierResponse {
-    json_message(RpcMessage::ServerResponse {
-        rpc_id: narrow.rpc_id,
-        result: match narrow.result {
-            RpcResult::Ok { ok, value } => WireRpcResult::Ok {
-                ok,
-                value: Some(value),
-            },
-            RpcResult::Err { ok, error } => WireRpcResult::Err { ok, error },
+fn full_response(method: &str, narrow: RpcResponse<serde_json::Value>) -> CarrierResponse {
+    let result = match narrow.result {
+        RpcResult::Ok { value, .. } if matches!(method, "session.history" | "subagent.history") => {
+            let chunks = super::json_body::JsonBody::history(narrow.rpc_id.into_inner(), value);
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::Stream(Box::pin(futures::stream::iter(chunks))))
+                .expect("carrier response");
+        }
+        RpcResult::Ok { ok, value } => WireRpcResult::Ok {
+            ok,
+            value: Some(value),
         },
-    })
+        RpcResult::Err { ok, error } => WireRpcResult::Err { ok, error },
+    };
+    let message = RpcMessage::ServerResponse {
+        rpc_id: narrow.rpc_id,
+        result,
+    };
+    json_message(message)
 }
 
 fn json_message(message: RpcMessage) -> CarrierResponse {
     let bytes = serde_json::to_vec(&message).expect("rpc messages serialize");
+    json_bytes_response(bytes)
+}
+
+fn json_bytes_response(bytes: Vec<u8>) -> CarrierResponse {
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .body(Body::Bytes(bytes))
         .expect("carrier response")
+}
+
+#[cfg(test)]
+mod response_serialization_tests {
+    use super::*;
+    use crate::api::rpc::True;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn history_response_streams_complete_wire_json_without_changing_bytes() {
+        use futures::StreamExt;
+        let mut text = "x".repeat(2 * 1024 * 1024 + 37);
+        text.push_str("\"\\\n\r\t汉字😀\u{2028}\u{2029}");
+        text.extend((0..=31).map(char::from));
+        for (method, projections) in [
+            ("session.history", None),
+            ("subagent.history", None),
+            (
+                "session.history",
+                Some(json!({"asOfSeq": 17, "values": {"title": "会话"}})),
+            ),
+            (
+                "subagent.history",
+                Some(json!({"asOfSeq": 17, "values": {"title": "会话"}})),
+            ),
+        ] {
+            let mut value = json!({
+                "events": [{
+                    "event": {
+                        "type": "assistant/message",
+                        "seq": 17,
+                        "time": 1.25,
+                        "data": {"text": text, "usage": u64::MAX, "offset": i64::MIN}
+                    },
+                    "view": null
+                }],
+                "hasMore": true,
+                "hasMoreBefore": true,
+                "hasMoreAfter": false,
+                "firstSeq": 17,
+                "lastSeq": 17
+            });
+            if let Some(projections) = projections {
+                value["projections"] = projections;
+            }
+            let expected = serde_json::to_vec(&RpcMessage::ServerResponse {
+                rpc_id: rpc_id("history-\"\\会话"),
+                result: WireRpcResult::Ok {
+                    ok: True,
+                    value: Some(value.clone()),
+                },
+            })
+            .unwrap();
+            let response = full_response(
+                method,
+                RpcResponse {
+                    rpc_id: rpc_id("history-\"\\会话"),
+                    result: RpcResult::ok(value),
+                },
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["content-type"], "application/json");
+            let Body::Stream(mut chunks) = response.into_body() else {
+                panic!("history must encode the unary JSON body incrementally");
+            };
+            let mut bytes = Vec::new();
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk.unwrap();
+                assert!(chunk.len() <= super::super::json_body::CHUNK_BYTES);
+                bytes.extend(chunk);
+            }
+            assert!(bytes.len() > 2 * 1024 * 1024);
+            assert_eq!(bytes, expected);
+        }
+    }
+
+    #[test]
+    fn history_errors_preserve_the_unary_error_wire_contract() {
+        let error = RpcError::BadRequest(RpcErrorBody {
+            message: "invalid history cursor: \"beforeSeq\"".into(),
+            details: BadRequestDetails { issues: vec![] },
+        });
+        let expected = serde_json::to_vec(&RpcMessage::ServerResponse {
+            rpc_id: rpc_id("history-error"),
+            result: WireRpcResult::Err {
+                ok: False,
+                error: error.clone(),
+            },
+        })
+        .unwrap();
+        let response = full_response(
+            "session.history",
+            RpcResponse {
+                rpc_id: rpc_id("history-error"),
+                result: RpcResult::fail(error),
+            },
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "application/json");
+        let Body::Bytes(bytes) = response.into_body() else {
+            panic!("business errors must remain unary byte responses");
+        };
+        assert_eq!(bytes, expected);
+    }
 }
 
 fn text_response(status: StatusCode, text: &str) -> CarrierResponse {
@@ -329,7 +447,7 @@ async fn handle_unary(
         .await
     });
     match spawned.await {
-        Ok(response) => full_response(response),
+        Ok(response) => full_response(method, response),
         // The impl never returns business errors; reaching here means the
         // implementation itself crashed — 500, carrier layer.
         Err(_) => text_response(StatusCode::INTERNAL_SERVER_ERROR, "handler failure"),

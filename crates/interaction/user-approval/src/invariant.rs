@@ -171,14 +171,12 @@ pub fn installer() -> InvariantInstaller {
                     .map(|slot| slot.as_ref().clone())
                 {
                     for session in store.list() {
-                        let events: Vec<SessionEvent> = session.events().iter().cloned().collect();
-                        for event in &events {
+                        if let Err(message) = session.visit_events(0, None, |event| {
                             apply_turn(&traces, session.id().as_str(), event);
-                            if let Err(message) =
-                                validate_event(&traces, session.id().as_str(), event)
-                            {
-                                fail(&message);
-                            }
+                            validate_event(&traces, session.id().as_str(), event)?;
+                            Ok(true)
+                        }) {
+                            fail(&message);
                         }
                     }
                 }

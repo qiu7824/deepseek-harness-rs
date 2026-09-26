@@ -85,10 +85,14 @@ pub fn installer() -> InvariantInstaller {
                     .map(|slot| slot.as_ref().clone())
                 {
                     for session in store.list() {
-                        for event in session.events().iter() {
+                        let replayed = session.visit_events(0, None, |event| {
                             if let Err(message) = validate_event(event) {
                                 fail(&message);
                             }
+                            Ok(true)
+                        });
+                        if let Err(error) = replayed {
+                            fail(&error);
                         }
                     }
                 }

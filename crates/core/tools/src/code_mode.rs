@@ -27,8 +27,8 @@ impl NestedDispatchLog {
         let start_seq = if let Some(session) = &session {
             Some(
                 session
-                    .append_if("tool/ptc-dispatch-start", start.clone(), None, |_| {
-                        !signal()
+                    .append_if_read("tool/ptc-dispatch-start", start.clone(), None, |_| {
+                        Ok(!signal())
                     })?
                     .ok_or("Nested tool execution cancelled before dispatch")?
                     .seq
@@ -55,8 +55,8 @@ impl NestedDispatchLog {
             value["error"] = json!({"name":info.name,"code":info.code});
         }
         if let (Some(session), Some(seq)) = (&self.session, self.start_seq) {
-            session.append_if("tool/ptc-dispatch", value, None, |events| {
-                pending_dispatch(events, seq)
+            session.append_if_read("tool/ptc-dispatch", value, None, |reader| {
+                pending_dispatch(reader, seq)
             })?;
         }
         self.settled = true;
@@ -74,27 +74,40 @@ impl Drop for NestedDispatchLog {
             value["content"] = json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
             value["error"] = json!({"name":"ToolAbortedError","code":"ABORTED"});
             if let Some(seq) = self.start_seq {
-                let _ = session.append_if("tool/ptc-dispatch", value, None, |events| {
-                    pending_dispatch(events, seq)
-                });
+                if let Err(error) =
+                    session.append_if_read("tool/ptc-dispatch", value, None, |reader| {
+                        pending_dispatch(reader, seq)
+                    })
+                {
+                    eprintln!("nested tool finalization failed: {error}");
+                }
             }
         }
     }
 }
 
-fn pending_dispatch(events: &[dsh_session::SessionEvent], seq: u64) -> bool {
-    let Some(start) = events
-        .get(seq as usize)
-        .filter(|e| e.type_ == "tool/ptc-dispatch-start")
+fn pending_dispatch(
+    reader: &dsh_session::SessionEventReader<'_>,
+    seq: u64,
+) -> Result<bool, String> {
+    let Some(start) = reader
+        .read(seq)?
+        .filter(|event| event.type_ == "tool/ptc-dispatch-start")
     else {
-        return false;
+        return Ok(false);
     };
-    !events.iter().skip(seq as usize + 1).any(|event| {
-        matches!(event.type_.as_str(), "step/end" | "turn/end")
+    let mut pending = true;
+    reader.visit(seq + 1, None, |event| {
+        if matches!(event.type_.as_str(), "step/end" | "turn/end")
             || event.type_ == "tool/ptc-dispatch"
                 && event.data["subCallId"] == start.data["subCallId"]
                 && event.data["rootCallId"] == start.data["rootCallId"]
-    })
+        {
+            pending = false;
+        }
+        Ok(pending)
+    })?;
+    Ok(pending)
 }
 struct CodeLifetime {
     closed: Arc<AtomicBool>,
@@ -102,31 +115,108 @@ struct CodeLifetime {
     root: dsh_llm::CallId,
     from: u64,
 }
+
+#[cfg(test)]
+mod archive_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn archived_nested_dispatch_cleanup_only_closes_unsettled_calls_once() {
+        let session = dsh_session::Session::create(
+            dsh_session::session_id("code-mode-archive"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let first = json!({"rootCallId":"root","subCallId":"first","name":"read","arguments":{}});
+        let second = json!({"rootCallId":"root","subCallId":"second","name":"read","arguments":{}});
+        let first_seq = session
+            .append("tool/ptc-dispatch-start", first.clone(), None)
+            .unwrap()
+            .seq
+            .get();
+        let second_seq = session
+            .append("tool/ptc-dispatch-start", second, None)
+            .unwrap()
+            .seq
+            .get();
+        session.append("tool/ptc-dispatch", first, None).unwrap();
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let archived = dsh_session::Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            session.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        archived.with_event_reader(|reader| {
+            assert!(!pending_dispatch(reader, first_seq).unwrap());
+            assert!(pending_dispatch(reader, second_seq).unwrap());
+        });
+        let closed = Arc::new(AtomicBool::new(false));
+        drop(CodeLifetime {
+            closed: closed.clone(),
+            session: Some(archived.clone()),
+            root: call_id("root"),
+            from: 0,
+        });
+        assert!(closed.load(Ordering::SeqCst));
+        archived
+            .with_event_reader(|reader| assert!(!pending_dispatch(reader, second_seq).unwrap()));
+        let mut completions = Vec::new();
+        archived
+            .visit_events(0, None, |event| {
+                if event.type_ == "tool/ptc-dispatch" {
+                    completions.push(event.data["subCallId"].clone());
+                }
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(completions, [json!("first"), json!("second")]);
+    }
+}
 impl Drop for CodeLifetime {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::SeqCst);
         let Some(session) = &self.session else {
             return;
         };
-        let pending = session.with_events(|events| {
-            events
-                .iter()
-                .skip(self.from as usize)
-                .filter(|e| {
-                    e.type_ == "tool/ptc-dispatch-start"
-                        && e.data["rootCallId"] == self.root.as_str()
-                        && pending_dispatch(events, e.seq.get())
-                })
-                .map(|e| (e.seq.get(), e.data.clone()))
-                .collect::<Vec<_>>()
-        });
+        let mut pending: Vec<(u64, JsonValue)> = Vec::new();
+        if let Err(error) = session.visit_events(self.from, None, |event| {
+            match event.type_.as_str() {
+                "step/end" | "turn/end" => pending.clear(),
+                "tool/ptc-dispatch-start" if event.data["rootCallId"] == self.root.as_str() => {
+                    pending.push((event.seq.get(), event.data.clone()));
+                }
+                "tool/ptc-dispatch" => pending.retain(|(_, start)| {
+                    start["rootCallId"] != event.data["rootCallId"]
+                        || start["subCallId"] != event.data["subCallId"]
+                }),
+                _ => {}
+            }
+            Ok(true)
+        }) {
+            eprintln!("nested tool cleanup could not read pending calls: {error}");
+            return;
+        }
         for (seq, mut value) in pending {
             value["isError"] = json!(true);
             value["content"] = json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
             value["error"] = json!({"name":"ToolAbortedError","code":"ABORTED"});
-            let _ = session.append_if("tool/ptc-dispatch", value, None, |events| {
-                pending_dispatch(events, seq)
-            });
+            if let Err(error) = session.append_if_read("tool/ptc-dispatch", value, None, |reader| {
+                pending_dispatch(reader, seq)
+            }) {
+                eprintln!("nested tool cleanup finalization failed: {error}");
+            }
         }
     }
 }

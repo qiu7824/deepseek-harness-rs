@@ -17,7 +17,6 @@ use std::sync::Arc;
 use cordis::{ArcValue, Context, DispatchMode, Listener, arc};
 use dsh_agent::Agent;
 use dsh_scope::{ScopeCarrier, scope_target};
-use dsh_session::SessionEvent;
 
 fn notification_content(output: Vec<dsh_llm::ContentBlock>) -> Option<Vec<dsh_llm::ContentBlock>> {
     let content: Vec<_> = output
@@ -223,7 +222,7 @@ pub struct ActivationObserver {
 impl ActivationObserver {
     /// Publish the start edge once the epoch is resident.
     pub fn start(&self, child: &Arc<dyn Agent>) {
-        *self.boundary.lock() = child.session().events().len();
+        *self.boundary.lock() = child.session().seq().get() as usize;
         emit_lifecycle_edge(
             &self.emit_ctx,
             LifecycleEdge::Start(self.identity.clone(), self.parent.clone()),
@@ -234,11 +233,30 @@ impl ActivationObserver {
     /// registered.
     pub fn capture(&self, child: &Arc<dyn Agent>) {
         let boundary = *self.boundary.lock();
-        let events = child.session().events();
-        let own: &[SessionEvent] = &events[boundary.min(events.len())..];
-        let output = crate::assistant_output::final_assistant_output(own);
+        let mut output = crate::assistant_output::AssistantOutputFold::default();
+        let mut work = dsh_agent::ConsumedWorkFold::default();
+        let replayed = child
+            .session()
+            .visit_events(boundary as u64, None, |event| {
+                output.push(event);
+                work.push(event);
+                Ok(true)
+            });
+        if let Err(error) = replayed {
+            self.emit_ctx
+                .named_logger(Some("subagent"))
+                .warn(vec![arc(format!(
+                    "activation history read failed: {error}"
+                ))]);
+            *self.captured.lock() = ActivationTerminal {
+                stop_reason: SubagentStopReason::Error,
+                output: None,
+            };
+            return;
+        }
+        let output = output.collect();
         let captured = ActivationTerminal {
-            stop_reason: epoch_stop_reason(own),
+            stop_reason: epoch_stop_reason(work.finish()),
             output,
         };
         *self.captured.lock() = captured;
@@ -302,8 +320,7 @@ pub fn create_activation_observer(
 
 /// Why this child's epoch ended, for the terminal lifecycle edge and the
 /// manager's own parent delivery.
-fn epoch_stop_reason(events: &[SessionEvent]) -> SubagentStopReason {
-    let consumed = dsh_agent::fold_consumed_work(events);
+fn epoch_stop_reason(consumed: dsh_agent::ConsumedWork) -> SubagentStopReason {
     let reason_kind = consumed
         .end
         .as_ref()

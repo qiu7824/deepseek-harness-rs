@@ -99,6 +99,7 @@ dsh-session-persistence = { path = "../../session/session-persistence" }
 dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }
 dsh-session-query = { path = "../../session/session-query" }
 dsh-session-reference = { path = "../../context/session-reference" }
+dsh-time-context = { path = "../../context/time-context" }
 dsh-llm-retry = { path = "../../llm/llm-retry" }
 dsh-session-query-sqlite = { path = "../../session/session-query-sqlite" }
 dsh-session-projection = { path = "../../session/session-projection" }

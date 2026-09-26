@@ -326,6 +326,15 @@ impl ReactLoopAgent {
         options: AgentOptions,
         session: Session,
     ) -> Result<Arc<Self>, String> {
+        let inbox = Inbox::new(&session, InboxNotifications::default())?;
+        let mut last_turn = 0;
+        session.visit_events(0, None, |event| {
+            if event.type_ == "turn/start" {
+                last_turn = event.data["turn"].as_u64().unwrap_or(0);
+            }
+            Ok(true)
+        })?;
+        let runtime_context = RuntimeContextProjection::restore(&session)?;
         let scope_key = dsh_scope::ScopeKey::new();
         let scope = create_scope(
             loop_ctx,
@@ -333,24 +342,13 @@ impl ReactLoopAgent {
             &dsh_scope::CreateScopeOptions::default(),
         );
         let scope_ctx = scope.ctx.clone();
+        runtime_context.attach(&scope_ctx, &session);
         let agent: Arc<Self> = Arc::new_cyclic(move |agent_ref: &Weak<Self>| {
-            let inbox = Inbox::new(
-                &session,
-                InboxNotifications {
-                    inserted: Some(inbox_notify_inserted(loop_ctx, agent_ref)),
-                    discarded: Some(inbox_notify_discarded(loop_ctx, agent_ref)),
-                    claimed: Some(inbox_notify_claimed(loop_ctx, agent_ref)),
-                },
-            )
-            .expect("inbox");
-            let last_turn = session
-                .events()
-                .iter()
-                .rev()
-                .find(|event| event.type_ == "turn/start")
-                .and_then(|event| event.data["turn"].as_u64())
-                .unwrap_or(0);
-            let runtime_context = RuntimeContextProjection::new(&scope_ctx, &session);
+            let inbox = inbox.with_notifications(InboxNotifications {
+                inserted: Some(inbox_notify_inserted(loop_ctx, agent_ref)),
+                discarded: Some(inbox_notify_discarded(loop_ctx, agent_ref)),
+                claimed: Some(inbox_notify_claimed(loop_ctx, agent_ref)),
+            });
             Self {
                 published: AtomicBool::new(true),
                 loop_ctx: loop_ctx.clone(),
@@ -592,24 +590,27 @@ impl ReactLoopAgent {
             Phase::Running { turn, step, .. } => (*turn, *step),
             _ => return,
         };
-        let open_turn = self.session.with_events(|events| {
-            events
-                .iter()
-                .rev()
-                .find(|event| matches!(event.type_.as_str(), "turn/start" | "turn/end"))
-                .is_some_and(|event| event.type_ == "turn/start")
-        });
-        if !open_turn {
+        let mut open_turn = None;
+        let mut open_step = None;
+        if let Err(error) = self.session.find_event_rev(|event| {
+            match event.type_.as_str() {
+                "turn/start" | "turn/end" if open_turn.is_none() => {
+                    open_turn = Some(event.type_ == "turn/start");
+                }
+                "step/start" | "step/end" if open_step.is_none() => {
+                    open_step = Some(event.type_ == "step/start");
+                }
+                _ => {}
+            }
+            open_turn.is_some() && open_step.is_some()
+        }) {
+            tracing::warn!(error = %error, "could not inspect lifecycle after a driver panic");
             return;
         }
-        let open_step = self.session.with_events(|events| {
-            events
-                .iter()
-                .rev()
-                .find(|event| matches!(event.type_.as_str(), "step/start" | "step/end"))
-                .is_some_and(|event| event.type_ == "step/start")
-        });
-        if open_step
+        if open_turn != Some(true) {
+            return;
+        }
+        if open_step == Some(true)
             && let Err(error) = self.session.append(
                 "step/end",
                 serde_json::json!({ "turn": turn, "step": step }),

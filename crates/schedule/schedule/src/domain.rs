@@ -24,7 +24,7 @@ use crate::types::{AtInput, LocalAtInput, ScheduleChange, ScheduleId, ScheduleRe
 pub const SCHEDULE_CHANGE_VERSION: u32 = 1;
 
 /// Fixed v1 lower bound for a fixed-rate reminder.
-pub const MIN_EVERY_INTERVAL_SECONDS: i64 = 300;
+pub const MIN_EVERY_INTERVAL_SECONDS: i64 = 60;
 
 /// Epoch milliseconds of `0001-01-01T00:00:00.000Z`.
 pub const MIN_FOUR_DIGIT_YEAR_MS: i64 = -62_135_596_800_000;
@@ -846,6 +846,37 @@ pub fn fold_schedule_events(
         apply_change(&mut folded, &change)?;
     }
     Ok(folded)
+}
+
+/// Incremental replay of one Session's complete own schedule stream.
+pub fn fold_session_schedules(
+    session: &dsh_session::Session,
+) -> Result<FoldedSchedules, ScheduleLogError> {
+    #[derive(Default)]
+    struct Trace {
+        initialized: bool,
+        observed: u64,
+        folded: FoldedSchedules,
+    }
+    let state = session.derived_cache::<parking_lot::Mutex<Trace>>();
+    let mut state = state.lock();
+    if !state.initialized {
+        state.observed = session.inherited_event_count().get();
+        state.initialized = true;
+    }
+    session
+        .visit_events(state.observed, None, |event| {
+            if event.type_ == "schedule/change" {
+                let change = decode_schedule_change(&event.data).map_err(|error| error.message)?;
+                let mut next = state.folded.clone();
+                apply_change(&mut next, &change).map_err(|error| error.message)?;
+                state.folded = next;
+            }
+            state.observed = event.seq.get() + 1;
+            Ok(true)
+        })
+        .map_err(ScheduleLogError::new)?;
+    Ok(state.folded.clone())
 }
 
 /// Apply one decoded change to a running fold (shared by the replay fold

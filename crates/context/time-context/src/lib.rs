@@ -4,10 +4,6 @@
 //!
 //! # Deviations
 //!
-//! - The TS listener consults `signal.aborted` from the pre-step payload; the
-//!   Rust [`dsh_agent::AgentPreStepPayload`] carries no signal yet, so the
-//!   already-aborted short-circuit is skipped (the loop cancels the step
-//!   itself).
 //! - `Date.now()` is `chrono::Utc::now().timestamp_millis()`.
 //! - IANA canonicalization follows the tz database (chrono-tz) with the CLDR
 //!   `Etc/UTC`-family alias collapsed to `UTC`, matching ICU
@@ -29,7 +25,7 @@ use dsh_llm::{
     ContentBlock, ContextForm, ContextSnapshotSection, MessageSource, UserMessage,
     create_user_message,
 };
-use dsh_schemastery::Schema;
+use dsh_schemastery::{Data, Schema};
 use dsh_session::SessionEvent;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -42,27 +38,90 @@ use crate::timestamp::{TimestampFormatter, format_timestamp};
 /// Cordis plugin name used by loader diagnostics.
 pub const NAME: &str = "time-context";
 
+/// Default cadence for durable time readings: ten minutes.
+pub const DEFAULT_REFRESH_INTERVAL_MS: f64 = 600_000.0;
+
 /// The agent registry that owns pre-step processing.
 pub const INJECT: [&str; 1] = ["agents"];
 
 /// Request-preparation clock formatting and append scheduling. Invalid values
 /// fail plugin load (TS `Config`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
     /// Fallback display zone when the open turn has no unique browser zone.
     /// Omit to use the process zone.
     pub time_zone: Option<String>,
     /// Minimum milliseconds between durable injections in one session. Omit
-    /// or set to 0 to inject at every eligible step.
+    /// for ten minutes, or set to 0 to inject at every eligible step.
     pub refresh_interval_ms: Option<f64>,
 }
 
-/// Schemastery validation for [`Config`] (the TS `Config` schema export; both
-/// fields are required, exactly like `z.object({ ... })`).
+/// Decode the actual Loader/Profile JSON vocabulary without replacing explicit
+/// zero or custom intervals with schema defaults. Null and unknown fields are
+/// rejected rather than silently changing the configured behavior.
+pub fn decode_config(value: &serde_json::Value) -> Result<Config, String> {
+    let object = value
+        .as_object()
+        .ok_or("time-context: configuration must be an object")?;
+    for key in object.keys() {
+        if !matches!(key.as_str(), "timeZone" | "refreshIntervalMs") {
+            return Err(format!("time-context: unknown configuration field {key:?}"));
+        }
+    }
+    let time_zone = object
+        .get("timeZone")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "time-context: timeZone must be a string".to_owned())
+        })
+        .transpose()?;
+    let refresh_interval_ms = object
+        .get("refreshIntervalMs")
+        .map(|value| {
+            value.as_f64().ok_or_else(|| {
+                "time-context: refreshIntervalMs must be a non-negative safe integer".to_owned()
+            })
+        })
+        .transpose()?;
+    let config = Config {
+        time_zone,
+        refresh_interval_ms,
+    };
+    validate_config(&config)?;
+    Ok(config)
+}
+
+fn validate_config(config: &Config) -> Result<(), String> {
+    validate_refresh_interval(config.refresh_interval_ms)?;
+    TimestampFormatter::create(config.time_zone.as_deref())
+        .map_err(|error| format!("time-context: {}", error.message()))?;
+    Ok(())
+}
+
+fn plugin_config(config: &ArcValue) -> Result<Config, String> {
+    let decoded = if let Some(config) = config.downcast_ref::<Config>() {
+        config.clone()
+    } else if let Some(value) = config.downcast_ref::<serde_json::Value>() {
+        return decode_config(value);
+    } else if config.is::<()>() {
+        Config::default()
+    } else {
+        return Err("time-context: unsupported configuration value".into());
+    };
+    validate_config(&decoded)?;
+    Ok(decoded)
+}
+
+/// Schemastery validation and defaults for [`Config`].
 pub fn config_schema() -> Schema {
     Schema::object(IndexMap::from([
         ("timeZone".to_string(), Schema::string()),
-        ("refreshIntervalMs".to_string(), Schema::number()),
+        (
+            "refreshIntervalMs".to_string(),
+            Schema::number().default(Data::Number(DEFAULT_REFRESH_INTERVAL_MS)),
+        ),
     ]))
 }
 
@@ -103,31 +162,30 @@ fn is_plugin_message(event: &SessionEvent, plugin: &str) -> bool {
 /// Find the latest model-visible event, excluding this plugin's pending
 /// append (TS `precedingMessageTime`).
 pub fn preceding_message_time(agent: &dyn Agent) -> Option<i64> {
-    for event in agent.session().events().iter().rev() {
-        match event.type_.as_str() {
-            "developer/message" | "user/message" | "assistant/message" | "tool/result" => {
-                return Some(event.time);
-            }
-            _ => {}
-        }
-    }
-    None
+    agent
+        .session()
+        .find_event_rev(|event| {
+            matches!(
+                event.type_.as_str(),
+                "developer/message" | "user/message" | "assistant/message" | "tool/result"
+            )
+        })
+        .expect("time-context Session archive must remain readable")
+        .map(|event| event.time)
 }
 
 /// Find the preceding time-context event within the open turn (TS
 /// `precedingStepContextTime`).
 pub fn preceding_step_context_time(agent: &dyn Agent, turn: u64) -> Option<i64> {
-    for event in agent.session().events().iter().rev() {
-        if event.type_ == "turn/start"
-            && event.data.get("turn").and_then(|value| value.as_u64()) == Some(turn)
-        {
-            return None;
-        }
-        if event.type_ == "user/message" && is_plugin_message(event, NAME) {
-            return Some(event.time);
-        }
-    }
-    None
+    agent
+        .session()
+        .find_event_rev(|event| {
+            event.type_ == "turn/start" && event.data["turn"].as_u64() == Some(turn)
+                || event.type_ == "user/message" && is_plugin_message(event, NAME)
+        })
+        .expect("time-context Session archive must remain readable")
+        .filter(|event| event.type_ == "user/message")
+        .map(|event| event.time)
 }
 
 /// Find this plugin's latest durable injection, including a shadowed surface
@@ -135,10 +193,8 @@ pub fn preceding_step_context_time(agent: &dyn Agent, turn: u64) -> Option<i64> 
 pub fn latest_injection_time(agent: &dyn Agent) -> Option<i64> {
     agent
         .session()
-        .events()
-        .iter()
-        .rev()
-        .find(|event| event.type_ == "user/message" && is_plugin_message(event, NAME))
+        .find_event_rev(|event| event.type_ == "user/message" && is_plugin_message(event, NAME))
+        .expect("time-context Session archive must remain readable")
         .map(|event| event.time)
 }
 
@@ -149,17 +205,26 @@ pub fn request_messages(
     turn: u64,
     proposed: Vec<UserMessage>,
 ) -> Vec<UserMessage> {
-    let events = agent.session().events();
-    let start = events.iter().rposition(|event| {
-        event.type_ == "turn/start"
-            && event.data.get("turn").and_then(|value| value.as_u64()) == Some(turn)
-    });
-    let mut entered: Vec<UserMessage> = events
-        .iter()
-        .skip(start.map_or(0, |index| index + 1))
-        .filter(|event| event.type_ == "user/message")
-        .filter_map(|event| serde_json::from_value::<UserMessage>(event.data.clone()).ok())
-        .collect();
+    let mut entered = agent
+        .session()
+        .with_event_reader(|reader| -> Result<Vec<UserMessage>, String> {
+            let start = reader
+                .find_rev(|event| {
+                    event.type_ == "turn/start" && event.data["turn"].as_u64() == Some(turn)
+                })?
+                .map_or(0, |event| event.seq.get() + 1);
+            let mut entered = Vec::new();
+            reader.visit(start, None, |event| {
+                if event.type_ == "user/message" {
+                    if let Ok(message) = serde_json::from_value::<UserMessage>(event.data.clone()) {
+                        entered.push(message);
+                    }
+                }
+                Ok(true)
+            })?;
+            Ok(entered)
+        })
+        .expect("time-context Session archive must remain readable");
     entered.extend(proposed);
     entered
 }
@@ -207,6 +272,12 @@ pub fn validate_refresh_interval(refresh_interval_ms: Option<f64>) -> Result<(),
     Ok(())
 }
 
+fn refresh_due(configured: Option<f64>, now: i64, last: Option<i64>) -> bool {
+    let interval = configured.unwrap_or(DEFAULT_REFRESH_INTERVAL_MS);
+    interval == 0.0
+        || last.is_none_or(|last| now < last || now.saturating_sub(last) as f64 >= interval)
+}
+
 /// The TS `String(number)` rendering for diagnostics.
 fn js_number_string(value: f64) -> String {
     if value.is_nan() {
@@ -251,9 +322,12 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
     ));
 
     let ctx_for_listener = ctx.clone();
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let active_for_listener = active.clone();
     let listener: Arc<Listener> = Arc::new(move |_dispatch_ctx: &Context, args: Vec<ArcValue>| {
         let formatters = Arc::clone(&formatters);
         let fallback_time_zone = fallback_time_zone.clone();
+        let active = active_for_listener.clone();
         Box::pin(async move {
             let payload = args
                 .first()
@@ -267,22 +341,21 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                 .expect("agent/pre-step decision")
                 .as_ref()
                 .clone();
-            if matches!(decision, PreStepDecision::Reject) {
+            if matches!(decision, PreStepDecision::Reject)
+                || payload.signal.aborted()
+                || !active.load(std::sync::atomic::Ordering::Acquire)
+            {
                 return Some(decision_value);
             }
-            // The TS listener also returns early when `signal.aborted`; the
-            // Rust payload carries no signal yet (documented deviation).
             let agent = payload.agent;
             let (turn, step) = (payload.turn, payload.step);
             let now = chrono::Utc::now().timestamp_millis();
-            if let Some(interval) = refresh_interval_ms {
-                if interval > 0.0 {
-                    if let Some(last) = latest_injection_time(agent.as_ref()) {
-                        if now >= last && ((now - last) as f64) < interval {
-                            return Some(decision_value);
-                        }
-                    }
-                }
+            if !refresh_due(
+                refresh_interval_ms,
+                now,
+                latest_injection_time(agent.as_ref()),
+            ) {
+                return Some(decision_value);
             }
             let PreStepDecision::Enter {
                 messages,
@@ -331,6 +404,9 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
                 &selected_time_zone,
                 &browser,
             );
+            if payload.signal.aborted() || !active.load(std::sync::atomic::Ordering::Acquire) {
+                return Some(decision_value);
+            }
             let mut merged = messages;
             merged.push(create_user_message(
                 vec![ContentBlock::Text { text: text.clone() }],
@@ -354,25 +430,36 @@ pub fn apply(ctx: &Context, config: &Config) -> Result<Disposer, String> {
     });
 
     let disposer_ctx = ctx_for_listener;
-    let installed: Arc<std::sync::OnceLock<Disposer>> = Arc::new(std::sync::OnceLock::new());
+    let installed: Arc<tokio::sync::OnceCell<Disposer>> = Arc::new(tokio::sync::OnceCell::new());
     Ok(cordis::make_disposer(move || {
         let ctx = disposer_ctx.clone();
         let listener = listener.clone();
         let installed = installed.clone();
+        let active = active.clone();
         Box::pin(async move {
             // Idempotent: repeated runs keep a single registration. When run
             // inside a plugin fiber, `ctx.on` also attaches the removal
             // disposer to that fiber.
-            if installed.get().is_none() {
-                let disposer = ctx
-                    .on(
-                        "agent/pre-step",
-                        listener,
-                        EventOptions::default().prepend(true),
-                    )
-                    .await;
-                let _ = installed.set(disposer);
-            }
+            installed
+                .get_or_init(|| async move {
+                    let disposer = ctx
+                        .on(
+                            "agent/pre-step",
+                            listener,
+                            EventOptions::default().prepend(true),
+                        )
+                        .await;
+                    // Event dispatch snapshots may outlive hook removal. A
+                    // generation-local guard also revokes those in-flight
+                    // callbacks when this exact plugin load is disposed.
+                    let revoke = cordis::make_disposer(move || {
+                        active.store(false, std::sync::atomic::Ordering::Release);
+                        Box::pin(async {})
+                    });
+                    let _ = ctx.fiber.disposables.push(revoke);
+                    disposer
+                })
+                .await;
         })
     }))
 }
@@ -391,12 +478,96 @@ impl Plugin for TimeContextPlugin {
         cordis::InjectSpec::new(INJECT)
     }
 
+    fn validate(&self, config: ArcValue) -> Result<ArcValue, cordis::ValidationError> {
+        plugin_config(&config)
+            .map(arc)
+            .map_err(|message| cordis::ValidationError::new([message]))
+    }
+
     async fn apply(&self, ctx: &Context, config: ArcValue) -> Result<(), PluginError> {
-        let config = config.downcast_ref::<Config>().cloned().unwrap_or_default();
+        let config = plugin_config(&config)
+            .map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         let disposer =
             apply(ctx, &config).map_err(|message| PluginError::from(anyhow::anyhow!(message)))?;
         // Registration attaches the removal disposer to this fiber.
         (disposer)().await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn loader_json_is_strict_and_preserves_explicit_intervals() {
+        for interval in [0, 600000, 1234567] {
+            assert_eq!(
+                decode_config(&serde_json::json!({"timeZone":"UTC","refreshIntervalMs":interval}))
+                    .unwrap(),
+                Config {
+                    time_zone: Some("UTC".into()),
+                    refresh_interval_ms: Some(interval as f64)
+                }
+            );
+        }
+        assert_eq!(
+            decode_config(&serde_json::json!({})).unwrap(),
+            Config::default()
+        );
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!("clock"),
+            serde_json::json!({"refreshIntervalMs":null}),
+            serde_json::json!({"refreshIntervalMs":"0"}),
+            serde_json::json!({"refreshIntervalMs":-1}),
+            serde_json::json!({"refreshIntervalMs":1.5}),
+            serde_json::json!({"refreshIntervalMs":9007199254740992u64}),
+            serde_json::json!({"timeZone":null}),
+            serde_json::json!({"timeZone":"invalid/zone"}),
+            serde_json::json!({"unexpected":true}),
+        ] {
+            assert!(decode_config(&invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn omitted_interval_refreshes_at_ten_minutes_and_after_clock_rollback() {
+        assert!(refresh_due(None, 1_000, None));
+        assert!(!refresh_due(None, 600_999, Some(1_000)));
+        assert!(refresh_due(None, 601_000, Some(1_000)));
+        assert!(refresh_due(None, 999, Some(1_000)));
+    }
+
+    #[test]
+    fn explicit_zero_and_custom_intervals_keep_their_cadence() {
+        assert!(refresh_due(Some(0.0), 1_000, Some(1_000)));
+        assert!(!refresh_due(Some(30_000.0), 30_999, Some(1_000)));
+        assert!(refresh_due(Some(30_000.0), 31_000, Some(1_000)));
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.5, 9_007_199_254_740_992.0] {
+            assert!(validate_refresh_interval(Some(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn configuration_default_does_not_replace_explicit_intervals() {
+        for (configured, expected) in [
+            (None, 600_000.0),
+            (Some(0.0), 0.0),
+            (Some(30_000.0), 30_000.0),
+        ] {
+            let input = Data::Object(
+                configured
+                    .map(|value| ("refreshIntervalMs".into(), Data::Number(value)))
+                    .into_iter()
+                    .collect(),
+            );
+            let resolved = Schema::validate(&config_schema(), input)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            assert_eq!(resolved["refreshIntervalMs"], serde_json::json!(expected));
+        }
     }
 }

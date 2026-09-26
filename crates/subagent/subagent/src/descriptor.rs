@@ -119,17 +119,13 @@ pub(crate) fn record_child_catalog(
     if let Some(label) = label {
         fact["label"] = serde_json::json!(label);
     }
-    let existing = parent.with_events(|events| {
-        events
-            .iter()
-            .rev()
-            .find(|event| {
-                event.seq.get() >= parent.inherited_event_count().get()
-                    && event.type_ == "subagent/catalog"
-                    && event.data["childId"] == child.id().as_str()
-            })
-            .map(|event| event.data.clone())
-    });
+    let existing = parent
+        .find_event_rev(|event| {
+            event.seq.get() >= parent.inherited_event_count().get()
+                && event.type_ == "subagent/catalog"
+                && event.data["childId"] == child.id().as_str()
+        })?
+        .map(|event| event.data);
     if let Some(existing) = existing {
         return if existing == fact {
             Ok(())

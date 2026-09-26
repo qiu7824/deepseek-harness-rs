@@ -38,23 +38,24 @@ fn reject<T>(message: impl Into<String>, code: &str) -> Result<T, ToolBodyError>
 
 /// Locate the open turn enclosing a model tool call.
 fn open_turn(agent: &Arc<dyn Agent>) -> Result<Vec<Value>, ToolBodyError> {
-    agent.session().with_events(|events| {
-        for index in (0..events.len()).rev() {
-            match events[index].type_.as_str() {
-                "turn/end" => return reject("goal tools require an open model turn", DRIVER_REQUIRED),
-                "turn/start" => return Ok(events[index+1..].iter().filter_map(|event| {
-                    if event.type_ != "user/message" { return None; }
-                    let source = event.data.get("source")?;
-                    match source.get("kind")?.as_str()? {
-                        "user" => Some(serde_json::json!({"kind":"user"})),
-                        "goal" => Some(serde_json::json!({"kind":"goal","goalId":source.get("goalId"),"revision":source.get("revision"),"round":source.get("round")})),
-                        _ => None,
-                    }
-                }).collect()),
-                _ => {}
+    agent.session().with_event_reader(|reader| {
+        let boundary = reader.find_rev(|event| matches!(event.type_.as_str(), "turn/start" | "turn/end"))
+            .map_err(|error| policy_error(format!("goal authority history could not be read: {error}"), DRIVER_REQUIRED))?;
+        let Some(boundary) = boundary.filter(|event| event.type_ == "turn/start") else {
+            return reject("goal tools require an open model turn", DRIVER_REQUIRED);
+        };
+        let mut sources = Vec::new();
+        reader.visit(boundary.seq.get() + 1, None, |event| {
+            if event.type_ == "user/message" && let Some(source) = event.data.get("source") {
+                match source.get("kind").and_then(Value::as_str) {
+                    Some("user") => sources.push(serde_json::json!({"kind":"user"})),
+                    Some("goal") => sources.push(serde_json::json!({"kind":"goal","goalId":source.get("goalId"),"revision":source.get("revision"),"round":source.get("round")})),
+                    _ => {}
+                }
             }
-        }
-        reject("goal tools require an open model turn", DRIVER_REQUIRED)
+            Ok(true)
+        }).map_err(|error| policy_error(format!("goal authority history could not be read: {error}"), DRIVER_REQUIRED))?;
+        Ok(sources)
     })
 }
 

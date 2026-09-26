@@ -136,9 +136,8 @@ impl Session {
         let nodes = selected_nodes
             .map(|nodes| nodes.to_vec())
             .unwrap_or(self.surface()?.nodes);
-        let events = self.with_events(|events| events.to_vec());
         let mut omitted = BTreeMap::<u64, BTreeSet<usize>>::new();
-        for event in &events {
+        self.visit_events(0, None, |event| {
             if event.type_ == "image/offload" {
                 if let Some(targets) = event.data["targets"].as_array() {
                     for target in targets {
@@ -154,13 +153,14 @@ impl Session {
                     }
                 }
             }
-        }
+            Ok(true)
+        })?;
         let mut targets = Vec::new();
         for seq in nodes {
-            let Some(event) = events.get(seq as usize) else {
+            let Some(event) = self.read_event(seq)? else {
                 continue;
             };
-            let Some(images) = input_images(event) else {
+            let Some(images) = input_images(&event) else {
                 continue;
             };
             let selected: Vec<_> = (0..images.count)

@@ -159,11 +159,22 @@ fn validate_refs(values: &[Value], seq: u64) -> Result<(bool, u64), String> {
     Ok((true, total))
 }
 
-fn decode_refs(mut values: Vec<Value>, seq: u64) -> Result<Vec<Value>, String> {
+fn decode_refs(mut values: Vec<Value>, seq: u64, expand: bool) -> Result<Vec<Value>, String> {
     let (has_range, total) = validate_refs(&values, seq)?;
     if !has_range {
         for value in &mut values {
             *value = json!(count(value, "source reference")?);
+        }
+        return Ok(values);
+    }
+    if !expand {
+        for entry in &mut values {
+            if let Some(range) = entry.as_array_mut() {
+                range[0] = json!(count(&range[0], "range start")?);
+                range[1] = json!(count(&range[1], "range end")?);
+            } else {
+                *entry = json!(count(entry, "source reference")?);
+            }
         }
         return Ok(values);
     }
@@ -185,7 +196,7 @@ fn decode_refs(mut values: Vec<Value>, seq: u64) -> Result<Vec<Value>, String> {
     Ok(output)
 }
 
-fn decode_row(mut row: Value, expected: u64) -> Result<Value, String> {
+fn decode_row(mut row: Value, expected: u64, expand_refs: bool) -> Result<Value, String> {
     let seq = envelope(&row)?;
     // Validate density before any range expansion; the bound comes from rows
     // actually accepted, never from an attacker-controlled enormous seq field.
@@ -199,7 +210,7 @@ fn decode_row(mut row: Value, expected: u64) -> Result<Value, String> {
             Value::Array(values) => values,
             _ => return Err("sourceEventSeqs must be an array".into()),
         };
-        row["sourceEventSeqs"] = Value::Array(decode_refs(values, seq)?);
+        row["sourceEventSeqs"] = Value::Array(decode_refs(values, seq, expand_refs)?);
     }
     row["seq"] = json!(seq);
     row["time"] = json!(signed(&row["time"], "event time")?);
@@ -222,7 +233,7 @@ pub fn encode_v4_event(mut row: Value, vocabulary: &V4Vocabulary) -> Result<Valu
     if values.iter().any(Value::is_array) {
         return Err("logical source references must not contain physical ranges".into());
     }
-    let values = decode_refs(values, seq)?;
+    let values = decode_refs(values, seq, true)?;
     if values
         .windows(2)
         .any(|w| w[0].as_u64().unwrap() >= w[1].as_u64().unwrap())
@@ -309,6 +320,25 @@ impl V4LogScanner {
     pub fn write(
         &mut self,
         chunk: &[u8],
+        event: impl FnMut(Value) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.write_with_reference_expansion(chunk, true, event)
+    }
+    /// Read validated rows while preserving physical source-reference ranges.
+    /// Integer endpoints are normalized, but callers must expand ranges before
+    /// exposing a logical event. This avoids an intermediate JSON value for
+    /// every source when only metadata or a typed reference vector is needed.
+    pub fn write_with_physical_references(
+        &mut self,
+        chunk: &[u8],
+        event: impl FnMut(Value) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.write_with_reference_expansion(chunk, false, event)
+    }
+    fn write_with_reference_expansion(
+        &mut self,
+        chunk: &[u8],
+        expand_refs: bool,
         mut event: impl FnMut(Value) -> Result<(), String>,
     ) -> Result<(), String> {
         if self.failed {
@@ -324,10 +354,13 @@ impl V4LogScanner {
             while let Some(relative) = chunk[start..].iter().position(|b| *b == b'\n') {
                 let end = start + relative;
                 let decoded = if self.fragment.is_empty() {
-                    self.decoder.decode_json_line(&chunk[start..end])
+                    self.decoder
+                        .decode_json_line_with_reference_expansion(&chunk[start..end], expand_refs)
                 } else {
                     self.fragment.extend_from_slice(&chunk[start..end]);
-                    let decoded = self.decoder.decode_json_line(&self.fragment);
+                    let decoded = self
+                        .decoder
+                        .decode_json_line_with_reference_expansion(&self.fragment, expand_refs);
                     self.fragment.clear();
                     if self.fragment.capacity() > 64 * 1024 {
                         self.fragment = vec![];
@@ -389,11 +422,18 @@ impl V4Decoder {
         &self.header
     }
     pub fn decode_json_line(&mut self, line: &[u8]) -> Result<Option<Value>, String> {
+        self.decode_json_line_with_reference_expansion(line, true)
+    }
+    fn decode_json_line_with_reference_expansion(
+        &mut self,
+        line: &[u8],
+        expand_refs: bool,
+    ) -> Result<Option<Value>, String> {
         if self.failed {
             return Err("V4 decoder already refused the generation".into());
         }
         match serde_json::from_slice::<Value>(line) {
-            Ok(row) => self.decode_row(row),
+            Ok(row) => self.decode_row_with_reference_expansion(row, expand_refs),
             Err(error) => {
                 let row = self.row_index;
                 self.row_index += 1;
@@ -402,6 +442,13 @@ impl V4Decoder {
         }
     }
     pub fn decode_row(&mut self, row: Value) -> Result<Option<Value>, String> {
+        self.decode_row_with_reference_expansion(row, true)
+    }
+    fn decode_row_with_reference_expansion(
+        &mut self,
+        row: Value,
+        expand_refs: bool,
+    ) -> Result<Option<Value>, String> {
         if self.failed {
             return Err("V4 decoder already refused the generation".into());
         }
@@ -437,7 +484,7 @@ impl V4Decoder {
             // range is checked arithmetically and never expanded.
             return Ok(None);
         }
-        let row = match decode_row(row, self.next_seq) {
+        let row = match decode_row(row, self.next_seq, expand_refs) {
             Ok(row) => row,
             Err(error) => return self.recover(index, error),
         };

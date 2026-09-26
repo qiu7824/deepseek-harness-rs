@@ -48,10 +48,14 @@ pub fn installer() -> InvariantInstaller {
             let ctx = ctx.clone();
             Box::pin(async move {
                 let seed = |session: &Session, fail: &Arc<dyn Fn(&str) + Send + Sync>| {
-                    for event in session.events().iter() {
+                    let replayed = session.visit_events(0, None, |event| {
                         if let Err(message) = validate_event(event) {
                             fail(&message);
                         }
+                        Ok(true)
+                    });
+                    if let Err(error) = replayed {
+                        fail(&error);
                     }
                 };
                 if let Some(store) = ctx
@@ -72,11 +76,7 @@ pub fn installer() -> InvariantInstaller {
                             .and_then(|value| downcast::<Session>(value))
                             .cloned();
                         if let Some(session) = session {
-                            for event in session.events().iter() {
-                                if let Err(message) = validate_event(event) {
-                                    fail(&message);
-                                }
-                            }
+                            seed(&session, &fail);
                         }
                         None
                     })

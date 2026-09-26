@@ -80,10 +80,9 @@ impl Inbox {
             mutation_owner: Mutex::new(None),
             mutation_released: parking_lot::Condvar::new(),
         };
-        let inherited_event_count = session.inherited_event_count().get() as usize;
-        for event in session.events().iter().skip(inherited_event_count) {
+        session.visit_events(session.inherited_event_count().get(), None, |event| {
             if event.type_ != "agent/inbox/spliced" {
-                continue;
+                return Ok(true);
             }
             let splice: InboxSplice = serde_json::from_value(event.data.clone())
                 .map_err(|error| error.to_string())
@@ -99,8 +98,15 @@ impl Inbox {
                     event.seq
                 )
             })?;
-        }
+            Ok(true)
+        })?;
         Ok(inbox)
+    }
+
+    /// Attach live notifications after a fallible durable replay completes.
+    pub fn with_notifications(mut self, notifications: InboxNotifications) -> Self {
+        self.notifications = notifications;
+        self
     }
 
     /// Prompts awaiting individual turns.
@@ -849,6 +855,85 @@ mod tests {
         assert!(
             restored.message_for_request("cancel-id").is_some(),
             "receipt identity remains stable while its outcome is explicit"
+        );
+    }
+
+    #[test]
+    fn archived_inbox_restores_receipts_pending_input_and_reference_context() {
+        let session =
+            Session::create(dsh_session::session_id("archived-inbox"), None, None, None).unwrap();
+        let inbox = Inbox::new(&session, InboxNotifications::default()).unwrap();
+        let prompt = |request: &str| {
+            dsh_llm::create_user_message(
+                vec![dsh_llm::ContentBlock::Text {
+                    text: request.into(),
+                }],
+                dsh_llm::MessageSource::User {
+                    rpc_id: Some(request.into()),
+                    client_time_zone: None,
+                },
+            )
+        };
+        let completed = prompt("completed-request");
+        inbox
+            .append(InboxTarget::NextTurn, completed.clone())
+            .unwrap();
+        inbox.claim(InboxTarget::NextTurn, 1).unwrap();
+        let cancelled = prompt("cancelled-request");
+        inbox
+            .append(InboxTarget::NextTurn, cancelled.clone())
+            .unwrap();
+        inbox.remove(&cancelled.id).unwrap();
+        let pending = prompt("pending-request");
+        let context = reference_context("retained reference");
+        inbox
+            .append_with_context(
+                InboxTarget::NextTurn,
+                pending.clone(),
+                Some(context.clone()),
+            )
+            .unwrap();
+
+        let mut archive =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                archive.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let restored_session = Session::from_event_archive(
+            session.id().clone(),
+            archive.finish().unwrap(),
+            session.header(),
+            session.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        let restored = Inbox::new(&restored_session, InboxNotifications::default()).unwrap();
+        assert_eq!(
+            restored.message_for_request("completed-request"),
+            Some(completed.id)
+        );
+        assert!(!restored.request_was_cancelled("completed-request"));
+        assert_eq!(
+            restored.message_for_request("cancelled-request"),
+            Some(cancelled.id)
+        );
+        assert!(restored.request_was_cancelled("cancelled-request"));
+        assert_eq!(restored.next_turn(), vec![pending.clone()]);
+        assert_eq!(
+            restored.claim(InboxTarget::NextTurn, 2).unwrap(),
+            vec![context, pending]
+        );
+        assert!(
+            !Inbox::new(&restored_session, InboxNotifications::default())
+                .unwrap()
+                .has_pending()
+        );
+        assert!(
+            inbox.has_pending(),
+            "restoring and claiming a copy cannot consume source input"
         );
     }
 

@@ -45,7 +45,7 @@ unsafe impl GlobalAlloc for CountedAllocator {
 static ALLOCATOR: CountedAllocator = CountedAllocator;
 
 #[tokio::test(flavor = "current_thread")]
-async fn prepared_resume_owns_one_history_and_preserves_inspection_prefix() {
+async fn prepared_resume_archives_complete_history_and_preserves_inspection_prefix() {
     const ROWS: usize = 32;
     const ROW_BYTES: usize = 128 * 1024;
     const PAYLOAD: usize = ROWS * ROW_BYTES;
@@ -105,15 +105,26 @@ async fn prepared_resume_owns_one_history_and_preserves_inspection_prefix() {
     let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
     println!("prepared history bytes: payload={PAYLOAD}, retained={retained}, peak={peak}");
     assert!(
-        retained <= PAYLOAD + 1024 * 1024,
-        "prepared resume retained a duplicate full history: {retained}"
+        retained <= 256 * 1024,
+        "prepared resume retained historical payloads instead of its index: {retained}"
     );
     assert!(
-        peak <= PAYLOAD * 2 + 1024 * 1024,
-        "cold resume materialized several full histories: {peak}"
+        peak <= ROW_BYTES * 8,
+        "cold resume exceeded its per-event working memory: {peak}"
     );
     assert_eq!(prepared.session.first_live_seq().get(), ROWS as u64);
     assert_eq!(prepared.session.seq().get(), ROWS as u64 + 1);
+    let mut visited = 0;
+    prepared
+        .session
+        .visit_events(0, Some(ROWS as u64), |event| {
+            assert_eq!(event.seq.get(), visited);
+            assert_eq!(event.data["text"].as_str().unwrap().len(), ROW_BYTES);
+            visited += 1;
+            Ok(true)
+        })
+        .unwrap();
+    assert_eq!(visited, ROWS as u64);
     drop(prepared);
     let inspection = backend.inspect(&id).await.unwrap();
     assert_eq!(inspection.events.len(), ROWS);

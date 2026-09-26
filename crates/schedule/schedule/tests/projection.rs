@@ -57,7 +57,7 @@ fn schedule_projection_preserves_order_and_applies_terminal_changes() {
                 "kind": "every",
                 "id": schedule_id("every"),
                 "prompt": "every",
-                "everySeconds": 300,
+                "everySeconds": 60,
                 "scheduledAt": "2026-08-31T04:00:00.000Z"
             }
         }),

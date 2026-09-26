@@ -52,8 +52,10 @@ pub fn encode_segment(raw: &str) -> String {
     }
     let mut out = String::new();
     for unit in raw.encode_utf16() {
-        let ch = char::from_u32(u32::from(unit)).expect("utf-16 unit");
-        if ch != '~' && (ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')) {
+        if let Some(ch) = char::from_u32(u32::from(unit))
+            && ch != '~'
+            && (ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        {
             out.push(ch);
         } else {
             out.push('~');
@@ -140,4 +142,38 @@ pub async fn save_text_file(options: SaveTextOptions) -> Result<SavedText, std::
         path: path.to_string_lossy().into_owned(),
         bytes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segment_encoding_preserves_supplementary_unicode_and_escaping() {
+        assert_eq!(encode_segment("日志😀.txt"), "~65E5~5FD7~D83D~DE00.txt");
+        assert_eq!(encode_segment("𠮷"), "~D842~DFB7");
+        assert_ne!(encode_segment("😀"), encode_segment("~D83D~DE00"));
+        assert_eq!(encode_segment("../x\\y"), "..~002Fx~005Cy");
+        assert_eq!(encode_segment(".."), "~002E~002E");
+    }
+
+    #[tokio::test]
+    async fn unicode_spill_name_round_trips_the_full_content() {
+        let root = std::env::temp_dir().join(format!("dsh-spill-unicode-{}", uuid::Uuid::new_v4()));
+        let content = "头部😀正文𠮷尾部".repeat(4096);
+        let saved = save_text_file(SaveTextOptions {
+            root: root.to_string_lossy().into_owned(),
+            session_id: "session-😀".into(),
+            suggested_name: "日志😀.txt".into(),
+            content: content.clone(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(saved.bytes, content.len() as u64);
+        assert_eq!(
+            tokio::fs::read_to_string(&saved.path).await.unwrap(),
+            content
+        );
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
 }

@@ -36,6 +36,7 @@ pub enum ReplaceTodosError {
     Append(String),
 }
 
+#[cfg(test)]
 fn current_todos(events: &[dsh_session::SessionEvent]) -> Vec<TodoItem> {
     events
         .iter()
@@ -46,6 +47,20 @@ fn current_todos(events: &[dsh_session::SessionEvent]) -> Vec<TodoItem> {
         .and_then(serde_json::Value::as_array)
         .and_then(|raw| to_todo_list(raw, true).ok())
         .unwrap_or_default()
+}
+
+fn current_todos_reader(
+    reader: &dsh_session::SessionEventReader<'_>,
+) -> Result<Vec<TodoItem>, String> {
+    let event =
+        reader.find_rev(|event| matches!(event.type_.as_str(), "todo/write" | "turn/start"))?;
+    Ok(event
+        .filter(|event| event.type_ == "todo/write")
+        .as_ref()
+        .and_then(|event| event.data.get("todos"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|raw| to_todo_list(raw, true).ok())
+        .unwrap_or_default())
 }
 
 pub fn replace_if_current(
@@ -67,12 +82,14 @@ pub fn replace_if_current(
         to_todo_list(&raw, allow_parallel_in_progress).map_err(ReplaceTodosError::Invalid)?;
     let data = todo_write_data(&replacement);
     let expected = expected.to_vec();
-    match session.append_if("todo/write", data, None, move |events| {
-        current_todos(events) == expected
+    match session.append_if_read("todo/write", data, None, move |reader| {
+        Ok(current_todos_reader(reader)? == expected)
     }) {
         Ok(Some(event)) => Ok(event),
         Ok(None) => Err(ReplaceTodosError::Conflict {
-            current: current_todos(&session.events()),
+            current: session
+                .with_event_reader(current_todos_reader)
+                .map_err(ReplaceTodosError::Append)?,
         }),
         Err(message) => Err(ReplaceTodosError::Append(message)),
     }
@@ -578,5 +595,63 @@ mod tests {
             .expect_err("parallel active todos must fail");
         assert!(matches!(error, ReplaceTodosError::Invalid(_)));
         assert!(current(&session).is_empty());
+    }
+
+    #[test]
+    fn archived_todos_keep_compare_and_swap_and_turn_reset_semantics() {
+        let source = session();
+        let initial = vec![item("restored task", TodoStatus::InProgress)];
+        replace_if_current(&source, &[], &initial, false).unwrap();
+        source
+            .append(
+                "tools/discovery",
+                serde_json::json!({"opaque":"x".repeat(64 * 1024)}),
+                None,
+            )
+            .unwrap();
+        let mut archive =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        source
+            .visit_events(0, None, |event| {
+                archive.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let cold = Session::from_event_archive(
+            source.id().clone(),
+            archive.finish().unwrap(),
+            source.header(),
+            source.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            cold.with_event_reader(current_todos_reader).unwrap(),
+            initial
+        );
+        let replacement = vec![item("restored task", TodoStatus::Completed)];
+        replace_if_current(&cold, &initial, &replacement, false).unwrap();
+        assert_eq!(
+            replace_if_current(&cold, &initial, &replacement, false),
+            Err(ReplaceTodosError::Conflict {
+                current: replacement.clone()
+            })
+        );
+        assert_eq!(
+            cold.read_event(0).unwrap().unwrap().data,
+            source.read_event(0).unwrap().unwrap().data
+        );
+        cold.append("turn/start", serde_json::json!({"turn":1}), None)
+            .unwrap();
+        assert!(
+            cold.with_event_reader(current_todos_reader)
+                .unwrap()
+                .is_empty()
+        );
+        replace_if_current(&cold, &[], &initial, false).unwrap();
+        assert_eq!(
+            cold.with_event_reader(current_todos_reader).unwrap(),
+            initial
+        );
     }
 }

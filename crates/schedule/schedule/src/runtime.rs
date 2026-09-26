@@ -18,7 +18,7 @@ use dsh_agent::{Agent, AgentRegistry};
 use dsh_llm::{ContentBlock, MessageSource, create_user_message};
 
 use crate::domain::{
-    FoldedSchedules, fold_schedule_events, render_every_reminder_batch_framing,
+    FoldedSchedules, render_every_reminder_batch_framing,
     render_reminder_framing, resolve_every_occurrence,
 };
 use crate::persistence::flush_schedule_persistence;
@@ -104,6 +104,60 @@ fn due_decision(folded: &FoldedSchedules, now: i64) -> DueDecision {
         .filter(|candidate| *candidate > now)
         .min();
     DueDecision::Wait { target }
+}
+
+#[cfg(test)]
+mod minute_interval_tests {
+    use super::*;
+    use crate::domain::{
+        create_every_schedule_record, decode_schedule_change, parse_canonical_instant,
+    };
+    use crate::types::schedule_id;
+
+    #[test]
+    fn one_minute_rules_replay_and_keep_creation_alignment_without_backlog() {
+        let now = parse_canonical_instant("2026-09-26T00:00:00.000Z").unwrap();
+        assert!(
+            create_every_schedule_record(schedule_id("too-fast"), "reminder", 59, now).is_err()
+        );
+        let record =
+            create_every_schedule_record(schedule_id("minute"), "reminder", 60, now).unwrap();
+        let change = ScheduleChange::Create {
+            version: 1,
+            schedule: record.clone(),
+        };
+        assert!(decode_schedule_change(&serde_json::to_value(&change).unwrap()).is_ok());
+        let mut invalid = serde_json::to_value(&change).unwrap();
+        invalid["schedule"]["everySeconds"] = serde_json::json!(59);
+        assert!(decode_schedule_change(&invalid).is_err());
+        let folded = FoldedSchedules {
+            active: vec![record.clone()],
+            seen_ids: vec![record.id().clone()],
+        };
+        assert!(
+            matches!(due_decision(&folded, now + 59_999), DueDecision::Wait { target: Some(t) } if t == now + 60_000)
+        );
+        let DueDecision::Every { reminders, .. } = due_decision(&folded, now + 60_000) else {
+            panic!("minute should be due");
+        };
+        assert_eq!(reminders.len(), 1);
+        assert_eq!(reminders[0].occurrence_at, "2026-09-26T00:01:00.000Z");
+        let delayed = resolve_every_occurrence(&record, now + 605_000).unwrap();
+        assert_eq!(delayed.occurrence_at, "2026-09-26T00:10:00.000Z");
+        assert_eq!(
+            delayed.next_scheduled_at.as_deref(),
+            Some("2026-09-26T00:11:00.000Z")
+        );
+        let DueDecision::Every { reminders, .. } = due_decision(&folded, now + 605_000) else {
+            panic!("overdue minute should be batched");
+        };
+        assert_eq!(
+            reminders.len(),
+            1,
+            "missed minutes must not burst into individual runs"
+        );
+        assert_eq!(reminders[0].occurrence_at, delayed.occurrence_at);
+    }
 }
 
 fn render_thrown(message: &str) -> String {
@@ -284,10 +338,7 @@ impl ScheduleRuntime {
     /// Fold the current exact runtime suffix and contain a corrupt durable
     /// stream.
     fn read_folded(&self) -> Option<FoldedSchedules> {
-        match fold_schedule_events(
-            &self.agent.session().events(),
-            self.agent.session().inherited_event_count().get() as usize,
-        ) {
+        match crate::domain::fold_session_schedules(self.agent.session()) {
             Ok(folded) => Some(folded),
             Err(error) => {
                 self.faulted.store(true, Ordering::SeqCst);

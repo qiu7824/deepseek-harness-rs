@@ -27,13 +27,19 @@ pub fn enabled(agent: &dyn Agent) -> bool {
         .unwrap_or(agent.options().execution_mode == dsh_llm::ExecutionMode::Ultra)
 }
 pub fn child_marker(agent: &dyn Agent) -> bool {
-    agent.session().events().iter().any(|e| {
-        e.type_ == "execution/ultra-child"
-            && e.data["childId"].as_str() == Some(agent.id().as_str())
-    })
+    try_child_marker(agent).expect("Ultra Session archive must remain readable")
+}
+fn try_child_marker(agent: &dyn Agent) -> Result<bool, String> {
+    Ok(agent
+        .session()
+        .find_event_rev(|e| {
+            e.type_ == "execution/ultra-child"
+                && e.data["childId"].as_str() == Some(agent.id().as_str())
+        })?
+        .is_some())
 }
 pub fn mark_child(parent: &dyn Agent, child: &dyn Agent) -> Result<(), String> {
-    if enabled(parent) && !child_marker(child) {
+    if enabled(parent) && !try_child_marker(child)? {
         child.session().append(
             "execution/ultra-child",
             json!({"childId":child.id().as_str(),"rootId":parent.id().as_str()}),
@@ -42,37 +48,89 @@ pub fn mark_child(parent: &dyn Agent, child: &dyn Agent) -> Result<(), String> {
     }
     Ok(())
 }
-fn tokens(agent: &dyn Agent) -> u64 {
+fn tokens(agent: &dyn Agent) -> Result<u64, String> {
     tokens_since(agent, 0)
 }
-fn tokens_since(agent: &dyn Agent, from: u64) -> u64 {
-    let events = agent.session().events();
-    let own = events
-        .iter()
-        .rposition(|e| {
-            e.type_ == "execution/ultra-child"
-                && e.data["childId"].as_str() == Some(agent.id().as_str())
+fn tokens_since(agent: &dyn Agent, from: u64) -> Result<u64, String> {
+    agent.session().with_event_reader(|reader| {
+        let own = reader
+            .find_rev(|e| {
+                e.type_ == "execution/ultra-child"
+                    && e.data["childId"].as_str() == Some(agent.id().as_str())
+            })?
+            .map(|event| event.seq.get() + 1)
+            .unwrap_or(0);
+        let mut tokens = 0_u64;
+        reader.visit(own.max(from), None, |e| {
+            if e.type_ == "assistant/message" {
+                let value = &e.data["usage"];
+                let count = value["totalTokens"].as_u64().unwrap_or_else(|| {
+                    [
+                        "inputTokens",
+                        "outputTokens",
+                        "cacheReadTokens",
+                        "cacheWriteTokens",
+                    ]
+                    .iter()
+                    .filter_map(|key| value[*key].as_u64())
+                    .fold(0, u64::saturating_add)
+                });
+                tokens = tokens.saturating_add(count);
+            }
+            Ok(true)
+        })?;
+        Ok(tokens)
+    })
+}
+
+#[derive(Default)]
+struct EpochAccounting {
+    admitted: usize,
+    created: HashSet<String>,
+    start: Option<u64>,
+    child_tokens: u64,
+    unknown_tokens: bool,
+}
+fn epoch_accounting(
+    session: &dsh_session::Session,
+    epoch: &str,
+) -> Result<EpochAccounting, String> {
+    let mut state = EpochAccounting::default();
+    session.visit_events(0, None, |event| {
+        if event.data["epoch"].as_str() == Some(epoch) {
+            match event.type_.as_str() {
+                "execution/ultra-admitted" => {
+                    if state.admitted == 0 {
+                        state.start = event.data["startedAt"].as_u64();
+                    }
+                    state.admitted += 1;
+                    if let Some(child) = event.data["childId"].as_str() {
+                        state.created.insert(child.into());
+                    }
+                }
+                "execution/ultra-settled" => {
+                    state.child_tokens = state
+                        .child_tokens
+                        .saturating_add(event.data["tokens"].as_u64().unwrap_or(0));
+                    state.unknown_tokens |= event.data["tokens"].is_null();
+                }
+                _ => {}
+            }
+        }
+        Ok(true)
+    })?;
+    Ok(state)
+}
+
+fn active_tokens(tree: &Tree) -> Result<u64, String> {
+    tree.local
+        .values()
+        .try_fold(0_u64, |total, (child, baseline)| {
+            Ok(total.saturating_add(match child.upgrade() {
+                Some(child) => tokens(child.as_ref())?.saturating_sub(*baseline),
+                None => 0,
+            }))
         })
-        .map(|n| n + 1)
-        .unwrap_or(0);
-    events[own..]
-        .iter()
-        .filter(|e| e.type_ == "assistant/message" && e.seq.get() >= from)
-        .map(|e| {
-            let value = &e.data["usage"];
-            value["totalTokens"].as_u64().unwrap_or_else(|| {
-                [
-                    "inputTokens",
-                    "outputTokens",
-                    "cacheReadTokens",
-                    "cacheWriteTokens",
-                ]
-                .iter()
-                .filter_map(|key| value[*key].as_u64())
-                .fold(0, u64::saturating_add)
-            })
-        })
-        .fold(0, u64::saturating_add)
 }
 #[derive(Default)]
 struct Tree {
@@ -134,7 +192,9 @@ impl UltraControl {
         parent: &Arc<dyn Agent>,
         child_id: &str,
     ) -> Result<Option<UltraPermit>, SubagentError> {
-        if child_marker(parent.as_ref()) {
+        if try_child_marker(parent.as_ref())
+            .map_err(|error| SubagentError::new("ULTRA_PERSISTENCE", error))?
+        {
             return Err(SubagentError::new(
                 "ULTRA_DEPTH_LIMIT",
                 "Ultra 子任务不能继续创建子任务",
@@ -144,11 +204,10 @@ impl UltraControl {
             return Ok(None);
         }
         let mut trees = self.trees.lock();
-        let all_events = parent.session().events();
-        let mut epoch = all_events
-            .iter()
-            .rev()
-            .find(|e| e.type_ == "turn/start")
+        let mut epoch = parent
+            .session()
+            .find_event_rev(|e| e.type_ == "turn/start")
+            .map_err(|error| SubagentError::new("ULTRA_PERSISTENCE", error))?
             .map(|e| e.seq.to_string())
             .unwrap_or_else(|| "initial".into());
         let tree = trees.entry(parent.id().to_string()).or_default();
@@ -179,36 +238,21 @@ impl UltraControl {
                 "已有三个子任务运行；等待现有结果后再分配新任务",
             ));
         }
-        let events = all_events
-            .iter()
-            .filter(|e| e.data["epoch"].as_str() == Some(epoch.as_str()))
-            .collect::<Vec<_>>();
-        let admitted = events
-            .iter()
-            .filter(|e| e.type_ == "execution/ultra-admitted")
-            .count();
-        if admitted >= 36 {
+        let accounting = epoch_accounting(parent.session(), &epoch)
+            .map_err(|error| SubagentError::new("ULTRA_PERSISTENCE", error))?;
+        if accounting.admitted >= 36 {
             return Err(SubagentError::new(
                 "ULTRA_RUN_LIMIT",
                 "Ultra 子任务累计运行次数已达到 36 次",
             ));
         }
-        let created = events
-            .iter()
-            .filter(|e| e.type_ == "execution/ultra-admitted")
-            .filter_map(|e| e.data["childId"].as_str())
-            .collect::<HashSet<_>>();
-        if !created.contains(child_id) && created.len() >= 12 {
+        if !accounting.created.contains(child_id) && accounting.created.len() >= 12 {
             return Err(SubagentError::new(
                 "ULTRA_CREATE_LIMIT",
                 "Ultra 子任务累计创建数已达到 12 个",
             ));
         }
-        let start = events
-            .iter()
-            .find(|e| e.type_ == "execution/ultra-admitted")
-            .and_then(|e| e.data["startedAt"].as_u64())
-            .unwrap_or_else(now);
+        let start = accounting.start.unwrap_or_else(now);
         let timeout = std::env::var("DSH_ULTRA_TIMEOUT_SECONDS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -220,35 +264,24 @@ impl UltraControl {
                 "Ultra 执行时间预算已耗尽",
             ));
         }
-        let child_tokens = events
-            .iter()
-            .filter(|e| e.type_ == "execution/ultra-settled")
-            .filter_map(|e| e.data["tokens"].as_u64())
-            .fold(0, u64::saturating_add);
+        let child_tokens = accounting.child_tokens;
         if let Some(limit) = std::env::var("DSH_ULTRA_TOKEN_BUDGET")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|v| *v > 0)
         {
-            if events.iter().any(|event| {
-                event.type_ == "execution/ultra-settled" && event.data["tokens"].is_null()
-            }) || tree.remote.keys().any(|id| !tree.local.contains_key(id))
+            if accounting.unknown_tokens
+                || tree.remote.keys().any(|id| !tree.local.contains_key(id))
             {
                 return Err(SubagentError::new(
                     "ULTRA_USAGE_UNAVAILABLE",
                     "子任务用量尚未完整提供，无法继续在 Token 预算内准入",
                 ));
             }
-            let active = tree
-                .local
-                .values()
-                .filter_map(|(child, baseline)| {
-                    child
-                        .upgrade()
-                        .map(|child| tokens(child.as_ref()).saturating_sub(*baseline))
-                })
-                .fold(0, u64::saturating_add);
+            let active = active_tokens(tree)
+                .map_err(|error| SubagentError::new("ULTRA_USAGE_UNAVAILABLE", error))?;
             if tokens_since(parent.as_ref(), epoch.parse().unwrap_or(0))
+                .map_err(|error| SubagentError::new("ULTRA_USAGE_UNAVAILABLE", error))?
                 .saturating_add(child_tokens)
                 .saturating_add(active)
                 >= limit
@@ -305,28 +338,27 @@ impl UltraControl {
             return false;
         };
         let epoch = tree.epoch.clone();
-        let settled = root
-            .session()
-            .events()
-            .iter()
-            .filter(|event| {
-                event.type_ == "execution/ultra-settled"
-                    && event.data["epoch"].as_str() == Some(&epoch)
-            })
-            .filter_map(|event| event.data["tokens"].as_u64())
-            .fold(0, u64::saturating_add);
-        let active = tree
-            .local
-            .values()
-            .filter_map(|(child, baseline)| {
-                child
-                    .upgrade()
-                    .map(|child| tokens(child.as_ref()).saturating_sub(*baseline))
-            })
-            .fold(0, u64::saturating_add);
-        let used = tokens_since(root.as_ref(), epoch.parse().unwrap_or(0))
-            .saturating_add(settled)
-            .saturating_add(active);
+        let usage = (|| -> Result<u64, String> {
+            let settled = epoch_accounting(root.session(), &epoch)?.child_tokens;
+            let active = active_tokens(tree)?;
+            Ok(tokens_since(root.as_ref(), epoch.parse().unwrap_or(0))?
+                .saturating_add(settled)
+                .saturating_add(active))
+        })();
+        let used = match usage {
+            Ok(used) => used,
+            Err(error) => {
+                tree.closed = true;
+                drop(trees);
+                root.ctx()
+                    .named_logger(Some("ultra"))
+                    .warn(vec![cordis::arc(format!(
+                        "usage read failed; closing Ultra admission: {error}"
+                    ))]);
+                self.changed.notify_waiters();
+                return true;
+            }
+        };
         if used < limit {
             return false;
         }
@@ -356,7 +388,22 @@ pub struct UltraPermit {
 }
 impl UltraPermit {
     pub fn bind(&mut self, child: &Arc<dyn Agent>) {
-        self.baseline_tokens = tokens(child.as_ref());
+        self.baseline_tokens = match tokens(child.as_ref()) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                if let Some(tree) = self.control.trees.lock().get_mut(&self.root_id) {
+                    tree.closed = true;
+                }
+                child
+                    .ctx()
+                    .named_logger(Some("ultra"))
+                    .warn(vec![cordis::arc(format!(
+                        "usage baseline failed; cancelling child: {error}"
+                    ))]);
+                child.cancel(dsh_session::AgentCancelCause::Parent, None);
+                return;
+            }
+        };
         self.child = Some(Arc::downgrade(child));
         if let Some(tree) = self.control.trees.lock().get_mut(&self.root_id) {
             tree.local.insert(
@@ -409,7 +456,11 @@ impl Drop for UltraPermit {
                 .child
                 .as_ref()
                 .and_then(Weak::upgrade)
-                .map(|child| tokens(child.as_ref()).saturating_sub(self.baseline_tokens));
+                .and_then(|child| {
+                    tokens(child.as_ref())
+                        .ok()
+                        .map(|count| count.saturating_sub(self.baseline_tokens))
+                });
             let _ = root.session().append(
                 "execution/ultra-settled",
                 json!({"childId":self.child_id,"epoch":self.epoch,"tokens":count}),

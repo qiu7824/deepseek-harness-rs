@@ -104,7 +104,9 @@ fn main() {
     }
     let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
     #[cfg(windows)]
-    runtime_builder.on_thread_park(dsh_host::collect_allocator_on_park);
+    runtime_builder
+        .on_thread_park(dsh_host::collect_allocator_on_park)
+        .on_thread_unpark(dsh_host::collect_allocator_on_unpark);
     let runtime = runtime_builder
         .worker_threads(4)
         .enable_all()

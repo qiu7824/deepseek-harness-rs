@@ -89,18 +89,17 @@ async fn render(
     let store = ctx
         .get_typed::<Arc<dyn AttachmentStore>>("attachments", false)
         .map(|service| service.as_ref().clone());
-    let reference = store.as_ref().and_then(|store| {
-        agent.session().with_events(|events| {
-            events
-                .iter()
-                .flat_map(|event| {
-                    dsh_attachment::file_references_for_event(&event.type_, &event.data)
-                })
+    let mut reference = None;
+    if let Some(store) = &store {
+        agent.session().visit_events(0, None, |event| {
+            reference = dsh_attachment::file_references_for_event(&event.type_, &event.data)
+                .into_iter()
                 .find(|reference| {
                     store.file_host_path(reference).as_deref() == Some(Path::new(raw))
-                })
-        })
-    });
+                });
+            Ok(reference.is_none())
+        })?;
+    }
     let attachment_lease = match (&store, &reference) {
         (Some(store), Some(reference)) => Some(
             store

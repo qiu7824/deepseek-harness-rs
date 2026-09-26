@@ -34,8 +34,14 @@ use crate::api::rpc::{
 use crate::api::sessions::ModelSelection;
 #[path = "file_attachments.rs"]
 mod file_attachments;
+#[path = "history_reader.rs"]
+mod history_reader;
+#[path = "history_response.rs"]
+mod history_response;
 #[path = "plugin_enablement.rs"]
 mod plugin_enablement;
+#[path = "plugin_config.rs"]
+mod plugin_config;
 pub use plugin_enablement::{PluginClientReady, PluginOperationControl, PluginProgress};
 #[cfg(test)]
 #[path = "plugin_profile_tests.rs"]
@@ -153,6 +159,58 @@ mod history_error_tests {
             super::history_read_error(id, "one safe history group requires 7305 events".into());
         assert!(matches!(error, crate::api::rpc::RpcError::Internal(_)));
     }
+
+    #[test]
+    fn forward_scan_boundary_keeps_every_raw_sequence_reachable() {
+        let mut events = Vec::new();
+        for seq in 1..=70_000 {
+            events.push(dsh_session::SessionEvent {
+                type_: "assistant/chunk".into(),
+                seq: dsh_session::SessionSeq::new(seq).unwrap(),
+                time: seq as i64,
+                data: serde_json::json!({"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"x"}}),
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            });
+        }
+        events.push(dsh_session::SessionEvent {
+            type_: "assistant/message".into(),
+            seq: dsh_session::SessionSeq::new(70_001).unwrap(),
+            time: 70_001,
+            data: serde_json::json!({"text":"x".repeat(70_000)}),
+            ignorable: None,
+            surface_op: Some(dsh_session::SurfaceOp::Append),
+            source_event_seqs: Some((1..=70_000).collect()),
+        });
+        let (first, more) = super::ApiProxyService::paginate_forward(&events, 1, 1).unwrap();
+        assert!(more);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].data["__historyStartSeq"], 1);
+        assert_eq!(first[0].data["__historyEndSeq"], 65_536);
+        assert_eq!(
+            first[0].data["chunk"]["text"].as_str().unwrap().len(),
+            65_536
+        );
+        let next = first[0].data["__historyEndSeq"].as_i64().unwrap() + 1;
+        let (last, more) = super::ApiProxyService::paginate_forward(&events, next, 1).unwrap();
+        assert!(!more);
+        assert_eq!(last.len(), 1);
+        assert_eq!(last[0].data["__historyStartSeq"], next);
+        assert_eq!(last[0].data["__historyEndSeq"], 70_001);
+        assert_eq!(last[0].type_, "assistant/message");
+        assert_eq!(last[0].data["text"].as_str().unwrap().len(), 70_000);
+        assert_eq!(
+            events
+                .last()
+                .unwrap()
+                .source_event_seqs
+                .as_ref()
+                .unwrap()
+                .len(),
+            70_000
+        );
+    }
 }
 
 type OpenPathFn =
@@ -218,6 +276,9 @@ pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Composition inputs supplied by the host app (TS `ApiProxyDefaults`).
 pub struct ApiProxyDefaults {
+    /// Reclaim finished history scan allocations on the thread that owned them.
+    /// The host supplies allocator policy; the carrier remains allocator-neutral.
+    pub history_read_cleanup: Option<Arc<dyn Fn() + Send + Sync>>,
     pub initialize_session: Option<
         Arc<
             dyn Fn(Arc<dyn dsh_agent::Agent>) -> BoxFuture<'static, Result<(), String>>
@@ -257,6 +318,7 @@ pub struct ApiProxyDefaults {
 impl Default for ApiProxyDefaults {
     fn default() -> Self {
         Self {
+            history_read_cleanup: None,
             initialize_session: None,
             cancel_collaboration: None,
             default_model_selection: Arc::new(|| ModelSelection {
@@ -351,8 +413,56 @@ fn model_selection_from_events(
     })
 }
 
-fn persisted_model_selection(session: &dsh_session::Session) -> Option<dsh_agent::ModelSelection> {
-    model_selection_from_events(&session.events())
+fn persisted_model_selection(
+    session: &dsh_session::Session,
+) -> Result<Option<dsh_agent::ModelSelection>, String> {
+    for kind in ["model/selection", "request/header"] {
+        let mut selected = None;
+        session.find_event_rev(|event| {
+            if event.type_ == kind {
+                selected = model_selection_from_events(std::slice::from_ref(event));
+            }
+            selected.is_some()
+        })?;
+        if selected.is_some() {
+            return Ok(selected);
+        }
+    }
+    Ok(None)
+}
+
+fn persisted_agent_preset(session: &dsh_session::Session) -> Result<Option<String>, String> {
+    let event = session.find_event_rev(|event| {
+        event.type_ == "agent-preset/selected"
+            && event
+                .data
+                .get("agentPreset")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+    })?;
+    Ok(event
+        .and_then(|event| {
+            event
+                .data
+                .get("agentPreset")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| session.header().agent_preset.clone()))
+}
+
+fn queue_snapshot_frame(
+    queues: &mut crate::queue_projection::QueueProjection,
+    session: &dsh_session::Session,
+) -> crate::api::events::MuxFrame {
+    queues
+        .snapshot(session)
+        .unwrap_or_else(|message| crate::api::events::MuxFrame::StreamError {
+            error: RpcError::Internal(RpcErrorBody {
+                message: format!("session.queue: {message}"),
+                details: EmptyDetails {},
+            }),
+        })
 }
 
 fn set_plugin_document_enabled(
@@ -407,7 +517,9 @@ fn model_selection_setup(defaults: Arc<ApiProxyDefaults>, selections: SelectionM
                                 Arc::new(move || {
                                     let agent = resolver_agent.upgrade()?;
                                     let session = agent.session();
-                                    if let Some(selected) = persisted_model_selection(session) {
+                                    if let Some(selected) =
+                                        persisted_model_selection(session).ok()?
+                                    {
                                         return Some(selected);
                                     }
                                     if let Some(header) = session.request_header() {
@@ -435,7 +547,7 @@ fn model_selection_setup(defaults: Arc<ApiProxyDefaults>, selections: SelectionM
                             move || {
                                 let agent = resolver_agent.upgrade()?;
                                 let session = agent.session();
-                                if let Some(selected) = persisted_model_selection(session) {
+                                if let Some(selected) = persisted_model_selection(session).ok()? {
                                     return Some(selected);
                                 }
                                 if let Some(header) = session.request_header() {
@@ -623,6 +735,14 @@ mod goal_completion_api_tests;
 #[cfg(test)]
 #[path = "title_edit_api_tests.rs"]
 mod title_edit_api_tests;
+
+#[cfg(test)]
+#[path = "session_list_compatibility_tests.rs"]
+mod session_list_compatibility_tests;
+
+#[cfg(test)]
+#[path = "cold_resume_archive_tests.rs"]
+mod cold_resume_archive_tests;
 
 #[cfg(test)]
 mod idle_retirement_tests {
@@ -1545,14 +1665,15 @@ impl ApiProxyService {
             crate::agent_lookup::ApiRemoteAgentOptions {
                 agent_options,
                 retain_handle,
-                setup: Some(Arc::new(move |header, events| {
+                setup: Some(Arc::new(move |agent_ctx, agent| {
+                    let agent_ctx = agent_ctx.clone();
                     let selection = setup_for_resume.clone();
                     let presets = ctx_for_resume
                         .get_typed::<Arc<dsh_agent_presets::AgentPresets>>("agentPresets", false)
                         .map(|slot| slot.as_ref().clone());
-                    let preset_id = dsh_agent_presets::resolve_session_preset(&header, &events);
                     Box::pin(async move {
-                        Ok(Some(composed_agent_setup(selection, presets, preset_id)))
+                        let preset_id = persisted_agent_preset(agent.session())?;
+                        composed_agent_setup(selection, presets, preset_id)(&agent_ctx, agent).await
                     })
                 })),
             },
@@ -2994,10 +3115,26 @@ impl ApiProxyService {
                 else {
                     return err(rpc_id, invalid("会话没有工作区"));
                 };
-                let events = session.events();
-                let start = events.len().saturating_sub(4096);
+                let selected = session.with_event_reader(|reader| {
+                    let start = reader.len().saturating_sub(4096);
+                    let mut events = Vec::new();
+                    reader.visit(start, None, |event| {
+                        if matches!(
+                            event.type_.as_str(),
+                            "model/selection" | "request/context" | "request/header"
+                        ) {
+                            events.push(event.clone());
+                        }
+                        Ok(true)
+                    })?;
+                    Ok::<_, String>((events, start))
+                });
+                let (events, start) = match selected {
+                    Ok(selected) => selected,
+                    Err(error) => return err(rpc_id, invalid(error)),
+                };
                 (
-                    crate::learning_preview::from_events(cwd.into(), &events[start..], start != 0),
+                    crate::learning_preview::from_events(cwd.into(), &events, start != 0),
                     "live",
                 )
             } else {
@@ -4040,13 +4177,15 @@ impl ApiProxyService {
         &self,
         session: &dsh_session::Session,
         projections: Option<&dsh_session_projection::SessionProjectionRegistry>,
-    ) -> crate::api::sessions::SessionSummary {
+    ) -> Result<crate::api::sessions::SessionSummary, String> {
         let running = self
             .agents()
             .and_then(|registry| registry.get(session.id()))
             .is_some_and(|agent| agent.status() == dsh_agent::AgentStatus::Running);
         let header = session.header();
-        let snapshot = projections.map(|registry| registry.snapshot(session));
+        let snapshot = projections
+            .map(|registry| registry.try_snapshot(session))
+            .transpose()?;
         let metadata = snapshot.as_ref().and_then(|snapshot| {
             snapshot
                 .values
@@ -4060,22 +4199,19 @@ impl ApiProxyService {
         }) {
             Some(metadata) => metadata,
             None => {
-                // Keep the full-log Arc scoped to the fallback. Holding it
-                // across projection cloning forces copy-on-write on a
-                // concurrent streamed append in this live session.
-                let events = session.events();
-                (
-                    !events.iter().any(|event| event.type_ == "turn/start"),
-                    events
-                        .iter()
-                        .rev()
-                        .find(|event| event.type_ == "user/message")
-                        .map(|event| event.time)
-                        .unwrap_or(header.created_at as i64),
-                )
+                let mut blank = true;
+                let mut updated_at = header.created_at as i64;
+                session.visit_events(0, None, |event| {
+                    blank &= event.type_ != "turn/start";
+                    if event.type_ == "user/message" {
+                        updated_at = event.time;
+                    }
+                    Ok(true)
+                })?;
+                (blank, updated_at)
             }
         };
-        crate::api::sessions::SessionSummary {
+        Ok(crate::api::sessions::SessionSummary {
             session_id: session.id().clone(),
             updated_at,
             running,
@@ -4091,7 +4227,7 @@ impl ApiProxyService {
                 as_of_seq: snapshot.as_of_seq,
                 values: serde_json::Value::Object(snapshot.values),
             }),
-        }
+        })
     }
 
     async fn session_list(
@@ -4116,11 +4252,23 @@ impl ApiProxyService {
                 false,
             )
             .map(|slot| slot.as_ref().clone());
-        let mut items: Vec<SessionSummary> = sessions
+        let items: Result<Vec<SessionSummary>, String> = sessions
             .list()
             .iter()
             .map(|session| self.summarize_attached(session, projection_registry.as_deref()))
             .collect();
+        let mut items = match items {
+            Ok(items) => items,
+            Err(error) => {
+                return err(
+                    request.rpc_id,
+                    RpcError::Internal(RpcErrorBody {
+                        message: format!("session.list: {error}"),
+                        details: EmptyDetails {},
+                    }),
+                );
+            }
+        };
         let attached: std::collections::HashSet<String> = items
             .iter()
             .map(|item| item.session_id.to_string())
@@ -4153,22 +4301,22 @@ impl ApiProxyService {
                 }
             };
             for meta in cold {
-                if attached.contains(meta.id.as_str())
-                    || meta.cwd.is_none()
-                    || meta.version != dsh_session::SESSION_FORMAT_VERSION
-                {
+                // Persistence validates supported generations. Listing must
+                // retain readable historical sessions before their next write
+                // migrates them; a format upgrade must not hide the corpus.
+                if attached.contains(meta.id.as_str()) || meta.cwd.is_none() {
                     continue;
                 }
                 let snapshot = match cache.as_ref() {
                     Some(cache) => {
-                        let cached = cache.cached_snapshot(&meta).filter(|snapshot| {
+                        let cached = cache.cached_list_snapshot(&meta).filter(|snapshot| {
                             snapshot
                                 .values
                                 .contains_key(dsh_session_title::SESSION_LIST_METADATA_KEY)
                         });
                         match cached {
                             Some(snapshot) => Some(snapshot),
-                            None => match cache.cold_snapshot(&meta.id).await {
+                            None => match cache.cold_list_snapshot(&meta.id).await {
                                 Ok(snapshot) => Some(snapshot),
                                 Err(error) => {
                                     return err(
@@ -4192,13 +4340,34 @@ impl ApiProxyService {
                         .values
                         .get(dsh_session_title::SESSION_LIST_METADATA_KEY)
                 });
+                let fallback = if metadata.is_none() {
+                    match persistence.read_list_metadata(&meta.id).await {
+                        Ok(metadata) => Some(metadata),
+                        Err(error) => {
+                            return err(
+                                request.rpc_id,
+                                RpcError::Internal(RpcErrorBody {
+                                    message: format!(
+                                        "session.list: cannot read persisted metadata {}: {error}",
+                                        meta.id.as_str()
+                                    ),
+                                    details: EmptyDetails {},
+                                }),
+                            );
+                        }
+                    }
+                } else {
+                    None
+                };
                 let blank = metadata
                     .and_then(|value| value.get("blank"))
                     .and_then(serde_json::Value::as_bool)
+                    .or_else(|| fallback.as_ref().map(|metadata| metadata.blank))
                     .unwrap_or(true);
                 let updated_at = metadata
                     .and_then(|value| value.get("updatedAt"))
                     .and_then(serde_json::Value::as_i64)
+                    .or_else(|| fallback.as_ref().map(|metadata| metadata.updated_at))
                     .unwrap_or(meta.created_at as i64);
                 items.push(SessionSummary {
                     session_id: meta.id.clone(),
@@ -4312,10 +4481,18 @@ impl ApiProxyService {
                             }),
                         );
                     }
-                    let existing_preset = dsh_agent_presets::resolve_session_preset(
-                        agent.session().header(),
-                        &agent.session().events(),
-                    );
+                    let existing_preset = match persisted_agent_preset(agent.session()) {
+                        Ok(preset) => preset,
+                        Err(error) => {
+                            return err(
+                                request.rpc_id,
+                                RpcError::Internal(RpcErrorBody {
+                                    message: format!("session.create: {error}"),
+                                    details: EmptyDetails {},
+                                }),
+                            );
+                        }
+                    };
                     if request.payload.agent_preset.is_some() && existing_preset != resolved_preset
                     {
                         return err(
@@ -4349,10 +4526,7 @@ impl ApiProxyService {
                         request.rpc_id,
                         crate::api::sessions::SessionCreateResult {
                             session_id: existing_id.clone(),
-                            agent_preset: dsh_agent_presets::resolve_session_preset(
-                                agent.session().header(),
-                                &agent.session().events(),
-                            ),
+                            agent_preset: existing_preset,
                         },
                     );
                 }
@@ -4554,6 +4728,7 @@ impl ApiProxyService {
         let header = self.request_control_header(id).await?;
         if header.version != dsh_session::SESSION_FORMAT_VERSION
             && header.version != dsh_session::LEGACY_SESSION_FORMAT_VERSION
+            && header.version != 3
         {
             return Err(invalid_prompt(
                 "unsupported session authority header version",
@@ -4751,12 +4926,12 @@ impl ApiProxyService {
     /// Select a bounded, message-aligned history page without first cloning
     /// the whole log. If the requested message count spans too many raw
     /// events, reduce the count until a safe contiguous page fits.
+    #[cfg(test)]
     fn paginate(
         events: &[dsh_session::SessionEvent],
         before_seq: Option<i64>,
         max_messages: u64,
-    ) -> Result<(Vec<dsh_session::SessionEvent>, bool), usize> {
-        const MAX_HISTORY_EVENTS: usize = 4_096;
+    ) -> Result<(Vec<dsh_session::SessionEvent>, bool), String> {
         let before_seq = before_seq.and_then(|value| u64::try_from(value).ok());
         let mut messages = max_messages.max(1);
         loop {
@@ -4769,33 +4944,43 @@ impl ApiProxyService {
                 Ok(selection) => {
                     let source = &events[selection.start..selection.end];
                     if Self::compact_history_bytes(source) <= HISTORY_SOURCE_BYTE_LIMIT {
-                        let compact =
-                            crate::api::sessions::coalesce_history_transport_slice(source);
-                        if compact.len() <= MAX_HISTORY_EVENTS
-                            && Self::compact_history_bytes(&compact) <= HISTORY_TRANSPORT_BYTE_LIMIT
-                        {
-                            return Ok((compact, selection.has_more));
-                        }
+                        let (compact, reduced) = crate::history_transport::compact_page(
+                            source
+                                .iter()
+                                .map(crate::public_event::clone_for_browser)
+                                .collect(),
+                            crate::history_transport::Direction::Backward,
+                            HISTORY_TRANSPORT_EVENT_LIMIT,
+                            HISTORY_TRANSPORT_BYTE_LIMIT,
+                        )?;
+                        return Ok((compact, selection.has_more || reduced));
                     }
                     if messages > 1 {
                         messages = (messages / 2).max(1);
                         continue;
                     }
-                    return Err(selection.event_count());
+                    return Err("one safe history group exceeds the 64 MiB source budget".into());
                 }
                 Err(_) if messages > 1 => messages = (messages / 2).max(1),
-                Err(error) => return Err(error.selection.event_count()),
+                Err(error) => {
+                    return Err(format!(
+                        "one safe history group requires {} events, above the {} event scan budget",
+                        error.selection.event_count(),
+                        HISTORY_SCAN_EVENT_LIMIT,
+                    ));
+                }
             }
         }
     }
 
     /// Select a bounded forward page starting at an indexed event. The target
     /// remains at the head so a jump reveals subsequent conversation first.
+    #[cfg(test)]
     fn paginate_forward(
         events: &[dsh_session::SessionEvent],
         after_seq: i64,
         max_messages: u64,
-    ) -> Result<(Vec<dsh_session::SessionEvent>, bool), usize> {
+    ) -> Result<(Vec<dsh_session::SessionEvent>, bool), String> {
         const MAX_HISTORY_EVENTS: usize = HISTORY_SCAN_EVENT_LIMIT;
         let after_seq = u64::try_from(after_seq).unwrap_or(0);
         let start = events.partition_point(|event| event.seq.get() < after_seq);
@@ -4818,15 +5003,18 @@ impl ApiProxyService {
         }
         let source = &events[start..end];
         if Self::compact_history_bytes(source) > HISTORY_SOURCE_BYTE_LIMIT {
-            return Err(source.len());
+            return Err("one safe history group exceeds the 64 MiB source budget".into());
         }
-        let compact = crate::api::sessions::coalesce_history_transport_slice(source);
-        if compact.len() > HISTORY_TRANSPORT_EVENT_LIMIT
-            || Self::compact_history_bytes(&compact) > HISTORY_TRANSPORT_BYTE_LIMIT
-        {
-            return Err(source.len());
-        }
-        Ok((compact, end < events.len()))
+        let (compact, reduced) = crate::history_transport::compact_page(
+            source
+                .iter()
+                .map(crate::public_event::clone_for_browser)
+                .collect(),
+            crate::history_transport::Direction::Forward,
+            HISTORY_TRANSPORT_EVENT_LIMIT,
+            HISTORY_TRANSPORT_BYTE_LIMIT,
+        )?;
+        Ok((compact, end < events.len() || reduced))
     }
 
     fn compact_history_bytes(events: &[dsh_session::SessionEvent]) -> usize {
@@ -4841,6 +5029,7 @@ impl ApiProxyService {
         session_id: &dsh_session::SessionId,
         from_seq: u64,
         max_messages: u64,
+        cleanup: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<
         (
             Vec<dsh_session::SessionEvent>,
@@ -4849,40 +5038,45 @@ impl ApiProxyService {
         ),
         String,
     > {
-        const MAX_COMPACT_BYTES: usize = 8 * 1024 * 1024;
         let window = persistence
-            .read_forward_window(
+            .read_forward_window_with_sink(
                 session_id,
                 dsh_session_persistence::SessionReadForwardWindowRequest {
                     after_seq: from_seq,
                     max_messages,
                     max_events: HISTORY_SCAN_EVENT_LIMIT,
                 },
+                Box::new(
+                    crate::history_transport::TransportSink::new(
+                        crate::history_transport::Direction::Forward,
+                        HISTORY_TRANSPORT_EVENT_LIMIT,
+                        HISTORY_TRANSPORT_BYTE_LIMIT,
+                        HISTORY_SOURCE_BYTE_LIMIT,
+                    )
+                    .with_cleanup(cleanup),
+                ),
             )
             .await?;
-        if Self::compact_history_bytes(&window.events) > HISTORY_SOURCE_BYTE_LIMIT {
-            return Err("history scan exceeds the 64 MiB source budget".into());
+        if let Some(required) = window.oversized_event_count {
+            return Err(format!(
+                "one safe history group requires {required} events, above the {HISTORY_SCAN_EVENT_LIMIT} event scan budget"
+            ));
         }
         let has_more = window.has_more;
         let meta = window.meta;
-        let mut compact = crate::api::sessions::coalesce_history_transport_events(window.events);
-        if compact.len() > HISTORY_TRANSPORT_EVENT_LIMIT
-            || Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES
-        {
-            return Err(format!(
-                "session.history: targeted compact window exceeds the {MAX_COMPACT_BYTES} byte budget"
-            ));
-        }
+        let mut compact = window.events;
         if let Some(first) = compact.first_mut() {
             first.data["__historyStartSeq"] = serde_json::Value::from(from_seq);
         }
         Ok((compact, has_more, meta))
     }
 
-    async fn read_cold_tail_compact(
+    async fn read_cold_backward_compact(
         persistence: &Arc<dyn dsh_session_persistence::SessionPersistenceApi>,
         session_id: &dsh_session::SessionId,
+        before_seq: Option<u64>,
         max_messages: u64,
+        cleanup: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<
         (
             Vec<dsh_session::SessionEvent>,
@@ -4891,35 +5085,44 @@ impl ApiProxyService {
         ),
         String,
     > {
-        const MAX_COMPACT_EVENTS: usize = 4_096;
-        const MAX_COMPACT_BYTES: usize = 8 * 1024 * 1024;
-        let window = persistence
-            .read_window(
-                session_id,
-                dsh_session_persistence::SessionReadWindowRequest {
-                    before_seq: None,
-                    max_messages,
-                    max_events: HISTORY_SCAN_EVENT_LIMIT,
-                },
-            )
-            .await?;
-        if let Some(required) = window.oversized_event_count {
-            return Err(format!(
-                "session.history: one safe tail group requires {required} events, above the {MAX_COMPACT_EVENTS} event budget"
-            ));
-        }
-        if Self::compact_history_bytes(&window.events) > HISTORY_SOURCE_BYTE_LIMIT {
-            return Err("history scan exceeds the 64 MiB source budget".into());
-        }
-        let compact = crate::api::sessions::coalesce_history_transport_events(window.events);
-        if compact.len() > HISTORY_TRANSPORT_EVENT_LIMIT
-            || Self::compact_history_bytes(&compact) > MAX_COMPACT_BYTES
-        {
-            return Err(format!(
-                "session.history: compact tail exceeds the {MAX_COMPACT_BYTES} byte budget"
-            ));
-        }
-        Ok((compact, window.has_more, window.meta))
+        let mut messages = max_messages.max(1);
+        let window = loop {
+            let window = persistence
+                .read_window_with_sink(
+                    session_id,
+                    dsh_session_persistence::SessionReadWindowRequest {
+                        before_seq,
+                        max_messages: messages,
+                        max_events: HISTORY_SCAN_EVENT_LIMIT,
+                    },
+                    Box::new(
+                        crate::history_transport::TransportSink::new(
+                            crate::history_transport::Direction::Backward,
+                            HISTORY_TRANSPORT_EVENT_LIMIT,
+                            HISTORY_TRANSPORT_BYTE_LIMIT,
+                            HISTORY_SOURCE_BYTE_LIMIT,
+                        )
+                        .with_cleanup(cleanup.clone()),
+                    ),
+                )
+                .await?;
+            if let Some(required) = window.oversized_event_count {
+                if messages > 1 {
+                    messages = messages
+                        .saturating_mul(HISTORY_TRANSPORT_EVENT_LIMIT as u64)
+                        .checked_div(required as u64)
+                        .unwrap_or(1)
+                        .max(1)
+                        .min(messages - 1);
+                    continue;
+                }
+                return Err(format!(
+                    "one safe history group requires {required} events, above the {HISTORY_SCAN_EVENT_LIMIT} event scan budget"
+                ));
+            }
+            break window;
+        };
+        Ok((window.events, window.has_more, window.meta))
     }
 
     async fn session_history(
@@ -4935,7 +5138,6 @@ impl ApiProxyService {
             .expect("history semaphore remains open for the service lifetime");
         let session_id = request.payload.session_id.clone();
         const DEFAULT_MAX_MESSAGES: u64 = 100;
-        const MAX_HISTORY_EVENTS: usize = 4_096;
         let requested_messages = request
             .payload
             .max_messages
@@ -4960,22 +5162,32 @@ impl ApiProxyService {
         {
             Some(session) => {
                 live_session = Some(session.clone());
-                let selected = session.with_events(|events| {
-                    if let Some(after_seq) = request.payload.after_seq {
-                        Self::paginate_forward(events, after_seq, requested_messages)
-                    } else {
-                        Self::paginate(events, request.payload.before_seq, requested_messages)
-                    }
-                });
+                let before_seq = request.payload.before_seq;
+                let after_seq = request.payload.after_seq;
+                let cleanup = self.defaults.history_read_cleanup.clone();
+                let selected = tokio::task::spawn_blocking(move || {
+                    session.with_event_reader(|reader| {
+                        if let Some(after_seq) = after_seq {
+                            history_reader::forward(reader, after_seq, requested_messages, cleanup)
+                        } else {
+                            history_reader::backward(
+                                reader,
+                                before_seq,
+                                requested_messages,
+                                cleanup,
+                            )
+                        }
+                    })
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("history reader failed: {error}")));
                 match selected {
                     Ok(page) => page,
-                    Err(required) => {
+                    Err(message) => {
                         return err(
                             request.rpc_id,
                             RpcError::Internal(RpcErrorBody {
-                                message: format!(
-                                    "session.history: one safe history group requires {required} events, above the {MAX_HISTORY_EVENTS} event budget"
-                                ),
+                                message: format!("session.history: {message}"),
                                 details: EmptyDetails {},
                             }),
                         );
@@ -5008,24 +5220,7 @@ impl ApiProxyService {
                         &session_id,
                         from_seq,
                         requested_messages,
-                    )
-                    .await
-                    {
-                        Ok(compact) => compact,
-                        Err(error) => {
-                            return err(
-                                request.rpc_id,
-                                history_read_error(session_id.as_str(), error),
-                            );
-                        }
-                    };
-                    cold_header = Some(meta);
-                    (events, has_more)
-                } else if request.payload.before_seq.is_none() {
-                    let (events, has_more, meta) = match Self::read_cold_tail_compact(
-                        &persistence,
-                        &session_id,
-                        requested_messages,
+                        self.defaults.history_read_cleanup.clone(),
                     )
                     .await
                     {
@@ -5044,50 +5239,25 @@ impl ApiProxyService {
                         .payload
                         .before_seq
                         .and_then(|value| u64::try_from(value).ok());
-                    let mut messages = requested_messages;
-                    loop {
-                        let window = match persistence
-                            .read_window(
-                                &session_id,
-                                dsh_session_persistence::SessionReadWindowRequest {
-                                    before_seq,
-                                    max_messages: messages,
-                                    max_events: HISTORY_SCAN_EVENT_LIMIT,
-                                },
-                            )
-                            .await
-                        {
-                            Ok(window) => window,
-                            Err(error) => {
-                                return err(
-                                    request.rpc_id,
-                                    history_read_error(session_id.as_str(), error),
-                                );
-                            }
-                        };
-                        if let Some(required) = window.oversized_event_count {
-                            if messages > 1 {
-                                let proportional = messages
-                                    .saturating_mul(MAX_HISTORY_EVENTS as u64)
-                                    .checked_div(required as u64)
-                                    .unwrap_or(1)
-                                    .max(1);
-                                messages = proportional.min(messages - 1);
-                                continue;
-                            }
+                    let (events, has_more, meta) = match Self::read_cold_backward_compact(
+                        &persistence,
+                        &session_id,
+                        before_seq,
+                        requested_messages,
+                        self.defaults.history_read_cleanup.clone(),
+                    )
+                    .await
+                    {
+                        Ok(compact) => compact,
+                        Err(error) => {
                             return err(
                                 request.rpc_id,
-                                RpcError::Internal(RpcErrorBody {
-                                    message: format!(
-                                        "session.history: one safe history group requires {required} events, above the {MAX_HISTORY_EVENTS} event budget"
-                                    ),
-                                    details: EmptyDetails {},
-                                }),
+                                history_read_error(session_id.as_str(), error),
                             );
                         }
-                        cold_header = Some(window.meta);
-                        break (window.events, window.has_more);
-                    }
+                    };
+                    cold_header = Some(meta);
+                    (events, has_more)
                 }
             }
         };
@@ -5125,11 +5295,7 @@ impl ApiProxyService {
             )
             .ok()
         });
-        let mut page_events = if live_session.is_some() || request.payload.before_seq.is_some() {
-            crate::api::sessions::coalesce_history_transport_events(page_events)
-        } else {
-            page_events
-        };
+        let mut page_events = page_events;
         for event in &mut page_events {
             crate::public_event::strip(event);
         }
@@ -5180,18 +5346,28 @@ impl ApiProxyService {
             if request.payload.before_seq.is_some() || request.payload.after_seq.is_some() {
                 None
             } else if let Some(session) = live_session {
-                self.ctx
+                let snapshot = self
+                    .ctx
                     .get_typed::<Arc<dsh_session_projection::SessionProjectionRegistry>>(
                         "sessionProjections",
                         false,
                     )
-                    .map(|registry| {
-                        let snapshot = registry.snapshot(&session);
-                        crate::api::sessions::SessionProjectionsBlock {
+                    .map(|registry| registry.try_snapshot(&session))
+                    .transpose();
+                match snapshot {
+                    Ok(snapshot) => {
+                        snapshot.map(|snapshot| crate::api::sessions::SessionProjectionsBlock {
                             as_of_seq: snapshot.as_of_seq,
                             values: serde_json::Value::Object(snapshot.values),
-                        }
-                    })
+                        })
+                    }
+                    Err(error) => {
+                        return err(
+                            request.rpc_id,
+                            history_read_error(session_id.as_str(), error),
+                        );
+                    }
+                }
             } else if let Some(cache) = self
                 .ctx
                 .get_typed::<Arc<dsh_session_projection_cache::SessionProjectionCache>>(
@@ -5200,27 +5376,35 @@ impl ApiProxyService {
                 )
                 .map(|slot| slot.as_ref().clone())
             {
-                cache.cold_snapshot(&session_id).await.ok().map(|snapshot| {
-                    crate::api::sessions::SessionProjectionsBlock {
+                match cache.cold_snapshot(&session_id).await {
+                    Ok(snapshot) => Some(crate::api::sessions::SessionProjectionsBlock {
                         as_of_seq: snapshot.as_of_seq,
                         values: serde_json::Value::Object(snapshot.values),
+                    }),
+                    Err(error) => {
+                        return err(
+                            request.rpc_id,
+                            history_read_error(session_id.as_str(), error),
+                        );
                     }
-                })
+                }
             } else {
                 None
             };
-        ok(
-            request.rpc_id,
-            crate::api::sessions::SessionHistoryResult {
-                has_more_before,
-                has_more_after,
-                first_seq,
-                last_seq,
-                events: page,
-                has_more,
-                projections,
-            },
-        )
+        RpcResponse {
+            rpc_id: request.rpc_id,
+            result: RpcResult::ok(history_response::into_json(
+                crate::api::sessions::SessionHistoryResult {
+                    has_more_before,
+                    has_more_after,
+                    first_seq,
+                    last_seq,
+                    events: page,
+                    has_more,
+                    projections,
+                },
+            )),
+        }
     }
     /// Install (once) and return the selection state owned by this exact live
     /// Agent. Directly-registered test/deployment Agents are supported through
@@ -6436,8 +6620,17 @@ impl ApiProxyService {
         let reference = if let Some(session) =
             self.sessions().and_then(|store| store.get(&session_id))
         {
-            let events = session.events();
-            Self::referenced_image(events.as_slice(), &attachment_id)
+            let mut reference = None;
+            if let Err(error) = session.visit_events(0, None, |event| {
+                reference = Self::referenced_image(std::slice::from_ref(event), &attachment_id);
+                Ok(reference.is_none())
+            }) {
+                return err(
+                    request.rpc_id,
+                    history_read_error(session_id.as_str(), error),
+                );
+            }
+            reference
         } else {
             let Some(persistence) = self
                 .ctx
@@ -6845,47 +7038,66 @@ impl ApiProxyService {
             .await
         {
             Ok(entries) => {
-                let entries: Vec<crate::api::subagents::SubagentListEntry> = entries
-                    .iter()
-                    .map(|entry| {
-                        let activity = match entry {
-                            dsh_subagent::SubagentListEntry::Child { id, .. } => self
-                                .agents()
-                                .and_then(|registry| registry.get(id))
-                                .map(|agent| {
-                                    if agent.status() == dsh_agent::AgentStatus::Running {
-                                        "running"
-                                    } else {
-                                        "inactive"
-                                    }
-                                })
-                                .or_else(|| {
-                                    self.sessions().and_then(|sessions| sessions.get(id)).map(
-                                        |session| {
-                                            if session
-                                                .events()
-                                                .iter()
-                                                .rev()
-                                                .find(|event| {
-                                                    matches!(
-                                                        event.type_.as_str(),
-                                                        "turn/start" | "turn/end"
-                                                    )
-                                                })
-                                                .is_some_and(|event| event.type_ == "turn/start")
-                                            {
+                let entries: Result<Vec<crate::api::subagents::SubagentListEntry>, String> =
+                    entries
+                        .iter()
+                        .map(|entry| {
+                            let activity = match entry {
+                                dsh_subagent::SubagentListEntry::Child { id, .. } => {
+                                    let active = self
+                                        .agents()
+                                        .and_then(|registry| registry.get(id))
+                                        .map(|agent| {
+                                            if agent.status() == dsh_agent::AgentStatus::Running {
                                                 "running"
                                             } else {
                                                 "inactive"
                                             }
+                                        });
+                                    match active {
+                                        Some(active) => Some(active),
+                                        None => match self
+                                            .sessions()
+                                            .and_then(|sessions| sessions.get(id))
+                                        {
+                                            Some(session) => Some(
+                                                if session
+                                                    .find_event_rev(|event| {
+                                                        matches!(
+                                                            event.type_.as_str(),
+                                                            "turn/start" | "turn/end"
+                                                        )
+                                                    })?
+                                                    .is_some_and(|event| {
+                                                        event.type_ == "turn/start"
+                                                    })
+                                                {
+                                                    "running"
+                                                } else {
+                                                    "inactive"
+                                                },
+                                            ),
+                                            None => None,
                                         },
-                                    )
-                                }),
-                            _ => None,
-                        };
-                        Self::wire_subagent_entry(entry, activity)
-                    })
-                    .collect();
+                                    }
+                                }
+                                _ => None,
+                            };
+                            Ok(Self::wire_subagent_entry(entry, activity))
+                        })
+                        .collect();
+                let entries = match entries {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        return err(
+                            request.rpc_id,
+                            RpcError::Internal(RpcErrorBody {
+                                message: format!("subagent.list: {error}"),
+                                details: EmptyDetails {},
+                            }),
+                        );
+                    }
+                };
                 let parent_available = self
                     .agents()
                     .and_then(|registry| registry.get(&request.payload.parent_session_id))
@@ -6931,12 +7143,28 @@ impl ApiProxyService {
 
         let child_id = request.payload.child_session_id.clone();
         let parent_id = request.payload.parent_session_id.clone();
+        let _history_permit = self
+            .history_gate
+            .acquire()
+            .await
+            .expect("history semaphore remains open");
+        let before_seq = request.payload.before_seq;
+        let max_messages = request.payload.max_messages.unwrap_or(100).max(1);
         // The generic-history data plane: attached child or cold inspection.
-        let (header, events): (
-            dsh_session::SessionHeader,
-            Arc<Vec<dsh_session::SessionEvent>>,
-        ) = match self.sessions().and_then(|store| store.get(&child_id)) {
-            Some(session) => (session.header().clone(), session.events()),
+        let selected = match self.sessions().and_then(|store| store.get(&child_id)) {
+            Some(session) => {
+                let header = session.header().clone();
+                let cleanup = self.defaults.history_read_cleanup.clone();
+                tokio::task::spawn_blocking(move || {
+                    session
+                        .with_event_reader(|reader| {
+                            history_reader::backward(reader, before_seq, max_messages, cleanup)
+                        })
+                        .map(|(events, has_more)| (header, events, has_more))
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("history reader failed: {error}")))
+            }
             None => {
                 let Some(persistence) = self
                     .ctx
@@ -6957,21 +7185,31 @@ impl ApiProxyService {
                         }),
                     );
                 };
-                match persistence.inspect(&child_id).await {
-                    Ok(inspection) => (inspection.meta, Arc::new(inspection.events)),
-                    Err(_) => {
-                        return err(
-                            request.rpc_id,
-                            RpcError::SubagentNotFound(RpcErrorBody {
-                                message: "subagent disappeared during history read".to_string(),
-                                details: crate::api::rpc::SubagentPairDetails {
-                                    parent_session_id: parent_id.to_string(),
-                                    child_session_id: child_id.to_string(),
-                                },
-                            }),
-                        );
-                    }
-                }
+                Self::read_cold_backward_compact(
+                    &persistence,
+                    &child_id,
+                    before_seq.and_then(|seq| u64::try_from(seq).ok()),
+                    max_messages,
+                    self.defaults.history_read_cleanup.clone(),
+                )
+                .await
+                .map(|(events, has_more, header)| (header, events, has_more))
+            }
+        };
+        let (header, page_events, has_more) = match selected {
+            Ok(selected) => selected,
+            Err(message) => {
+                let error = match history_read_error(child_id.as_str(), message) {
+                    RpcError::SessionNotFound(_) => RpcError::SubagentNotFound(RpcErrorBody {
+                        message: "subagent disappeared during history read".into(),
+                        details: crate::api::rpc::SubagentPairDetails {
+                            parent_session_id: parent_id.to_string(),
+                            child_session_id: child_id.to_string(),
+                        },
+                    }),
+                    error => error,
+                };
+                return err(request.rpc_id, error);
             }
         };
         if signal.aborted() {
@@ -6994,25 +7232,6 @@ impl ApiProxyService {
                 }),
             );
         }
-        const DEFAULT_MAX_MESSAGES: u64 = 100;
-        let (page_events, has_more) = match Self::paginate(
-            &events,
-            request.payload.before_seq,
-            request.payload.max_messages.unwrap_or(DEFAULT_MAX_MESSAGES),
-        ) {
-            Ok(page) => page,
-            Err(required) => {
-                return err(
-                    request.rpc_id,
-                    RpcError::Internal(RpcErrorBody {
-                        message: format!(
-                            "subagent.history: one safe history group requires {required} events, above the 4096 event budget"
-                        ),
-                        details: EmptyDetails {},
-                    }),
-                );
-            }
-        };
         let page: Vec<HistoryEntry> = page_events
             .into_iter()
             .map(|mut event| {
@@ -7020,14 +7239,16 @@ impl ApiProxyService {
                 HistoryEntry { event, view: None }
             })
             .collect();
-        ok(
-            request.rpc_id,
-            crate::api::subagents::SubagentHistoryResult {
-                events: page,
-                has_more,
-                projections: None,
-            },
-        )
+        RpcResponse {
+            rpc_id: request.rpc_id,
+            result: RpcResult::ok(history_response::subagent_into_json(
+                crate::api::subagents::SubagentHistoryResult {
+                    events: page,
+                    has_more,
+                    projections: None,
+                },
+            )),
+        }
     }
 
     async fn subagent_prompt(
@@ -7675,10 +7896,19 @@ impl ApiProxyService {
                 // Re-read inside the queue: an earlier switch may have run,
                 // and a conversation may have started, since this request
                 // arrived (TS `swap`).
-                let started = session_for_swap
-                    .events()
-                    .iter()
-                    .any(|event| event.type_ == "turn/start");
+                let started =
+                    match session_for_swap.find_event_rev(|event| event.type_ == "turn/start") {
+                        Ok(event) => event.is_some(),
+                        Err(error) => {
+                            return Arc::new(err(
+                                rpc_id_for_swap,
+                                RpcError::Internal(RpcErrorBody {
+                                    message: format!("agentPreset.select: {error}"),
+                                    details: EmptyDetails {},
+                                }),
+                            ));
+                        }
+                    };
                 if started {
                     return Arc::new(err(
                         rpc_id_for_swap,
@@ -8165,6 +8395,20 @@ impl ApiProxyCarrier for ApiProxyService {
                     payload: serde_json::Value::Null,
                 })
                 .await
+            }
+            "pluginInventory.getConfig" => {
+                let payload = match serde_json::from_value(request.payload) {
+                    Ok(payload) => payload,
+                    Err(error) => return err(rpc_id, bad_request("pluginInventory.getConfig", error)),
+                };
+                self.plugin_inventory_get_config(RpcRequest { rpc_id, payload }).await
+            }
+            "pluginInventory.setConfig" => {
+                let payload = match serde_json::from_value(request.payload) {
+                    Ok(payload) => payload,
+                    Err(error) => return err(rpc_id, bad_request("pluginInventory.setConfig", error)),
+                };
+                self.plugin_inventory_set_config(RpcRequest { rpc_id, payload }, signal).await
             }
             "pluginInventory.setEnabled" => {
                 let payload: dsh_host_plugin_inventory::PluginSetEnabledRequest =
@@ -8974,8 +9218,11 @@ impl ApiProxyCarrier for ApiProxyService {
                             let mut queues = queues.lock();
                             let _ = tx.send(FrameRequest {
                                 rpc_id: crate::api::rpc::rpc_id(Self::fresh_id()),
-                                payload: serde_json::to_value(queues.snapshot(&session))
-                                    .expect("session/queue mux frame serialization"),
+                                payload: serde_json::to_value(queue_snapshot_frame(
+                                    &mut queues,
+                                    &session,
+                                ))
+                                .expect("session/queue mux frame serialization"),
                             });
                         }
                         let view = if event.type_ == "tool/call" {
@@ -9037,7 +9284,7 @@ impl ApiProxyCarrier for ApiProxyService {
             let mut queues = queues.lock();
             let _ = tx.send(FrameRequest {
                 rpc_id: crate::api::rpc::rpc_id(Self::fresh_id()),
-                payload: serde_json::to_value(queues.snapshot(&session))
+                payload: serde_json::to_value(queue_snapshot_frame(&mut queues, &session))
                     .expect("session/queue baseline serialization"),
             });
         }
@@ -9169,10 +9416,12 @@ impl ApiProxyCarrier for ApiProxyService {
                                 .cloned()
                             {
                                 let header = session.header();
-                                let blank = !session
-                                    .events()
-                                    .iter()
-                                    .any(|event| event.type_ == "turn/start");
+                                let blank = match session
+                                    .find_event_rev(|event| event.type_ == "turn/start")
+                                {
+                                    Ok(event) => event.is_none(),
+                                    Err(_) => return None,
+                                };
                                 push(
                                     &tx,
                                     crate::api::events::HostFrame::SessionAdded {

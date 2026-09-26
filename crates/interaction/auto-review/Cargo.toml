@@ -12,6 +12,7 @@ dsh-llm = { path = "../../core/llm" }
 dsh-session = { path = "../../core/session" }
 dsh-tools = { path = "../../core/tools" }
 dsh-permission-presets = { path = "../permission-presets" }
+dsh-user-approval = { path = "../user-approval" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
@@ -27,6 +28,5 @@ dsh-code-runtime = { path = "../../code-runtime/code-runtime" }
 dsh-agent-loop = { path = "../../core/agent-loop" }
 dsh-scope = { path = "../../core/scope" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
-dsh-user-approval = { path = "../user-approval" }
 dsh-shell = { path = "../../shell/shell" }
 dsh-sandbox = { path = "../../sandbox/sandbox" }

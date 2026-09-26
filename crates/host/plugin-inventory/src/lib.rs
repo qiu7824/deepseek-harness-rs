@@ -9,7 +9,7 @@ pub use index::{
     NAME, PluginInventoryGateway, PluginInventoryGatewayPlugin, SERVICE_NAME, composition_inventory,
 };
 pub use types::{
-    PluginEntryId, PluginFiberPhase, PluginInventoryEntry, PluginInventoryPreset,
-    PluginInventoryPresetRow, PluginInventorySnapshot, PluginSetEnabledRequest,
-    PluginSetEnabledResult,
+    PluginConfigSnapshot, PluginEntryId, PluginFiberPhase, PluginGetConfigRequest,
+    PluginInventoryEntry, PluginInventoryPreset, PluginInventoryPresetRow, PluginInventorySnapshot,
+    PluginSetConfigRequest, PluginSetEnabledRequest, PluginSetEnabledResult,
 };

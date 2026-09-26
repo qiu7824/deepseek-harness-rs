@@ -413,31 +413,37 @@ impl InteractionState {
             .collect();
         let mut decided = HashSet::new();
         let mut approval_id = None;
-        for event in request.agent.session().events().iter().rev() {
-            match event.type_.as_str() {
-                "approval/decided" => {
-                    if let Some(id) = event.data.get("id").and_then(serde_json::Value::as_str) {
-                        decided.insert(id.to_string());
+        request
+            .agent
+            .session()
+            .find_event_rev(|event| {
+                match event.type_.as_str() {
+                    "approval/decided" => {
+                        if let Some(id) = event.data.get("id").and_then(serde_json::Value::as_str) {
+                            decided.insert(id.to_string());
+                        }
                     }
+                    "approval/asked" => {
+                        let Some(id) = event.data.get("id").and_then(serde_json::Value::as_str)
+                        else {
+                            return false;
+                        };
+                        if claimed.contains(id) || decided.contains(id) {
+                            return false;
+                        }
+                        let event_call_id =
+                            event.data.get("callId").and_then(serde_json::Value::as_str);
+                        if request.call_id.as_deref() != event_call_id {
+                            return false;
+                        }
+                        approval_id = Some(approval_request_id(id));
+                        return true;
+                    }
+                    _ => {}
                 }
-                "approval/asked" => {
-                    let Some(id) = event.data.get("id").and_then(serde_json::Value::as_str) else {
-                        continue;
-                    };
-                    if claimed.contains(id) || decided.contains(id) {
-                        continue;
-                    }
-                    let event_call_id =
-                        event.data.get("callId").and_then(serde_json::Value::as_str);
-                    if request.call_id.as_deref() != event_call_id {
-                        continue;
-                    }
-                    approval_id = Some(approval_request_id(id));
-                    break;
-                }
-                _ => {}
-            }
-        }
+                false
+            })
+            .ok()?;
         let approval_id = approval_id?;
         let rpc_id = fresh_rpc_id();
         let (resolve, outcome) = oneshot::channel();

@@ -93,6 +93,7 @@ mod stream_restore;
 pub use stream_restore::ProjectionStreamRestore;
 
 /// Per-session per-unit watermark cache row (TS `UnitCell`).
+#[derive(Clone)]
 struct UnitCell {
     state: ArcValue,
     /// Seq of the last event passed through `apply` (regardless of change).
@@ -136,15 +137,23 @@ impl SessionProjectionRegistry {
 
         // session/event: pass every committed event through every unit.
         let event_registry = Arc::clone(&registry);
-        let event_listener: Arc<Listener> = Arc::new(move |_ctx, args| {
+        let event_listener: Arc<Listener> = Arc::new(move |ctx, args| {
+            let ctx = ctx.clone();
             let session = downcast::<Session>(&args[0]).expect("session arg").clone();
             let event = args[1].clone();
             let registry = Arc::clone(&event_registry);
             Box::pin(async move {
-                registry.drive(
+                if let Err(error) = registry.drive(
                     &session,
                     downcast::<SessionEvent>(&event).expect("event arg"),
-                );
+                ) {
+                    registry.forget_session(&session);
+                    ctx.named_logger(Some("session-projection"))
+                        .warn(vec![arc(format!(
+                            "session \"{}\" projection history could not be read: {error}",
+                            session.id()
+                        ))]);
+                }
                 None
             })
         });
@@ -232,6 +241,15 @@ impl SessionProjectionRegistry {
         keys
     }
 
+    /// Clone only the requested registered units under one registry lock.
+    /// Consumers can make bounded summaries without depending on each domain.
+    pub fn definitions_for_keys(&self, keys: &[&str]) -> Vec<ProjectionDefinition> {
+        let registrations = self.registrations.lock();
+        keys.iter()
+            .filter_map(|key| registrations.get(*key).map(|row| row.def.clone()))
+            .collect()
+    }
+
     /// Subscribe to the change feed (an effect on the caller context's
     /// fiber; TS `onChanged`).
     pub fn on_changed(
@@ -259,18 +277,26 @@ impl SessionProjectionRegistry {
     /// One consistent cut over every registered unit for one session (TS
     /// `snapshot`). Fully synchronous; schema failures panic (the TS throw).
     pub fn snapshot(&self, session: &Session) -> ProjectionSnapshot {
+        self.try_snapshot(session)
+            .expect("session projection history or view is invalid")
+    }
+
+    /// Fallible counterpart for persistent Session readers.
+    pub fn try_snapshot(&self, session: &Session) -> Result<ProjectionSnapshot, String> {
         let mut values = serde_json::Map::new();
         let registrations = self.registrations.lock();
+        let mut cells = cells_for(&registrations, session, true)?;
         for registration in registrations.values() {
-            let cell = cell_for(registration, session);
-            let parsed = (registration.def.schema)(&(registration.def.view)(&cell.state))
-                .expect("session projection view violated its schema");
+            let cell = cells
+                .remove(&registration.def.key)
+                .expect("registered cell");
+            let parsed = (registration.def.schema)(&(registration.def.view)(&cell.state))?;
             values.insert(registration.def.key.clone(), parsed);
         }
-        ProjectionSnapshot {
+        Ok(ProjectionSnapshot {
             as_of_seq: session.seq().get() as i64 - 1,
             values,
-        }
+        })
     }
 
     /// State-level checkpoint of every registered unit (TS `checkpoint`).
@@ -286,19 +312,35 @@ impl SessionProjectionRegistry {
     }
 
     fn checkpoint_with_retention(&self, session: &Session, retain: bool) -> ProjectionCheckpoint {
+        self.try_checkpoint_with_retention(session, retain)
+            .expect("session projection checkpoint history is invalid")
+    }
+
+    pub fn try_checkpoint(&self, session: &Session) -> Result<ProjectionCheckpoint, String> {
+        self.try_checkpoint_with_retention(session, true)
+    }
+
+    pub fn try_checkpoint_detached(
+        &self,
+        session: &Session,
+    ) -> Result<ProjectionCheckpoint, String> {
+        self.try_checkpoint_with_retention(session, false)
+    }
+
+    fn try_checkpoint_with_retention(
+        &self,
+        session: &Session,
+        retain: bool,
+    ) -> Result<ProjectionCheckpoint, String> {
         let mut rows = ProjectionCheckpoint::new();
         let registrations = self.registrations.lock();
+        let mut cells = cells_for(&registrations, session, retain)?;
         for registration in registrations.values() {
-            let cell = if retain {
-                cell_for(registration, session)
-            } else {
-                let existing = registration.cells.lock().remove(&session.identity());
-                existing.unwrap_or_else(|| {
-                    build_cell(&registration.def, session.header(), &session.events())
-                })
-            };
+            let cell = cells
+                .remove(&registration.def.key)
+                .expect("registered cell");
             let value: Arc<ProjectionValue> = cordis::downcast_arc(&cell.state)
-                .expect("session projection state must be plain JSON");
+                .ok_or("session projection state must be plain JSON")?;
             rows.insert(
                 registration.def.key.clone(),
                 ProjectionCheckpointRow {
@@ -308,7 +350,7 @@ impl SessionProjectionRegistry {
                 },
             );
         }
-        rows
+        Ok(rows)
     }
 
     /// The stored seq a restore tail read must start at (TS `restoreFloor`):
@@ -441,29 +483,28 @@ impl SessionProjectionRegistry {
 
     /// Eager drive: pass one committed event through every registered unit;
     /// notify on changed references (TS `drive`).
-    fn drive(&self, session: &Session, event: &SessionEvent) {
+    fn drive(&self, session: &Session, event: &SessionEvent) -> Result<(), String> {
         let listeners = self.listeners.lock().clone();
         let registrations = self.registrations.lock();
+        let mut rebuilt = Vec::new();
+        for registration in registrations.values() {
+            if !registration.cells.lock().contains_key(&session.identity()) {
+                rebuilt.push((
+                    registration,
+                    build_session_cell(&registration.def, session, Some(event.seq.get()))?,
+                ));
+            }
+        }
+        // All cold reads must succeed before publishing any event-driven state.
+        for (registration, cell) in rebuilt {
+            registration.cells.lock().insert(session.identity(), cell);
+        }
         for registration in registrations.values() {
             let (next, changed) = {
                 let mut cells = registration.cells.lock();
-                let cell = match cells.get_mut(&session.identity()) {
-                    Some(cell) => cell,
-                    None => {
-                        // Late build mid-stream: fold history before this
-                        // event (seq = log index, so the prefix slice is
-                        // exact), then take the normal gate.
-                        let events = session.events();
-                        let prefix = &events[..event.seq.get() as usize];
-                        cells.insert(
-                            session.identity(),
-                            build_cell(&registration.def, session.header(), prefix),
-                        );
-                        cells
-                            .get_mut(&session.identity())
-                            .expect("cell just inserted")
-                    }
-                };
+                let cell = cells
+                    .get_mut(&session.identity())
+                    .expect("prepared projection cell");
                 let next = (registration.def.apply)(&cell.state, event);
                 let changed = !Arc::ptr_eq(&next, &cell.state);
                 cell.state = next;
@@ -499,58 +540,75 @@ impl SessionProjectionRegistry {
                 }
             }
         }
+        Ok(())
     }
 }
 
-/// Fold one unit from init over `events` (TS `buildCell`).
-fn build_cell(
+fn build_session_cell(
     def: &ProjectionDefinition,
-    header: &SessionHeader,
-    events: &[SessionEvent],
-) -> UnitCell {
-    let mut state = (def.init)(header);
-    for event in events {
-        state = (def.apply)(&state, event);
-    }
-    UnitCell {
-        state,
-        observed_seq: events
-            .last()
-            .map(|event| event.seq.get() as i64)
-            .unwrap_or(-1),
+    session: &Session,
+    before: Option<u64>,
+) -> Result<UnitCell, String> {
+    let mut cell = UnitCell {
+        state: (def.init)(session.header()),
+        observed_seq: -1,
         observed_view: None,
-    }
+    };
+    session.visit_events(0, before, |event| {
+        cell.state = (def.apply)(&cell.state, event);
+        cell.observed_seq = event.seq.get() as i64;
+        Ok(true)
+    })?;
+    Ok(cell)
 }
 
-/// Read (or lazily build, folding the full in-memory log) one unit's cell
-/// (TS `cellFor`).
-fn cell_for(registration: &Registration, session: &Session) -> UnitCell {
+/// Restore missing units in one traversal. A detached history reader must
+/// never re-populate the registry's strong Session cells.
+fn cells_for(
+    registrations: &HashMap<String, Registration>,
+    session: &Session,
+    retain: bool,
+) -> Result<HashMap<String, UnitCell>, String> {
     let identity = session.identity();
-    // snapshot/checkpoint callers hold the registration lock, which also
-    // serializes forget_session. A history request may still hold a Session
-    // after the store detached it; never resurrect its strong projection cells.
-    if !session.is_attached_to_store() {
-        registration.cells.lock().remove(&identity);
-        return build_cell(&registration.def, session.header(), &session.events());
-    }
-    if let Some(cell) = registration.cells.lock().get(&identity) {
-        return UnitCell {
-            state: cell.state.clone(),
-            observed_seq: cell.observed_seq,
-            observed_view: cell.observed_view.clone(),
+    let attached = session.is_attached_to_store();
+    let mut ready = HashMap::new();
+    let mut missing = Vec::new();
+    for registration in registrations.values() {
+        let previous = if retain && attached {
+            registration.cells.lock().get(&identity).cloned()
+        } else {
+            let removed = registration.cells.lock().remove(&identity);
+            if retain { None } else { removed }
         };
+        if let Some(cell) = previous {
+            ready.insert(registration.def.key.clone(), cell);
+        } else {
+            missing.push((
+                registration,
+                UnitCell {
+                    state: (registration.def.init)(session.header()),
+                    observed_seq: -1,
+                    observed_view: None,
+                },
+            ));
+        }
     }
-    let events = session.events();
-    let built = build_cell(&registration.def, session.header(), &events);
-    registration.cells.lock().insert(
-        identity,
-        UnitCell {
-            state: built.state.clone(),
-            observed_seq: built.observed_seq,
-            observed_view: built.observed_view.clone(),
-        },
-    );
-    built
+    if !missing.is_empty() {
+        session.visit_events(0, None, |event| {
+            for (registration, cell) in &mut missing {
+                cell.state = (registration.def.apply)(&cell.state, event);
+                cell.observed_seq = event.seq.get() as i64;
+            }
+            Ok(true)
+        })?;
+    }
+    for (registration, cell) in missing {
+        if retain && attached {
+            registration.cells.lock().insert(identity, cell.clone());
+        }
+        ready.insert(registration.def.key.clone(), cell);
+    }
+    Ok(ready)
 }
 
 impl Default for ProjectionSnapshot {
@@ -565,6 +623,92 @@ impl Default for ProjectionSnapshot {
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn archived_projection_units_match_complete_log_and_detached_checkpoint() {
+        let original = Session::create(
+            dsh_session::session_id("archive-projection"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        for index in 0..32 {
+            original
+                .append(
+                    "session/title",
+                    serde_json::json!({"value":index,"body":"x".repeat(8192)}),
+                    None,
+                )
+                .unwrap();
+        }
+        let mut builder =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        original
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let restored = Session::from_event_archive(
+            original.id().clone(),
+            builder.finish().unwrap(),
+            original.header(),
+            dsh_session::SessionLogOffset::ZERO,
+            vec![],
+        )
+        .unwrap();
+        let ctx = Context::root();
+        let registry = SessionProjectionRegistry::install(&ctx);
+        for key in ["first", "second"] {
+            registry
+                .register(
+                    &ctx,
+                    ProjectionDefinition {
+                        key: key.into(),
+                        state_version: 1,
+                        init: Arc::new(|_| arc(serde_json::json!({"count":0,"last":null}))),
+                        apply: Arc::new(|state, event| {
+                            let mut value = downcast::<serde_json::Value>(state).unwrap().clone();
+                            value["count"] = (value["count"].as_u64().unwrap() + 1).into();
+                            if let Some(latest) = event.data.get("value") {
+                                value["last"] = latest.clone();
+                            }
+                            arc(value)
+                        }),
+                        view: Arc::new(|state| state.clone()),
+                        schema: Arc::new(|state| {
+                            Ok(downcast::<serde_json::Value>(state).unwrap().clone())
+                        }),
+                    },
+                )
+                .unwrap();
+        }
+        let complete = restored.events();
+        let (expected, expected_checkpoint) = registry
+            .restore(
+                restored.header(),
+                &ProjectionCheckpoint::new(),
+                &complete,
+                0,
+            )
+            .unwrap();
+        assert_eq!(registry.try_snapshot(&restored).unwrap(), expected);
+        assert_eq!(
+            registry.try_checkpoint_detached(&restored).unwrap(),
+            expected_checkpoint
+        );
+        assert_eq!(expected.values["first"], expected.values["second"]);
+        assert_eq!(expected.values["first"]["last"], 31);
+        assert!(
+            registry
+                .registrations
+                .lock()
+                .values()
+                .all(|registration| registration.cells.lock().is_empty())
+        );
+        ctx.fiber.dispose().await;
+    }
 
     #[tokio::test]
     async fn late_history_snapshot_does_not_resurrect_disposed_projection_cells() {

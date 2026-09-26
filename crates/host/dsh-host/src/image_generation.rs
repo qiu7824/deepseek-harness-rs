@@ -57,9 +57,11 @@ pub(crate) async fn read_references(
             return Err("图像读取已取消".into());
         }
         let path = value.as_str().ok_or("参考图必须是附件标识或工作区路径")?;
-        let reference = agent
-            .session()
-            .with_events(|events| events.iter().find_map(|event| image_ref(&event.data, path)));
+        let mut reference = None;
+        agent.session().visit_events(0, None, |event| {
+            reference = image_ref(&event.data, path);
+            Ok(reference.is_none())
+        })?;
         if path.starts_with("sha256:") && reference.is_none() {
             return Err("参考图不属于当前会话".into());
         }

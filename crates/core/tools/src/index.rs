@@ -430,6 +430,11 @@ pub enum PreToolDecision {
         grant_key: Option<String>,
         rememberable: bool,
     },
+    /// A reviewer denial requires a fresh human decision, never an automatic
+    /// answerer, an unattended fallback, or a remembered grant.
+    AskHuman {
+        reason: Option<String>,
+    },
 }
 
 /// Post-dispatch decision.
@@ -1107,18 +1112,22 @@ impl ToolRuntime {
         let stale_binding = binding_schema
             .as_ref()
             .is_some_and(|schema| Some(schema) != actual_schema.as_ref());
+        let permission = agent
+            .as_ref()
+            .map(|agent| {
+                agent
+                    .session()
+                    .find_event_rev(|event| event.type_ == "permission/preset")
+                    .map(|event| {
+                        event.and_then(|event| event.data["preset"].as_str().map(str::to_owned))
+                    })
+            })
+            .transpose()
+            .map(Option::flatten);
+        let permission_error = permission.as_ref().err().cloned();
         let execution = Arc::new(ToolExecution {
             schema: binding_schema.or(actual_schema),
-            permission_preset: agent.as_ref().and_then(|agent| {
-                agent.session().with_events(|events| {
-                    events
-                        .iter()
-                        .rev()
-                        .find(|e| e.type_ == "permission/preset")
-                        .and_then(|e| e.data["preset"].as_str())
-                        .map(str::to_owned)
-                })
-            }),
+            permission_preset: permission.ok().flatten(),
             token,
             call_id,
             root_call_id,
@@ -1142,6 +1151,19 @@ impl ToolRuntime {
             execution: Arc::clone(&execution),
             state,
         });
+        if let Some(error) = permission_error {
+            let result = tool_error_result(
+                &format!("Permission history could not be read; tool was not executed: {error}"),
+                Some(&ToolErrorInfo {
+                    name: "PermissionStateError".into(),
+                    code: "PERMISSION_STATE_UNAVAILABLE".into(),
+                }),
+            );
+            return CreatedExecution::Final {
+                run_ctx,
+                result: Arc::new(self.mark_canonical(token, result)),
+            };
+        }
         if stale_binding {
             let result = tool_error_result(
                 "Tool binding changed before dispatch; its body was not executed",
@@ -1277,7 +1299,27 @@ impl ToolRuntime {
                     rememberable,
                 } => {
                     match self
-                        .service_ask(&run_ctx, reason.clone(), grant_key.clone(), *rememberable)
+                        .service_ask(
+                            &run_ctx,
+                            reason.clone(),
+                            grant_key.clone(),
+                            *rememberable,
+                            false,
+                        )
+                        .await
+                    {
+                        Ok(()) => (PreToolDecision::Allow, None),
+                        Err(error) => (
+                            PreToolDecision::Deny {
+                                reason: error.message.clone(),
+                            },
+                            Some(error),
+                        ),
+                    }
+                }
+                PreToolDecision::AskHuman { reason } => {
+                    match self
+                        .service_ask(&run_ctx, reason.clone(), None, false, true)
                         .await
                     {
                         Ok(()) => (PreToolDecision::Allow, None),
@@ -1313,7 +1355,7 @@ impl ToolRuntime {
             let denial_reason = match &decision {
                 PreToolDecision::Allow => self.guard_reason(&run_ctx.execution),
                 PreToolDecision::Deny { reason } => Some(reason.clone()),
-                PreToolDecision::Ask { .. } => None,
+                PreToolDecision::Ask { .. } | PreToolDecision::AskHuman { .. } => None,
                 PreToolDecision::Cancel | PreToolDecision::DenyWithInfo { .. } => unreachable!(),
             };
             if let Some(reason) = denial_reason {
@@ -1684,6 +1726,7 @@ impl ToolRuntime {
         reason: Option<String>,
         grant_key: Option<String>,
         rememberable: bool,
+        human_only: bool,
     ) -> Result<(), ToolBodyError> {
         let Some(agent) = run_ctx.agent.clone() else {
             return Err(ToolBodyError::coded(
@@ -1712,7 +1755,11 @@ impl ToolRuntime {
             rememberable,
             signal: Some(signal),
         };
-        let outcome = approval.request(&request).await.map_err(|error| ToolBodyError::coded(
+        let outcome = if human_only {
+            approval.request_human(&request).await
+        } else {
+            approval.request(&request).await
+        }.map_err(|error| ToolBodyError::coded(
             format!("Approval could not be requested; the tool did not run and no approval is pending: {error}"),
             "UserApprovalError", "USER_APPROVAL_UNAVAILABLE",
         ))?;

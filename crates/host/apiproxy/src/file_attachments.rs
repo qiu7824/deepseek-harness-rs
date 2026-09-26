@@ -30,7 +30,17 @@ impl ApiProxyService {
                 })
         };
         if let Some(session) = self.sessions().and_then(|sessions| sessions.get(session)) {
-            return Ok(session.with_events(inspect));
+            let mut found = None;
+            session
+                .visit_events(0, None, |event| {
+                    if signal.is_some_and(|signal| signal()) {
+                        return Err("File attachment lookup cancelled".into());
+                    }
+                    found = inspect(std::slice::from_ref(event));
+                    Ok(found.is_none())
+                })
+                .map_err(|error| AttachmentError::new("ATTACHMENT_HISTORY_UNAVAILABLE", error))?;
+            return Ok(found);
         }
         let persistence = self
             .ctx

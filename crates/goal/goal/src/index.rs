@@ -106,6 +106,7 @@ struct GoalCache {
     observed_seq: usize,
     pending_activation: Option<(u64, GoalActivation)>,
     replay_valid: bool,
+    replay_error: Option<String>,
 }
 
 /// Short reservation of a goal requirements generation while a Host commits
@@ -329,7 +330,7 @@ impl GoalService {
         self.assert_live(agent)?;
         let state = self.state_for(agent);
         let mut cache = state.cache.lock();
-        self.sync(&state.session, &mut cache);
+        self.sync(&state.session, &mut cache)?;
         Ok(self.view(&cache))
     }
 
@@ -342,7 +343,7 @@ impl GoalService {
         self.assert_live(agent)?;
         let state = self.state_for(agent);
         let mut cache = state.cache.lock();
-        self.sync(&state.session, &mut cache);
+        self.sync(&state.session, &mut cache)?;
         if !cache.replay_valid {
             return Err(GoalError::new(
                 "goal replay is invalid",
@@ -359,7 +360,7 @@ impl GoalService {
     ) -> Option<GoalRequirementsIdentity> {
         let state = self.state_for_session(session.clone());
         let mut cache = state.cache.lock();
-        self.sync(&state.session, &mut cache);
+        self.sync(&state.session, &mut cache).ok()?;
         requirements_identity(&cache)
     }
 
@@ -368,7 +369,9 @@ impl GoalService {
     pub fn requirements_view_for_session(&self, session: &Session) -> Option<Value> {
         let state = self.state_for_session(session.clone());
         let mut cache = state.cache.lock();
-        self.sync(&state.session, &mut cache);
+        if self.sync(&state.session, &mut cache).is_err() {
+            return Some(serde_json::json!({"unavailable":true}));
+        }
         if !cache.replay_valid {
             return Some(serde_json::json!({"unavailable":true}));
         }
@@ -383,7 +386,10 @@ impl GoalService {
         agent: &Arc<dyn Agent>,
     ) -> Result<Option<GoalRequirementsIdentity>, GoalError> {
         self.assert_live(agent)?;
-        Ok(self.requirements_identity_for_session(agent.session()))
+        let state = self.state_for(agent);
+        let mut cache = state.cache.lock();
+        self.sync(&state.session, &mut cache)?;
+        Ok(requirements_identity(&cache))
     }
 
     /// Reserve a trusted binding across a short Host database transaction.
@@ -413,7 +419,7 @@ impl GoalService {
         let state = self.state_for(agent);
         state.disarm_requested.store(true, Ordering::Release);
         let mut cache = state.cache.lock();
-        self.sync(&state.session, &mut cache);
+        self.sync(&state.session, &mut cache)?;
         cache.activation = GoalActivation::Disarmed;
         let view = self.view(&cache);
         if !state.mutating.load(Ordering::Acquire) {
@@ -663,7 +669,7 @@ impl GoalService {
         let state = self.state_for(agent);
         let identity = {
             let mut cache = state.cache.lock().clone();
-            self.sync(&state.session, &mut cache);
+            self.sync(&state.session, &mut cache)?;
             if !cache.replay_valid {
                 return Err(GoalError::new(
                     "goal replay is invalid; completion is unavailable",
@@ -815,7 +821,7 @@ impl GoalService {
         let state = self.state_for(agent);
         let claim = MutationClaim::acquire(state.clone())?;
         let mut cache = state.cache.lock().clone();
-        self.sync(&state.session, &mut cache);
+        self.sync(&state.session, &mut cache)?;
         Ok((state, cache, claim))
     }
 
@@ -877,14 +883,15 @@ impl GoalService {
 
         let mut fold = empty_goal_fold_state();
         let mut replay_valid = true;
-        let observed_seq = session.with_events(|events| {
-            for event in events {
-                if apply_goal_event(&mut fold, event).is_err() {
-                    replay_valid = false;
-                }
+        let mut observed_seq = 0;
+        let replay = session.visit_events(0, None, |event| {
+            if apply_goal_event(&mut fold, event).is_err() {
+                replay_valid = false;
             }
-            events.len()
+            observed_seq = event.seq.get() as usize + 1;
+            Ok(true)
         });
+        replay_valid &= replay.is_ok();
         let state = Arc::new(SessionGoalState {
             cache: Mutex::new(GoalCache {
                 state: fold,
@@ -892,6 +899,7 @@ impl GoalService {
                 observed_seq,
                 pending_activation: None,
                 replay_valid,
+                replay_error: replay.err(),
             }),
             session,
             mutating: AtomicBool::new(false),
@@ -907,22 +915,29 @@ impl GoalService {
 
     /// Incrementally observe durable events and reconcile local activation
     /// intent.
-    fn sync(&self, session: &Session, cache: &mut GoalCache) {
-        session.with_events(|events| {
-            while cache.observed_seq < events.len() {
-                let event = &events[cache.observed_seq];
-                if apply_goal_event(&mut cache.state, event).is_err() {
-                    cache.replay_valid = false;
-                }
-                if event.type_ == "goal/change" {
-                    cache.activation = match &cache.pending_activation {
-                        Some((seq, activation)) if *seq == event.seq => *activation,
-                        _ => GoalActivation::Disarmed,
-                    };
-                }
-                cache.observed_seq += 1;
+    fn sync(&self, session: &Session, cache: &mut GoalCache) -> Result<(), GoalError> {
+        if let Some(error) = &cache.replay_error {
+            return Err(GoalError::new(error.clone(), GoalErrorCode::CommitFailed));
+        }
+        let replay = session.visit_events(cache.observed_seq as u64, None, |event| {
+            if apply_goal_event(&mut cache.state, event).is_err() {
+                cache.replay_valid = false;
             }
+            if event.type_ == "goal/change" {
+                cache.activation = match &cache.pending_activation {
+                    Some((seq, activation)) if *seq == event.seq => *activation,
+                    _ => GoalActivation::Disarmed,
+                };
+            }
+            cache.observed_seq = event.seq.get() as usize + 1;
+            Ok(true)
         });
+        if let Err(error) = replay {
+            cache.replay_valid = false;
+            cache.replay_error = Some(error.clone());
+            return Err(GoalError::new(error, GoalErrorCode::CommitFailed));
+        }
+        Ok(())
     }
 
     /// Build a new revision with one replacement phase.
@@ -1073,7 +1088,7 @@ impl GoalService {
                 GoalErrorCode::CommitFailed,
             ));
         }
-        self.sync(session, cache);
+        self.sync(session, cache)?;
         cache.pending_activation = None;
         Ok(())
     }
@@ -1193,6 +1208,84 @@ fn change_to_json(change: &GoalChangeMeta) -> Value {
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn archived_goal_replay_keeps_requirements_and_disarms_continuation() {
+        let ctx = Context::root();
+        let store = dsh_session::SessionStore::install(&ctx);
+        let goals = GoalService::install(&ctx, Config::default());
+        let source = Session::create(
+            dsh_session::session_id("cold-goal-session"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let change = serde_json::json!({
+            "kind":"goal/change","version":1,"operation":"create",
+            "goal":{"id":"cold-goal","revision":1,"objective":"Preserve restored goal","phase":"active","maxGoalRounds":8},
+            "roundsStarted":0,"createdAt":1,"updatedAt":1
+        });
+        source.append("goal/change", change, None).unwrap();
+        source
+            .append(
+                "tools/discovery",
+                serde_json::json!({"opaque":"x".repeat(64 * 1024)}),
+                None,
+            )
+            .unwrap();
+        let mut archive =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        source
+            .visit_events(0, None, |event| {
+                archive.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let cold = Session::from_event_archive(
+            source.id().clone(),
+            archive.finish().unwrap(),
+            source.header(),
+            source.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        let detach = store.enter(&cold).unwrap();
+        let state = goals.state_for_session(cold.clone());
+        {
+            let cache = state.cache.lock();
+            assert!(cache.replay_valid);
+            assert!(cache.replay_error.is_none());
+            assert_eq!(cache.activation, GoalActivation::Disarmed);
+            assert_eq!(
+                cache.state.goal.as_ref().unwrap().objective,
+                "Preserve restored goal"
+            );
+        }
+        assert_eq!(
+            goals
+                .requirements_identity_for_session(&cold)
+                .unwrap()
+                .goal_id,
+            "cold-goal"
+        );
+        let mut pause = source.read_event(0).unwrap().unwrap().data;
+        pause["operation"] = "pause".into();
+        pause["goal"]["revision"] = 2.into();
+        pause["goal"]["phase"] = "paused".into();
+        pause["updatedAt"] = 2.into();
+        cold.append("goal/change", pause, None).unwrap();
+        {
+            let mut cache = state.cache.lock();
+            goals.sync(&cold, &mut cache).unwrap();
+            assert!(cache.replay_valid);
+            assert_eq!(cache.state.goal.as_ref().unwrap().revision, 2);
+            assert_eq!(cache.state.goal.as_ref().unwrap().phase, GoalPhase::Paused);
+            assert_eq!(cache.activation, GoalActivation::Disarmed);
+        }
+        detach().await;
+        ctx.fiber.dispose().await;
+    }
 
     #[tokio::test]
     async fn retired_session_generations_release_goal_caches_and_late_reads_do_not_revive_them() {

@@ -10,6 +10,7 @@ use dsh_llm::{
 use dsh_permission_presets::{AUTO_PRESET, PermissionPresetService};
 use dsh_session::SessionStore;
 use dsh_tools::{PreToolDecision, RUN_CODE_NAME, ToolErrorInfo, ToolExecution};
+use dsh_user_approval::ApprovalPolicy;
 use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 use std::{panic::AssertUnwindSafe, sync::Arc};
@@ -136,6 +137,20 @@ fn denied(exec: &ToolExecution, reason: Option<String>) -> PreToolDecision {
         meta: reason.map(|reason| serde_json::json!({"autoReview":{"reason":reason}})),
     }
 }
+
+fn failed(exec: &ToolExecution, message: &str) -> PreToolDecision {
+    PreToolDecision::DenyWithInfo {
+        reason: format!(
+            "Auto review of tool \"{}\" failed; its body was not executed: {message}",
+            exec.name
+        ),
+        info: ToolErrorInfo {
+            name: "AutoReviewFailedError".into(),
+            code: "AUTO_REVIEW_FAILED".into(),
+        },
+        meta: None,
+    }
+}
 pub struct AutoReview {
     state: Arc<State>,
     stop_listener: Disposer,
@@ -193,11 +208,16 @@ impl AutoReview {
                 if exec.parent.is_none() && exec.name == RUN_CODE_NAME {
                     return Some(next.call().await);
                 }
-                if agent
-                    .session()
-                    .with_events(|events| state.permissions.current(events))
-                    != AUTO_PRESET
-                {
+                let preset = match state.permissions.try_current(agent.session()) {
+                    Ok(preset) => preset,
+                    Err(error) => {
+                        return Some(arc(failed(
+                            &exec,
+                            &format!("permission history unavailable: {error}"),
+                        )));
+                    }
+                };
+                if preset != AUTO_PRESET {
                     return Some(next.call().await);
                 }
                 let Some(_lease) = state.begin() else {
@@ -207,18 +227,62 @@ impl AutoReview {
                 if !state.open() || state.cancel.aborted() || (exec.signal.lock().clone())() {
                     return Some(arc(PreToolDecision::Cancel));
                 }
-                match reviewed {
-                    Ok(Ok(Decision::Allow)) => {
-                        let downstream = next.call().await;
-                        if !state.open() || state.cancel.aborted() || (exec.signal.lock().clone())()
-                        {
-                            Some(arc(PreToolDecision::Cancel))
-                        } else {
-                            Some(downstream)
-                        }
+                let decision = match reviewed {
+                    Ok(Ok(decision)) => decision,
+                    Ok(Err(error)) => return Some(arc(failed(&exec, &error))),
+                    Err(_) => return Some(arc(failed(&exec, "reviewer panicked"))),
+                };
+                if let Decision::Deny(reason) = &decision {
+                    if state
+                        .permissions
+                        .approval()
+                        .effective_policy(agent.session())
+                        == ApprovalPolicy::Never
+                    {
+                        return Some(arc(denied(&exec, reason.clone())));
                     }
-                    Ok(Ok(Decision::Deny(reason))) => Some(arc(denied(&exec, reason))),
-                    _ => Some(arc(denied(&exec, None))),
+                }
+                let downstream = next.call().await;
+                if !state.open() || state.cancel.aborted() || (exec.signal.lock().clone())() {
+                    return Some(arc(PreToolDecision::Cancel));
+                }
+                // Another security gate must still be able to reject the call.
+                let downstream_decision = downcast_arc::<PreToolDecision>(&downstream);
+                if !matches!(
+                    downstream_decision.as_deref(),
+                    Some(
+                        PreToolDecision::Allow
+                            | PreToolDecision::Ask { .. }
+                            | PreToolDecision::AskHuman { .. }
+                    )
+                ) {
+                    return Some(downstream);
+                }
+                match decision {
+                    Decision::Allow => Some(downstream),
+                    Decision::Deny(reason) => {
+                        let denial = format!("Auto review denied tool \"{}\"", exec.name);
+                        let mut reason = reason
+                            .map_or_else(|| denial.clone(), |reason| format!("{denial}: {reason}"));
+                        if let Some(
+                            PreToolDecision::Ask {
+                                reason: Some(additional),
+                                ..
+                            }
+                            | PreToolDecision::AskHuman {
+                                reason: Some(additional),
+                            },
+                        ) = downstream_decision.as_deref()
+                        {
+                            reason.push_str(&format!("\n{additional}"));
+                        }
+                        let caller = exec.signal.lock().clone();
+                        let lifecycle = state.cancel.clone();
+                        *exec.signal.lock() = Arc::new(move || caller() || lifecycle.aborted());
+                        Some(arc(PreToolDecision::AskHuman {
+                            reason: Some(reason),
+                        }))
+                    }
                 }
             })
         });
@@ -271,8 +335,12 @@ impl AutoReview {
         self.closed.get_or_init(||async {
             self.state.activity.lock().accepting=false;
             for session in self.state.sessions.list() {
-                if session.with_events(|events|self.state.permissions.current(events))==AUTO_PRESET {
-                    if let Err(error)=self.state.permissions.set(&session,"danger-full-access"){eprintln!("Auto review session transition failed; execution remains fenced: {error}");}
+                match self.state.permissions.try_current(&session) {
+                    Ok(preset) if preset == AUTO_PRESET => {
+                        if let Err(error)=self.state.permissions.set(&session,"danger-full-access"){eprintln!("Auto review session transition failed; execution remains fenced: {error}");}
+                    }
+                    Err(error) => eprintln!("Auto review permission history unavailable; execution remains fenced: {error}"),
+                    _ => {}
                 }
             }
             self.state.cancel.abort();self.state.drain().await;

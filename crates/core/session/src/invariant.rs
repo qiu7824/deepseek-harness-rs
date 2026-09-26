@@ -365,9 +365,14 @@ async fn install_inner(ctx: &Context, fail: &(dyn Fn(&str) + Send + Sync)) {
         let traces = Arc::clone(&traces);
         Arc::new(move |session: &Session, fail: &dyn Fn(&str)| {
             let mut trace = fresh_trace();
-            for event in session.events().iter() {
+            let replayed = session.visit_events(0, None, |event| {
                 let transition = validate_event(&trace, event, fail);
                 apply_transition(&mut trace, transition);
+                Ok(true)
+            });
+            if let Err(error) = replayed {
+                fail(&error);
+                return;
             }
             traces.lock().insert(
                 session_ptr(session),

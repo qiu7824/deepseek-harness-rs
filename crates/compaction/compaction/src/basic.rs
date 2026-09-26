@@ -6,7 +6,7 @@ use dsh_llm::{
     BlockAssembler, ContentBlock, FinishReason, GenerateOptions, LlmRuntime, Message,
     MessageSource, create_user_message,
 };
-use dsh_session::{Session, SessionStore, SurfaceIntent, SurfaceOp, fold_request_header};
+use dsh_session::{Session, SessionStore, SurfaceIntent, SurfaceOp};
 use dsh_token_meter::TokenMeter;
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -293,6 +293,9 @@ const PREAMBLE: &str = "This checkpoint condenses earlier conversation context. 
 #[cfg(test)]
 #[path = "cancellation_tests.rs"]
 mod cancellation_tests;
+#[cfg(test)]
+#[path = "model_selection_tests.rs"]
+mod model_selection_tests;
 
 pub struct BasicCompactionEngine {
     llm: Arc<LlmRuntime>,
@@ -310,12 +313,18 @@ struct CompactionLifecycleGuard {
 impl Drop for CompactionLifecycleGuard {
     fn drop(&mut self) {
         let id = &self.lifecycle["compactionId"];
-        let ended = self.session.with_events(|events| {
-            events
-                .iter()
-                .rev()
-                .any(|e| e.type_ == "compaction/end" && &e.data["compactionId"] == id)
-        });
+        let ended = match self.session.find_event_rev(|event| {
+            event.type_ == "compaction/end" && &event.data["compactionId"] == id
+        }) {
+            Ok(event) => event.is_some(),
+            Err(error) => {
+                eprintln!(
+                    "compaction lifecycle inspection failed for {}: {error}",
+                    self.session.id()
+                );
+                return;
+            }
+        };
         if !ended {
             self.lifecycle["error"] =
                 serde_json::json!("Compaction interrupted before the checkpoint completed");
@@ -324,6 +333,50 @@ impl Drop for CompactionLifecycleGuard {
                 .append("compaction/end", self.lifecycle.clone(), None);
         }
     }
+}
+
+/// Scan the needed log span once and retain only caller-selected facts, in
+/// surface order. Replacement nodes need not be ordered by durable sequence.
+fn map_surface_events<T>(
+    session: &Session,
+    seqs: &[u64],
+    mut map: impl FnMut(
+        &dsh_session::SessionEventReader<'_>,
+        &dsh_session::SessionEvent,
+    ) -> Result<T, String>,
+) -> Result<Vec<T>, ManualCompactionError> {
+    if seqs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let positions: std::collections::HashMap<_, _> = seqs
+        .iter()
+        .enumerate()
+        .map(|(index, seq)| (*seq, index))
+        .collect();
+    let mut values: Vec<Option<T>> = std::iter::repeat_with(|| None).take(seqs.len()).collect();
+    session
+        .with_event_reader(|reader| {
+            reader.visit(
+                *seqs.iter().min().expect("nonempty surface span"),
+                seqs.iter().max().and_then(|seq| seq.checked_add(1)),
+                |event| {
+                    if let Some(index) = positions.get(&event.seq.get()) {
+                        values[*index] = Some(map(reader, event)?);
+                    }
+                    Ok(true)
+                },
+            )?;
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    value.ok_or_else(|| {
+                        format!("surface seq {} has no matching session event", seqs[index])
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .map_err(|error| ManualCompactionError::new(ManualCompactionErrorCode::Commit, error))
 }
 
 impl BasicCompactionEngine {
@@ -380,32 +433,29 @@ impl BasicCompactionEngine {
         let surface = session.surface().map_err(|error| {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
-        let events = session.events();
+        let facts = map_surface_events(session, &surface.nodes, |reader, event| {
+            Ok((
+                event.type_ == "system/message",
+                reader
+                    .derive_event_message(event)
+                    .map(|message| self.meter.estimate_message(&message)),
+            ))
+        })?;
         // Only the protected head is outside history. Later system updates,
         // including dormant empty nodes, must not block bounded compaction.
-        let start_index = usize::from(
-            surface
-                .nodes
-                .first()
-                .and_then(|seq| events.get(*seq as usize))
-                .is_some_and(|event| event.type_ == "system/message"),
-        );
-        let events = session.events();
+        let start_index = usize::from(facts.first().is_some_and(|(system, _)| *system));
         let mut retained = 0u64;
         let mut count = 0usize;
         let mut keep_from = surface.nodes.len();
-        for (index, seq) in surface.nodes.iter().enumerate().rev() {
+        for (index, (_, tokens)) in facts.iter().enumerate().rev() {
             if index < start_index {
                 break;
             }
-            if let Some(message) = events
-                .get(*seq as usize)
-                .and_then(|event| session.derive_event_message(event))
-            {
+            if let Some(tokens) = tokens {
                 if count >= protect && retained >= retain_tokens {
                     break;
                 }
-                retained = retained.saturating_add(self.meter.estimate_message(&message));
+                retained = retained.saturating_add(*tokens);
                 count += 1;
             }
             keep_from = index;
@@ -441,50 +491,51 @@ impl BasicCompactionEngine {
         let surface = session.surface().map_err(|error| {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
-        let mut selected = Vec::new();
-        let events = session.events();
-        if let Some(head) = surface
+        let bounds = surface
             .nodes
-            .first()
-            .and_then(|seq| events.get(*seq as usize))
-            .filter(|event| event.type_ == "system/message")
-        {
-            if let Some(message) = session.derive_event_message(head) {
-                selected.push(message);
-            }
+            .iter()
+            .position(|seq| *seq == start)
+            .zip(surface.nodes.iter().position(|seq| *seq == end))
+            .filter(|(start, end)| start <= end)
+            .ok_or_else(|| {
+                ManualCompactionError::new(
+                    ManualCompactionErrorCode::Changed,
+                    "the selected history changed before summarization",
+                )
+            })?;
+        let mut seqs = surface.nodes[bounds.0..=bounds.1].to_vec();
+        let head = (bounds.0 > 0).then(|| surface.nodes[0]);
+        if let Some(head) = head {
+            seqs.insert(0, head);
         }
-        let mut in_range = false;
-        for seq in surface.nodes {
-            if seq == start {
-                in_range = true;
-            }
-            if in_range {
-                let event = events.get(seq as usize).cloned().ok_or_else(|| {
-                    ManualCompactionError::new(
-                        ManualCompactionErrorCode::Changed,
-                        "the selected history changed before summarization",
-                    )
-                })?;
-                if let Some(message) = session.derive_event_message(&event) {
-                    selected.push(message);
-                }
-            }
-            if seq == end {
-                break;
-            }
-        }
-        Ok(selected)
+        Ok(map_surface_events(session, &seqs, |reader, event| {
+            Ok(
+                if Some(event.seq.get()) == head && event.type_ != "system/message" {
+                    None
+                } else {
+                    reader.derive_event_message(event)
+                },
+            )
+        })?
+        .into_iter()
+        .flatten()
+        .collect())
     }
 
     fn assert_inactive(session: &Session) -> Result<(), ManualCompactionError> {
         let mut active = false;
-        for event in session.events().iter() {
-            match event.type_.as_str() {
-                "compaction/start" => active = true,
-                "compaction/end" => active = false,
-                _ => {}
-            }
-        }
+        session
+            .visit_events(0, None, |event| {
+                match event.type_.as_str() {
+                    "compaction/start" => active = true,
+                    "compaction/end" => active = false,
+                    _ => {}
+                }
+                Ok(true)
+            })
+            .map_err(|error| {
+                ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
+            })?;
         if active {
             Err(ManualCompactionError::new(
                 ManualCompactionErrorCode::Busy,
@@ -515,40 +566,23 @@ impl BasicCompactionEngine {
                 "manual compaction was cancelled",
             ));
         }
-        let header = fold_request_header(&agent.session.events(), None);
-        let provider = header
-            .as_ref()
-            .map(|header| header.config.provider.clone())
-            .filter(|value| !value.is_empty())
-            .or_else(|| agent.provider.clone())
-            .ok_or_else(|| {
-                ManualCompactionError::new(
-                    ManualCompactionErrorCode::Summary,
-                    "no provider is available for summarization",
-                )
-            })?;
-        let model = header
-            .as_ref()
-            .map(|header| header.config.model.clone())
-            .filter(|value| !value.is_empty())
-            .or_else(|| agent.model.clone())
-            .ok_or_else(|| {
-                ManualCompactionError::new(
-                    ManualCompactionErrorCode::Summary,
-                    "no model is available for summarization",
-                )
-            })?;
-        let policy = resolve_target_policy(&self.resolved()?, &provider, &model);
-        let provider = if policy.summarization_provider.is_empty() {
-            provider
+        let header = agent.session.request_header();
+        let selected = self.target_config(agent)?;
+        let policy = resolve_target_policy(&self.resolved()?, &selected.provider, &selected.model);
+        let mut call_config = if policy.summarization_provider.is_empty() {
+            selected
         } else {
-            policy.summarization_provider.clone()
+            // A dedicated summary route owns its own defaults and capability
+            // settings; the conversation model's effort cannot cross routes.
+            dsh_llm::LlmCallConfig {
+                provider: policy.summarization_provider.clone(),
+                model: policy.summarization_model.clone(),
+                ..Default::default()
+            }
         };
-        let model = if policy.summarization_model.is_empty() {
-            model
-        } else {
-            policy.summarization_model.clone()
-        };
+        call_config.max_tokens = Some(policy.max_tokens);
+        let provider = call_config.provider.clone();
+        let model = call_config.model.clone();
         messages.push(create_user_message(
             vec![ContentBlock::Text {
                 text: INSTRUCTION.to_string(),
@@ -565,13 +599,11 @@ impl BasicCompactionEngine {
         let surface = agent.session.surface().map_err(|error| {
             ManualCompactionError::new(ManualCompactionErrorCode::Commit, error)
         })?;
-        let has_system_history = agent.session.with_events(|events| {
-            surface.nodes.iter().any(|seq| {
-                events
-                    .get(*seq as usize)
-                    .is_some_and(|event| event.type_ == "system/message")
-            })
-        });
+        let has_system_history = map_surface_events(&agent.session, &surface.nodes, |_, event| {
+            Ok(event.type_ == "system/message")
+        })?
+        .into_iter()
+        .any(|system| system);
         let legacy_system = if has_system_history {
             None
         } else {
@@ -594,7 +626,35 @@ impl BasicCompactionEngine {
             telemetry: None,
         };
         let assembler = loop {
-            let mut stream = self.llm.stream(options.clone());
+            // Use the main request's preparation boundary so exact-model
+            // capability resolution and dispatch share one account snapshot.
+            let prepared = self
+                .llm
+                .prepare_call(&call_config, signal)
+                .await
+                .map_err(|error| {
+                    ManualCompactionError::new(
+                        if Self::cancelled(signal) {
+                            ManualCompactionErrorCode::Cancelled
+                        } else {
+                            ManualCompactionErrorCode::Summary
+                        },
+                        error.to_string(),
+                    )
+                })?;
+            if Self::cancelled(signal) {
+                return Err(ManualCompactionError::new(
+                    ManualCompactionErrorCode::Cancelled,
+                    "compaction cancelled",
+                ));
+            }
+            options.reasoning_effort = prepared.config.reasoning_effort.clone();
+            options.max_tokens = prepared.config.max_tokens;
+            options.temperature = prepared.config.temperature;
+            options.stop = prepared.config.stop.clone();
+            let mut stream = (prepared.stream)(options.clone()).map_err(|error| {
+                ManualCompactionError::new(ManualCompactionErrorCode::Summary, error.to_string())
+            })?;
             let mut assembler = BlockAssembler::new();
             loop {
                 tokio::select! {
@@ -619,21 +679,22 @@ impl BasicCompactionEngine {
                         .iter()
                         .map(|message| message.id.clone())
                         .collect();
-                    let events = agent.session.events();
-                    let selected: Vec<_> = agent
+                    let nodes = agent
                         .session
                         .surface()
                         .map_err(|e| {
                             ManualCompactionError::new(ManualCompactionErrorCode::Summary, e)
                         })?
-                        .nodes
+                        .nodes;
+                    let selected: Vec<_> =
+                        map_surface_events(&agent.session, &nodes, |reader, event| {
+                            Ok(reader
+                                .derive_event_message(event)
+                                .filter(|message| ids.contains(&message.id))
+                                .map(|_| event.seq.get()))
+                        })?
                         .into_iter()
-                        .filter(|seq| {
-                            events
-                                .get(*seq as usize)
-                                .and_then(|event| agent.session.derive_event_message(event))
-                                .is_some_and(|message| ids.contains(&message.id))
-                        })
+                        .flatten()
                         .collect();
                     if agent
                         .session
@@ -761,19 +822,20 @@ pub fn install_automatic(
                 provider: payload.agent.options().provider.clone(),
                 model: payload.agent.options().model.clone(),
             };
-            let attempt = agent
-                .session
-                .events()
-                .iter()
-                .filter(|e| {
-                    e.type_ == "compaction/recovery"
-                        && e.data["turn"].as_u64() == Some(payload.turn)
-                        && e.data["step"].as_u64() == Some(payload.step)
-                })
-                .count() as u64;
+            let mut attempt = 0_u64;
+            let counted = agent.session.visit_events(0, None, |event| {
+                if event.type_ == "compaction/recovery"
+                    && event.data["turn"].as_u64() == Some(payload.turn)
+                    && event.data["step"].as_u64() == Some(payload.step)
+                {
+                    attempt += 1;
+                }
+                Ok(true)
+            });
             let signal = payload.signal.clone();
             let abort: CompactionAbort = Arc::new(move || signal.aborted());
             let recover = async {
+                counted.map_err(|error| ManualCompactionError::new(ManualCompactionErrorCode::Commit,error))?;
                 let config = engine.resolved()?;
                 let (provider, model) = engine.target(&agent)?;
                 let policy = resolve_target_policy(&config, &provider, &model);

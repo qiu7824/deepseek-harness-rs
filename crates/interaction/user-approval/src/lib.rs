@@ -295,6 +295,57 @@ mod policy_tests {
         );
     }
 
+    #[tokio::test]
+    async fn human_grant_is_rejected_when_policy_changes_to_never_while_waiting() {
+        for allowed in [ApprovalOutcome::AllowedOnce, ApprovalOutcome::AllowedAlways] {
+            let ctx = Context::root();
+            let service = ApprovalService::install(&ctx, Config::default());
+            let owner = agent(&ctx, "revoked-human-approval").await;
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let entered_listener = entered.clone();
+            let release_listener = release.clone();
+            let human: Arc<cordis::Listener> = Arc::new(move |_, _| {
+                let entered = entered_listener.clone();
+                let release = release_listener.clone();
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    Some(cordis::arc(allowed))
+                })
+            });
+            ctx.events.register(
+                &ctx,
+                "delayed human",
+                "approval/human-request",
+                human,
+                &Default::default(),
+            );
+            let request = ApprovalRequest {
+                agent: owner.clone(),
+                tool_name: "effect".into(),
+                call_id: Some("pending-call".into()),
+                reason: None,
+                grant_key: None,
+                rememberable: false,
+                signal: None,
+            };
+            let service_request = service.clone();
+            let pending =
+                tokio::spawn(async move { service_request.request_human(&request).await.unwrap() });
+            entered.notified().await;
+            service.set_policy(&owner, ApprovalPolicy::Never).unwrap();
+            release.notify_one();
+            assert_eq!(pending.await.unwrap(), ApprovalOutcome::Rejected);
+            let events = owner.session().events();
+            let decided = events
+                .iter()
+                .find(|event| event.type_ == "approval/decided")
+                .unwrap();
+            assert_eq!(decided.data["outcome"], "rejected");
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn deadline_keeps_its_outcome_and_closes_the_audit_pair() {
         let ctx = Context::root();
@@ -600,6 +651,63 @@ pub fn set_approval_policy(
     )
 }
 
+#[cfg(all(test, windows))]
+mod archive_policy_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn archived_approval_policy_keeps_latest_value_with_private_backing() {
+        let ctx = Context::root();
+        let service = ApprovalService::install(&ctx, Config::default());
+        let session = Session::create(
+            dsh_session::session_id("approval-archive"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        set_approval_policy(&session, ApprovalPolicy::Never).unwrap();
+        set_approval_policy(&session, ApprovalPolicy::Ask).unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("approval-archive-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut builder = dsh_session::event_archive::EventArchiveBuilder::new(&directory).unwrap();
+        session
+            .visit_events(0, None, |event| {
+                builder.push(event)?;
+                Ok(true)
+            })
+            .unwrap();
+        let archived = Session::from_event_archive(
+            session.id().clone(),
+            builder.finish().unwrap(),
+            session.header(),
+            session.inherited_event_count(),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            service.try_override_of(&archived).unwrap(),
+            Some(ApprovalPolicy::Ask)
+        );
+        let path = std::fs::read_dir(&directory)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(std::fs::OpenOptions::new().read(true).open(&path).is_err());
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert_eq!(
+            service.try_effective_policy(&archived).unwrap(),
+            ApprovalPolicy::Ask
+        );
+        assert_eq!(service.effective_policy(&archived), ApprovalPolicy::Ask);
+        drop(archived);
+        std::fs::remove_dir(directory).unwrap();
+    }
+}
+
 /// Readonly same-process permission question.
 #[derive(Clone)]
 pub struct ApprovalRequest {
@@ -684,9 +792,7 @@ impl ApprovalService {
                                             )
                                             .and_then(|slot| slot.get(&dsh_session::session_id(id)))
                                     })
-                                    .and_then(|session| {
-                                        effective_approval_policy(&session.events())
-                                    })
+                                    .and_then(|session| service.override_of(&session))
                                     .or(service.config.policy)
                                     .unwrap_or(ApprovalPolicy::Ask);
                                 match policy {
@@ -740,7 +846,7 @@ impl ApprovalService {
     /// Switch one live agent's policy and queue the transition for its next
     /// model step (TS `setPolicy`).
     pub fn set_policy(&self, agent: &Arc<dyn Agent>, policy: ApprovalPolicy) -> Result<(), String> {
-        let previous = self.effective_policy(agent.session());
+        let previous = self.try_effective_policy(agent.session())?;
         if previous == policy {
             return Ok(());
         }
@@ -773,10 +879,33 @@ impl ApprovalService {
             .unwrap_or(ApprovalPolicy::Ask)
     }
 
+    /// Resolve the effective policy while preserving archive read failures.
+    pub fn try_effective_policy(&self, session: &Session) -> Result<ApprovalPolicy, String> {
+        Ok(self
+            .try_override_of(session)?
+            .or(self.config.policy)
+            .unwrap_or(ApprovalPolicy::Ask))
+    }
+
     /// Read the session override without applying the configured default (TS
     /// `overrideOf`).
     pub fn override_of(&self, session: &Session) -> Option<ApprovalPolicy> {
-        effective_approval_policy(&session.events())
+        self.try_override_of(session).unwrap_or_else(|error| {
+            eprintln!("approval policy history unavailable; denying approval: {error}");
+            Some(ApprovalPolicy::Never)
+        })
+    }
+
+    /// Read the durable override without converting a read failure into a default.
+    pub fn try_override_of(&self, session: &Session) -> Result<Option<ApprovalPolicy>, String> {
+        let mut policy = None;
+        session.visit_events(0, None, |event| {
+            if event.type_ == "approval/policy" {
+                policy = effective_approval_policy(std::slice::from_ref(event));
+            }
+            Ok(true)
+        })?;
+        Ok(policy)
     }
 
     /// Ask the composed answerers to decide one readonly same-process
@@ -800,13 +929,16 @@ impl ApprovalService {
         human: bool,
     ) -> Result<ApprovalOutcome, String> {
         let session = req.agent.session();
-        if !has_open_turn(&session.events()) {
+        let open = session
+            .find_event_rev(|event| matches!(event.type_.as_str(), "turn/start" | "turn/end"))?
+            .is_some_and(|event| event.type_ == "turn/start");
+        if !open {
             return Err(
                 "approval.request() outside an open turn: the approval/asked + approval/decided audit pair must be turn-enclosed (a bare event between turns is crash-tail garbage on reload). Ask from inside the turn that needs the decision."
                     .to_string(),
             );
         }
-        if self.effective_policy(session) != ApprovalPolicy::Never
+        if self.try_effective_policy(session)? != ApprovalPolicy::Never
             && !req.signal.as_ref().is_some_and(|signal| signal())
             && req.rememberable
             && req
@@ -832,6 +964,14 @@ impl ApprovalService {
         let mut outcome = self.decide(req, session, human).await;
         if human && req.signal.as_ref().is_some_and(|signal| signal()) {
             outcome = ApprovalOutcome::Cancelled;
+        } else if human
+            && self.effective_policy(session) == ApprovalPolicy::Never
+            && matches!(
+                outcome,
+                ApprovalOutcome::AllowedOnce | ApprovalOutcome::AllowedAlways
+            )
+        {
+            outcome = ApprovalOutcome::Rejected;
         }
         if outcome == ApprovalOutcome::AllowedAlways {
             match (req.rememberable, req.grant_key.as_deref()) {

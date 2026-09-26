@@ -79,6 +79,8 @@ fn streamed_context_overflow_preserves_the_compaction_recovery_code() {
     for event in [
         json!({"type":"error","code":"context_length_exceeded","message":"request too large"}),
         json!({"type":"response.failed","response":{"status":"failed","error":{"code":"context_window_exceeded","message":"request too large"}}}),
+        json!({"type":"error","message":"input is too long for this model"}),
+        json!({"type":"response.failed","response":{"status":"failed","error":{"message":"request too large for model context"}}}),
     ] {
         let chunks = collect(vec![event]);
         assert!(chunks.iter().any(|chunk|matches!(chunk,StreamChunk::Finish{reason:FinishReason::Error{failure},..} if failure.code==dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE)));
@@ -90,6 +92,10 @@ fn streamed_context_overflow_preserves_the_compaction_recovery_code() {
     assert_eq!(
         provider_error_code(Some("content_filter"), "context window exceeded"),
         "CONTENT_FILTER"
+    );
+    assert_eq!(
+        provider_error_code(None, "context window size must be positive"),
+        "PROVIDER_ERROR"
     );
 }
 

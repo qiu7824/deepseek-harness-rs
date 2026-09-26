@@ -11,18 +11,11 @@ fn provider_error_code(code: Option<&str>, message: &str) -> &'static str {
     ) {
         return "CONTENT_FILTER";
     }
-    let text = message.to_ascii_lowercase();
-    if matches!(
-        code,
-        Some(
-            "context_length_exceeded"
-                | "context_window_exceeded"
-                | "prompt_too_long"
-                | "CONTEXT_WINDOW_EXCEEDED"
-        )
-    ) || (text.contains("context")
-        && (text.contains("length") || text.contains("window"))
-        && (text.contains("exceed") || text.contains("too long") || text.contains("maximum")))
+    if code == Some("prompt_too_long")
+        || dsh_llm::is_context_window_exceeded_error(&format!(
+            "{} {message}",
+            code.unwrap_or_default()
+        ))
     {
         dsh_llm::CONTEXT_WINDOW_EXCEEDED_CODE
     } else {

@@ -31,19 +31,33 @@ fn accounts_for_claim(reason: &TurnEndReason) -> bool {
 /// Fold one agent log, or an owned suffix of one, into its account of
 /// consumed work (TS `foldConsumedWork`).
 pub fn fold_consumed_work(events: &[SessionEvent]) -> ConsumedWork {
-    let mut stepped = std::collections::HashSet::new();
-    let mut claimed = std::collections::HashSet::new();
-    let mut open: Option<u64> = None;
-    let mut end: Option<SessionEvent> = None;
-    let mut dropped_unrun = false;
+    let mut fold = ConsumedWorkFold::default();
     for event in events {
+        fold.push(event);
+    }
+    fold.finish()
+}
+
+/// Streaming equivalent of `fold_consumed_work`, retaining only open work
+/// identities and the latest turn ending.
+#[derive(Default)]
+pub struct ConsumedWorkFold {
+    stepped: std::collections::HashSet<u64>,
+    claimed: std::collections::HashSet<u64>,
+    open: Option<u64>,
+    end: Option<SessionEvent>,
+    dropped_unrun: bool,
+}
+
+impl ConsumedWorkFold {
+    pub fn push(&mut self, event: &SessionEvent) {
         match event.type_.as_str() {
             "turn/start" => {
-                open = event.data.get("turn").and_then(|value| value.as_u64());
+                self.open = event.data.get("turn").and_then(|value| value.as_u64());
             }
             "step/start" => {
                 if let Some(turn) = event.data.get("turn").and_then(|value| value.as_u64()) {
-                    stepped.insert(turn);
+                    self.stepped.insert(turn);
                 }
             }
             "agent/inbox/spliced" => {
@@ -58,16 +72,16 @@ pub fn fold_consumed_work(events: &[SessionEvent]) -> ConsumedWork {
                     .map(|value| value.len())
                     .unwrap_or(0);
                 let Some(_removed) = removed_count else {
-                    continue;
+                    return;
                 };
                 let outcome = event.data.get("outcome").and_then(|value| value.as_str());
                 if outcome == Some("canceled") {
                     // A replacement keeps the work pending under a new
                     // identity, so only a cancellation that leaves nothing
                     // behind drops it.
-                    dropped_unrun |= inserted == 0;
-                } else if let Some(turn) = open {
-                    claimed.insert(turn);
+                    self.dropped_unrun |= inserted == 0;
+                } else if let Some(turn) = self.open {
+                    self.claimed.insert(turn);
                 }
             }
             "turn/end" => {
@@ -76,23 +90,28 @@ pub fn fold_consumed_work(events: &[SessionEvent]) -> ConsumedWork {
                     .data
                     .get("reason")
                     .and_then(|value| serde_json::from_value(value.clone()).ok());
-                open = None;
+                self.open = None;
                 if let Some(turn) = turn {
-                    let was_stepped = stepped.remove(&turn);
-                    let was_claimed = claimed.remove(&turn);
+                    let was_stepped = self.stepped.remove(&turn);
+                    let was_claimed = self.claimed.remove(&turn);
                     if was_stepped
                         || (was_claimed && reason.as_ref().is_some_and(accounts_for_claim))
                     {
-                        end = Some(event.clone());
+                        self.end = Some(event.clone());
                         // Anything dropped before this turn closed is what
                         // its own ending reports; only a later drop is still
                         // unaccounted for.
-                        dropped_unrun = false;
+                        self.dropped_unrun = false;
                     }
                 }
             }
             _ => {}
         }
     }
-    ConsumedWork { end, dropped_unrun }
+    pub fn finish(self) -> ConsumedWork {
+        ConsumedWork {
+            end: self.end,
+            dropped_unrun: self.dropped_unrun,
+        }
+    }
 }

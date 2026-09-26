@@ -140,6 +140,16 @@ pub struct StoredSuffix {
     pub events: Vec<SessionEvent>,
 }
 
+/// A backend-validated complete cold Session, built without a full payload
+/// vector. The coordinator still owns revision checks, repair and leases.
+pub struct StoredPreparation<TornMarker = ()> {
+    pub session: Session,
+    pub inspection_length: usize,
+    pub revision: SessionPersistenceRevision,
+    pub torn_marker: Option<TornMarker>,
+    pub closers: Vec<SessionEvent>,
+}
+
 /// The storage contract between [`PersistenceCoordinator`] and a concrete
 /// backend.
 #[async_trait::async_trait]
@@ -165,6 +175,15 @@ pub trait PersistenceBackend<TornMarker: Clone + Send + Sync + 'static = ()>: Se
     /// Read a stored prefix by id, scanning every backend storage scope.
     async fn load_stored(&self, id: &SessionId)
     -> Result<Option<StoredPrefix<TornMarker>>, String>;
+
+    /// Optional bounded native restore. Returning None selects the complete
+    /// legacy/recovery reader without weakening its existing validation.
+    async fn prepare_stored(
+        &self,
+        _id: &SessionId,
+    ) -> Result<Option<StoredPreparation<TornMarker>>, String> {
+        Ok(None)
+    }
 
     /// Read the current source-qualified revision for one stored session.
     async fn read_stored_revision(
@@ -1178,7 +1197,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
             let source = reservation.source.clone();
             let session = source.session.clone();
             let reusable = reservation.state.owner.is_none()
-                && session.events().len() == source.session_length;
+                && session.seq().get() == source.session_length as u64;
             let coordinator = Arc::clone(self);
             let reservation = reservation.clone();
             return Ok(dsh_session::SessionPreparation::create(
@@ -1355,6 +1374,18 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
         &self,
         id: &SessionId,
     ) -> Result<Arc<PreparedSessionSource<TornMarker>>, String> {
+        if let Some(stored) = self.backend.prepare_stored(id).await? {
+            self.assert_stored_id(id, stored.session.header())?;
+            self.assert_version(stored.session.header())?;
+            return Ok(Arc::new(PreparedSessionSource {
+                session_length: stored.session.seq().get() as usize,
+                session: stored.session,
+                inspection_length: stored.inspection_length,
+                revision: stored.revision,
+                torn_marker: stored.torn_marker,
+                closers: stored.closers,
+            }));
+        }
         let stored = self
             .backend
             .load_stored(id)
@@ -1913,12 +1944,7 @@ impl<TornMarker: Clone + Send + Sync + 'static> PersistenceCoordinator<TornMarke
                 session.id().as_str()
             );
         }
-        let suffix: Vec<SessionEvent> = session
-            .events()
-            .iter()
-            .skip(state.cursor as usize)
-            .cloned()
-            .collect();
+        let suffix = session.events_from(state.cursor);
         self.preparations
             .attach(reservation)
             .unwrap_or_else(|error| panic!("{error}"));

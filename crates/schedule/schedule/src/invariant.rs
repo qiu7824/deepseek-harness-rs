@@ -53,11 +53,7 @@ pub fn installer() -> InvariantInstaller {
                     .map(|slot| slot.as_ref().clone())
                 {
                     for session in store.list() {
-                        let events = session.events();
-                        let folded = fold_schedule_events(
-                            &events,
-                            session.inherited_event_count().get() as usize,
-                        );
+                        let folded = crate::domain::fold_session_schedules(&session);
                         match folded {
                             Ok(folded) => {
                                 traces.lock().insert(session.identity(), folded);

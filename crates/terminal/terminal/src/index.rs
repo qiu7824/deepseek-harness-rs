@@ -224,7 +224,7 @@ impl TerminalSessionService {
             dsh_sandbox::SandboxMode::WorkspaceWrite => 1,
             dsh_sandbox::SandboxMode::DangerFullAccess => 2,
         };
-        let next = if event.type_ == "sandbox/mode" {
+        let mut next = if event.type_ == "sandbox/mode" {
             match event.data.get("mode").and_then(|value| value.as_str()) {
                 Some("read-only") => Some(dsh_sandbox::SandboxMode::ReadOnly),
                 Some("workspace-write") => Some(dsh_sandbox::SandboxMode::WorkspaceWrite),
@@ -239,11 +239,17 @@ impl TerminalSessionService {
         } else {
             return;
         };
-        let events = session.events();
-        let previous = events
-            .iter()
-            .position(|entry| entry.seq == event.seq)
-            .and_then(|index| dsh_sandbox_policy::effective_sandbox_mode(&events[..index]))
+        let mut previous = None;
+        if let Err(error) = session.visit_events(0, Some(event.seq.get()), |entry| {
+            if entry.type_ == "sandbox/mode" {
+                previous = dsh_sandbox_policy::effective_sandbox_mode(std::slice::from_ref(entry));
+            }
+            Ok(true)
+        }) {
+            eprintln!("terminal permission history could not be read; revoking execution: {error}");
+            next = None;
+        }
+        let previous = previous
             .or_else(|| {
                 self.ctx
                     .get_typed::<Arc<dsh_sandbox_policy::SandboxPolicyService>>(

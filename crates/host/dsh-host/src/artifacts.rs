@@ -190,7 +190,7 @@ impl Artifacts {
         &self,
         owner: &str,
         root: &Path,
-        events: &[dsh_session::SessionEvent],
+        session: Option<&dsh_session::Session>,
     ) -> Result<Value, String> {
         let mut indexes = self.indexes.lock();
         self.load(owner, root, &mut indexes)?;
@@ -230,52 +230,20 @@ impl Artifacts {
                     });
             }
         }
-        for event in events.iter().filter(|event| event.type_ == "tool/result") {
-            let Some(meta) = event.data.get("meta") else {
-                continue;
-            };
-            let Some(path) = meta.get("path").and_then(Value::as_str) else {
-                continue;
-            };
-            if meta.get("after").is_none() {
-                continue;
-            }
-            let native = PathBuf::from(dsh_host_apiproxy::native_path_opener::display_native_path(
-                path,
-            ));
-            let native = if native.is_absolute() {
-                native
-            } else {
-                root.join(native)
-            };
-            let absolute = fs::canonicalize(&native).unwrap_or(native);
-            let Ok(relative) = absolute.strip_prefix(root) else {
-                continue;
-            };
-            let relative = relative.to_string_lossy().replace('\\', "/");
-            index.entries.insert(
-                relative.clone(),
-                Artifact {
-                    path: relative,
-                    change: if meta.get("before").is_some_and(Value::is_null) {
-                        "created"
-                    } else {
-                        "modified"
-                    }
-                    .into(),
-                    source: "tool".into(),
-                    updated_at: (event.time.max(0) as u64) / 1000,
-                },
-            );
-        }
-        for event in events
-            .iter()
-            .filter(|event| event.type_ == "deliverables/presented")
-        {
-            for file in event.data["files"].as_array().into_iter().flatten() {
-                let Some(path) = file["path"].as_str() else {
-                    continue;
+        if let Some(session) = session {
+            session.visit_events(0, None, |event| {
+                if event.type_ != "tool/result" {
+                    return Ok(true);
+                }
+                let Some(meta) = event.data.get("meta") else {
+                    return Ok(true);
                 };
+                let Some(path) = meta.get("path").and_then(Value::as_str) else {
+                    return Ok(true);
+                };
+                if meta.get("after").is_none() {
+                    return Ok(true);
+                }
                 let native = PathBuf::from(
                     dsh_host_apiproxy::native_path_opener::display_native_path(path),
                 );
@@ -286,19 +254,58 @@ impl Artifacts {
                 };
                 let absolute = fs::canonicalize(&native).unwrap_or(native);
                 let Ok(relative) = absolute.strip_prefix(root) else {
-                    continue;
+                    return Ok(true);
                 };
                 let relative = relative.to_string_lossy().replace('\\', "/");
                 index.entries.insert(
                     relative.clone(),
                     Artifact {
                         path: relative,
-                        change: "presented".into(),
-                        source: "delivery".into(),
+                        change: if meta.get("before").is_some_and(Value::is_null) {
+                            "created"
+                        } else {
+                            "modified"
+                        }
+                        .into(),
+                        source: "tool".into(),
                         updated_at: (event.time.max(0) as u64) / 1000,
                     },
                 );
-            }
+                Ok(true)
+            })?;
+            session.visit_events(0, None, |event| {
+                if event.type_ != "deliverables/presented" {
+                    return Ok(true);
+                }
+                for file in event.data["files"].as_array().into_iter().flatten() {
+                    let Some(path) = file["path"].as_str() else {
+                        continue;
+                    };
+                    let native = PathBuf::from(
+                        dsh_host_apiproxy::native_path_opener::display_native_path(path),
+                    );
+                    let native = if native.is_absolute() {
+                        native
+                    } else {
+                        root.join(native)
+                    };
+                    let absolute = fs::canonicalize(&native).unwrap_or(native);
+                    let Ok(relative) = absolute.strip_prefix(root) else {
+                        continue;
+                    };
+                    let relative = relative.to_string_lossy().replace('\\', "/");
+                    index.entries.insert(
+                        relative.clone(),
+                        Artifact {
+                            path: relative,
+                            change: "presented".into(),
+                            source: "delivery".into(),
+                            updated_at: (event.time.max(0) as u64) / 1000,
+                        },
+                    );
+                }
+                Ok(true)
+            })?;
         }
         let rows = index
             .entries
@@ -614,13 +621,12 @@ async fn handle(
         Err(response) => return response,
     };
     if operation == "list" {
-        let events = sessions
-            .get(&id)
-            .map(|session| session.events())
-            .unwrap_or_default();
+        let session = sessions.get(&id);
         let owner = owner.to_string();
-        return match tokio::task::spawn_blocking(move || artifacts.list(&owner, &root, &events))
-            .await
+        return match tokio::task::spawn_blocking(move || {
+            artifacts.list(&owner, &root, session.as_ref())
+        })
+        .await
         {
             Ok(Ok(value)) => response(StatusCode::OK, value),
             Ok(Err(error)) => failure(error),

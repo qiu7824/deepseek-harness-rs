@@ -70,10 +70,11 @@ pub fn installer() -> InvariantInstaller {
                         .map(|slot| slot.as_ref().clone()),
                 ) {
                     for session in store.list() {
-                        for event in session.events().iter() {
-                            if let Err(message) = validate_event(&service, event) {
-                                fail(&message);
-                            }
+                        if let Err(message) = session.visit_events(0, None, |event| {
+                            validate_event(&service, event)?;
+                            Ok(true)
+                        }) {
+                            fail(&message);
                         }
                     }
                 }

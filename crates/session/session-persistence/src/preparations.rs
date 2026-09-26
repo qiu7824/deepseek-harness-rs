@@ -60,27 +60,28 @@ fn fits_prepared_cache(session: &Session) -> bool {
             _ => true,
         }
     }
-    session.with_events(|events| {
-        if events.len() as u64 > MAX_CACHED_PREPARED_EVENTS {
-            return false;
-        }
-        let mut remaining = MAX_CACHED_PREPARED_BYTES;
-        charge(
-            &mut remaining,
-            events
-                .len()
-                .saturating_mul(std::mem::size_of::<dsh_session::SessionEvent>()),
-        ) && events.iter().all(|event| {
-            charge(&mut remaining, event.type_.capacity())
-                && charge(
-                    &mut remaining,
-                    event.source_event_seqs.as_ref().map_or(0, |seqs| {
-                        seqs.capacity().saturating_mul(std::mem::size_of::<u64>())
-                    }),
-                )
-                && json_fits(&event.data, &mut remaining)
-        })
-    })
+    if session.seq().get() > MAX_CACHED_PREPARED_EVENTS {
+        return false;
+    }
+    let mut remaining = MAX_CACHED_PREPARED_BYTES;
+    let mut fits = charge(
+        &mut remaining,
+        (session.seq().get() as usize)
+            .saturating_mul(std::mem::size_of::<dsh_session::SessionEvent>()),
+    );
+    let scanned = session.visit_events(0, None, |event| {
+        fits = fits
+            && charge(&mut remaining, event.type_.capacity())
+            && charge(
+                &mut remaining,
+                event.source_event_seqs.as_ref().map_or(0, |seqs| {
+                    seqs.capacity().saturating_mul(std::mem::size_of::<u64>())
+                }),
+            )
+            && json_fits(&event.data, &mut remaining);
+        Ok(fits)
+    });
+    scanned.is_ok() && fits
 }
 
 /// One prepared source exposing its exact unpublished Session.

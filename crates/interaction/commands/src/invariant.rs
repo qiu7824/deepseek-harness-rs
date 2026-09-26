@@ -31,6 +31,24 @@ pub const INJECT: [&str; 1] = ["invariants"];
 type Histories = parking_lot::Mutex<HashMap<String, Vec<SessionEvent>>>;
 type RunIds = parking_lot::Mutex<HashMap<String, HashSet<String>>>;
 
+#[derive(Default)]
+struct CommandTrace {
+    end: u64,
+    command_seqs: HashSet<u64>,
+}
+impl CommandTrace {
+    fn observe(&mut self, event: &SessionEvent) {
+        self.end = event.seq.get() + 1;
+        if matches!(event.type_.as_str(), "command/run" | "command/done") {
+            self.command_seqs.insert(event.seq.get());
+        }
+    }
+    fn valid_source(&self, seq: u64) -> bool {
+        seq < self.end && !self.command_seqs.contains(&seq)
+    }
+}
+type Traces = parking_lot::Mutex<HashMap<String, CommandTrace>>;
+
 /// Validate one lifecycle event against the incremental session history (TS
 /// `validateEvent`; failures carry the exact TS messages).
 pub fn validate_event(
@@ -38,6 +56,22 @@ pub fn validate_event(
     run_ids: &RunIds,
     session_id: &str,
     event: &SessionEvent,
+) -> Result<(), String> {
+    validate_with_source(run_ids, session_id, event, |source| {
+        histories.lock().get(session_id).is_some_and(|history| {
+            history.get(source as usize).is_some_and(|source_event| {
+                source_event.seq == source
+                    && !matches!(source_event.type_.as_str(), "command/run" | "command/done")
+            })
+        })
+    })
+}
+
+fn validate_with_source(
+    run_ids: &RunIds,
+    session_id: &str,
+    event: &SessionEvent,
+    valid_source: impl Fn(u64) -> bool,
 ) -> Result<(), String> {
     let command_id = event
         .data
@@ -77,15 +111,8 @@ pub fn validate_event(
                     .get("kind")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let valid_source = kind == "success"
-                    && source < event.seq.get()
-                    && histories.lock().get(session_id).is_some_and(|history| {
-                        history.get(source as usize).is_some_and(|source_event| {
-                            source_event.seq == source
-                                && source_event.type_ != "command/run"
-                                && source_event.type_ != "command/done"
-                        })
-                    });
+                let valid_source =
+                    kind == "success" && source < event.seq.get() && valid_source(source);
                 if !valid_source {
                     return Err(format!(
                         "command/done {} has invalid sourceEventSeq {}",
@@ -107,24 +134,33 @@ pub fn installer() -> InvariantInstaller {
         install: Arc::new(|ctx: &Context, fail: Arc<dyn Fn(&str) + Send + Sync>| {
             let ctx = ctx.clone();
             Box::pin(async move {
-                let histories: Arc<Histories> = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+                let histories: Arc<Traces> = Arc::new(parking_lot::Mutex::new(HashMap::new()));
                 let run_ids: Arc<RunIds> = Arc::new(parking_lot::Mutex::new(HashMap::new()));
 
                 let seed = |session: &Session,
-                            histories: &Histories,
+                            histories: &Traces,
                             run_ids: &RunIds,
                             fail: &Arc<dyn Fn(&str) + Send + Sync>| {
-                    let events: Vec<SessionEvent> = session.events().iter().cloned().collect();
-                    for event in &events {
+                    let mut trace = CommandTrace::default();
+                    run_ids.lock().remove(session.id().as_str());
+                    let replayed = session.visit_events(0, None, |event| {
                         if let Err(message) =
-                            validate_event(histories, run_ids, session.id().as_str(), event)
+                            validate_with_source(run_ids, session.id().as_str(), event, |seq| {
+                                trace.valid_source(seq)
+                            })
                         {
                             fail(&message);
                         }
+                        trace.observe(event);
+                        Ok(true)
+                    });
+                    if let Err(error) = replayed {
+                        fail(&error);
+                        return;
                     }
                     histories
                         .lock()
-                        .insert(session.id().as_str().to_string(), events);
+                        .insert(session.id().as_str().to_string(), trace);
                 };
 
                 // Seed every attached session.
@@ -136,6 +172,49 @@ pub fn installer() -> InvariantInstaller {
                         seed(&session, &histories, &run_ids, &fail);
                     }
                 }
+
+                let created_histories = histories.clone();
+                let created_ids = run_ids.clone();
+                let created_fail = fail.clone();
+                ctx.on(
+                    "session/created",
+                    Arc::new(move |_, args| {
+                        let histories = created_histories.clone();
+                        let run_ids = created_ids.clone();
+                        let fail = created_fail.clone();
+                        Box::pin(async move {
+                            if let Some(session) = args.first().and_then(downcast::<Session>) {
+                                seed(session, &histories, &run_ids, &fail);
+                            }
+                            None
+                        })
+                    }),
+                    EventOptions::default().global(true),
+                )
+                .await;
+
+                let committed = histories.clone();
+                ctx.on(
+                    "session/event",
+                    Arc::new(move |_, args| {
+                        let histories = committed.clone();
+                        Box::pin(async move {
+                            if let (Some(session), Some(event)) = (
+                                args.first().and_then(downcast::<Session>),
+                                args.get(1).and_then(downcast::<SessionEvent>),
+                            ) {
+                                histories
+                                    .lock()
+                                    .entry(session.id().to_string())
+                                    .or_default()
+                                    .observe(event);
+                            }
+                            None
+                        })
+                    }),
+                    EventOptions::default().global(true),
+                )
+                .await;
 
                 // Validate each event before publication from the
                 // incremental history (no session-state read inside the
@@ -177,15 +256,15 @@ pub fn installer() -> InvariantInstaller {
                             return None;
                         }
                         if let Err(message) =
-                            validate_event(&histories, &run_ids, session.id().as_str(), &event)
+                            validate_with_source(&run_ids, session.id().as_str(), &event, |seq| {
+                                histories
+                                    .lock()
+                                    .get(session.id().as_str())
+                                    .is_some_and(|trace| trace.valid_source(seq))
+                            })
                         {
                             fail(&message);
                         }
-                        histories
-                            .lock()
-                            .entry(session.id().as_str().to_string())
-                            .or_default()
-                            .push(event);
                         None
                     })
                 });

@@ -3,13 +3,13 @@
 //!
 //! # Deviations
 //!
-//! - The TS `persistence.list()` existence pre-check collapses into the
-//!   Rust coordinator's `inspect` (an absent id fails the same way); the
-//!   `meta.cwd` check keeps the TS session-not-found semantics.
+//! - Cold routing reads the authoritative header only. Full validation and
+//!   repair belong to the loop's one reserved preparation; setup receives
+//!   that exact unpublished Session instead of a second transcript copy.
 //! - Single-flight resumes share one `futures::future::Shared` per identity
 //!   (the TS `resumes` map holds one promise per identity); the entry is
-//!   removed when the shared future settles, so a failed resume retries on
-//!   the next call exactly like TS.
+//!   removed when the shared future settles or its last caller cancels, so
+//!   failures retry and abandoned unpublished resources can roll back.
 //! - The typert lookup configuration is absent until the typert milestone
 //!   (same deferral as the goal crate's remote units, round 49).
 
@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use cordis::Context;
 use dsh_agent::{Agent, AgentRegistry, AgentSetup, ResumeAgentOptions};
-use dsh_session::{SessionEvent, SessionHeader, SessionId};
+use dsh_session::{SessionHeader, SessionId};
 use dsh_session_persistence::SessionPersistenceApi;
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
@@ -27,14 +27,7 @@ use parking_lot::Mutex;
 use crate::api::rpc::{EmptyDetails, ReasonDetails, RpcError, RpcErrorBody, SessionIdDetails};
 
 /// Resume configuration supplied by the owning Host composition.
-pub type ApiRemoteAgentSetup = Arc<
-    dyn Fn(
-            SessionHeader,
-            Vec<SessionEvent>,
-        ) -> BoxFuture<'static, Result<Option<AgentSetup>, String>>
-        + Send
-        + Sync,
->;
+pub type ApiRemoteAgentSetup = AgentSetup;
 
 pub struct ApiRemoteAgentOptions {
     /// Read the per-Agent defaults when a cold identity must resume.
@@ -56,6 +49,40 @@ enum ResumeFailure {
 }
 
 type SharedResume = Shared<BoxFuture<'static, Result<Arc<dyn Agent>, ResumeFailure>>>;
+
+struct ResumeEntry {
+    future: SharedResume,
+    waiters: usize,
+}
+
+/// The map coordinates current callers, rather than owning an abandoned
+/// preparation forever when the last caller cancels during async setup.
+struct ResumeWaiter<'a> {
+    resumes: &'a Mutex<HashMap<SessionId, ResumeEntry>>,
+    id: SessionId,
+    future: SharedResume,
+}
+
+impl Drop for ResumeWaiter<'_> {
+    fn drop(&mut self) {
+        let removed = {
+            let mut resumes = self.resumes.lock();
+            if let Some(entry) = resumes.get_mut(&self.id)
+                && entry.future.ptr_eq(&self.future)
+            {
+                entry.waiters -= 1;
+                if entry.waiters == 0 {
+                    resumes.remove(&self.id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        drop(removed);
+    }
+}
 
 #[derive(Default)]
 struct RetirementGates {
@@ -193,7 +220,7 @@ fn subagent_ownership_error(session_id: &SessionId) -> RpcError {
 pub struct AgentResolver {
     ctx: Context,
     options: Arc<ApiRemoteAgentOptions>,
-    resumes: Mutex<HashMap<SessionId, SharedResume>>,
+    resumes: Mutex<HashMap<SessionId, ResumeEntry>>,
     retirements: RetirementGates,
     admissions: Mutex<HashMap<SessionId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 }
@@ -271,24 +298,26 @@ impl AgentResolver {
 
         let shared = {
             let mut resumes = self.resumes.lock();
-            if let Some(shared) = resumes.get(session_id) {
-                shared.clone()
+            if let Some(entry) = resumes.get_mut(session_id) {
+                entry.waiters += 1;
+                entry.future.clone()
             } else {
                 let resume_id = session_id.clone();
                 let ctx = self.ctx.clone();
                 let options = self.options.clone();
                 let future: BoxFuture<'static, Result<Arc<dyn Agent>, ResumeFailure>> =
                     Box::pin(async move {
-                        let (meta, events) = inspect_cold(&ctx, &resume_id).await?;
+                        let meta = inspect_cold(&ctx, &resume_id).await?;
                         if has_api_remote_subagent_owner(&ctx, &meta, None) {
                             return Err(ResumeFailure::SubagentOwned(resume_id.clone()));
                         }
-                        let setup = match &options.setup {
-                            None => None,
-                            Some(build) => build(meta.clone(), events.clone())
-                                .await
-                                .map_err(ResumeFailure::Internal)?,
-                        };
+                        let ownership_blocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let setup = guarded_cold_setup(
+                            ctx.clone(),
+                            meta,
+                            options.setup.clone(),
+                            ownership_blocked.clone(),
+                        );
                         // Re-check published state before resuming (the TS
                         // collision-window guard).
                         let published_owned = ctx
@@ -324,20 +353,35 @@ impl AgentResolver {
                             ));
                         };
                         let options_builder = ResumeAgentOptions {
-                            resume_session_id: Some(resume_id),
+                            resume_session_id: Some(resume_id.clone()),
                             agent_options: Some((options.agent_options)()),
-                            setup,
+                            setup: Some(setup),
                         };
-                        let handle = registry
-                            .resume(options_builder)
-                            .await
-                            .map_err(ResumeFailure::Internal)?;
+                        let handle = registry.resume(options_builder).await.map_err(|error| {
+                            if ownership_blocked.load(std::sync::atomic::Ordering::Acquire) {
+                                ResumeFailure::SubagentOwned(resume_id.clone())
+                            } else {
+                                ResumeFailure::Internal(error)
+                            }
+                        })?;
                         Ok((options.retain_handle)(handle))
                     });
                 let shared: SharedResume = future.shared();
-                resumes.insert(session_id.clone(), shared.clone());
+                resumes.insert(
+                    session_id.clone(),
+                    ResumeEntry {
+                        future: shared.clone(),
+                        waiters: 1,
+                    },
+                );
                 shared
             }
+        };
+
+        let _waiter = ResumeWaiter {
+            resumes: &self.resumes,
+            id: session_id.clone(),
+            future: shared.clone(),
         };
 
         let outcome = shared.clone().await;
@@ -348,7 +392,7 @@ impl AgentResolver {
             let mut resumes = self.resumes.lock();
             if resumes
                 .get(session_id)
-                .is_some_and(|current| current.ptr_eq(&shared))
+                .is_some_and(|current| current.future.ptr_eq(&shared))
             {
                 resumes.remove(session_id);
             }
@@ -415,7 +459,7 @@ mod retirement_gate_tests {
 async fn inspect_cold(
     ctx: &Context,
     session_id: &SessionId,
-) -> Result<(SessionHeader, Vec<SessionEvent>), ResumeFailure> {
+) -> Result<SessionHeader, ResumeFailure> {
     let Some(persistence) = ctx
         .get_typed::<Arc<dyn SessionPersistenceApi>>("sessionPersistence", false)
         .map(|slot| slot.as_ref().clone())
@@ -425,18 +469,82 @@ async fn inspect_cold(
                 .to_string(),
         ));
     };
-    let inspected = persistence.inspect(session_id).await.map_err(|error| {
-        let missing = format!("session \"{session_id}\" not found");
-        if error == missing {
-            ResumeFailure::SessionNotFound(missing)
-        } else {
-            ResumeFailure::Internal(format!("cannot restore session \"{session_id}\": {error}"))
-        }
-    })?;
-    if inspected.meta.cwd.is_none() {
+    let inspected = persistence
+        .read_snapshot(session_id)
+        .await
+        .map_err(|error| {
+            let missing = format!("session \"{session_id}\" not found");
+            if error == missing {
+                ResumeFailure::SessionNotFound(missing)
+            } else {
+                ResumeFailure::Internal(format!("cannot restore session \"{session_id}\": {error}"))
+            }
+        })?
+        .ok_or_else(|| {
+            ResumeFailure::SessionNotFound(format!("session \"{session_id}\" not found"))
+        })?;
+    if inspected.header.id != *session_id {
+        return Err(ResumeFailure::Internal(format!(
+            "session authority does not match requested identity \"{session_id}\""
+        )));
+    }
+    if inspected.header.cwd.is_none() {
         return Err(ResumeFailure::SessionNotFound(format!(
             "session \"{session_id}\" not found"
         )));
     }
-    Ok((inspected.meta, inspected.events))
+    Ok(inspected.header)
+}
+
+/// Generation conversion may alter positions and the format number, but
+/// cannot change the identity whose header admitted this resume request.
+fn same_cold_authority(before: &SessionHeader, prepared: &SessionHeader) -> bool {
+    before.id == prepared.id
+        && before.created_at == prepared.created_at
+        && before.cwd == prepared.cwd
+        && before.parent_session == prepared.parent_session
+        && before.is_seeded == prepared.is_seeded
+        && before.origin == prepared.origin
+        && before.delegation_depth.unwrap_or(0) == prepared.delegation_depth.unwrap_or(0)
+        && before.agent_preset == prepared.agent_preset
+        && (before.version == prepared.version
+            || matches!((before.version, prepared.version), (0 | 3, 4)))
+}
+
+fn guarded_cold_setup(
+    ctx: Context,
+    authority: SessionHeader,
+    setup: Option<AgentSetup>,
+    ownership_blocked: Arc<std::sync::atomic::AtomicBool>,
+) -> AgentSetup {
+    Arc::new(move |agent_ctx, agent| {
+        let ctx = ctx.clone();
+        let agent_ctx = agent_ctx.clone();
+        let authority = authority.clone();
+        let setup = setup.clone();
+        let ownership_blocked = ownership_blocked.clone();
+        Box::pin(async move {
+            let validate = || {
+                if has_api_remote_subagent_owner(&ctx, agent.session().header(), Some(&agent)) {
+                    ownership_blocked.store(true, std::sync::atomic::Ordering::Release);
+                    return Err("the prepared Session is owned by subagent routing".to_string());
+                }
+                if agent.id() != &authority.id
+                    || !same_cold_authority(&authority, agent.session().header())
+                {
+                    return Err("Session authority changed before Agent publication".to_string());
+                }
+                Ok(())
+            };
+            validate()?;
+            let commit = match setup {
+                Some(setup) => setup(&agent_ctx, agent.clone()).await?,
+                None => None,
+            };
+            // Setup can await external composition. Recheck the exact prepared
+            // identity and current ownership before its transaction commits.
+            validate()?;
+            Ok(commit)
+        })
+    })
 }

@@ -59,8 +59,13 @@ pub fn installer() -> InvariantInstaller {
                         + Sync,
                 > = Arc::new(|session, states, fail| {
                     let mut state = empty_goal_fold_state();
-                    for event in session.events().iter() {
+                    let replayed = session.visit_events(0, None, |event| {
                         apply_checked(&mut state, event, fail);
+                        Ok(true)
+                    });
+                    if let Err(error) = replayed {
+                        fail(&error);
+                        return;
                     }
                     states.lock().insert(session_key(session), state);
                 });
