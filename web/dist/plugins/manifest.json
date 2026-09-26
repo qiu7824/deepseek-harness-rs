@@ -102,7 +102,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-sidebar",
       "url": "/plugins/ui-sidebar.js",
-      "rev": "cd7bb416473382ba",
+      "rev": "699ff18a24ee78e3",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-layout",
@@ -177,10 +177,12 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-schedule",
       "url": "/plugins/ui-schedule.js",
-      "rev": "74f3e4959874049f",
+      "rev": "91789d60a14e1dc8",
       "inject": [
         "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-locale"
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-layout"
       ],
       "immediately": false
     },

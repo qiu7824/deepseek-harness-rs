@@ -161,15 +161,18 @@ class RustRuntimeContractTests(unittest.TestCase):
         self.assertIn("Fn(&SessionHeader)", framework)
         self.assertIn("dsh-session-projection", cargo)
         self.assertTrue(any(row["url"] == "/plugins/ui-schedule.js" for row in manifest["entries"]))
+        # Tasks are Host-owned: the page, the header clock and the sidebar
+        # entry read /__dsh-schedule, not the historical session projection.
         ui = self.source("ui-schedule.js")
-        self.assertIn("ScheduleCatalogAction", ui)
-        self.assertIn('useProjection("schedule")', ui)
-        self.assertIn('name: "conversation.session.header.actions"', ui)
-        self.assertIn("createPortal", ui)
-        self.assertIn("useAnchoredPosition", ui)
-        self.assertIn("catalogRef", ui)
-        self.assertIn("position:fixed", ui)
-        self.assertIn("margin: 16", ui)
+        self.assertIn("function TaskManager", ui)
+        self.assertIn("function ScheduleHeaderAction", ui)
+        self.assertIn("/__dsh-schedule/", ui)
+        self.assertIn('name:"conversation.session.header.actions"', ui)
+        self.assertIn('name:"main",key:"schedule"', ui)
+        self.assertIn('name:"sidebar.panellist",id:"schedule"', ui)
+        self.assertNotIn('useProjection("schedule")', ui)
+        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn("dsh_schedule::apply_projection(ctx);", host)
 
     def test_turn_usage_and_time_details_are_available(self):
         chat = self.source("ui-conversation.js")
