@@ -899,6 +899,16 @@ async fn git_status(repository: &Path, worktree: &Path) -> Result<GitStatusBody,
     })
 }
 
+/// Caps diff text at `max` bytes without splitting a UTF-8 character; a diff
+/// of non-ASCII source would otherwise panic at an arbitrary byte cut.
+fn cap_diff_text(output: &mut String, max: usize) -> bool {
+    if output.len() <= max {
+        return false;
+    }
+    output.truncate(output.floor_char_boundary(max));
+    true
+}
+
 async fn git_diff(
     worktree: &Path,
     relative: &str,
@@ -960,10 +970,7 @@ async fn git_diff(
             };
         }
     }
-    let truncated = output.len() > MAX_DIFF_BYTES;
-    if truncated {
-        output.truncate(MAX_DIFF_BYTES);
-    }
+    let truncated = cap_diff_text(&mut output, MAX_DIFF_BYTES);
     Ok(GitDiffBody {
         path: display,
         diff: output,
@@ -1040,10 +1047,7 @@ async fn git_commit_diff(worktree: &Path, revision: &str) -> Result<GitDiffBody,
         ],
     )
     .await?;
-    let truncated = output.len() > MAX_DIFF_BYTES;
-    if truncated {
-        output.truncate(MAX_DIFF_BYTES);
-    }
+    let truncated = cap_diff_text(&mut output, MAX_DIFF_BYTES);
     Ok(GitDiffBody {
         path: revision.to_string(),
         diff: output,
@@ -1236,6 +1240,44 @@ pub(super) async fn authorized_path(
 
 fn execution_path(path: &Path) -> String {
     dsh_host_apiproxy::native_path_opener::display_native_path(&path.to_string_lossy())
+}
+
+/// One sidebar row. A link (a symlink or a Windows junction) is listed with
+/// its target's type only while the target stays inside the workspace and
+/// outside protected directories; `authorized_path` resolves it on open.
+async fn directory_entry(root: &Path, entry: &tokio::fs::DirEntry) -> Option<DirectoryEntry> {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    if denied_name(&name) {
+        return None;
+    }
+    let mut kind = entry.file_type().await.ok()?;
+    let meta = if kind.is_symlink() {
+        let target = tokio::fs::canonicalize(entry.path()).await.ok()?;
+        let inside = target.strip_prefix(root).ok()?;
+        if inside
+            .components()
+            .any(|part| denied_name(&part.as_os_str().to_string_lossy()))
+        {
+            return None;
+        }
+        let meta = tokio::fs::metadata(&target).await.ok()?;
+        kind = meta.file_type();
+        meta
+    } else {
+        entry.metadata().await.ok()?
+    };
+    Some(DirectoryEntry {
+        name,
+        path: relative_display(root, &entry.path()),
+        kind: if kind.is_dir() {
+            "directory"
+        } else if kind.is_file() {
+            "file"
+        } else {
+            "other"
+        },
+        size: kind.is_file().then_some(meta.len()),
+    })
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
@@ -3141,31 +3183,9 @@ impl PreviewService {
                     truncated = true;
                     break;
                 }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if denied_name(&name) {
-                    continue;
+                if let Some(listed) = directory_entry(&root, &entry).await {
+                    entries.push(listed);
                 }
-                let Ok(kind) = entry.file_type().await else {
-                    continue;
-                };
-                if kind.is_symlink() {
-                    continue;
-                }
-                let Ok(meta) = entry.metadata().await else {
-                    continue;
-                };
-                entries.push(DirectoryEntry {
-                    name,
-                    path: relative_display(&root, &entry.path()),
-                    kind: if kind.is_dir() {
-                        "directory"
-                    } else if kind.is_file() {
-                        "file"
-                    } else {
-                        "other"
-                    },
-                    size: kind.is_file().then_some(meta.len()),
-                });
             }
             entries.sort_by(|a, b| {
                 (a.kind != "directory", a.name.to_ascii_lowercase())
@@ -3301,6 +3321,74 @@ pub fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn link_directory(link: &Path, target: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            // A junction needs no symlink privilege, like the links users make.
+            std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .output()
+                .is_ok_and(|output| output.status.success())
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_links_list_through_targets_inside_the_workspace() {
+        let base = std::env::temp_dir().join(format!("dsh-dir-links-{}", uuid::Uuid::new_v4()));
+        let root = base.join("workspace");
+        std::fs::create_dir_all(root.join("real/sub")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(base.join("outside")).unwrap();
+        std::fs::write(root.join("real/a.txt"), "a").unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        if !(link_directory(&root.join("linked"), &root.join("real"))
+            && link_directory(&root.join("escape"), &base.join("outside"))
+            && link_directory(&root.join("deps"), &root.join("node_modules/pkg")))
+        {
+            let _ = std::fs::remove_dir_all(&base);
+            eprintln!("directory links unavailable on this host");
+            return;
+        }
+        let mut reader = tokio::fs::read_dir(&root).await.unwrap();
+        let mut listed = Vec::new();
+        while let Some(entry) = reader.next_entry().await.unwrap() {
+            if let Some(row) = directory_entry(&root, &entry).await {
+                listed.push((row.name, row.path, row.kind));
+            }
+        }
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec![
+                ("linked".to_string(), "linked".to_string(), "directory"),
+                ("real".to_string(), "real".to_string(), "directory"),
+            ]
+        );
+        for link in ["linked", "escape", "deps"] {
+            let _ = std::fs::remove_dir(root.join(link));
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn diff_cap_never_splits_a_character() {
+        let mut ascii = "+abc".to_string();
+        assert!(!cap_diff_text(&mut ascii, 4));
+        assert_eq!(ascii, "+abc");
+        let mut text = format!("+{}", "中文".repeat(4));
+        assert!(cap_diff_text(&mut text, 6));
+        assert_eq!(text, "+中");
+        assert!(text.len() <= 6);
+    }
 
     #[tokio::test]
     async fn binary_preview_streams_bounded_chunks_and_head_does_not_read_the_body() {

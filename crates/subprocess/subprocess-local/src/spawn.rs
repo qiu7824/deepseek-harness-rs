@@ -150,6 +150,8 @@ pub struct OutputCollector {
     spill_fd: Option<std::fs::File>,
     spill_file: Option<PathBuf>,
     spill_disabled: bool,
+    /// Set once settlement has joined the reader: no chunk follows.
+    sealed: bool,
     /// Total bytes ever pushed (not just retained).
     total: u64,
     max_bytes: usize,
@@ -173,6 +175,7 @@ impl OutputCollector {
             spill_fd: None,
             spill_file: None,
             spill_disabled,
+            sealed: false,
             total: 0,
             max_bytes,
             max_spill_bytes,
@@ -289,6 +292,11 @@ impl OutputCollector {
     /// pushed since `from_byte`. When `from_byte` has already slid out of the
     /// in-memory tail window, the read is `lossy` — it returns the whole
     /// retained tail and the gap is only recoverable from the spill file.
+    ///
+    /// Reads never begin or end inside a UTF-8 character: a start that the
+    /// byte-exact tail cut mid-character skips the orphaned continuation
+    /// bytes, and while the stream is open an incomplete trailing character
+    /// stays unread (`next_offset` stops before it) for the next read.
     pub fn read_from(&self, from_byte: u64) -> SubprocessOutputRead {
         let window_start = self.total - self.bytes as u64;
         let mut buffer = Vec::with_capacity(self.bytes);
@@ -296,14 +304,24 @@ impl OutputCollector {
             buffer.extend_from_slice(chunk);
         }
         let lossy = from_byte < window_start;
-        let text = if lossy {
-            &buffer[..]
+        let start = if lossy {
+            window_start
         } else {
-            &buffer[(from_byte - window_start) as usize..]
+            from_byte.min(self.total)
         };
+        let mut text = &buffer[(start - window_start) as usize..];
+        if start > 0 {
+            text = skip_orphaned_continuation(text);
+        }
+        let held = if self.sealed {
+            0
+        } else {
+            incomplete_utf8_tail(text)
+        };
+        let text = &text[..text.len() - held];
         SubprocessOutputRead {
             text: String::from_utf8_lossy(text).into_owned(),
-            next_offset: self.total,
+            next_offset: self.total - held as u64,
             lossy,
             spill_path: self
                 .spill_file
@@ -317,6 +335,7 @@ impl OutputCollector {
     /// point at a still-open file. The delayed-writeback failure arm
     /// collapses into a drop (TS `seal`).
     pub fn seal(&mut self) {
+        self.sealed = true;
         if self.spill_fd.is_none() {
             return;
         }
@@ -330,8 +349,13 @@ impl OutputCollector {
         for chunk in &self.chunks {
             buffer.extend_from_slice(chunk);
         }
+        let text = if self.dropped {
+            skip_orphaned_continuation(&buffer)
+        } else {
+            &buffer[..]
+        };
         CollectedOutput {
-            text: String::from_utf8_lossy(&buffer).into_owned(),
+            text: String::from_utf8_lossy(text).into_owned(),
             truncated: self.dropped,
             spill_path: self
                 .spill_file
@@ -339,6 +363,36 @@ impl OutputCollector {
                 .map(|path| path.to_string_lossy().into_owned()),
         }
     }
+}
+
+/// Drops at most three leading UTF-8 continuation bytes left by a cut inside
+/// a character; valid text at a character boundary is unchanged.
+fn skip_orphaned_continuation(bytes: &[u8]) -> &[u8] {
+    let skip = bytes
+        .iter()
+        .take(3)
+        .take_while(|byte| (*byte & 0xC0) == 0x80)
+        .count();
+    &bytes[skip..]
+}
+
+/// Length of a UTF-8 lead byte's sequence that the slice ends before
+/// completing; 0 when the slice ends on a character boundary.
+fn incomplete_utf8_tail(bytes: &[u8]) -> usize {
+    for back in 1..=bytes.len().min(3) {
+        let byte = bytes[bytes.len() - back];
+        if (byte & 0xC0) == 0x80 {
+            continue;
+        }
+        let expected = match byte {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => return 0,
+        };
+        return if back < expected { back } else { 0 };
+    }
+    0
 }
 
 /// Offset-based access to one live collector (implements the seam's
@@ -1120,4 +1174,49 @@ fn parse_proc_stat(pid: &str) -> Option<ProcStat> {
     }
     let pgrp: i32 = rest.get(2)?.parse().ok()?;
     Some(ProcStat { pgrp, state })
+}
+
+#[cfg(test)]
+mod collector_utf8_tests {
+    use super::*;
+
+    fn collector(max_bytes: usize) -> OutputCollector {
+        OutputCollector::new(max_bytes, None, "test", std::env::temp_dir())
+    }
+
+    #[test]
+    fn a_tail_cut_inside_a_character_drops_the_orphaned_bytes() {
+        let mut output = collector(7);
+        output.push("前后中文".as_bytes());
+        let read = output.read_from(0);
+        assert!(read.lossy);
+        assert_eq!(read.text, "中文");
+        assert!(!read.text.contains('\u{FFFD}'));
+        assert_eq!(output.finalize().text, "中文");
+    }
+
+    #[test]
+    fn incremental_reads_hold_a_split_character_until_it_completes() {
+        let mut output = collector(1024);
+        let bytes = "日志：完成".as_bytes();
+        output.push(&bytes[..4]);
+        let first = output.read_from(0);
+        assert_eq!(first.text, "日");
+        assert_eq!(first.next_offset, 3);
+        output.push(&bytes[4..]);
+        let second = output.read_from(first.next_offset);
+        assert_eq!(second.text, "志：完成");
+        assert_eq!(second.next_offset, bytes.len() as u64);
+    }
+
+    #[test]
+    fn a_sealed_stream_returns_its_incomplete_tail() {
+        let mut output = collector(1024);
+        output.push(&"好".as_bytes()[..2]);
+        assert_eq!(output.read_from(0).next_offset, 0);
+        output.seal();
+        let read = output.read_from(0);
+        assert_eq!(read.next_offset, 2);
+        assert_eq!(read.text, "\u{FFFD}");
+    }
 }
