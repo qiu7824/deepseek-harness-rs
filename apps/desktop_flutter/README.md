@@ -1,6 +1,6 @@
 # DeepSeek Harness Desktop
 
-Flutter Windows 客户端，通过本机 HTTP RPC 与 WebSocket 连接 Rust Host。
+Flutter 桌面客户端，通过本机 HTTP RPC 与 WebSocket 连接 Rust Host；Windows、macOS 与 Linux 的实际验收状态见[平台矩阵](../../docs/desktop-platforms.zh.md)。
 
 ## 功能
 
@@ -9,6 +9,9 @@ Flutter Windows 客户端，通过本机 HTTP RPC 与 WebSocket 连接 Rust Host
 - 中文 Markdown 对话、流式回复、思考过程、工具调用和停止执行。
 - 有界历史分页、断线重连、待处理审批恢复及多问题批量回答。
 - 按任务保存输入草稿、深浅主题和自适应布局。
+- 图片与文件附件、Windows 剪贴板图片和复制文件粘贴、拖放、文件预览与保存。
+- 代码图谱、上下文、计划、子智能体、任务编辑、终端及差异审阅工作台。
+- 模型账号、模型显示开关、技能与 MCP 管理、快捷键配置。
 
 连接地址默认是 `http://127.0.0.1:58080`。客户端只接受回环地址。关闭窗口保留后台服务及其任务；“停止任务”仅取消所选任务。
 
@@ -39,4 +42,6 @@ flutter test integration_test/desktop_flow_test.dart -d windows
 
 ## 范围
 
-当前版本提供文本任务闭环。文件上传、图片查看、终端、差异审阅、Web 插件、远程服务和自动更新尚未接入。模型账号与高级设置继续由已有 Web 界面管理。
+Windows 图片粘贴支持 `Ctrl+V`、`Shift+Insert` 和输入框右键菜单，纯文本粘贴保留选择范围替换行为。macOS/Linux 原生图片剪贴板尚未实现。附件读取与上传受数量和总大小限制，切换任务会取消迟到导入。
+
+Web 插件不能直接作为 Flutter 原生界面运行。远程服务连接、完整首次引导、全局提醒管理、自动更新和三平台安装升级仍有未完成项，详见[更新计划](../../docs/plans/更新计划.md)和[rc.2 评估](../../docs/upstream-v0.1.7-rc.2-evaluation.zh.md)。
