@@ -895,139 +895,149 @@ class _ConversationState extends State<Conversation>
                                   ),
                                 Align(
                                   alignment: Alignment.topCenter,
-                                  child: ListView.builder(
-                                    shrinkWrap:
-                                        c.transcript.length <= 8 &&
-                                        c.transcript.fold<int>(
-                                              0,
-                                              (size, item) =>
-                                                  size + item.text.length,
-                                            ) <=
-                                            16384 &&
-                                        c.transcript.fold<int>(
-                                              0,
-                                              (count, item) =>
-                                                  count + item.images.length,
-                                            ) <=
-                                            2,
-                                    key: PageStorageKey(
-                                      'messages-${c.selectedId}',
-                                    ),
-                                    scrollCacheExtent: ScrollCacheExtent.pixels(
-                                      240,
-                                    ),
-                                    controller: scroll,
-                                    reverse: true,
-                                    findChildIndexCallback: (key) =>
-                                        key is ValueKey<String>
-                                        ? messageIndices[key.value]
-                                        : null,
-                                    padding: const EdgeInsets.fromLTRB(
-                                      32,
-                                      16,
-                                      56,
-                                      16,
-                                    ),
-                                    itemCount:
-                                        activityCount +
-                                        c.transcript.length +
-                                        (c.window.hasBefore ? 1 : 0),
-                                    itemBuilder: (context, rawIndex) {
-                                      if (activityCount == 1 && rawIndex == 0) {
+                                  // One selection spans every visible message.
+                                  child: SelectionArea(
+                                    child: ListView.builder(
+                                      shrinkWrap:
+                                          c.transcript.length <= 8 &&
+                                          c.transcript.fold<int>(
+                                                0,
+                                                (size, item) =>
+                                                    size + item.text.length,
+                                              ) <=
+                                              16384 &&
+                                          c.transcript.fold<int>(
+                                                0,
+                                                (count, item) =>
+                                                    count + item.images.length,
+                                              ) <=
+                                              2,
+                                      key: PageStorageKey(
+                                        'messages-${c.selectedId}',
+                                      ),
+                                      scrollCacheExtent:
+                                          ScrollCacheExtent.pixels(240),
+                                      controller: scroll,
+                                      reverse: true,
+                                      findChildIndexCallback: (key) =>
+                                          key is ValueKey<String>
+                                          ? messageIndices[key.value]
+                                          : null,
+                                      padding: const EdgeInsets.fromLTRB(
+                                        32,
+                                        16,
+                                        56,
+                                        16,
+                                      ),
+                                      itemCount:
+                                          activityCount +
+                                          c.transcript.length +
+                                          (c.window.hasBefore ? 1 : 0),
+                                      itemBuilder: (context, rawIndex) {
+                                        if (activityCount == 1 &&
+                                            rawIndex == 0) {
+                                          return Align(
+                                            key: const ValueKey(
+                                              'turn-activity',
+                                            ),
+                                            alignment: Alignment.topCenter,
+                                            child: ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                maxWidth: contentWidth,
+                                              ),
+                                              child: TurnActivity(
+                                                controller: c,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        final index = rawIndex - activityCount;
+                                        if (index == c.transcript.length) {
+                                          return Center(
+                                            child: DshButton(
+                                              onPressed: c.loading
+                                                  ? null
+                                                  : () => c.run(
+                                                      () => c.loadHistory(
+                                                        before:
+                                                            c.window.firstSeq,
+                                                        merge: true,
+                                                      ),
+                                                    ),
+                                              child: Text(
+                                                c.loading ? '正在读取…' : '加载更早记录',
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        final item =
+                                            c.transcript[c.transcript.length -
+                                                1 -
+                                                index];
                                         return Align(
-                                          key: const ValueKey('turn-activity'),
+                                          key: ValueKey(item.id),
                                           alignment: Alignment.topCenter,
                                           child: ConstrainedBox(
+                                            key:
+                                                item.kind == 'user' &&
+                                                    item.seq != null
+                                                ? userAnchors.putIfAbsent(
+                                                    item.seq!,
+                                                    () => GlobalKey(),
+                                                  )
+                                                : null,
                                             constraints: BoxConstraints(
                                               maxWidth: contentWidth,
                                             ),
-                                            child: TurnActivity(controller: c),
-                                          ),
-                                        );
-                                      }
-                                      final index = rawIndex - activityCount;
-                                      if (index == c.transcript.length) {
-                                        return Center(
-                                          child: DshButton(
-                                            onPressed: c.loading
-                                                ? null
-                                                : () => c.run(
-                                                    () => c.loadHistory(
-                                                      before: c.window.firstSeq,
-                                                      merge: true,
-                                                    ),
-                                                  ),
-                                            child: Text(
-                                              c.loading ? '正在读取…' : '加载更早记录',
+                                            child: MessageCard(
+                                              key: ValueKey(item.id),
+                                              item: item,
+                                              bottomSpacing: rawIndex == 0
+                                                  ? 0
+                                                  : 16,
+                                              animateNewContent:
+                                                  follow &&
+                                                  !c.readingHistory &&
+                                                  freshMessages.containsKey(
+                                                    item.id,
+                                                  ) &&
+                                                  DateTime.now()
+                                                              .millisecondsSinceEpoch -
+                                                          freshMessages[item
+                                                              .id]! <=
+                                                      600,
+                                              cwd: c.selected?.cwd,
+                                              onOpenPath: widget.onOpenPath,
+                                              onOpenPlan: widget.onOpenPlan,
+                                              feedback: feedback,
+                                              readAloud:
+                                                  item.kind == 'turn-tail'
+                                                  ? readAloud
+                                                  : null,
+                                              hintDisplay:
+                                                  '${c.conversationSettings['hintDisplay'] ?? 'both'}',
+                                              client: c.client,
+                                              sessionId: c.selectedId,
+                                              onDetails: () => details(item),
+                                              onBranch:
+                                                  item.kind == 'turn-tail' &&
+                                                      !item.streaming &&
+                                                      item.seq != null &&
+                                                      c.connected
+                                                  ? () => branch(item.seq!)
+                                                  : null,
+                                              onOpenFile:
+                                                  widget.onOpenWorkbench == null
+                                                  ? null
+                                                  : () =>
+                                                        widget.onOpenWorkbench!(
+                                                          'files',
+                                                        ),
                                             ),
                                           ),
                                         );
-                                      }
-                                      final item =
-                                          c.transcript[c.transcript.length -
-                                              1 -
-                                              index];
-                                      return Align(
-                                        key: ValueKey(item.id),
-                                        alignment: Alignment.topCenter,
-                                        child: ConstrainedBox(
-                                          key:
-                                              item.kind == 'user' &&
-                                                  item.seq != null
-                                              ? userAnchors.putIfAbsent(
-                                                  item.seq!,
-                                                  () => GlobalKey(),
-                                                )
-                                              : null,
-                                          constraints: BoxConstraints(
-                                            maxWidth: contentWidth,
-                                          ),
-                                          child: MessageCard(
-                                            key: ValueKey(item.id),
-                                            item: item,
-                                            bottomSpacing: rawIndex == 0
-                                                ? 0
-                                                : 16,
-                                            animateNewContent:
-                                                follow &&
-                                                !c.readingHistory &&
-                                                freshMessages.containsKey(
-                                                  item.id,
-                                                ) &&
-                                                DateTime.now()
-                                                            .millisecondsSinceEpoch -
-                                                        freshMessages[item
-                                                            .id]! <=
-                                                    600,
-                                            cwd: c.selected?.cwd,
-                                            onOpenPath: widget.onOpenPath,
-                                            onOpenPlan: widget.onOpenPlan,
-                                            feedback: feedback,
-                                            readAloud: item.kind == 'turn-tail'
-                                                ? readAloud
-                                                : null,
-                                            hintDisplay:
-                                                '${c.conversationSettings['hintDisplay'] ?? 'both'}',
-                                            client: c.client,
-                                            sessionId: c.selectedId,
-                                            onDetails: () => details(item),
-                                            onBranch:
-                                                item.kind == 'turn-tail' &&
-                                                    !item.streaming &&
-                                                    item.seq != null &&
-                                                    c.connected
-                                                ? () => branch(item.seq!)
-                                                : null,
-                                            onOpenFile:
-                                                widget.onOpenWorkbench == null
-                                                ? null
-                                                : () => widget.onOpenWorkbench!(
-                                                    'files',
-                                                  ),
-                                          ),
-                                        ),
-                                      );
-                                    },
+                                      },
+                                    ),
                                   ),
                                 ),
                                 if (c.readingHistory ||
@@ -2232,7 +2242,7 @@ class MessageCard extends StatelessWidget {
             ],
           ),
         if (item.text.isNotEmpty && item.kind == 'user')
-          SelectableText(
+          Text(
             displayText,
             style: DshTypography.composer.copyWith(color: colors.text),
           )

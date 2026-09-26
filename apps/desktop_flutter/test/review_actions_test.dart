@@ -261,7 +261,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final text = find.byType(SelectableText).first;
+      final text = find.textContaining('网页地址', findRichText: true).first;
       await tester.tapAt(
         tester.getTopLeft(text) + const Offset(12, 12),
         buttons: kSecondaryMouseButton,

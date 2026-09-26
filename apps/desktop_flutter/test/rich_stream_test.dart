@@ -128,8 +128,8 @@ void main() {
       }
 
       final link = tester
-          .widgetList<SelectableText>(find.byType(SelectableText))
-          .expand((w) => spans(w.textSpan ?? TextSpan(text: w.data)))
+          .widgetList<RichText>(find.byType(RichText))
+          .expand((w) => spans(w.text))
           .where((s) => s.recognizer is TapGestureRecognizer)
           .first;
       (link.recognizer as TapGestureRecognizer).onTap!();

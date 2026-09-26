@@ -67,6 +67,15 @@ class _DshMarkdownState extends State<DshMarkdown> {
 
   @override
   Widget build(BuildContext context) {
+    final body = _buildBody(context);
+    // Inside the transcript the surrounding SelectionArea owns selection;
+    // standalone documents (plans, questions, panels) provide their own.
+    return SelectionContainer.maybeOf(context) == null
+        ? SelectionArea(child: body)
+        : body;
+  }
+
+  Widget _buildBody(BuildContext context) {
     if (_body != null) return _body!;
     final colors = DshColors(context);
     final fontSize = widget.fontSize;
@@ -294,7 +303,9 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
     if (_rendered != null) return _rendered!;
     final children = MarkdownBuilder(
       delegate: this,
-      selectable: true,
+      // Plain text joins the enclosing SelectionArea, so one drag can cover
+      // paragraphs, lists, code and neighbouring messages.
+      selectable: false,
       styleSheet: widget.style,
       imageDirectory: null,
       imageBuilder: (uri, title, alt) {
@@ -495,7 +506,7 @@ class _InlineCodeBuilder extends MarkdownElementBuilder {
                     : const Color(0xffebeef2),
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: SelectableText(
+              child: Text(
                 element.textContent,
                 style: (preferredStyle ?? const TextStyle()).copyWith(
                   backgroundColor: Colors.transparent,
@@ -655,7 +666,7 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                             color: Colors.orange,
                           ),
                         ),
-                        SelectableText(
+                        Text(
                           widget.code,
                           style: const TextStyle(
                             fontFamily: 'Consolas',
@@ -667,7 +678,7 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                   )
                 : SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
-                    child: SelectableText(
+                    child: Text(
                       widget.code,
                       style: TextStyle(
                         fontFamily: 'Consolas',
