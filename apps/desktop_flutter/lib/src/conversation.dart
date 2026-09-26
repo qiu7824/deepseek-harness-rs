@@ -36,6 +36,7 @@ import '../features/conversation/permission_control.dart';
 import '../features/conversation/streaming_presentation.dart';
 import '../features/conversation/turn_activity.dart';
 import '../features/conversation/read_aloud.dart';
+import '../features/conversation/reasoning_slider.dart';
 import '../features/conversation/turn_stats.dart';
 import 'resource_diagnostics.dart';
 import '../features/conversation/retry_message.dart';
@@ -1939,34 +1940,31 @@ class _ModelPickerState extends State<ModelPicker> {
                   },
                 ),
               ),
-              Wrap(
-                spacing: 4,
-                children: [
-                  const Text('推理等级', style: TextStyle(fontSize: 12)),
-                  for (final effort
-                      in c.catalog!.choices
-                              .where((m) => m.key == c.catalog!.currentKey)
-                              .firstOrNull
-                              ?.reasoning ??
-                          <Json>[])
-                    DshButton(
-                      height: 26,
-                      onPressed: busy
-                          ? null
-                          : () async {
-                              try {
-                                await c.setReasoning('${effort['id']}');
-                                if (context.mounted) Navigator.pop(context);
-                              } catch (e) {
-                                if (mounted) setState(() => error = '$e');
-                              }
-                            },
-                      child: Text(
-                        '${effort['name'] ?? effort['id']}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                ],
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: ReasoningSlider(
+                  levels:
+                      c.catalog!.choices
+                          .where((m) => m.key == c.catalog!.currentKey)
+                          .firstOrNull
+                          ?.reasoning ??
+                      const <Json>[],
+                  value: c.catalog!.current['reasoningEffort'] as String?,
+                  enabled: !busy,
+                  onChanged: (id) async {
+                    setState(() {
+                      busy = true;
+                      error = null;
+                    });
+                    try {
+                      await c.setReasoning(id);
+                    } catch (e) {
+                      if (mounted) setState(() => error = '$e');
+                    } finally {
+                      if (mounted) setState(() => busy = false);
+                    }
+                  },
+                ),
               ),
               const Divider(),
               Align(

@@ -153,9 +153,20 @@ async function main() {
   const renderModel = dictionary => act(() => root.render(React.createElement(modelUi.ModelSelect, { locked: false, available: true, directory, load() {}, select: async value => { selections.push(value); return true; }, t: translate(dictionary) })));
   await renderModel(modelUi.zh); assert.match(document.querySelector('button[aria-haspopup=menu]').textContent, /MODEL_NAME_UNCHANGED.*高/);
   await act(() => document.querySelector('button[aria-haspopup=menu]').click());
-  await act(() => [...document.querySelectorAll('[role=menuitem]')].find(node => node.textContent.startsWith('推理等级')).click());
-  assert.deepEqual([...document.querySelectorAll('[role=menuitemradio]')].map(node => node.textContent), ['中', '高', 'CUSTOM_LEVEL_UNCHANGED']);
-  await act(() => document.querySelector('[role=menuitemradio]').click()); assert.equal(selections[0].reasoningEffort, 'medium'); assert.equal(selections[0].model, 'model');
+  // Reasoning is an inline slider in the root pane (same as the desktop client).
+  const slider = document.querySelector('.dshEffortSlider');
+  assert.ok(slider, 'effort slider is shown in the model menu');
+  assert.deepEqual([...slider.querySelectorAll('.dshEffortTicks button')].map(node => node.textContent), ['中', '高', 'CUSTOM_LEVEL_UNCHANGED']);
+  const range = slider.querySelector('input[type=range]');
+  assert.equal(range.value, '1', 'the current level is selected');
+  assert.equal(slider.querySelector('.dshEffortHead strong').textContent, '高');
+  await act(() => slider.querySelector('.dshEffortTicks button').click()); assert.equal(selections[0].reasoningEffort, 'medium'); assert.equal(selections[0].model, 'model');
+  assert.ok(document.querySelector('[role=menu]'), 'changing the level keeps the menu open');
+  const setRange = value => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(range, value); range.dispatchEvent(new window.Event('input', { bubbles: true })); };
+  await act(() => setRange('2'));
+  assert.equal(selections.length, 1, 'dragging alone does not commit');
+  await act(() => range.dispatchEvent(new window.MouseEvent('pointerup', { bubbles: true })));
+  assert.equal(selections[1].reasoningEffort, 'custom', 'releasing the slider commits once');
   await renderModel(modelUi.en); assert.match(document.querySelector('button[aria-haspopup=menu]').textContent, /MODEL_NAME_UNCHANGED.*High/);
   const permission = { currentValue: 'workspace-write', options: [{ value: 'workspace-write', name: 'workspace-write', description: 'Write inside the workspace and permitted temporary directories; wider retries require approval.' }, { value: 'custom-preset', name: 'CUSTOM_PRESET', description: 'CUSTOM_DESCRIPTION_UNCHANGED' }] };
   const commands = [];

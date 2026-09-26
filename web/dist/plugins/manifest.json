@@ -312,7 +312,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-model-selection",
       "url": "/plugins/ui-model-selection.js",
-      "rev": "db5a10d71d3719d0",
+      "rev": "38f8232e1021647a",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
