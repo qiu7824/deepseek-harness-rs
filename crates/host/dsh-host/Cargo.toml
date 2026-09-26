@@ -77,6 +77,7 @@ dsh-llm-deepseek = { path = "../../llm/llm-deepseek" }
 
 dsh-schedule = { path = "../../schedule/schedule" }
 dsh-schedule-host = { path = "../../schedule/schedule-host" }
+dsh-knowledge-base = { path = "../../memory/knowledge-base" }
 dsh-settings = { path = "../../settings/settings" }
 dsh-schemastery = { path = "../../vendor/schemastery" }
 dsh-storage = { path = "../../storage/storage" }

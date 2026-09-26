@@ -41,6 +41,7 @@ members = [
   "crates/interaction/*",
   "crates/feedback/*",
   "crates/compaction/*",
+  "crates/memory/knowledge-base",
   "crates/web/*",
   # "crates/feature/*",
   # "crates/exec/*",

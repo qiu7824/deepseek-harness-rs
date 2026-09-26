@@ -38,6 +38,7 @@ mod free_catalog;
 mod free_probe;
 mod hosted_search;
 mod image_generation;
+mod knowledge_base;
 mod learning_bridge;
 mod memory_import;
 mod model_capabilities;
@@ -3952,6 +3953,7 @@ fn compose_host_in_fiber(
     // Host-owned task store, which works for cold sessions and restarts.
     dsh_schedule::apply_projection(ctx);
     let schedule_service = schedule_tasks::install(ctx, &data_root);
+    let knowledge_store = knowledge_base::install(ctx, &data_root);
     // ---- M6 shell: the web face over the spine ----
     // The loader service anchors the plugin inventory and profile
     // composition (the Rust static registry serves empty for now).
@@ -4630,6 +4632,7 @@ fn compose_host_in_fiber(
         &system_prompt,
     )?;
     open_in_app::register(&web_server, ctx, allow_remote_host);
+    let _knowledge_route = knowledge_base::attach(knowledge_store, &web_server, allow_remote_host);
     let _schedule_route = schedule_tasks::attach(
         ctx,
         schedule_service,

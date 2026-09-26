@@ -74,6 +74,9 @@ impl Default for DiscoveryConfig {
                 "schedule_create",
                 "schedule_list",
                 "schedule_delete",
+                // The runtime context names enabled knowledge bases and asks the
+                // model to search them first.
+                "knowledge_search",
                 "tool_search",
                 "tool_describe",
                 "environment_probe",

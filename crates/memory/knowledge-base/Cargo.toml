@@ -1,0 +1,23 @@
+[package]
+name = "dsh-knowledge-base"
+version = "0.1.0-rc.8"
+edition = "2024"
+license = "MIT"
+description = "Local knowledge bases: document text extraction, chunking, full-text search with CJK segmentation, and model tools"
+
+[dependencies]
+cordis = { path = "../../vendor/cordis" }
+dsh-llm = { path = "../../core/llm" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+encoding_rs = "0.8"
+lopdf = { version = "0.45", default-features = false }
+parking_lot = { workspace = true }
+quick-xml = "0.41"
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
