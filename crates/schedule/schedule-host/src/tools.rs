@@ -22,7 +22,9 @@ fn zone_schema() -> Value {
 }
 
 fn timing_properties() -> serde_json::Map<String, Value> {
-    let time = json!({"type": "string", "pattern": "^\\d{2}:\\d{2}(:\\d{2})?$", "description": "Local time HH:MM"});
+    // The tool schema subset rejects `pattern`; the rule validator checks the
+    // HH:MM form and reports a readable error instead.
+    let time = json!({"type": "string", "description": "Local time HH:MM (24-hour)"});
     json!({
         "after_seconds": {"type": "integer", "minimum": 60, "description": "Run once after this many seconds"},
         "at": {"type": "string", "description": "Run once at this RFC 3339 time with offset, e.g. 2026-09-27T09:00:00+08:00"},
@@ -157,6 +159,35 @@ fn session_of(run: &dsh_tools::ToolRunContext) -> Result<String, ToolBodyError> 
     Ok(agent.id().as_str().to_string())
 }
 
+pub(crate) fn create_parameters() -> Value {
+    let mut properties = timing_properties();
+    properties.insert(
+        "prompt".into(),
+        json!({"type": "string", "minLength": 1, "maxLength": 8000}),
+    );
+    properties.insert("title".into(), json!({"type": "string", "maxLength": 120}));
+    json!({"type": "object", "additionalProperties": false, "required": ["prompt"], "properties": properties})
+}
+
+pub(crate) fn list_parameters() -> Value {
+    json!({"type": "object", "additionalProperties": false, "properties": {}})
+}
+
+pub(crate) fn update_parameters() -> Value {
+    let mut properties = timing_properties();
+    properties.insert("id".into(), json!({"type": "string"}));
+    properties.insert(
+        "prompt".into(),
+        json!({"type": "string", "minLength": 1, "maxLength": 8000}),
+    );
+    properties.insert("title".into(), json!({"type": "string", "maxLength": 120}));
+    json!({"type": "object", "additionalProperties": false, "required": ["id"], "properties": properties})
+}
+
+pub(crate) fn delete_parameters() -> Value {
+    json!({"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string"}}})
+}
+
 fn view_json(view: &TaskView) -> Value {
     serde_json::to_value(view).unwrap_or(Value::Null)
 }
@@ -167,19 +198,13 @@ pub fn register_tools(ctx: &cordis::Context, service: Arc<ScheduleService>) -> R
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .ok_or("缺少工具运行时")?;
-    let mut create_properties = timing_properties();
-    create_properties.insert(
-        "prompt".into(),
-        json!({"type": "string", "minLength": 1, "maxLength": 8000}),
-    );
-    create_properties.insert("title".into(), json!({"type": "string", "maxLength": 120}));
     let create_service = service.clone();
     tools.register(
         ctx,
         ToolDefinition {
             name: "schedule_create".into(),
             description: CREATE_DESCRIPTION.into(),
-            parameters: json!({"type": "object", "additionalProperties": false, "required": ["prompt"], "properties": create_properties}),
+            parameters: create_parameters(),
             output: output(),
             timeout_ms: Some(15_000),
             is_concurrency_safe: Some(Arc::new(|_| false)),
@@ -200,8 +225,15 @@ pub fn register_tools(ctx: &cordis::Context, service: Arc<ScheduleService>) -> R
                     let view = service
                         .create(CreateTask {
                             session_id,
-                            title: args.get("title").and_then(Value::as_str).map(str::to_string),
-                            prompt: args.get("prompt").and_then(Value::as_str).unwrap_or_default().to_string(),
+                            title: args
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            prompt: args
+                                .get("prompt")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
                             rule,
                             origin: TaskOrigin::Agent,
                         })
@@ -219,7 +251,7 @@ pub fn register_tools(ctx: &cordis::Context, service: Arc<ScheduleService>) -> R
         ToolDefinition {
             name: "schedule_list".into(),
             description: LIST_DESCRIPTION.into(),
-            parameters: json!({"type": "object", "additionalProperties": false, "properties": {}}),
+            parameters: list_parameters(),
             output: output(),
             timeout_ms: Some(15_000),
             is_concurrency_safe: Some(Arc::new(|_| true)),
@@ -238,20 +270,13 @@ pub fn register_tools(ctx: &cordis::Context, service: Arc<ScheduleService>) -> R
         },
     )?;
 
-    let mut update_properties = timing_properties();
-    update_properties.insert("id".into(), json!({"type": "string"}));
-    update_properties.insert(
-        "prompt".into(),
-        json!({"type": "string", "minLength": 1, "maxLength": 8000}),
-    );
-    update_properties.insert("title".into(), json!({"type": "string", "maxLength": 120}));
     let update_service = service.clone();
     tools.register(
         ctx,
         ToolDefinition {
             name: "schedule_update".into(),
             description: UPDATE_DESCRIPTION.into(),
-            parameters: json!({"type": "object", "additionalProperties": false, "required": ["id"], "properties": update_properties}),
+            parameters: update_parameters(),
             output: output(),
             timeout_ms: Some(15_000),
             is_concurrency_safe: Some(Arc::new(|_| false)),
@@ -272,8 +297,14 @@ pub fn register_tools(ctx: &cordis::Context, service: Arc<ScheduleService>) -> R
                             Some(&session_id),
                             None,
                             UpdateTask {
-                                title: args.get("title").and_then(Value::as_str).map(str::to_string),
-                                prompt: args.get("prompt").and_then(Value::as_str).map(str::to_string),
+                                title: args
+                                    .get("title")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                prompt: args
+                                    .get("prompt")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
                                 rule,
                             },
                         )
@@ -291,7 +322,7 @@ pub fn register_tools(ctx: &cordis::Context, service: Arc<ScheduleService>) -> R
         ToolDefinition {
             name: "schedule_delete".into(),
             description: DELETE_DESCRIPTION.into(),
-            parameters: json!({"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string"}}}),
+            parameters: delete_parameters(),
             output: output(),
             timeout_ms: Some(15_000),
             is_concurrency_safe: Some(Arc::new(|_| false)),
@@ -300,11 +331,18 @@ pub fn register_tools(ctx: &cordis::Context, service: Arc<ScheduleService>) -> R
             present_result: None,
             execute: Arc::new(move |args, run| {
                 let service = delete_service.clone();
-                let id = args.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
                 let session = session_of(run);
                 Box::pin(async move {
                     let session_id = session?;
-                    service.delete(&id, Some(&session_id)).await.map_err(tool_error)?;
+                    service
+                        .delete(&id, Some(&session_id))
+                        .await
+                        .map_err(tool_error)?;
                     Ok(json!({"id": id, "deleted": true}))
                 })
             }),

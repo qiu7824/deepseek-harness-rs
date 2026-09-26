@@ -69,6 +69,11 @@ impl Default for DiscoveryConfig {
                 "get_goal",
                 "create_goal",
                 "update_goal",
+                // Scheduling is requested in plain chat ("remind me every
+                // morning"); keep creation, listing and removal one call away.
+                "schedule_create",
+                "schedule_list",
+                "schedule_delete",
                 "tool_search",
                 "tool_describe",
                 "environment_probe",

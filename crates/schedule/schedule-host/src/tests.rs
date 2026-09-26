@@ -511,3 +511,18 @@ fn model_selectors_are_exclusive_and_mapped() {
     );
     assert!(rule_from_args(&serde_json::json!({"after_seconds": 30}), &service).is_err());
 }
+
+#[test]
+fn tool_parameter_schemas_fit_the_host_schema_subset() {
+    for (name, schema) in [
+        ("schedule_create", crate::tools::create_parameters()),
+        ("schedule_list", crate::tools::list_parameters()),
+        ("schedule_update", crate::tools::update_parameters()),
+        ("schedule_delete", crate::tools::delete_parameters()),
+    ] {
+        dsh_tools::assert_supported_json_schema(&schema)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        dsh_tools::assert_object_json_schema(&schema)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+    }
+}
