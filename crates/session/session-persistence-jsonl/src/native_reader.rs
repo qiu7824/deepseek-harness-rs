@@ -587,7 +587,30 @@ fn materialize_range(
     };
     if let Some(mut sink) = sink {
         scan(&mut |event| sink.inspect(&event))?;
-        scan(&mut |event| sink.push(event))?;
+        if let Some((first, _)) = range {
+            let mut staged = dsh_session::event_archive::EventArchiveBuilder::new_at_seq(
+                &std::env::temp_dir(),
+                dsh_session::SessionSeq::new(first)?,
+            )?;
+            // Complete the same physical scan and revision checks before any
+            // page bodies accumulate beside the decoder's tail-read buffers.
+            scan(&mut |event| staged.push_cancellable(&event, cancelled))?;
+            let staged = staged.finish()?;
+            crate::v4_artifact::check_cancel(cancelled)?;
+            staged.visit_owned_cancellable(0..staged.len(), cancelled, |event| {
+                sink.push(event)?;
+                Ok(true)
+            })?;
+        } else {
+            scan(&mut |_| Ok(()))?;
+        }
+        crate::v4_artifact::check_cancel(cancelled)?;
+        if &crate::index::file_revision(
+            &std::fs::metadata(path).map_err(|error| error.to_string())?,
+        ) != revision
+        {
+            return Err("Session source changed during staged history replay".into());
+        }
         sink.finish()
     } else {
         let mut events = Vec::with_capacity(count);

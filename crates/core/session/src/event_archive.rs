@@ -10,21 +10,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 
-use crate::SessionEvent;
+use crate::{SessionEvent, SessionSeq};
 
 static NEXT_ARCHIVE: AtomicU64 = AtomicU64::new(0);
 
-/// A complete contiguous event prefix whose payloads are read on demand.
+/// A contiguous event range whose original payloads and seqs are read on demand.
 /// Only one eight-byte file offset per event is retained in memory.
 pub struct EventArchive {
     file: Mutex<File>,
     offsets: Vec<u64>,
+    first_seq: SessionSeq,
 }
 
 /// Incrementally builds an archive without collecting event payloads.
 pub struct EventArchiveBuilder {
     writer: BufWriter<File>,
     offsets: Vec<u64>,
+    first_seq: SessionSeq,
+    failed: bool,
 }
 
 /// A range owns its logical cursor, so callbacks may make other indexed
@@ -32,12 +35,16 @@ pub struct EventArchiveBuilder {
 /// file mutex through arbitrary visitor code.
 struct ArchiveRange<'a> {
     archive: &'a EventArchive,
+    cancelled: &'a dyn Fn() -> bool,
     position: u64,
     end: u64,
 }
 
 impl Read for ArchiveRange<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if (self.cancelled)() {
+            return Err(std::io::Error::other("Session archive read cancelled"));
+        }
         let length = (self.end - self.position).min(buffer.len() as u64) as usize;
         if length == 0 {
             return Ok(0);
@@ -48,6 +55,15 @@ impl Read for ArchiveRange<'_> {
         self.position += count as u64;
         Ok(count)
     }
+}
+
+fn sequence_at(first: SessionSeq, index: usize) -> Result<SessionSeq, String> {
+    let offset = u64::try_from(index).map_err(|_| "Session archive index overflow")?;
+    let seq = first
+        .get()
+        .checked_add(offset)
+        .ok_or("Session archive sequence overflow")?;
+    SessionSeq::new(seq)
 }
 
 fn temporary_file(directory: &Path) -> Result<File, String> {
@@ -90,9 +106,16 @@ fn temporary_file(directory: &Path) -> Result<File, String> {
 
 impl EventArchiveBuilder {
     pub fn new(directory: &Path) -> Result<Self, String> {
+        Self::new_at_seq(directory, SessionSeq::ZERO)
+    }
+
+    /// Archive a slice without renumbering events or their source references.
+    pub fn new_at_seq(directory: &Path, first_seq: SessionSeq) -> Result<Self, String> {
         Ok(Self {
             writer: BufWriter::with_capacity(64 * 1024, temporary_file(directory)?),
             offsets: vec![0],
+            first_seq,
+            failed: false,
         })
     }
 
@@ -105,41 +128,80 @@ impl EventArchiveBuilder {
     }
 
     pub fn push(&mut self, event: &SessionEvent) -> Result<(), String> {
-        if event.seq.get() != self.len() as u64 {
+        self.push_cancellable(event, &|| false)
+    }
+
+    /// Stage a complete event while checking cancellation between bounded writes.
+    pub fn push_cancellable(
+        &mut self,
+        event: &SessionEvent,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), String> {
+        if self.failed {
+            return Err("Session archive write already failed".into());
+        }
+        let expected = sequence_at(self.first_seq, self.len())?;
+        if event.seq != expected {
             return Err(format!(
                 "Session archive expected seq {}, got {}",
-                self.len(),
-                event.seq
+                expected, event.seq
             ));
         }
         // Stream serialization through a byte counter. Large result bodies
         // never acquire a second complete serialized allocation.
         struct Counter<'a> {
             writer: &'a mut BufWriter<File>,
+            cancelled: &'a dyn Fn() -> bool,
             bytes: u64,
         }
         impl Write for Counter<'_> {
             fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-                let written = self.writer.write(buffer)?;
+                if (self.cancelled)() {
+                    return Err(std::io::Error::other("Session archive write cancelled"));
+                }
+                let written = self.writer.write(&buffer[..buffer.len().min(64 * 1024)])?;
                 self.bytes += written as u64;
                 Ok(written)
             }
             fn flush(&mut self) -> std::io::Result<()> {
+                if (self.cancelled)() {
+                    return Err(std::io::Error::other("Session archive write cancelled"));
+                }
                 self.writer.flush()
             }
         }
         let mut output = Counter {
             writer: &mut self.writer,
+            cancelled,
             bytes: 0,
         };
-        serde_json::to_writer(&mut output, event).map_err(|error| error.to_string())?;
-        output.write_all(b"\n").map_err(|error| error.to_string())?;
-        let next = self.offsets.last().unwrap() + output.bytes;
+        let result = serde_json::to_writer(&mut output, event)
+            .map_err(|error| error.to_string())
+            .and_then(|()| output.write_all(b"\n").map_err(|error| error.to_string()));
+        let written = output.bytes;
+        if let Err(error) = result {
+            self.failed = true;
+            return Err(error);
+        }
+        let next = self
+            .offsets
+            .last()
+            .unwrap()
+            .checked_add(written)
+            .ok_or_else(|| {
+                self.failed = true;
+                "Session archive byte offset overflow".to_string()
+            })?;
         self.offsets.push(next);
         Ok(())
     }
 
     pub fn finish(mut self) -> Result<EventArchive, String> {
+        if self.failed {
+            return Err(
+                "Session archive write failed; incomplete events cannot be published".into(),
+            );
+        }
         self.writer.flush().map_err(|error| error.to_string())?;
         let file = self
             .writer
@@ -149,11 +211,16 @@ impl EventArchiveBuilder {
         Ok(EventArchive {
             file: Mutex::new(file),
             offsets: self.offsets,
+            first_seq: self.first_seq,
         })
     }
 }
 
 impl EventArchive {
+    pub fn first_seq(&self) -> SessionSeq {
+        self.first_seq
+    }
+
     pub fn len(&self) -> usize {
         self.offsets.len() - 1
     }
@@ -173,13 +240,13 @@ impl EventArchive {
         let reader = BufReader::new((&mut *file).take(length));
         let event: SessionEvent =
             serde_json::from_reader(reader).map_err(|error| error.to_string())?;
-        if event.seq.get() != index as u64 {
+        if event.seq != sequence_at(self.first_seq, index)? {
             return Err("Session archive sequence mismatch".into());
         }
         Ok(Some(event))
     }
 
-    /// Visit an exact half-open prefix range, stopping when the callback
+    /// Visit an exact half-open index range, stopping when the callback
     /// returns false. Indexed reads made by the callback have independent
     /// cursors and cannot disturb this traversal.
     pub fn visit(
@@ -195,10 +262,23 @@ impl EventArchive {
     pub fn visit_owned(
         &self,
         range: Range<usize>,
+        visitor: impl FnMut(SessionEvent) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        self.visit_owned_cancellable(range, &|| false, visitor)
+    }
+
+    /// Check cancellation at event boundaries and bounded file-buffer refills.
+    pub fn visit_owned_cancellable(
+        &self,
+        range: Range<usize>,
+        cancelled: &impl Fn() -> bool,
         mut visitor: impl FnMut(SessionEvent) -> Result<bool, String>,
     ) -> Result<(), String> {
         if range.start > range.end || range.end > self.len() {
             return Err("Session archive range exceeds its captured prefix".into());
+        }
+        if cancelled() {
+            return Err("Session archive read cancelled".into());
         }
         if range.is_empty() {
             return Ok(());
@@ -207,20 +287,28 @@ impl EventArchive {
             64 * 1024,
             ArchiveRange {
                 archive: self,
+                cancelled,
                 position: self.offsets[range.start],
                 end: self.offsets[range.end],
             },
         );
         let mut events = serde_json::Deserializer::from_reader(reader).into_iter::<SessionEvent>();
         for index in range {
+            if cancelled() {
+                return Err("Session archive read cancelled".into());
+            }
             let event = events
                 .next()
                 .ok_or("Session archive ended before its captured prefix")?
                 .map_err(|error| error.to_string())?;
-            if event.seq.get() != index as u64 {
+            if event.seq != sequence_at(self.first_seq, index)? {
                 return Err("Session archive sequence mismatch".into());
             }
-            if !visitor(event)? {
+            let keep_going = visitor(event)?;
+            if cancelled() {
+                return Err("Session archive read cancelled".into());
+            }
+            if !keep_going {
                 return Ok(());
             }
         }
@@ -231,7 +319,7 @@ impl EventArchive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SessionSeq, SurfaceOp};
+    use crate::SurfaceOp;
 
     fn event(seq: u64) -> SessionEvent {
         SessionEvent {
@@ -274,6 +362,134 @@ mod tests {
             .unwrap();
         assert_eq!(repeated, vec![event(7), event(8)]);
         assert!(archive.visit(8..10, |_| Ok(true)).is_err());
+    }
+
+    #[test]
+    fn archive_slices_preserve_original_sequences_and_references() {
+        let first = SessionSeq::new(37).unwrap();
+        let seed: Vec<_> = (37..41).map(event).collect();
+        let mut builder = EventArchiveBuilder::new_at_seq(&std::env::temp_dir(), first).unwrap();
+        assert!(builder.push(&event(0)).is_err());
+        for event in &seed {
+            builder.push(event).unwrap();
+        }
+        let archive = builder.finish().unwrap();
+        assert_eq!(archive.first_seq(), first);
+        assert_eq!(archive.len(), 4);
+        assert_eq!(archive.read(0).unwrap(), Some(seed[0].clone()));
+        assert_eq!(archive.read(3).unwrap(), Some(seed[3].clone()));
+        assert_eq!(archive.read(4).unwrap(), None);
+        let mut output = Vec::new();
+        archive
+            .visit_owned(1..3, |event| {
+                assert_eq!(archive.read(0)?, Some(seed[0].clone()));
+                output.push(event);
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(output, seed[1..3]);
+        let mut all = Vec::new();
+        archive
+            .visit(0..4, |event| {
+                all.push(event.clone());
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(all, seed);
+    }
+
+    #[test]
+    fn archive_slice_sequences_reject_safe_integer_and_addition_overflow() {
+        let largest = SessionSeq::new(9_007_199_254_740_991).unwrap();
+        assert!(sequence_at(largest, 1).is_err());
+        assert!(sequence_at(largest, usize::MAX).is_err());
+        let mut last = event(0);
+        last.seq = largest;
+        let mut builder = EventArchiveBuilder::new_at_seq(&std::env::temp_dir(), largest).unwrap();
+        builder.push(&last).unwrap();
+        assert!(builder.push(&last).is_err());
+        let archive = builder.finish().unwrap();
+        assert_eq!(archive.read(0).unwrap(), Some(last));
+        archive
+            .visit_owned(0..1, |event| {
+                assert_eq!(event.seq, largest);
+                Ok(true)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cancelled_archive_reads_stop_inside_large_events_and_cleanup_on_drop() {
+        let directory = std::env::temp_dir().join(format!(
+            "dsh-archive-cancel-{}-{}",
+            std::process::id(),
+            NEXT_ARCHIVE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let mut large = event(0);
+        large.data["large"] = "x".repeat(256 * 1024).into();
+        let mut builder = EventArchiveBuilder::new(&directory).unwrap();
+        builder.push(&large).unwrap();
+        let archive = builder.finish().unwrap();
+        let checks = std::cell::Cell::new(0);
+        let error = archive
+            .visit_owned_cancellable(
+                0..1,
+                &|| {
+                    let count = checks.get() + 1;
+                    checks.set(count);
+                    count >= 5
+                },
+                |_| panic!("cancelled large event reached its visitor"),
+            )
+            .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(archive.read(0).unwrap(), Some(large));
+        assert!(
+            archive
+                .visit_owned_cancellable(0..0, &|| true, |_| Ok(true))
+                .is_err()
+        );
+        drop(archive);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        {
+            let mut builder = EventArchiveBuilder::new(&directory).unwrap();
+            builder.push(&event(0)).unwrap();
+            assert!(builder.push(&event(3)).is_err());
+        }
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn cancelled_archive_writes_cannot_publish_a_partial_event() {
+        let directory = std::env::temp_dir().join(format!(
+            "dsh-archive-write-cancel-{}-{}",
+            std::process::id(),
+            NEXT_ARCHIVE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let mut large = event(0);
+        large.data["large"] = "x".repeat(256 * 1024).into();
+        let mut builder = EventArchiveBuilder::new(&directory).unwrap();
+        let handle = builder.writer.get_ref().try_clone().unwrap();
+        let error = builder
+            .push_cancellable(&large, &|| handle.metadata().unwrap().len() >= 64 * 1024)
+            .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(builder.len(), 0);
+        assert!(builder.push(&large).is_err());
+        assert!(
+            builder
+                .finish()
+                .err()
+                .unwrap()
+                .contains("incomplete events")
+        );
+        assert!((64 * 1024..256 * 1024).contains(&handle.metadata().unwrap().len()));
+        drop(handle);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

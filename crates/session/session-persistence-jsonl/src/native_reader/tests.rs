@@ -425,3 +425,212 @@ fn projected_native_window_rejects_append_between_inspection_and_consumption() {
         "{error}"
     );
 }
+
+#[test]
+fn staged_history_replay_rejects_cancellation_consumer_errors_and_source_changes() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    struct ReplaySink {
+        action: &'static str,
+        path: std::path::PathBuf,
+        cancelled: Arc<AtomicBool>,
+        pushed: Arc<AtomicUsize>,
+        inspected: usize,
+    }
+    impl dsh_session_persistence::HistoryWindowSink for ReplaySink {
+        fn inspect(&mut self, _: &SessionEvent) -> Result<(), String> {
+            assert_eq!(self.pushed.load(Ordering::Relaxed), 0);
+            self.inspected += 1;
+            Ok(())
+        }
+        fn push(&mut self, value: SessionEvent) -> Result<(), String> {
+            assert_eq!(self.inspected, 3);
+            let index = self.pushed.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(value.seq.get(), index as u64);
+            if index == 0 {
+                match self.action {
+                    "cancel" => self.cancelled.store(true, Ordering::Relaxed),
+                    "error" => return Err("replay consumer rejected".into()),
+                    "append" => {
+                        let mut file = std::fs::OpenOptions::new()
+                            .append(true)
+                            .open(&self.path)
+                            .unwrap();
+                        serde_json::to_writer(&mut file, &event(3, "user/message")).unwrap();
+                        file.write_all(b"\n").unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Ok(())
+        }
+        fn finish(self: Box<Self>) -> Result<(Vec<SessionEvent>, bool), String> {
+            panic!("failed replay published a page")
+        }
+    }
+    for action in ["cancel", "error", "append"] {
+        let events: Vec<_> = (0..3).map(|seq| event(seq, "user/message")).collect();
+        let fixture = fixture(&events, JsonlCompression::None);
+        let bytes = std::fs::read(&fixture.0).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let pushed = Arc::new(AtomicUsize::new(0));
+        let error = forward_window_with_sink(
+            &fixture.0,
+            "fixture",
+            dsh_session_persistence::SessionReadForwardWindowRequest {
+                after_seq: 0,
+                max_messages: 3,
+                max_events: 8,
+            },
+            &|| cancelled.load(Ordering::Relaxed),
+            Some(Box::new(ReplaySink {
+                action,
+                path: fixture.0.clone(),
+                cancelled: cancelled.clone(),
+                pushed: pushed.clone(),
+                inspected: 0,
+            })),
+        )
+        .unwrap_err();
+        let expected = match action {
+            "cancel" => "cancelled",
+            "error" => "replay consumer rejected",
+            "append" => "Session source changed during staged history replay",
+            _ => unreachable!(),
+        };
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(
+            pushed.load(Ordering::Relaxed),
+            if action == "append" { 3 } else { 1 }
+        );
+        if action != "append" {
+            assert_eq!(std::fs::read(&fixture.0).unwrap(), bytes);
+        }
+    }
+}
+
+#[test]
+fn staged_empty_windows_keep_the_same_sink_contract() {
+    let fixture = fixture(&[event(0, "user/message")], JsonlCompression::Zstd);
+    let result = window_with_sink(
+        &fixture.0,
+        "fixture",
+        SessionReadWindowRequest {
+            before_seq: Some(0),
+            max_messages: 1,
+            max_events: 8,
+        },
+        &|| false,
+        Some(checked_sink(&[])),
+    )
+    .unwrap();
+    assert!(result.events.is_empty());
+    let result = forward_window_with_sink(
+        &fixture.0,
+        "fixture",
+        dsh_session_persistence::SessionReadForwardWindowRequest {
+            after_seq: 1,
+            max_messages: 1,
+            max_events: 8,
+        },
+        &|| false,
+        Some(checked_sink(&[])),
+    )
+    .unwrap();
+    assert!(result.events.is_empty());
+}
+
+#[test]
+fn staged_forward_replay_preserves_the_consumers_raw_byte_policy() {
+    struct DiscardingSink {
+        inspected: u64,
+        pushed: u64,
+    }
+    impl dsh_session_persistence::HistoryWindowSink for DiscardingSink {
+        fn inspect(&mut self, event: &SessionEvent) -> Result<(), String> {
+            assert_eq!(event.seq.get(), self.inspected);
+            assert_eq!(
+                event.data["chunk"]["replayState"]["opaque"]
+                    .as_str()
+                    .unwrap()
+                    .len(),
+                1024 * 1024
+            );
+            self.inspected += 1;
+            Ok(())
+        }
+        fn push(&mut self, event: SessionEvent) -> Result<(), String> {
+            assert_eq!(self.inspected, 65);
+            assert_eq!(event.seq.get(), self.pushed);
+            assert_eq!(
+                event.data["chunk"]["replayState"]["opaque"]
+                    .as_str()
+                    .unwrap()
+                    .len(),
+                1024 * 1024
+            );
+            self.pushed += 1;
+            Ok(())
+        }
+        fn finish(self: Box<Self>) -> Result<(Vec<SessionEvent>, bool), String> {
+            assert_eq!(self.pushed, 65);
+            Ok((vec![], false))
+        }
+    }
+    let fixture = fixture(&[], JsonlCompression::Zstd);
+    {
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&fixture.0)
+            .unwrap();
+        let mut writer = zstd::stream::Encoder::new(file, 0).unwrap();
+        let mut large = event(0, "assistant/chunk");
+        large.data = json!({"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"stop"},"replayState":{"opaque":"x".repeat(1024 * 1024)}}});
+        for seq in 0..65 {
+            large.seq = SessionSeq::new(seq).unwrap();
+            serde_json::to_writer(&mut writer, &large).unwrap();
+            writer.write_all(b"\n").unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    let bytes = std::fs::read(&fixture.0).unwrap();
+    let revision = crate::index::file_revision(&std::fs::metadata(&fixture.0).unwrap());
+    let make_sink = || {
+        Some(Box::new(DiscardingSink {
+            inspected: 0,
+            pushed: 0,
+        })
+            as Box<dyn dsh_session_persistence::HistoryWindowSink>)
+    };
+    assert_eq!(
+        materialize_range(
+            &fixture.0,
+            "fixture",
+            Some((0, 64)),
+            65,
+            &revision,
+            &|| false,
+            false,
+            make_sink()
+        )
+        .unwrap(),
+        (vec![], false)
+    );
+    assert!(
+        materialize_range(
+            &fixture.0,
+            "fixture",
+            Some((0, 64)),
+            65,
+            &revision,
+            &|| false,
+            true,
+            make_sink()
+        )
+        .unwrap_err()
+        .contains("64 MiB source budget")
+    );
+    assert_eq!(std::fs::read(&fixture.0).unwrap(), bytes);
+}

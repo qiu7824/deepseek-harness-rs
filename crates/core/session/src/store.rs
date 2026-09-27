@@ -556,6 +556,9 @@ impl Session {
         inherited_event_count: SessionLogOffset,
         closers: Vec<SessionEvent>,
     ) -> Result<Session, String> {
+        if archive.first_seq() != SessionSeq::ZERO {
+            return Err("Session restore requires an archive starting at seq 0".into());
+        }
         let header = validate_session_header(
             &id,
             &serde_json::to_value(header).map_err(|error| error.to_string())?,
@@ -2048,6 +2051,28 @@ mod ownership_tests {
                 .unwrap();
         });
         assert_eq!(restored.events(), original);
+    }
+
+    #[test]
+    fn archive_slice_cannot_be_restored_as_a_zero_based_session_prefix() {
+        let mut builder = crate::event_archive::EventArchiveBuilder::new_at_seq(
+            &std::env::temp_dir(),
+            SessionSeq::new(7).unwrap(),
+        )
+        .unwrap();
+        builder.push(&record(7)).unwrap();
+        let header = snapshot_session_header(&session_id("nonzero-archive"), None).unwrap();
+        let result = Session::from_event_archive(
+            header.id.clone(),
+            builder.finish().unwrap(),
+            &header,
+            SessionLogOffset::ZERO,
+            vec![],
+        );
+        assert_eq!(
+            result.err().unwrap(),
+            "Session restore requires an archive starting at seq 0"
+        );
     }
 
     #[test]
