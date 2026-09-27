@@ -28,7 +28,8 @@ pub use model_selection::{
 };
 pub use registry::AgentRegistry;
 pub use runtime_types::{
-    Agent, AgentControlBusy, AgentControlGuard, AgentErrorPayload, AgentFactory, AgentHandle,
+    ACCOUNT_SIGNED_OUT_REASON,
+    Agent, AgentAuthenticationBinding, AgentControlBusy, AgentControlGuard, AgentErrorPayload, AgentFactory, AgentHandle,
     AgentInboxClaimedPayload, AgentInboxMessagePayload, AgentLifecyclePayload, AgentOptions,
     AgentPreStepPayload, AgentRequestConfig, AgentRequestErrorPayload, AgentRequestPayload,
     AgentRunAdmission, AgentSessionStartPayload, AgentSetup, AgentSetupCommit, AgentStatus,

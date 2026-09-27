@@ -150,7 +150,7 @@ impl dsh_settings::SettingsStorage for MemorySettings {
         }
     }
 }
-async fn setup() -> (Arc<AccountAuth>, cordis::Context, std::path::PathBuf) {
+pub(super) async fn setup() -> (Arc<AccountAuth>, cordis::Context, std::path::PathBuf) {
     setup_with_storage(Arc::new(MemorySettings::default())).await
 }
 async fn setup_with_storage(
@@ -188,9 +188,12 @@ async fn setup_with_storage(
             Default::default(),
         )
         .unwrap();
-    (AccountAuth::new(credentials, settings).unwrap(), ctx, root)
+    let auth = AccountAuth::new(credentials, settings).unwrap();
+    let agents = dsh_agent::AgentRegistry::install(&ctx);
+    auth.set_agents(&agents);
+    (auth, ctx, root)
 }
-fn tokens(account: &str) -> Session {
+pub(super) fn tokens(account: &str) -> Session {
     tokens_for_subject(account, &format!("subject-{account}"))
 }
 fn tokens_for_subject(account: &str, subject: &str) -> Session {
@@ -480,10 +483,8 @@ async fn multiple_logins_preserve_legacy_account_switch_identity_and_remove_cred
     assert!(!directory.to_string().contains("fixture-refresh"));
 
     // Removing a saved account leaves the current account usable and cannot be undone by switch.
-    auth.handle(
-        "logout",
-        &json!({"provider":p.id,"accountScope":b.account_scope}),
-    )
+    let impact = auth.handle("logout-impact", &json!({"provider":p.id,"accountScope":b.account_scope})).await.unwrap();
+    auth.handle("logout", &impact)
     .await
     .unwrap();
     assert!(
@@ -500,14 +501,16 @@ async fn multiple_logins_preserve_legacy_account_switch_identity_and_remove_cred
     );
     assert_eq!(auth.saved_sessions(p.id).await.unwrap().len(), 1);
     auth.save(p.id, &b).await.unwrap();
-    auth.handle("logout", &json!({"provider":p.id}))
+    let impact = auth.handle("logout-impact", &json!({"provider":p.id})).await.unwrap();
+    auth.handle("logout", &impact)
         .await
         .unwrap();
     assert_eq!(
         auth.session(p.id).await.unwrap().unwrap().account_scope,
         a.account_scope
     );
-    auth.handle("logout", &json!({"provider":p.id}))
+    let impact = auth.handle("logout-impact", &json!({"provider":p.id})).await.unwrap();
+    auth.handle("logout", &impact)
         .await
         .unwrap();
     assert!(auth.session(p.id).await.unwrap().is_none());

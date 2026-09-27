@@ -64,6 +64,8 @@ pub use retry_policy::{
     ResolvedAlwaysRetryPolicy, ResolvedNormalRetryPolicy, ResolvedRetryBackoff,
     ResolvedRetryPolicy, resolve_retry_policy,
 };
+mod authentication;
+pub use authentication::{RequestAuthentication, RequestAuthenticationIdentity, RequestAuthenticationObserver, RequestAuthenticationObservers};
 pub use runtime::{
     AdapterRegistrationHandle, ChunkStream, DirectoryRegistrationHandle, LlmAdapter, LlmError,
     LlmErrorOptions, LlmImageRequestPrice, LlmImageRequestPricing, LlmRuntime, PreparedLlmCall,

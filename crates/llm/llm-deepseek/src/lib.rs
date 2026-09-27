@@ -531,6 +531,7 @@ pub struct DeepSeekAdapterOptions {
 pub struct DeepSeekAdapter {
     config: DeepSeekAdapterOptions,
     cleanup: Arc<files_cleanup::CleanupWorker>,
+    authentication: Option<dsh_llm::RequestAuthentication>,
 }
 
 fn upload_lock(
@@ -560,11 +561,21 @@ impl DeepSeekAdapter {
         Self {
             config,
             cleanup: Arc::new(files_cleanup::CleanupWorker::default()),
+            authentication: None,
         }
+    }
+
+    pub fn with_authentication(mut self, authentication: dsh_llm::RequestAuthentication) -> Self {
+        self.authentication = Some(authentication);
+        self
     }
 
     pub fn frozen(&self) -> Result<Arc<dyn dsh_llm::LlmAdapter>, LlmError> {
         let options = (self.config.options)()?;
+        let authentication = self.authentication.clone().unwrap_or_else(|| dsh_llm::RequestAuthentication::new(
+            if options.keyless { dsh_llm::RequestAuthenticationIdentity::Anonymous }
+            else { dsh_llm::RequestAuthenticationIdentity::ApiKey }
+        ));
         Ok(Arc::new(Self {
             config: DeepSeekAdapterOptions {
                 options: Arc::new(move || Ok(options.clone())),
@@ -574,6 +585,7 @@ impl DeepSeekAdapter {
                 reasoning_wire_format: self.config.reasoning_wire_format,
             },
             cleanup: self.cleanup.clone(),
+            authentication: Some(authentication),
         }))
     }
 }
@@ -2474,6 +2486,9 @@ async fn drive_owned_request(
 
 #[async_trait::async_trait]
 impl LlmAdapter for DeepSeekAdapter {
+    fn request_authentication(&self) -> dsh_llm::RequestAuthentication {
+        self.authentication.clone().unwrap_or_default()
+    }
     async fn snapshot_for_call(
         &self,
         _provider: &str,

@@ -76,6 +76,7 @@ const RELEASED: &[&str] = &[
     "workspace/changes",
 ];
 const RUST_ADDITIONS: &[&str] = &[
+    "agent/account-continuation",
     "assistant/chunk",
     "compaction/error",
     "compaction/recovery",

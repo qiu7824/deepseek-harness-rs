@@ -202,7 +202,262 @@ class ModelsController extends DesktopController {
   DshClient get client => active;
 }
 
+class LogoutApi extends AccountsApi {
+  String activeScope = 'account-a', loginGeneration = 'generation-a';
+  int taskCount = 2;
+  bool failImpact = false, omitGeneration = false, conflict = false;
+
+  @override
+  Future<Json> request(
+    String path, {
+    Json? body,
+    RequestScope? scope,
+    bool mutation = false,
+    int maxBytes = 16 * 1024 * 1024,
+  }) async {
+    if (path == '/provider-auth/logout-impact') {
+      accountRequests.add((path: path, body: {...?body}));
+      if (failImpact) throw DshException('http-503', '影响查询失败');
+      return {
+        'provider': body!['provider'],
+        'accountScope': body['accountScope'] ?? activeScope,
+        if (!omitGeneration) 'loginGeneration': loginGeneration,
+        'taskCount': taskCount,
+        'reason': 'account-signed-out',
+      };
+    }
+    if (path == '/provider-auth/logout') {
+      accountRequests.add((path: path, body: {...?body}));
+      if (conflict) throw DshException('http-409', '登录状态已变化');
+      return {
+        'status': 'signedOut',
+        'provider': body!['provider'],
+        'removedAccountScope': body['accountScope'],
+        'loginGeneration': body['loginGeneration'],
+        'cancelledTaskCount': taskCount,
+        'reason': 'account-signed-out',
+        'warning': '授权清理提示',
+      };
+    }
+    final value = await super.request(
+      path,
+      body: body,
+      scope: scope,
+      mutation: mutation,
+      maxBytes: maxBytes,
+    );
+    if (path == '/provider-auth/providers') {
+      return {
+        'providers': [
+          for (final provider in objects(value['providers']))
+            {
+              ...provider,
+              if (provider['id'] == 'openai-codex') 'accountScope': activeScope,
+            },
+        ],
+      };
+    }
+    return value;
+  }
+}
+
+Future<void> openLogoutModels(
+  WidgetTester tester,
+  ModelsController controller,
+) async {
+  await tester.binding.setSurfaceSize(const Size(1100, 900));
+  await tester.pumpWidget(
+    ShadApp(
+      home: Scaffold(
+        body: ModelsPage(
+          controller: controller,
+          initialTab: 'accounts',
+          onSettingsChanged: () async {},
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('ChatGPT / Codex'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
+  testWidgets(
+    'account sign-out captures identity, explains impact and cancels safely',
+    (tester) async {
+      final api = LogoutApi(), controller = ModelsController(api);
+      await openLogoutModels(tester, controller);
+      await tester.tap(find.text('退出登录'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byType(LinearProgressIndicator),
+        findsNothing,
+        reason: 'Waiting for confirmation is not a page network operation',
+      );
+      expect(find.text('退出将停止绑定此账号的 2 个运行中任务。'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.textContaining('account-a'),
+        ),
+        findsNothing,
+      );
+      expect(find.textContaining('排队内容和会话记录保留，任务不会自动继续'), findsOneWidget);
+      expect(find.textContaining('API 密钥任务和其他账号的任务不受影响'), findsOneWidget);
+      expect(
+        api.accountRequests.where((r) => r.path == '/provider-auth/logout'),
+        isEmpty,
+      );
+      expect(api.accountRequests.last.body, {
+        'provider': 'openai-codex',
+        'accountScope': 'account-a',
+      });
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(
+        api.accountRequests.where((r) => r.path == '/provider-auth/logout'),
+        isEmpty,
+      );
+      await tester.tap(find.text('退出登录'));
+      await tester.pumpAndSettle();
+      api.activeScope = 'account-b';
+      api.loginGeneration = 'generation-b';
+      await tester.tap(find.text('确认退出此账号'));
+      await tester.pumpAndSettle();
+      expect(
+        api.accountRequests
+            .where((r) => r.path == '/provider-auth/logout')
+            .single
+            .body,
+        {
+          'provider': 'openai-codex',
+          'accountScope': 'account-a',
+          'loginGeneration': 'generation-a',
+        },
+      );
+      expect(find.textContaining('排队内容保留且不会自动继续'), findsOneWidget);
+      expect(find.textContaining('授权清理提示'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      controller.dispose();
+      await api.close();
+      await tester.binding.setSurfaceSize(null);
+    },
+  );
+
+  testWidgets(
+    'unknown impact cannot sign out and conflicts require fresh confirmation',
+    (tester) async {
+      final api = LogoutApi()..failImpact = true;
+      final controller = ModelsController(api);
+      await openLogoutModels(tester, controller);
+      await tester.tap(find.text('退出登录'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byType(LinearProgressIndicator),
+        findsNothing,
+        reason: 'A failed impact read must leave the page idle for retry',
+      );
+      expect(find.textContaining('影响未知'), findsWidgets);
+      expect(find.textContaining('0 个运行中任务'), findsNothing);
+      await tester.tap(find.text('确认退出此账号'));
+      await tester.pumpAndSettle();
+      expect(
+        api.accountRequests.where((r) => r.path == '/provider-auth/logout'),
+        isEmpty,
+      );
+      api.failImpact = false;
+      api.omitGeneration = true;
+      await tester.tap(find.text('重试影响查询'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('影响未知'), findsWidgets);
+      await tester.tap(find.text('确认退出此账号'));
+      expect(
+        api.accountRequests.where((r) => r.path == '/provider-auth/logout'),
+        isEmpty,
+      );
+      api.omitGeneration = false;
+      api.taskCount = 0;
+      await tester.tap(find.text('重试影响查询'));
+      await tester.pumpAndSettle();
+      expect(find.text('退出将停止绑定此账号的 0 个运行中任务。'), findsOneWidget);
+      api.conflict = true;
+      await tester.tap(find.text('确认退出此账号'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('请重新查询影响并确认后再退出'), findsOneWidget);
+      await tester.tap(find.text('确认退出此账号'));
+      expect(
+        api.accountRequests
+            .where((r) => r.path == '/provider-auth/logout')
+            .length,
+        1,
+      );
+      api.conflict = false;
+      api.activeScope = 'account-b';
+      api.loginGeneration = 'generation-new';
+      await tester.tap(find.text('重试影响查询'));
+      await tester.pumpAndSettle();
+      expect(api.accountRequests.last.body['accountScope'], 'account-a');
+      expect(
+        api.accountRequests
+            .where((r) => r.path == '/provider-auth/logout')
+            .length,
+        1,
+      );
+      await tester.tap(find.text('确认退出此账号'));
+      await tester.pumpAndSettle();
+      expect(
+        api.accountRequests
+            .where((r) => r.path == '/provider-auth/logout')
+            .last
+            .body,
+        {
+          'provider': 'openai-codex',
+          'accountScope': 'account-a',
+          'loginGeneration': 'generation-new',
+        },
+      );
+      await tester.pumpWidget(const SizedBox());
+      controller.dispose();
+      await api.close();
+      await tester.binding.setSurfaceSize(null);
+    },
+  );
+
+  testWidgets(
+    'removing a saved account checks that exact account and respects connection changes',
+    (tester) async {
+      final api = LogoutApi(), controller = ModelsController(api);
+      await openLogoutModels(tester, controller);
+      await tester.tap(find.byTooltip('移除账号'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byType(LinearProgressIndicator),
+        findsNothing,
+        reason: 'Saved-account confirmation must not keep a page spinner alive',
+      );
+      expect(api.accountRequests.last.body['accountScope'], 'other');
+      final replacement = ModelsApi();
+      controller.active = replacement;
+      controller.notifyListeners();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('确认退出此账号'));
+      await tester.pumpAndSettle();
+      expect(
+        api.accountRequests.where((r) => r.path == '/provider-auth/logout'),
+        isEmpty,
+      );
+      expect(find.textContaining('连接已变化'), findsWidgets);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+      controller.dispose();
+      await api.close();
+      await replacement.close();
+      await tester.binding.setSurfaceSize(null);
+    },
+  );
+
   testWidgets(
     'refresh reads upstream and deleting an API profile uses scoped unsets',
     (tester) async {

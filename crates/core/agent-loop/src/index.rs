@@ -329,6 +329,13 @@ impl AgentLoop {
             max_parallel_tool_calls: parking_lot::Mutex::new(cap),
         });
         ctx.register_service(service.clone());
+        let observer_ctx = ctx.clone();
+        ctx.register_service(Arc::new(dsh_llm::RequestAuthenticationObservers {
+            capture: Arc::new(move || observer_ctx
+                .get_typed::<Arc<dsh_agent::AgentRegistry>>("agents", false)
+                .and_then(|registry| registry.current_initiator().ok().flatten())
+                .and_then(|agent| agent.authentication_observer())),
+        }));
         let system_prompt = ctx
             .get_typed::<Arc<dsh_system_prompt::SystemPrompt>>("systemPrompt", false)
             .map(|slot| slot.as_ref().clone())

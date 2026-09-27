@@ -112,6 +112,8 @@ enum Phase {
         turn: u64,
         step: u64,
         wake_requested: bool,
+        authentication: Option<dsh_llm::RequestAuthentication>,
+        authentication_open: bool,
     },
 }
 
@@ -229,6 +231,7 @@ pub struct ReactLoopAgent {
     control_boundary: ReentrantMutex<AgentControlState>,
     request_header_logged: AtomicBool,
     request_surface_generation: Mutex<Option<u64>>,
+    authentication_paused: AtomicBool,
     runtime_context: RuntimeContextProjection,
 }
 
@@ -236,6 +239,8 @@ pub struct ReactLoopAgent {
 struct AgentControlState {
     generation: Cell<u64>,
     mutation_depth: Cell<usize>,
+    authentication_revision: Cell<u64>,
+    authentication_flush_revision: Cell<u64>,
 }
 
 struct AgentMutationGuard<'a> {
@@ -327,13 +332,13 @@ impl ReactLoopAgent {
         session: Session,
     ) -> Result<Arc<Self>, String> {
         let inbox = Inbox::new(&session, InboxNotifications::default())?;
-        let mut last_turn = 0;
+        let mut authentication_replay = crate::authentication_control::Replay::default();
         session.visit_events(0, None, |event| {
-            if event.type_ == "turn/start" {
-                last_turn = event.data["turn"].as_u64().unwrap_or(0);
-            }
+            authentication_replay.observe(id.as_str(), event,
+                event.seq.get() >= session.inherited_event_count().get())?;
             Ok(true)
         })?;
+        let last_turn = authentication_replay.turn;
         let runtime_context = RuntimeContextProjection::restore(&session)?;
         let scope_key = dsh_scope::ScopeKey::new();
         let scope = create_scope(
@@ -363,9 +368,13 @@ impl ReactLoopAgent {
                 phase: Mutex::new(Phase::Idle { last_turn }),
                 activity: Arc::new(Mutex::new(Activity::resolved())),
                 cancelled_inbox: Mutex::new(Vec::new()),
-                control_boundary: ReentrantMutex::new(AgentControlState::default()),
+                control_boundary: ReentrantMutex::new(AgentControlState {
+                    authentication_revision: Cell::new(authentication_replay.revision),
+                    ..Default::default()
+                }),
                 request_header_logged: AtomicBool::new(false),
                 request_surface_generation: Mutex::new(None),
+                authentication_paused: AtomicBool::new(authentication_replay.paused),
                 runtime_context,
             }
         });
@@ -381,6 +390,76 @@ impl ReactLoopAgent {
 
     pub fn scope(&self) -> &Scope {
         &self.scope
+    }
+
+    fn report_authentication_control_error(&self, message: &str) {
+        let (turn, step) = match &*self.phase.lock() {
+            Phase::Running { turn, step, .. } => (*turn, *step),
+            Phase::Idle { last_turn } | Phase::Maintenance { last_turn, .. } => (*last_turn, 0),
+        };
+        self.dispatcher().emit("agent/error", |agent| arc(AgentErrorPayload {
+            agent: agent.clone(), turn, step,
+            error: serde_json::json!({"code":"AUTH_CONTINUATION_PERSISTENCE_FAILED","message":message}),
+        }));
+    }
+
+    fn publish_authentication_control(&self, paused: bool, turn: u64) -> Result<(), String> {
+        let control = AgentMutationGuard::enter(&self.control_boundary);
+        let revision = control.guard.authentication_revision.get().checked_add(1)
+            .filter(|revision| *revision <= 9_007_199_254_740_991)
+            .ok_or("account continuation control revision exhausted")?;
+        control.guard.authentication_revision.set(revision);
+        let value = crate::authentication_control::Control {
+            owner: self.id.as_str().into(), turn, revision, paused,
+            reason: dsh_agent::ACCOUNT_SIGNED_OUT_REASON.into(),
+        };
+        // Session precommit callbacks may inspect or reenter Agent controls.
+        // Keep the reentrant publication boundary, never a Phase mutex here.
+        let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.session.append(crate::authentication_control::EVENT,
+                serde_json::to_value(value).expect("account continuation control"), None)
+        })).map_err(|_| "account continuation precommit failed".to_string())
+            .and_then(|result| result.map(|_| ()));
+        if let Err(error) = written {
+            self.authentication_paused.store(true, Ordering::SeqCst);
+            self.report_authentication_control_error(&error);
+            return Err(error);
+        }
+        if control.guard.authentication_revision.get() != revision {
+            return Err("account continuation control was superseded during publication".into());
+        }
+        self.authentication_paused.store(paused, Ordering::SeqCst);
+        control.guard.authentication_flush_revision.set(revision);
+        Ok(())
+    }
+
+    fn resume_authentication_control(&self) -> Result<(), String> {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
+        let paused = self.authentication_paused.load(Ordering::SeqCst);
+        if paused {
+            let turn = match &*self.phase.lock() {
+                Phase::Running { turn, .. } => *turn,
+                Phase::Idle { last_turn } | Phase::Maintenance { last_turn, .. } => *last_turn,
+            };
+            self.publish_authentication_control(false, turn)?;
+        }
+        if let Phase::Running { authentication, authentication_open, .. } = &mut *self.phase.lock() {
+            if paused || !*authentication_open { *authentication = None; }
+        }
+        Ok(())
+    }
+
+    fn stop_revoked_authentication_handoff(&self) -> Result<(), String> {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
+        let binding = match &*self.phase.lock() {
+            Phase::Running { turn, authentication: Some(authentication), abort, .. }
+                if authentication.is_revoked() && !abort.aborted() => Some(dsh_agent::AgentAuthenticationBinding {
+                    turn: *turn, identity: authentication.identity().clone(),
+                }),
+            _ => None,
+        };
+        if let Some(binding) = binding { self.cancel_authentication(&binding)?; }
+        Ok(())
     }
 
     fn llm(&self) -> Arc<dsh_llm::LlmRuntime> {
@@ -446,7 +525,17 @@ impl ReactLoopAgent {
         wakeup: bool,
         context: Option<UserMessage>,
     ) {
-        let _control = AgentMutationGuard::enter(&self.control_boundary);
+        if let Err(error) = self.send_with_context_result(message, target, wakeup, context) {
+            self.report_authentication_control_error(&error);
+        }
+    }
+
+    fn send_with_context_result(
+        &self, message: UserMessage, target: InboxTarget, wakeup: bool, context: Option<UserMessage>,
+    ) -> Result<(), String> {
+        let control = AgentMutationGuard::enter(&self.control_boundary);
+        let admitted_generation = control.guard.generation.get();
+        let explicit_user = matches!(&message.source, dsh_llm::MessageSource::User { .. });
         let waking_after_abort = wakeup
             && matches!(
                 &*self.phase.lock(),
@@ -460,10 +549,15 @@ impl ReactLoopAgent {
         };
         self.inbox
             .append_with_context(resolved_target, message, context)
-            .expect("inbox splice");
+            .map_err(|error| format!("input queue could not be saved: {error}"))?;
         if wakeup {
+            if explicit_user && control.guard.generation.get() == admitted_generation {
+                self.resume_authentication_control().map_err(|error|
+                    format!("输入已保留在队列，但继续状态未能保存；请重试继续排队消息：{error}"))?;
+            }
             self.wake_driver(waking_after_abort);
         }
+        Ok(())
     }
 
     pub(crate) fn hold_publication(&self) {
@@ -481,7 +575,7 @@ impl ReactLoopAgent {
 
     fn wake_driver(&self, _wake_after_abort: bool) {
         let _control = AgentMutationGuard::enter(&self.control_boundary);
-        if !self.published.load(Ordering::Acquire) {
+        if !self.published.load(Ordering::Acquire) || self.authentication_paused.load(Ordering::SeqCst) {
             return;
         }
         // Claim Idle and open its activity in one critical section. Two
@@ -516,6 +610,8 @@ impl ReactLoopAgent {
                         turn: last_turn,
                         step: 0,
                         wake_requested: false,
+                        authentication: None,
+                        authentication_open: false,
                     };
                     activity.begin()
                 }
@@ -648,6 +744,10 @@ impl ReactLoopAgent {
     }
 
     fn finish_driver(&self, activity_token: u64) {
+        let _control = AgentMutationGuard::enter(&self.control_boundary);
+        if let Err(error) = self.stop_revoked_authentication_handoff() {
+            self.report_authentication_control_error(&error);
+        }
         // The driver owns the publication boundary until this point. Apply a
         // deferred cancellation clear before publishing Idle so observers
         // never see quiescence with stale queued authority.
@@ -677,7 +777,12 @@ impl ReactLoopAgent {
 
     async fn kick(&self) {
         loop {
-            match self.turn().await {
+            let outcome = self.turn().await;
+            // A late revoked adapter can be observed after logout's scan.
+            // Its pause still reaches a real durability boundary before this
+            // driver publishes Idle or admits another automatic model turn.
+            if self.flush_authentication_control().await.is_err() { break; }
+            match outcome {
                 Ok(true) => continue,
                 Ok(false) | Err(_) => break,
             }
@@ -758,6 +863,8 @@ impl ReactLoopAgent {
     /// Open one turn before claiming its first proposed step. Returns
     /// whether another turn is pending.
     async fn turn(&self) -> Result<bool, LoopCancelled> {
+        self.flush_authentication_control().await.map_err(LoopCancelled::hook)?;
+        self.stop_revoked_authentication_handoff().map_err(LoopCancelled::hook)?;
         self.clear_cancelled_inbox();
         let signal = match &*self.phase.lock() {
             Phase::Running { abort, .. } => Arc::clone(abort),
@@ -766,20 +873,24 @@ impl ReactLoopAgent {
                 self.id.as_str()
             ),
         };
-        throw_if_aborted(&signal)?;
-        let turn = match &*self.phase.lock() {
-            Phase::Running { turn, .. } => *turn + 1,
-            _ => unreachable!(),
+        let turn = {
+            // Publish the reserved number and its durable start under the
+            // same Agent control boundary as account cancellation. No Phase
+            // lock crosses Session's reentrant precommit notifications.
+            let _control = AgentMutationGuard::enter(&self.control_boundary);
+            throw_if_aborted(&signal)?;
+            let turn = match &*self.phase.lock() {
+                Phase::Running { turn, .. } => *turn + 1,
+                _ => unreachable!(),
+            };
+            if let Phase::Running { turn: phase_turn, authentication_open, .. } = &mut *self.phase.lock() {
+                *phase_turn = turn;
+                *authentication_open = true;
+            }
+            self.session.append("turn/start", serde_json::json!({ "turn": turn }), None)
+                .expect("turn/start");
+            turn
         };
-        self.session
-            .append("turn/start", serde_json::json!({ "turn": turn }), None)
-            .expect("turn/start");
-        if let Phase::Running {
-            turn: phase_turn, ..
-        } = &mut *self.phase.lock()
-        {
-            *phase_turn = turn;
-        }
         let deadline = TurnDeadline(self.options.timeout_seconds.map(|seconds| {
             let weak = self.weak.clone();
             let expected_signal = signal.clone();
@@ -952,6 +1063,9 @@ impl ReactLoopAgent {
                 });
             }
         }
+        if let Phase::Running { authentication_open, .. } = &mut *self.phase.lock() {
+            *authentication_open = false;
+        }
         self.session
             .append(
                 "turn/end",
@@ -967,6 +1081,7 @@ impl ReactLoopAgent {
                 })
             })
             .await;
+        self.stop_revoked_authentication_handoff().map_err(LoopCancelled::hook)?;
         // Remove only input captured by cancel, before deciding whether to
         // start another turn. Fresh input admitted after cancel must survive.
         self.clear_cancelled_inbox();
@@ -981,7 +1096,10 @@ impl ReactLoopAgent {
             ..
         } = &*self.phase.lock()
         {
-            if abort.reason() == Some(AgentCancelCause::User) && !*wake_requested {
+            let explicit_wake_required = matches!(abort.reason(), Some(AgentCancelCause::User))
+                || matches!(abort.reason(), Some(AgentCancelCause::Hook { reason })
+                    if reason == dsh_agent::ACCOUNT_SIGNED_OUT_REASON);
+            if explicit_wake_required && !*wake_requested {
                 return Ok(false);
             }
         }
@@ -1594,7 +1712,41 @@ impl ReactLoopAgent {
         };
         throw_if_aborted(signal)?;
 
+        self.bind_authentication(turn, signal, prepared_call.as_ref()
+            .map(|call| call.authentication.clone()).unwrap_or_default())?;
+
         Ok((config, prepared_call))
+    }
+
+    fn bind_authentication(
+        &self,
+        expected_turn: u64,
+        signal: &Arc<CancellationSignal>,
+        captured: dsh_llm::RequestAuthentication,
+    ) -> Result<(), LoopCancelled> {
+        let control = AgentMutationGuard::enter(&self.control_boundary);
+        let mut phase = self.phase.lock();
+        let Phase::Running { turn, abort, authentication, authentication_open, wake_requested, .. } = &mut *phase else {
+            return Err(LoopCancelled::hook("request turn is no longer running"));
+        };
+        if !*authentication_open || *turn != expected_turn || !Arc::ptr_eq(abort, signal) {
+            return Err(LoopCancelled::hook("request turn changed during preparation"));
+        }
+        throw_if_aborted(abort)?;
+        // An automatic fallback after logout must not replace a revoked A
+        // binding with B. A first request arriving after the logout scan must
+        // also observe the same revocation boundary before it can dispatch.
+        if captured.is_revoked() || authentication.as_ref().is_some_and(|auth| auth.is_revoked()) {
+            control.guard.generation.set(control.guard.generation.get().wrapping_add(1));
+            self.authentication_paused.store(true, Ordering::SeqCst);
+            *wake_requested = false;
+            abort.abort_with(AgentCancelCause::Hook { reason: dsh_agent::ACCOUNT_SIGNED_OUT_REASON.into() });
+            drop(phase);
+            self.publish_authentication_control(true, expected_turn).map_err(LoopCancelled::hook)?;
+            return throw_if_aborted(signal);
+        }
+        *authentication = Some(captured);
+        Ok(())
     }
 
     fn build_request(
@@ -1808,6 +1960,81 @@ fn inbox_notify_claimed(
 }
 
 impl Agent for ReactLoopAgent {
+    fn authentication_observer(&self) -> Option<dsh_llm::RequestAuthenticationObserver> {
+        let (turn, signal) = match &*self.phase.lock() {
+            Phase::Running { turn, abort, authentication_open: true, .. } if !abort.aborted() => (*turn, abort.clone()),
+            _ => return None,
+        };
+        let weak = self.weak.clone();
+        Some(Arc::new(move |authentication| {
+            let agent = weak.upgrade().ok_or_else(|| dsh_llm::LlmError::new(
+                "request agent is no longer available", "AUTH_REQUEST_STALE", dsh_llm::LlmErrorOptions::default(),
+            ))?;
+            agent.bind_authentication(turn, &signal, authentication).map_err(|error| dsh_llm::LlmError::new(
+                &error.to_string(), "AUTH_ACCOUNT_SIGNED_OUT", dsh_llm::LlmErrorOptions::default(),
+            ))
+        }))
+    }
+
+    fn authentication_binding(&self) -> Option<dsh_agent::AgentAuthenticationBinding> {
+        match &*self.phase.lock() {
+            Phase::Running { turn, abort, authentication: Some(authentication), .. } if !abort.aborted() => {
+                Some(dsh_agent::AgentAuthenticationBinding { turn: *turn, identity: authentication.identity().clone() })
+            }
+            _ => None,
+        }
+    }
+
+    fn cancel_authentication(&self, expected: &dsh_agent::AgentAuthenticationBinding) -> Result<bool, String> {
+        let control = AgentMutationGuard::enter(&self.control_boundary);
+        let mut phase = self.phase.lock();
+        let Phase::Running { turn, abort, authentication: Some(authentication), wake_requested, .. } = &mut *phase else {
+            return Ok(false);
+        };
+        if *turn != expected.turn || authentication.identity() != &expected.identity || abort.aborted() {
+            return Ok(false);
+        }
+        control.guard.generation.set(control.guard.generation.get().wrapping_add(1));
+        self.authentication_paused.store(true, Ordering::SeqCst);
+        *wake_requested = false;
+        abort.abort_with(AgentCancelCause::Hook { reason: dsh_agent::ACCOUNT_SIGNED_OUT_REASON.into() });
+        drop(phase);
+        self.publish_authentication_control(true, expected.turn)?;
+        Ok(true)
+    }
+
+    fn flush_authentication_control(&self) -> BoxFuture<'static, Result<(), String>> {
+        let weak = self.weak.clone();
+        Box::pin(async move {
+            let agent = weak.upgrade().ok_or("account continuation owner is unavailable")?;
+            loop {
+                let revision = agent.control_boundary.lock().authentication_flush_revision.get();
+                if revision == 0 { return Ok(()); }
+                let sessions = agent.loop_ctx.get_typed::<Arc<dsh_session::SessionStore>>("sessions", false)
+                    .map(|slot| slot.as_ref().clone()).ok_or("account continuation session store is unavailable")?;
+                let result = match sessions.flush(&agent.session).await {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err("account continuation has no durability acknowledgment".into()),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    let control = agent.control_boundary.lock();
+                    if control.authentication_revision.get() == revision
+                        && control.authentication_flush_revision.get() == revision {
+                        agent.authentication_paused.store(true, Ordering::SeqCst);
+                        agent.report_authentication_control_error(&error);
+                    }
+                    return Err(error);
+                }
+                let control = agent.control_boundary.lock();
+                if control.authentication_flush_revision.get() == revision {
+                    control.authentication_flush_revision.set(0);
+                    return Ok(());
+                }
+            }
+        })
+    }
+
     fn id(&self) -> &SessionId {
         &self.id
     }
@@ -1867,7 +2094,8 @@ impl Agent for ReactLoopAgent {
         let control = AgentMutationGuard::enter(&self.control_boundary);
         let generation = &control.guard.generation;
         generation.set(generation.get().wrapping_add(1));
-        let keep_inbox = options.map(|options| options.keep_inbox).unwrap_or(false);
+        let keep_inbox = options.map(|options| options.keep_inbox).unwrap_or(false)
+            || (cause == AgentCancelCause::Disposed && self.authentication_paused.load(Ordering::SeqCst));
         let clear_now = {
             let mut phase = self.phase.lock();
             if !keep_inbox {
@@ -1887,7 +2115,11 @@ impl Agent for ReactLoopAgent {
                     if !keep_inbox || cause == AgentCancelCause::User {
                         *wake_requested = false;
                     }
-                    abort.abort_with(cause);
+                    let preserve_logout = cause == AgentCancelCause::Disposed
+                        && self.authentication_paused.load(Ordering::SeqCst)
+                        && matches!(abort.reason(), Some(AgentCancelCause::Hook { reason })
+                            if reason == dsh_agent::ACCOUNT_SIGNED_OUT_REASON);
+                    if !preserve_logout { abort.abort_with(cause); }
                     false
                 }
                 Phase::Idle { .. } => !keep_inbox,
@@ -1951,7 +2183,7 @@ impl Agent for ReactLoopAgent {
         };
         self.inbox.append(target, message).expect("inbox splice");
         // An inbox notification may have synchronously stopped this agent.
-        if current() {
+        if current() && !self.authentication_paused.load(Ordering::SeqCst) {
             self.wake_driver(false);
             true
         } else {
@@ -2019,6 +2251,12 @@ impl Agent for ReactLoopAgent {
         self.send_with_context(message, target, true, context);
     }
 
+    fn send_with_context_checked(
+        &self, message: UserMessage, target: InboxTarget, context: Option<UserMessage>,
+    ) -> Result<(), String> {
+        self.send_with_context_result(message, target, true, context)
+    }
+
     fn followup(&self, message: UserMessage) {
         self.send(message, InboxTarget::NextTurn, true)
     }
@@ -2028,9 +2266,13 @@ impl Agent for ReactLoopAgent {
     }
 
     fn steer_queued(&self, message_id: &dsh_llm::MessageId) -> Result<bool, String> {
-        let _control = AgentMutationGuard::enter(&self.control_boundary);
+        let control = AgentMutationGuard::enter(&self.control_boundary);
+        let admitted_generation = control.guard.generation.get();
         let moved = self.inbox.move_to_next_step(message_id)?;
         if moved {
+            if control.guard.generation.get() == admitted_generation {
+                self.resume_authentication_control()?;
+            }
             self.wake_driver(true);
         }
         Ok(moved)

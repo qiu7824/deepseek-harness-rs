@@ -1,5 +1,7 @@
 #[path = "lifecycle_failures/cancellation.rs"]
 mod cancellation;
+#[path = "lifecycle_failures/authentication.rs"]
+mod authentication;
 #[path = "lifecycle_failures/compaction_recovery.rs"]
 mod compaction_recovery;
 #[path = "lifecycle_failures/driver_panic.rs"]

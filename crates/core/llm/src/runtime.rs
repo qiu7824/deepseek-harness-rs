@@ -164,6 +164,8 @@ pub fn assert_usable_api_key(raw: &str, pkg: &str, reference: &str) -> Result<St
 /// One model call whose config and adapter registration were resolved
 /// together.
 pub struct PreparedLlmCall {
+    /// Non-secret authentication ownership captured with this exact adapter.
+    pub authentication: crate::RequestAuthentication,
     /// Capability captured with the exact adapter/options used for dispatch.
     pub system_prompt_update: Option<crate::SystemPromptUpdate>,
     /// Detached, deep-frozen config with any adapter-owned default
@@ -187,6 +189,9 @@ pub struct PreparedLlmCall {
 /// Provider-wire adapter for the harness message and stream vocabulary.
 #[async_trait::async_trait]
 pub trait LlmAdapter: Send + Sync {
+    fn request_authentication(&self) -> crate::RequestAuthentication {
+        crate::RequestAuthentication::default()
+    }
     /// Freeze mutable route options before capabilities and request defaults
     /// are resolved. Replay ownership remains the registered adapter's.
     async fn snapshot_for_call(
@@ -988,6 +993,7 @@ impl LlmRuntime {
         config: &LlmCallConfig,
         signal: Option<&AbortSignal>,
     ) -> Result<PreparedLlmCall, LlmError> {
+        let observer = self.authentication_observer();
         let registration = self.registration(&config.provider)?;
         let adapter = registration
             .adapter
@@ -1001,6 +1007,8 @@ impl LlmRuntime {
                 .provider_retry_policy(&config.provider)
                 .unwrap_or_else(|| registration.retry_policy.clone()),
         };
+        let authentication = adapter.request_authentication();
+        if let Some(observer) = observer { observer(authentication.clone())?; }
         let (resolved_config, context, system_prompt_update) =
             Self::resolve_call_for(&frozen, config, signal).await?;
         let adapter_defaults = LlmCallConfigAdapterDefaults {
@@ -1044,6 +1052,7 @@ impl LlmRuntime {
                 ))
             });
         Ok(PreparedLlmCall {
+            authentication,
             system_prompt_update,
             config: resolved_config,
             retry_policy: frozen.retry_policy,
@@ -1104,10 +1113,11 @@ impl LlmRuntime {
         self: &Arc<Self>,
         options: GenerateOptions,
         prepared: Option<PreparedDispatch>,
+        observer: Option<crate::RequestAuthenticationObserver>,
     ) -> ChunkStream {
         let runtime = Arc::clone(self);
         Box::pin(futures::stream::unfold(
-            AdapterPhase::Setup { options, prepared },
+            AdapterPhase::Setup { options, prepared, observer },
             move |phase| {
                 let runtime = Arc::clone(&runtime);
                 async move { runtime.adapter_phase(phase).await }
@@ -1120,7 +1130,7 @@ impl LlmRuntime {
         phase: AdapterPhase,
     ) -> Option<(StreamChunk, AdapterPhase)> {
         match phase {
-            AdapterPhase::Setup { options, prepared } => {
+            AdapterPhase::Setup { options, prepared, observer } => {
                 let signal = options.signal.clone();
                 let (registration, resolved_config, adapter) = match &prepared {
                     Some(binding) => (
@@ -1169,6 +1179,11 @@ impl LlmRuntime {
                         }
                     }
                 };
+                if let Some(observer) = observer
+                    && let Err(error) = observer(adapter.request_authentication())
+                {
+                    return Some((adapter_failure_chunk(error.failure, signal.as_ref()), AdapterPhase::Done));
+                }
                 if prepared.is_some() && !generate_options_config_equals(&options, &resolved_config)
                 {
                     let failure = LlmFailure {
@@ -1253,12 +1268,18 @@ impl LlmRuntime {
         self.stream_with_registration(options, None)
     }
 
+    fn authentication_observer(&self) -> Option<crate::RequestAuthenticationObserver> {
+        self.ctx.get_typed::<Arc<crate::RequestAuthenticationObservers>>("llmAuthenticationObservers", false)
+            .and_then(|observers| (observers.capture)())
+    }
+
     fn stream_with_registration(
         self: &Arc<Self>,
         options: GenerateOptions,
         prepared: Option<PreparedDispatch>,
     ) -> ChunkStream {
         let runtime = Arc::clone(self);
+        let observer = self.authentication_observer();
         // The `llm/stream` waterfall resolves a StreamFactory while the
         // request rides a shared cell, so routing listeners' mutations
         // reach the fallback adapter exactly like the TS in-place writes
@@ -1269,7 +1290,7 @@ impl LlmRuntime {
             let cell = Arc::clone(&cell);
             move |_options: GenerateOptions| {
                 let options = cell.lock().clone();
-                runtime.adapter_stream(options, prepared.clone())
+                runtime.adapter_stream(options, prepared.clone(), observer.clone())
             }
         });
         let thread_runtime = Arc::clone(&runtime);
@@ -1302,6 +1323,7 @@ enum AdapterPhase {
     Setup {
         options: GenerateOptions,
         prepared: Option<PreparedDispatch>,
+        observer: Option<crate::RequestAuthenticationObserver>,
     },
     Iterating {
         stream: ChunkStream,

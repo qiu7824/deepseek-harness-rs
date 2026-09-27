@@ -6590,14 +6590,14 @@ impl ApiProxyService {
                         "message submission was stopped before execution",
                     ));
                 }
-                agent.send_with_context(
+                agent.send_with_context_checked(
                     message,
                     match request.payload.mode {
                         PromptMode::Steer => dsh_agent::InboxTarget::NextStep,
                         PromptMode::Queue => dsh_agent::InboxTarget::NextTurn,
                     },
                     prepared.additional_context,
-                );
+                ).map_err(|error| dsh_subagent::SubagentError::new("AUTH_CONTINUATION_CONTROL_FAILED", error))?;
                 Ok(())
             })
         });

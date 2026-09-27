@@ -8,6 +8,14 @@ mod models;
 #[cfg(test)]
 #[path = "provider_auth_review_tests.rs"]
 mod review_tests;
+#[path = "provider_auth_requests.rs"]
+mod requests;
+#[cfg(test)]
+#[path = "provider_auth_requests_tests.rs"]
+mod request_tests;
+#[cfg(test)]
+#[path = "provider_auth_flush_tests.rs"]
+mod flush_tests;
 use dsh_credentials::CredentialProvider;
 use dsh_host_webserver::{RouteDisposer, WebRoute, WebRouteKind, WebServer};
 use serde::{Deserialize, Serialize};
@@ -405,6 +413,8 @@ impl Pending {
     }
 }
 pub(crate) struct AccountAuth {
+    agents: parking_lot::RwLock<std::sync::Weak<dsh_agent::AgentRegistry>>,
+    request_identities: parking_lot::Mutex<HashMap<(String, String), dsh_llm::RequestAuthentication>>,
     account_usage: crate::codex_account::CodexAccountService,
     client: reqwest::Client,
     credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
@@ -456,6 +466,8 @@ impl AccountAuth {
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
+            agents: Default::default(),
+            request_identities: Default::default(),
             account_usage: crate::codex_account::CodexAccountService::new(
                 std::path::Path::new(credentials.filename())
                     .parent()
@@ -574,7 +586,9 @@ impl AccountAuth {
                 &reference(id),
                 &serde_json::to_string(session).map_err(|e| e.to_string())?,
             )
-            .await
+            .await?;
+        self.authorize_request_identity(id, &session.account_scope);
+        Ok(())
     }
     async fn activate(&self, p: Provider, session: &Session) -> Result<(), String> {
         let previous = self.session(p.id).await?;
@@ -717,6 +731,11 @@ impl AccountAuth {
         expected_scope: Option<&str>,
     ) -> Result<Option<String>, String> {
         let _guard = self.refresh.lock().await;
+        self.resolve_request_token_for_scope_locked(id, base, headers, expected_scope).await
+    }
+    async fn resolve_request_token_for_scope_locked(
+        &self, id: &str, base: &str, headers: &[(String, String)], expected_scope: Option<&str>,
+    ) -> Result<Option<String>, String> {
         // Compare the captured route before repair: a legacy active profile may
         // legitimately be migrated by resolve_token_locked below, but a route
         // captured before a switch must never use the newly active credential.
@@ -1519,41 +1538,8 @@ impl AccountAuth {
                 let removed = self.pending.lock().remove(&attempt).is_some();
                 Ok(json!({"status":if removed { "cancelled" } else { "complete" }}))
             }
-            "logout" => {
-                let id = string(body, "provider")?;
-                let p = provider(&id)?;
-                let _guard = self.refresh.lock().await;
-                let current = self.session(&id).await?;
-                let scope = body
-                    .get("accountScope")
-                    .and_then(Value::as_str)
-                    .or_else(|| current.as_ref().map(|item| item.account_scope.as_str()));
-                let mut accounts = self.account_sessions(&id).await?;
-                if scope
-                    .is_some_and(|scope| !accounts.iter().any(|item| item.account_scope == scope))
-                {
-                    return Err("未找到要移除的登录账号".into());
-                }
-                accounts.retain(|item| Some(item.account_scope.as_str()) != scope);
-                let remove_active = current
-                    .as_ref()
-                    .is_none_or(|item| Some(item.account_scope.as_str()) == scope);
-                if remove_active && id == "openai-codex" {
-                    self.account_usage.disconnect().await;
-                }
-                self.pending.lock().retain(|_, (owner, _)| owner.id != id);
-                if remove_active {
-                    self.credentials.unset(&reference(&id)).await?;
-                }
-                self.write_accounts(&id, &accounts).await?;
-                if remove_active {
-                    self.catalogs.unbind(&id);
-                    if let Some(next) = accounts.iter().find(|item| !item.invalid) {
-                        self.activate(p, next).await?;
-                    }
-                }
-                Ok(json!({"status":"signedOut","removedAccountScope":scope}))
-            }
+            "logout-impact" => self.logout_impact(body).await,
+            "logout" => self.logout_account(body).await,
             _ => Err("未知账号操作".to_string()),
         }
     }

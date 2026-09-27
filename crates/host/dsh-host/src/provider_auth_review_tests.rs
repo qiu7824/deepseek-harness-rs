@@ -30,7 +30,10 @@ fn setup() -> (Arc<AccountAuth>, std::path::PathBuf) {
     )
     .unwrap();
     let settings = dsh_settings::SettingsProvider::install(&ctx, Arc::new(MemorySettings));
-    (AccountAuth::new(credentials, settings).unwrap(), root)
+    let auth = AccountAuth::new(credentials, settings).unwrap();
+    let agents = dsh_agent::AgentRegistry::install(&ctx);
+    auth.set_agents(&agents);
+    (auth, root)
 }
 fn pending(auth: &AccountAuth, id: &str) -> Provider {
     let p = provider("openai-codex").unwrap();
@@ -89,7 +92,8 @@ async fn logout_invalidates_all_provider_attempts_before_late_commit() {
     let p = pending(&auth, "first");
     pending(&auth, "second");
     auth.save("openai-codex", &tokens()).await.unwrap();
-    auth.handle("logout", &json!({"provider":"openai-codex"}))
+    let impact = auth.handle("logout-impact", &json!({"provider":"openai-codex"})).await.unwrap();
+    auth.handle("logout", &impact)
         .await
         .unwrap();
     assert!(!auth.pending.lock().contains_key("first"));

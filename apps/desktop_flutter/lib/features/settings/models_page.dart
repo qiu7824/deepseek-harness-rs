@@ -96,6 +96,7 @@ class _ModelsPageState extends State<ModelsPage> {
   final expandedAccounts = <String>{};
   late String tab = widget.initialTab;
   bool busy = false;
+  bool accountLogoutOpen = false;
   bool lastReportedDirty = false;
   String? error, notice;
   int generation = 0;
@@ -1552,25 +1553,52 @@ class _ModelsPageState extends State<ModelsPage> {
   }
 
   Future<void> removeAccount(Json provider, [Json? account]) async {
-    if (!await confirmAction(
-      context,
-      account == null ? '退出登录' : '移除账号',
-      '移除本机保存的授权；已有会话记录保留。',
-      action: '移除授权',
-    )) {
+    if (busy ||
+        accountLogoutOpen ||
+        staleConnection ||
+        !mounted ||
+        provider['scope'] == 'subagent') {
       return;
     }
-    if (!mounted) return;
-    await run(() async {
-      await api.request(
-        '/provider-auth/logout',
-        body: {
-          'provider': provider['id'],
-          if (account != null) 'accountScope': account['accountScope'],
-        },
-        scope: scope,
-        mutation: true,
+    final providerId = provider['id'] as String? ?? '';
+    final selectedScope = account == null
+        ? provider['accountScope'] as String?
+        : account['accountScope'] as String? ?? '';
+    final displayedAccount =
+        account ??
+        objects(provider['accounts'])
+            .where((saved) => saved['accountScope'] == selectedScope)
+            .firstOrNull;
+    final label =
+        '${displayedAccount?['label'] ?? displayedAccount?['accountId'] ?? provider['name'] ?? providerId}';
+    ProviderLogoutResult? result;
+    accountLogoutOpen = true;
+    try {
+      result = await showDialog<ProviderLogoutResult>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AccountLogoutDialog(
+          api: api,
+          provider: providerId,
+          accountScope: selectedScope,
+          label: label,
+          parentScope: scope,
+          isCurrentConnection: () => mounted && !staleConnection,
+        ),
       );
+    } catch (e) {
+      if (mounted) setState(() => error = '$e');
+    } finally {
+      accountLogoutOpen = false;
+    }
+    if (!mounted || staleConnection || result == null) return;
+    final completed = result;
+    await run(() async {
+      setState(() {
+        notice =
+            '已退出账号；该账号任务已停止，排队内容保留且不会自动继续。'
+            '${completed.warning == null ? '' : ' ${completed.warning}'}';
+      });
       await refreshAccountState();
     });
   }
@@ -1591,6 +1619,159 @@ class _ModelsPageState extends State<ModelsPage> {
       await widget.controller.loadCatalogs();
     }
   }
+}
+
+class AccountLogoutDialog extends StatefulWidget {
+  const AccountLogoutDialog({
+    super.key,
+    required this.api,
+    required this.provider,
+    required this.label,
+    required this.parentScope,
+    required this.isCurrentConnection,
+    this.accountScope,
+  });
+
+  final DshClient api;
+  final String provider, label;
+  final String? accountScope;
+  final RequestScope parentScope;
+  final bool Function() isCurrentConnection;
+
+  @override
+  State<AccountLogoutDialog> createState() => _AccountLogoutDialogState();
+}
+
+class _AccountLogoutDialogState extends State<AccountLogoutDialog> {
+  late final auth = ProviderAuthApi(widget.api);
+  final requests = RequestScope();
+  late final void Function() unregister;
+  late String? selectedScope = widget.accountScope;
+  ProviderLogoutImpact? impact;
+  String? failure;
+  bool working = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unregister = widget.parentScope.register(requests.cancel);
+    readImpact();
+  }
+
+  @override
+  void dispose() {
+    unregister();
+    requests.cancel();
+    super.dispose();
+  }
+
+  void checkConnection() {
+    if (requests.cancelled || !widget.isCurrentConnection()) {
+      throw DshException('connection-changed', '连接已变化，请重新打开账号设置。');
+    }
+  }
+
+  Future<void> readImpact() async {
+    if (working) return;
+    setState(() {
+      working = true;
+      impact = null;
+      failure = null;
+    });
+    try {
+      checkConnection();
+      final value = await auth.logoutImpact(
+        widget.provider,
+        accountScope: selectedScope,
+        scope: requests,
+      );
+      checkConnection();
+      if (!mounted) return;
+      setState(() {
+        selectedScope = value.accountScope;
+        impact = value;
+      });
+    } catch (error) {
+      if (mounted) setState(() => failure = '$error');
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
+  }
+
+  Future<void> signOut() async {
+    final confirmed = impact;
+    if (working || confirmed == null) return;
+    setState(() {
+      working = true;
+      failure = null;
+    });
+    try {
+      checkConnection();
+      final result = await auth.logout(confirmed, scope: requests);
+      if (mounted) Navigator.of(context).pop(result);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          impact = null;
+          failure = '$error；请重新查询影响并确认后再退出。';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !working,
+    child: AlertDialog(
+      title: const Text('确认退出账号'),
+      content: SingleChildScrollView(
+        child: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.label),
+              const SizedBox(height: 12),
+              Text(
+                impact != null
+                    ? '退出将停止绑定此账号的 ${impact!.taskCount} 个运行中任务。'
+                    : working
+                    ? '正在核对该账号的任务…'
+                    : '影响未知，请重试后再退出。',
+              ),
+              const SizedBox(height: 12),
+              const Text('排队内容和会话记录保留，任务不会自动继续；API 密钥任务和其他账号的任务不受影响。'),
+              if (failure != null) ...[
+                const SizedBox(height: 12),
+                Text('影响未知，请重试后再退出。 $failure'),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        DshButton(
+          outline: true,
+          onPressed: working ? null : () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        if (impact == null)
+          DshButton(
+            outline: true,
+            onPressed: working ? null : readImpact,
+            child: const Text('重试影响查询'),
+          ),
+        DshButton(
+          destructive: true,
+          onPressed: working || impact == null ? null : signOut,
+          child: const Text('确认退出此账号'),
+        ),
+      ],
+    ),
+  );
 }
 
 class AccountLoginDialog extends StatefulWidget {

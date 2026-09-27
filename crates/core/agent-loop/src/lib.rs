@@ -5,6 +5,7 @@
 //! service/registry wiring arrives next).
 
 pub mod agent;
+mod authentication_control;
 pub mod constants;
 pub mod index;
 pub mod invariant;

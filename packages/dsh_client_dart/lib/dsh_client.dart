@@ -11,3 +11,4 @@ export 'src/turn_usage.dart';
 export 'src/code_graph.dart';
 export 'src/display_path.dart';
 export 'src/schedule.dart';
+export 'src/provider_auth.dart';

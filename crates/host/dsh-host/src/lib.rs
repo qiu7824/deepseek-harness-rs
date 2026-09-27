@@ -1233,6 +1233,13 @@ impl OpenAiCompatibleAdapter {
             .get(provider)
             .cloned()
             .expect("registered OpenAI-compatible route has a profile");
+        self.delegate_profile(provider, profile, None)
+    }
+
+    fn delegate_profile(
+        &self, provider: &str, profile: OpenAiCompatibleProviderConfig,
+        authentication: Option<dsh_llm::RequestAuthentication>,
+    ) -> dsh_llm_deepseek::DeepSeekAdapter {
         let configured_models: Vec<OpenAiCompatibleModelConfig> = if let Some(auth) = &self.auth {
             auth.effective_model_rows(
                 provider,
@@ -1357,6 +1364,7 @@ impl OpenAiCompatibleAdapter {
         let auth = self.auth.clone();
         let auth_provider = profile.auth_provider.clone();
         let auth_scope = profile.model_catalog_scope.clone();
+        let captured_authentication = authentication.clone();
         let reasoning_wire_format = if resolved.api == "openai-completions"
             && resolved.models.iter().all(|model| {
                 model
@@ -1379,19 +1387,20 @@ impl OpenAiCompatibleAdapter {
                 let auth = auth.clone();
                 let auth_provider = auth_provider.clone();
                 let auth_scope = auth_scope.clone();
+                let captured_authentication = captured_authentication.clone();
                 let base_url = snapshot.base_url.clone();
                 let headers = snapshot.headers.clone();
                 Box::pin(async move {
                     if let (Some(auth), Some(provider)) = (auth, auth_provider) {
-                        return auth
-                            .resolve_request_token_for_scope(
-                                &provider,
-                                &base_url,
-                                &headers,
-                                auth_scope.as_deref(),
-                            )
-                            .await
-                            .map_err(|message| {
+                        let token = match captured_authentication {
+                            Some(authentication) => auth.resolve_request_token_for_authentication(
+                                &provider, &base_url, &headers, auth_scope.as_deref(), &authentication,
+                            ).await,
+                            None => auth.resolve_request_token_for_scope(
+                                &provider, &base_url, &headers, auth_scope.as_deref(),
+                            ).await,
+                        };
+                        return token.map_err(|message| {
                                 dsh_llm::LlmError::new(
                                     &message,
                                     "AUTH_REQUIRED",
@@ -1422,6 +1431,10 @@ impl OpenAiCompatibleAdapter {
             ),
             reasoning_wire_format,
         })
+        .with_authentication(authentication.unwrap_or_else(|| dsh_llm::RequestAuthentication::new(
+            if profile.keyless { dsh_llm::RequestAuthenticationIdentity::Anonymous }
+            else { dsh_llm::RequestAuthenticationIdentity::ApiKey }
+        )))
     }
 }
 
@@ -1436,7 +1449,16 @@ impl dsh_llm::LlmAdapter for OpenAiCompatibleAdapter {
         if let Some(auth) = &self.auth {
             let _ = auth.ensure_catalog_scope(provider).await;
         }
-        self.delegate(provider).frozen().map(Some)
+        let profile = self.profiles.lock().get(provider).cloned()
+            .expect("registered OpenAI-compatible route has a profile");
+        let authentication = if let Some(auth_provider) = profile.auth_provider.as_deref() {
+            let auth = self.auth.as_ref().ok_or_else(|| dsh_llm::LlmError::new(
+                "account authorization is unavailable", "AUTH_REQUIRED", dsh_llm::LlmErrorOptions::default(),
+            ))?;
+            Some(auth.capture_request_authentication(auth_provider, profile.model_catalog_scope.as_deref()).await
+                .map_err(|message| dsh_llm::LlmError::new(&message, "AUTH_REQUIRED", dsh_llm::LlmErrorOptions::default()))?)
+        } else { None };
+        self.delegate_profile(provider, profile, authentication).frozen().map(Some)
     }
     fn provider_info(&self, provider: &str) -> dsh_llm::LlmProviderInfo {
         self.delegate(provider).provider_info(provider)
@@ -3341,6 +3363,7 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("web-fetch-http: {error}"))?;
 
     let account_auth = provider_auth::AccountAuth::new(credentials.clone(), settings.clone())?;
+    account_auth.set_agents(&agents);
     let _hosted_search = web
         .register_search_provider(Arc::new(hosted_search::RoutedSearch {
             ctx: ctx.clone(),

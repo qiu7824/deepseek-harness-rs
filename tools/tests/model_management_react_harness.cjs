@@ -13,8 +13,8 @@ function mergeOps(ops){for(const op of ops){if(JSON.stringify(op.path)===JSON.st
 function snapshotStore(initial){let value=initial;const listeners=new Set();const set=next=>{value=next;for(const fn of listeners)fn()};return {getSnapshot:()=>value,subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn)},set,update:fn=>{const next={...value};fn(next);set(next)}}}
 let providersReply=null,accountActionReply=null;
 const primitives=new Proxy({IconCheckOutline14:()=>React.createElement('svg',{'data-check-icon':true}),Modal:({open,children,footer,title})=>open?React.createElement('section',{role:'dialog','aria-label':title},children,footer):null,Button:({variant,...props})=>React.createElement('button',props)},{get:(target,key)=>target[key]??(()=>React.createElement('svg',{'data-icon':key}))});
-let exported;const context={document,window:{__ModuleLoader__:{load(def){exported=def.factory(id=>id==='react'?React:id==='react/jsx-runtime'?jsx:id.endsWith('ui-primitives')?primitives:id.endsWith('schema-form')?{getPath:(value,parts)=>parts.reduce((current,key)=>current?.[key],value),rehydrateSchema:value=>value,nodeAtPath:()=>null}: {createSnapshotStore:snapshotStore})}}},fetch:async(url,init)=>{const action=url.split('/').at(-1),body=init.body?JSON.parse(init.body):{};apiCalls.push({action,body});if(accountActionReply&&['switch','logout','start','poll'].includes(action))return accountActionReply(action,body);if(usageReply&&['usage','usage-login'].includes(action))return usageReply(action);if(url.startsWith('/__dsh-free/')){if(action==='test')freeReport.models[0]={...freeReport.models[0],status:'available',available:true,verifiedAt:Date.now()};return{ok:true,json:async()=>clone(action==='enable'?{enabled:true,provider:'opencode-free',model:body.model}:freeReport)}};if(readError)throw readError;if(action==='providers'&&providersReply)return providersReply();if(action==='reset-prepare')return{ok:true,json:async()=>({operation:{operationId:'fixture-reset',state:'prepared'}})};if(action==='reset-consume'){assert.equal(body.confirmed,true);assert.equal(body.operationId,'fixture-reset');return{ok:true,json:async()=>({operation:{operationId:'fixture-reset',state:'complete',outcome:'reset'}})}};if(action==='providers')return{ok:true,json:async()=>({providers:accountRows})};if(action==='start'&&startPending)return startPending.promise;if(action==='cancel')return{ok:true,json:async()=>({status:'cancelled'})};return{ok:true,json:async()=>clone(catalog)}},setTimeout,clearTimeout,setInterval,clearInterval,structuredClone,console};
-vm.runInNewContext(source.replace('return module.exports;','exports.test={CustomProviderCard,normalizeProviderRoute,PROVIDER_PRESETS,ProviderModelManager,CodexUsagePanel,AccountConnections,ModelEditorBoundary,ProviderEditor,Loaded,FreeModelsSection,createAccountDirectory,SidebarAccount,zh,en};return module.exports;'),context);
+let exported;const context={document,window:{__ModuleLoader__:{load(def){exported=def.factory(id=>id==='react'?React:id==='react/jsx-runtime'?jsx:id.endsWith('ui-primitives')?primitives:id.endsWith('schema-form')?{getPath:(value,parts)=>parts.reduce((current,key)=>current?.[key],value),rehydrateSchema:value=>value,nodeAtPath:()=>null}: {createSnapshotStore:snapshotStore})}}},fetch:async(url,init)=>{const action=url.split('/').at(-1),body=init.body?JSON.parse(init.body):{};apiCalls.push({action,body});if(accountActionReply&&['switch','logout-impact','logout','start','poll'].includes(action))return accountActionReply(action,body);if(usageReply&&['usage','usage-login'].includes(action))return usageReply(action);if(url.startsWith('/__dsh-free/')){if(action==='test')freeReport.models[0]={...freeReport.models[0],status:'available',available:true,verifiedAt:Date.now()};return{ok:true,json:async()=>clone(action==='enable'?{enabled:true,provider:'opencode-free',model:body.model}:freeReport)}};if(readError)throw readError;if(action==='providers'&&providersReply)return providersReply();if(action==='reset-prepare')return{ok:true,json:async()=>({operation:{operationId:'fixture-reset',state:'prepared'}})};if(action==='reset-consume'){assert.equal(body.confirmed,true);assert.equal(body.operationId,'fixture-reset');return{ok:true,json:async()=>({operation:{operationId:'fixture-reset',state:'complete',outcome:'reset'}})}};if(action==='providers')return{ok:true,json:async()=>({providers:accountRows})};if(action==='start'&&startPending)return startPending.promise;if(action==='cancel')return{ok:true,json:async()=>({status:'cancelled'})};return{ok:true,json:async()=>clone(catalog)}},setTimeout,clearTimeout,setInterval,clearInterval,structuredClone,console};
+vm.runInNewContext(source.replace('return module.exports;','exports.test={AccountLogoutDialog,CustomProviderCard,normalizeProviderRoute,PROVIDER_PRESETS,ProviderModelManager,CodexUsagePanel,AccountConnections,ModelEditorBoundary,ProviderEditor,Loaded,FreeModelsSection,createAccountDirectory,SidebarAccount,zh,en};return module.exports;'),context);
 const test=exported.test,t=key=>test.en[key]??key,api={settings:{mutate:async request=>{writes.push(request);if(writeError)return{result:{ok:false,error:{code:'write-error',message:writeError}}};mergeOps(request.ops);return{result:{ok:true,value:{}}}}}};
 const makeController=()=>({load:async()=>{},accounts:test.createAccountDirectory()});
 async function expandAccounts(name){const tab=document.querySelector('#dsh-model-tab-accounts');if(tab)await act(async()=>tab.click());const disclosure=document.querySelector('.dshAccountDisclosure');if(disclosure.getAttribute('aria-expanded')!=='true')await act(async()=>disclosure.click());await click(name)}
@@ -24,6 +24,74 @@ async function render(element){await act(async()=>root.render(element));await fl
 async function click(label){const button=[...document.querySelectorAll('button')].find(node=>node.textContent===label);assert.ok(button,'button '+label);await act(async()=>button.click());await flush()}
 async function check(id,value){const node=document.querySelector(`[data-model-id="${id}"] input[type=checkbox]`);assert.ok(node);assert.equal(node.checked,!value);await act(async()=>node.click());await flush()}
 async function input(selector,value){const node=document.querySelector(selector);assert.ok(node,selector);await act(async()=>{Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype,'value').set.call(node,value);node.dispatchEvent(new dom.window.Event('input',{bubbles:true}))});await flush()}
+async function logoutTests(){
+ const requested=()=>apiCalls.filter(call=>call.action==='logout');
+ const target={provider:'openai-codex',accountScope:'account-a',label:'first@example.invalid'};
+ const valid={provider:'openai-codex',accountScope:'account-a',loginGeneration:'generation-a',taskCount:2,reason:'account-signed-out'};
+ let impactReply=valid,impactError=null,logoutError=null,logoutProvider=null,completed=null;
+ accountActionReply=async(action,body)=>{
+  if(action==='logout-impact'){
+   if(impactError)throw Error(impactError);
+   return{ok:true,json:async()=>clone(impactReply)};
+  }
+  if(action==='logout'){
+   if(logoutError)return{ok:false,status:409,json:async()=>({error:logoutError})};
+   return{ok:true,json:async()=>({status:'signedOut',provider:logoutProvider||body.provider,removedAccountScope:body.accountScope,loginGeneration:body.loginGeneration,reason:'account-signed-out',cancelledTaskCount:2,warning:'Credential cleanup warning'})};
+  }
+  throw Error('Unexpected logout-fixture action '+action);
+ };
+ const confirmButton=()=>[...document.querySelectorAll('button')].find(node=>node.textContent===t('accountLogoutConfirm'));
+ const dialog=(key)=>React.createElement(test.AccountLogoutDialog,{key,target,t,onClose:()=>{completed='cancelled'},onComplete:value=>{completed=value}});
+ for(const [index,invalid] of [
+  {taskCount:undefined},{taskCount:-1},{taskCount:'0'}, {taskCount:1.5},
+  {accountScope:''},{accountScope:'account-b'},{loginGeneration:''},{loginGeneration:undefined},{provider:'other'},{reason:'other'}
+ ].entries()){
+  impactReply={...valid,...invalid};await render(dialog('invalid-'+index));
+  assert.ok(confirmButton().disabled,'incomplete impact cannot be confirmed');
+  assert.match(document.body.textContent,/Impact unknown/);
+  assert.equal(document.body.textContent.includes('stop 0 running tasks'),false,'unknown impact never appears as zero');
+ }
+ impactReply=valid;impactError='impact lookup failed';const beforeUnknown=requested().length;
+ await render(dialog('network-error'));await click(t('accountLogoutConfirm'));
+ assert.equal(requested().length,beforeUnknown,'failed impact lookup cannot call logout');
+ impactError=null;await click(t('accountLogoutRetry'));assert.equal(confirmButton().disabled,false);assert.match(document.body.textContent,/stop 2 running tasks bound to this account/);
+ assert.equal(document.querySelector('[role=dialog]').textContent.includes('account-a'),false,'opaque account scope stays out of the confirmation copy');
+ logoutError='Login generation changed';await click(t('accountLogoutConfirm'));assert.match(document.body.textContent,/Login generation changed/);assert.ok(confirmButton().disabled);
+ const afterConflict=requested().length;await click(t('accountLogoutConfirm'));assert.equal(requested().length,afterConflict,'conflict requires a fresh impact read');
+ impactReply={...valid,loginGeneration:'generation-new',taskCount:0};logoutError=null;
+ await click(t('accountLogoutRetry'));assert.match(document.body.textContent,/stop 0 running tasks/);assert.equal(completed,null,'retry only reads impact');
+ await click(t('accountLogoutConfirm'));assert.deepEqual(requested().at(-1).body,{provider:'openai-codex',accountScope:'account-a',loginGeneration:'generation-new'});assert.equal(completed.warning,'Credential cleanup warning');
+ completed=null;logoutProvider='other-provider';impactReply=valid;await render(dialog('wrong-result-provider'));await click(t('accountLogoutConfirm'));assert.equal(completed,null);assert.ok(confirmButton().disabled,'a mismatched success provider requires rechecking');logoutProvider=null;
+ await render(React.createElement('span',null,'settings logout integration'));impactReply=valid;
+ accountRows=[{id:'openai-codex',name:'ChatGPT/Codex',signedIn:true,settingsNs:'llm-pi-ai',accountScope:'account-a',accounts:[{accountScope:'account-a',label:'first@example.invalid',active:true},{accountScope:'account-b',label:'second@example.invalid',active:false}]}];
+ const controller=makeController();
+ await render(React.createElement(test.AccountConnections,{controller,api,namespaces:new Map(),t,disabled:false}));await expandAccounts('ChatGPT/Codex');
+ const beforeCancel=requested().length;await click(t('accountLogout'));
+ assert.deepEqual(apiCalls.filter(call=>call.action==='logout-impact').at(-1).body,{provider:'openai-codex',accountScope:'account-a'});
+ assert.equal(requested().length,beforeCancel,'opening sign-out is read-only');
+ assert.match(document.body.textContent,/Queued content and conversation history are retained/);assert.match(document.body.textContent,/will not resume automatically/);assert.match(document.body.textContent,/API key tasks and tasks on other accounts are unaffected/);
+ await click(t('cancel'));assert.equal(requested().length,beforeCancel,'cancel preserves credentials and tasks');
+ await click(t('accountLogout'));
+ accountRows=[{...accountRows[0],accountScope:'account-b',accounts:accountRows[0].accounts.map(row=>({...row,active:row.accountScope==='account-b'}))}];
+ await act(async()=>{controller.accounts.invalidate();await controller.accounts.load(true)});
+ await click(t('accountLogoutConfirm'));
+ assert.deepEqual(requested().at(-1).body,{provider:'openai-codex',accountScope:'account-a',loginGeneration:'generation-a'},'external account switch cannot retarget sign-out');
+ assert.match(document.body.textContent,/Credential cleanup warning/);assert.match(document.body.textContent,/queued content is retained and will not resume automatically/);
+ await render(React.createElement('span',null,'sidebar logout integration'));controller.accounts.dispose();
+ impactReply={...valid,accountScope:'account-b',loginGeneration:'generation-b',taskCount:1};const sidebarController=makeController();
+ await render(React.createElement(test.SidebarAccount,{controller:sidebarController,t,wide:true}));await act(async()=>document.querySelector('.dshAccountBadge').click());await flush();
+ const beforeSaved=requested().length;
+ await act(async()=>[...document.querySelector('[data-account-scope="account-b"]').querySelectorAll('button')].find(node=>node.textContent===t('accountRemove')).click());await flush();
+ assert.equal(requested().length,beforeSaved);assert.match(document.body.textContent,/stop 1 running tasks/);
+ assert.deepEqual(apiCalls.filter(call=>call.action==='logout-impact').at(-1).body,{provider:'openai-codex',accountScope:'account-b'});
+ await click(t('accountLogoutConfirm'));assert.deepEqual(requested().at(-1).body,{provider:'openai-codex',accountScope:'account-b',loginGeneration:'generation-b'});
+ await render(React.createElement('span',null,'CLI accounts retain official-client control'));sidebarController.accounts.dispose();
+ accountRows=[{id:'cli-fixture',name:'Official CLI',signedIn:true,scope:'subagent'}];const cliController=makeController();
+ await render(React.createElement(test.AccountConnections,{controller:cliController,api,namespaces:new Map(),t,disabled:false}));await expandAccounts('Official CLI');
+ assert.equal([...document.querySelectorAll('button')].some(node=>[t('accountLogout'),t('accountRemove')].includes(node.textContent)),false);
+ await render(null);cliController.accounts.dispose();accountActionReply=null;
+ console.log('PASS OAuth logout: unknown-impact fail closed; valid zero; explicit confirmation/cancel; conflict recheck; captured scope/generation across account switch; settings/sidebar parity; CLI exclusion');
+}
 async function main(){
 assert.equal(test.normalizeProviderRoute('DeepSeek 4.1'),'deepseek-4-1');
 assert.equal(test.normalizeProviderRoute('4.1'),'provider-4-1');
@@ -170,6 +238,7 @@ assert.equal(document.querySelectorAll('[data-account-scope]').length,2,'statist
 await click(t('accountSwitch'));assert.equal(accountRows[0].accountScope,'account-b');assert.equal(apiCalls.filter(call=>call.action==='usage').at(-1).body.accountScope,'account-b');
 await click(t('accountAdd'));assert.match(document.body.textContent,/FIXTURE-CODE/,'another account can be authorized directly from the statistics dialog');await click(t('cancel'));assert.equal(document.body.textContent.includes('FIXTURE-CODE'),false);
 await render(React.createElement('span',null,'account directory race'));multiController.accounts.dispose();accountActionReply=null;usageReply=null;
+await logoutTests();
 const service=test.createAccountDirectory();let resolveProviders,providerReads=0;
 providersReply=()=>{providerReads++;return providerReads===1?new Promise(resolve=>resolveProviders=resolve):Promise.resolve({ok:true,json:async()=>({providers:[{id:'new-account'}]})})};
 const firstLoad=service.load();service.invalidate();const secondLoad=service.load(true);

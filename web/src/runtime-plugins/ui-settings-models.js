@@ -2186,10 +2186,49 @@ window.__ModuleLoader__.load({
                 attempt.verificationUri&&h("a",{className:ModelsSection_module_css_default.secondaryButton,href:attempt.verificationUri,target:"_blank",rel:"noopener noreferrer"},t("accountOpenExternal")),
                 h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy,onClick:onCancel},t("cancel")));
         }
+        function logoutTarget(account,accountScope=account.accountScope) {
+            const saved=account.accounts?.find(item=>item.accountScope===accountScope);
+            return {provider:account.id,accountScope,label:saved?.label||saved?.accountId||account.name};
+        }
+        function AccountLogoutDialog({target,t,onClose,onComplete}) {
+            const h=react.createElement,[impact,setImpact]=react.useState(null),[working,setWorking]=react.useState(false),[error,setError]=react.useState(null);
+            const mounted=react.useRef(false),running=react.useRef(false),identity=react.useRef({provider:target.provider,accountScope:target.accountScope});
+            const read=async()=>{
+                if(running.current)return;running.current=true;setWorking(true);setImpact(null);setError(null);
+                try {
+                    const requested=identity.current;
+                    if(typeof requested.provider!=="string"||!requested.provider.trim()||(requested.accountScope!==undefined&&(typeof requested.accountScope!=="string"||!requested.accountScope.trim())))throw new Error(t("accountLogoutInvalid"));
+                    const value=await accountRequest("logout-impact",requested);
+                    if(!value||value.provider!==requested.provider||typeof value.accountScope!=="string"||!value.accountScope.trim()||(requested.accountScope!==undefined&&value.accountScope!==requested.accountScope)||typeof value.loginGeneration!=="string"||!value.loginGeneration.trim()||!Number.isSafeInteger(value.taskCount)||value.taskCount<0||value.reason!=="account-signed-out")throw new Error(t("accountLogoutInvalid"));
+                    if(mounted.current){identity.current={provider:value.provider,accountScope:value.accountScope};setImpact(Object.freeze({provider:value.provider,accountScope:value.accountScope,loginGeneration:value.loginGeneration,taskCount:value.taskCount}));}
+                } catch(e){if(mounted.current)setError(messageOf$1(e))}
+                finally{running.current=false;if(mounted.current)setWorking(false)}
+            };
+            react.useEffect(()=>{mounted.current=true;void read();return()=>{mounted.current=false}},[]);
+            const confirm=async()=>{
+                if(running.current||!impact)return;
+                const captured=impact;running.current=true;setWorking(true);setError(null);
+                try {
+                    const value=await accountRequest("logout",{provider:captured.provider,accountScope:captured.accountScope,loginGeneration:captured.loginGeneration});
+                    if(value.status!=="signedOut"||(value.provider!==undefined&&value.provider!==captured.provider)||value.removedAccountScope!==captured.accountScope||value.loginGeneration!==captured.loginGeneration||value.reason!=="account-signed-out"||!Number.isSafeInteger(value.cancelledTaskCount)||value.cancelledTaskCount<0||(value.warning!=null&&typeof value.warning!=="string"))throw new Error(t("accountLogoutRecheck"));
+                    if(mounted.current)onComplete(value);
+                } catch(e){if(mounted.current){setImpact(null);setError(`${messageOf$1(e)} · ${t("accountLogoutRecheck")}`)}}
+                finally{running.current=false;if(mounted.current)setWorking(false)}
+            };
+            return h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:true,onClose:()=>{if(!running.current)onClose()},title:t("accountLogoutTitle"),closeLabel:t("cancel"),className:"dshAccountDialog",footer:h(react.Fragment,null,
+                h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:working,onClick:onClose},t("cancel")),
+                !impact&&h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:working,onClick:read},t("accountLogoutRetry")),
+                h(_deepseek_ai_dsh_client_ui_primitives.Button,{disabled:working||!impact,onClick:confirm},t("accountLogoutConfirm")))},
+                h("p",null,target.label||target.provider),
+                h("p",{role:impact?undefined:"status"},impact?t("accountLogoutImpact").replace("{count}",String(impact.taskCount)):t(working?"accountLogoutReading":"accountLogoutUnknown")),
+                h("p",null,t("accountLogoutQueue")),
+                error&&h("p",{role:"alert",className:ModelsSection_module_css_default.error},t("accountLogoutUnknown")," · ",error));
+        }
         function SidebarAccount({controller,t,wide}) {
             const h=react.createElement,service=controller.accounts;
             const state=(0,react.useSyncExternalStore)(service.store.subscribe,service.store.getSnapshot,service.store.getSnapshot);
             const [open,setOpen]=react.useState(false),[selected,setSelected]=react.useState(null),[switching,setSwitching]=react.useState(false),[failure,setFailure]=react.useState(null),[attempt,setAttempt]=react.useState(null);
+            const [logoutSelection,setLogoutSelection]=react.useState(null),[logoutNotice,setLogoutNotice]=react.useState(null);
             const busy=react.useRef(false),mounted=react.useRef(true),attemptRef=react.useRef(null),opened=react.useRef(false);
             react.useEffect(()=>{service.load().catch(()=>{})},[service]);
             react.useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;const id=attemptRef.current;attemptRef.current=null;if(id)accountRequest("cancel",{attempt:id}).catch(()=>{})}},[]);
@@ -2198,25 +2237,27 @@ window.__ModuleLoader__.load({
             const refresh=react.useCallback(async()=>{service.invalidate();await Promise.all([service.load(true),controller.load()])},[service,controller]);
             const run=async task=>{if(busy.current)return;busy.current=true;setSwitching(true);setFailure(null);try{await task()}catch(error){if(mounted.current)setFailure(messageOf$1(error))}finally{busy.current=false;if(mounted.current)setSwitching(false)}};
             const cancel=async()=>{const id=attemptRef.current;if(!id)return;const value=await accountRequest("cancel",{attempt:id});attemptRef.current=null;if(mounted.current)setAttempt(null);if(value.status==="complete")await refresh()};
-            const close=()=>run(async()=>{await cancel();opened.current=false;setOpen(false)});
+            const close=()=>{if(!logoutSelection)run(async()=>{await cancel();opened.current=false;setOpen(false)})};
             const manage=()=>run(async()=>{await cancel();opened.current=false;setOpen(false);window.dispatchEvent(new CustomEvent("dsh-open-settings",{detail:{section:"models"}}))});
             const switchAccount=scope=>run(async()=>{await accountRequest("switch",{provider:account.id,accountScope:scope});await refresh();await accountRequest("refresh",{provider:account.id});await refresh()});
-            const logout=scope=>run(async()=>{await accountRequest("logout",{provider:account.id,accountScope:scope});await refresh()});
+            const logout=scope=>{if(!busy.current&&!attemptRef.current&&!logoutSelection){setLogoutNotice(null);setLogoutSelection(logoutTarget(account,typeof scope==="string"?scope:""))}};
             const addAccount=()=>run(async()=>{if(attemptRef.current)return;const value=await accountRequest("start",{provider:account.id});if(!mounted.current||!opened.current){if(value.attempt)await accountRequest("cancel",{attempt:value.attempt});return}attemptRef.current=value.attempt;setAttempt(value)});
             react.useEffect(()=>{if(!attempt)return;const id=attempt.attempt;let stale=false,timer;const poll=async()=>{try{const value=await accountRequest("poll",{attempt:id});if(stale||!mounted.current||attemptRef.current!==id)return;setFailure(value.retryable?t("accountRetrying"):null);if(value.status==="complete"||value.status==="cancelled"){attemptRef.current=null;setAttempt(null);try{await refresh()}catch(error){if(mounted.current&&!attemptRef.current)setFailure(messageOf$1(error))}}else timer=setTimeout(poll,Math.max(3,value.interval||attempt.interval||3)*1000)}catch(error){if(!stale&&mounted.current&&attemptRef.current===id){setFailure(error.retryable?t("accountRetrying"):messageOf$1(error));if(error.retryable&&(!attempt.expiresAt||Date.now()<attempt.expiresAt*1000)){timer=setTimeout(poll,Math.max(5,attempt.interval||5)*1000)}else{attemptRef.current=null;setAttempt(null);accountRequest("cancel",{attempt:id}).catch(()=>{})}}}};timer=setTimeout(poll,Math.max(3,attempt.interval||3)*1000);return()=>{stale=true;clearTimeout(timer)}},[attempt,refresh]);
-            if(!account)return null;
+            if(!account&&!logoutSelection&&!logoutNotice)return null;
             return h(react.Fragment,null,
+                logoutSelection&&h(AccountLogoutDialog,{target:logoutSelection,t,onClose:()=>setLogoutSelection(null),onComplete:value=>{setLogoutSelection(null);setLogoutNotice(t("accountLogoutDone")+(value.warning?` ${value.warning}`:""));void run(refresh)}}),
+                logoutNotice&&h("p",{role:"status"},logoutNotice),
                 h("div",{className:"dshAccountBadges",style:{display:"flex",flexDirection:"column",width:"100%",minWidth:0,maxHeight:180,overflowY:"auto",overflowX:"hidden"}},...signed.map(item=>h("button",{key:item.id,type:"button",className:"dshSidebarAction dshAccountBadge","data-provider":item.id,"data-rail":!wide||undefined,title:item.name+" · "+t("accountSignedIn"),"aria-label":`${item.name} · ${t("accountTitle")}`,"aria-haspopup":"dialog",disabled:switching||!!attempt,onClick:()=>{setSelected(item.id);opened.current=true;setOpen(true);service.load().catch(()=>{})}},
 					 h(_deepseek_ai_dsh_client_ui_primitives.IconAgentPresetOutline16,{size:16}),wide&&h("span",null,item.name+(item.accounts?.length>1?` · ${item.accounts.length}`:""))))),
-                h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open,onClose:close,title:t("accountTitle"),closeLabel:t("close"),className:"dshAccountDialog",footer:h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:switching,onClick:manage},t("accountManage"))},
+                account&&h(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:open&&!logoutSelection,onClose:close,title:t("accountTitle"),closeLabel:t("close"),className:"dshAccountDialog",footer:h(_deepseek_ai_dsh_client_ui_primitives.Button,{variant:"outline",disabled:switching||!!logoutSelection,onClick:manage},t("accountManage"))},
                     state.error&&h("p",{role:"alert"},state.error),
                     failure&&h("p",{role:"alert",className:ModelsSection_module_css_default.error},failure),
                     signed.length>1&&h("nav",{className:"dshAccountSwitcher","aria-label":t("accountProviders")},...signed.map(item=>h("button",{key:item.id,type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:switching||!!attempt,"aria-pressed":item.id===account.id,onClick:()=>setSelected(item.id)},item.name))),
                     h("p",{className:ModelsSection_module_css_default.modelCatalogMeta},account.name),
-                    h(AccountSessionList,{account,t,disabled:switching||!!attempt,onSwitch:switchAccount,onLogout:logout}),
+                    h(AccountSessionList,{account,t,disabled:switching||!!attempt||!!logoutSelection,onSwitch:switchAccount,onLogout:logout}),
                     h("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:switching||!!attempt,onClick:addAccount},t("accountAdd")),
                     h(AccountLoginPrompt,{attempt,t,busy:switching,onCancel:()=>run(cancel)}),
-                    open&&!switching&&!attempt&&(account.signedIn&&account.id==="openai-codex"?h(CodexUsagePanel,{key:account.accountScope,account,disabled:false}):h("p",null,t("accountUsageUnavailable")))));
+                    open&&!logoutSelection&&!switching&&!attempt&&(account.signedIn&&account.id==="openai-codex"?h(CodexUsagePanel,{key:account.accountScope,account,disabled:false}):h("p",null,t("accountUsageUnavailable")))));
         }
         function CodexUsagePanel({account,disabled}) {
             const h=react.createElement;
@@ -2269,6 +2310,7 @@ window.__ModuleLoader__.load({
             const service=controller.accounts;
             const directory=(0,react.useSyncExternalStore)(service.store.subscribe,service.store.getSnapshot,service.store.getSnapshot),accounts=directory.accounts;
             const [attempt,setAttempt]=(0,react.useState)(null),[busy,setBusy]=(0,react.useState)(false),[failure,setFailure]=(0,react.useState)(null);
+            const [logoutSelection,setLogoutSelection]=react.useState(null),[logoutNotice,setLogoutNotice]=react.useState(null);
             const [accountsOpen,setAccountsOpen]=react.useState(standalone),[activeAccount,setActiveAccount]=react.useState(null),[dirtyAccounts,setDirtyAccounts]=react.useState(()=>new Set());
             const dirtyCallbacks=react.useRef(new Map());
             const dirtyCallback=id=>{if(!dirtyCallbacks.current.has(id))dirtyCallbacks.current.set(id,dirty=>setDirtyAccounts(old=>{if(old.has(id)===dirty)return old;const next=new Set(old);if(dirty)next.add(id);else next.delete(id);return next}));return dirtyCallbacks.current.get(id)};
@@ -2315,7 +2357,7 @@ window.__ModuleLoader__.load({
                 if(!mounted.current){if(value.attempt)await accountRequest("cancel",{attempt:value.attempt});return}
                 attemptRef.current=value.attempt;setAttempt(value);
             });
-            const logout=(provider,accountScope)=>run(async()=>{if(attemptRef.current)return;await accountRequest("logout",{provider,accountScope});await Promise.all([refresh(),controller.load()])});
+            const logout=(account,accountScope=account.accountScope)=>{if(!disabled&&!busyRef.current&&!attemptRef.current&&!logoutSelection){setLogoutNotice(null);setLogoutSelection(logoutTarget(account,accountScope))}};
             const switchAccount=(provider,accountScope)=>run(async()=>{if(attemptRef.current)return;await accountRequest("switch",{provider,accountScope});await Promise.all([refresh(),controller.load()]);await accountRequest("refresh",{provider});await Promise.all([refresh(),controller.load()])});
             const cancel=()=>run(async()=>{
                 const pending=attempt,id=attemptRef.current;if(!id)return;
@@ -2324,6 +2366,8 @@ window.__ModuleLoader__.load({
                 catch(error){if(mounted.current){attemptRef.current=id;setAttempt({...pending})}throw error}
             });
             return (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowCard,children:[
+                logoutSelection&&(0,react_jsx_runtime.jsx)(AccountLogoutDialog,{target:logoutSelection,t,onClose:()=>setLogoutSelection(null),onComplete:value=>{setLogoutSelection(null);setLogoutNotice(t("accountLogoutDone")+(value.warning?` ${value.warning}`:""));void run(async()=>{await Promise.all([refresh(),controller.load()])})}}),
+                logoutNotice&&(0,react_jsx_runtime.jsx)("p",{role:"status",children:logoutNotice}),
                 (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowHead,children:[(0,react_jsx_runtime.jsxs)("button",{type:"button",className:"dshAccountDisclosure",onClick:()=>setAccountsOpen(value=>!value),"aria-expanded":accountsOpen,children:[(0,react_jsx_runtime.jsx)(IconChevron,{open:accountsOpen}),t("accountTitle"),(0,react_jsx_runtime.jsx)("span",{className:ModelsSection_module_css_default.rowTag,children:accounts.filter(item=>item.signedIn).length+" / "+accounts.length})]}), (0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:busy||!!attempt,onClick:()=>run(refresh),children:t("accountRefresh")})]}),
                 (0,react_jsx_runtime.jsx)("p",{className:ModelsSection_module_css_default.advancedHint,children:t("accountHint")}),
                 ...accounts.map(account=>(0,react_jsx_runtime.jsxs)("div",{className:"dshAccountEntry",hidden:!accountsOpen,children:[
@@ -2333,11 +2377,11 @@ window.__ModuleLoader__.load({
                         (0,react_jsx_runtime.jsxs)("div",{className:ModelsSection_module_css_default.rowActions,hidden:activeAccount!==account.id,children:[
                             account.installed===false?(0,react_jsx_runtime.jsx)("a",{className:ModelsSection_module_css_default.secondaryButton,href:account.installUrl,target:"_blank",rel:"noopener noreferrer",children:t("accountInstallCli")}):(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||busy||!!attempt,onClick:()=>start(account.id,account.signedIn),children:t(account.signedIn?account.scope==="subagent"?"accountRefresh":"accountReconnect":"accountLogin")}),
                             account.scope!=="subagent"&&(account.signedIn||account.accounts?.length>0)&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.secondaryButton,disabled:disabled||busy||!!attempt||dirtyAccounts.has(account.id),onClick:()=>start(account.id,false),children:t("accountAdd")}),
-                            account.signedIn&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.dangerButton,disabled:disabled||busy||!!attempt,onClick:()=>logout(account.id),children:t("accountLogout")})
+                            account.signedIn&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)("button",{type:"button",className:ModelsSection_module_css_default.dangerButton,disabled:disabled||busy||!!attempt||!!logoutSelection,onClick:()=>logout(account),children:t("accountLogout")})
                         ]})
                     ]}),
                     account.error&&(0,react_jsx_runtime.jsx)("p",{role:"alert",className:ModelsSection_module_css_default.error,children:account.error}),
-                    accountsOpen&&activeAccount===account.id&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)(AccountSessionList,{account,t,disabled:disabled||busy||!!attempt||dirtyAccounts.has(account.id),onSwitch:scope=>switchAccount(account.id,scope),onLogout:scope=>logout(account.id,scope)}),
+                    accountsOpen&&activeAccount===account.id&&account.scope!=="subagent"&&(0,react_jsx_runtime.jsx)(AccountSessionList,{account,t,disabled:disabled||busy||!!attempt||!!logoutSelection||dirtyAccounts.has(account.id),onSwitch:scope=>switchAccount(account.id,scope),onLogout:scope=>logout(account,typeof scope==="string"?scope:"")}),
                     accountsOpen&&activeAccount===account.id&&account.id==="openai-codex"&&account.signedIn&&!busy&&!attempt&&(0,react_jsx_runtime.jsx)(CodexUsagePanel,{account,disabled},account.accountScope),
                     account.signedIn&&account.scope!=="subagent"&&((accountsOpen&&activeAccount===account.id)||dirtyAccounts.has(account.id))&&(0,react_jsx_runtime.jsx)("div",{hidden:!accountsOpen||activeAccount!==account.id,children:(0,react_jsx_runtime.jsx)(ModelEditorBoundary,{t,children:(0,react_jsx_runtime.jsx)(ProviderModelManager,{provider:account.provider||account.id,api,t,embedded:standalone,disabled:disabled||busy||!!attempt,revision:namespaces?.get(account.settingsNs)?.revision??account.catalog?.updatedAt,onDirtyChange:dirtyCallback(account.id),onSaved:async()=>{await Promise.all([refresh(),controller.load()])}})})})
                 ]},account.id)),
@@ -3162,6 +3206,7 @@ window.__ModuleLoader__.load({
             accountEmbeddedTitle:"Subscription authorization browser",accountEmbeddedHint:"Click a field in the page, then enter its text below. Input stays in this authorization session. If the provider requires another browser, use the sign-in link below.",accountBrowserStarting:"Opening authorization browser…",accountBrowserInput:"Text for the selected field",accountBrowserType:"Send input",
             accountEmbeddedVerify:"Complete sign-in in the page below. Enter the device code if one is shown; account status updates automatically.",
             accountSignedIn: "Connected", accountSignedOut: "Disconnected", accountReconnect: "Reconnect", accountLogin: "Sign in", accountLogout: "Sign out",
+            accountLogoutTitle: "Confirm account sign-out", accountLogoutConfirm: "Sign out this account", accountLogoutReading: "Checking tasks for this account…", accountLogoutUnknown: "Impact unknown. Retry before signing out.", accountLogoutRetry: "Retry impact check", accountLogoutInvalid: "The host did not return a valid account and task impact.", accountLogoutRecheck: "Check the account impact again and confirm before retrying.", accountLogoutImpact: "Signing out will stop {count} running tasks bound to this account.", accountLogoutQueue: "Queued content and conversation history are retained. Tasks will not resume automatically. API key tasks and tasks on other accounts are unaffected.", accountLogoutDone: "Signed out. Tasks for this account stopped; queued content is retained and will not resume automatically.",
             accountAdd: "Sign in another account", accountSaved: "Accounts for this provider", accountCurrent: "Current account", accountSwitch: "Switch account", accountRemove: "Remove account", accountLabel: "Account", accountSavedLogin: "Saved login", accountNeedsLogin: "Sign in again", accountAddHint: "Existing accounts stay saved. On the authorization page, choose the other account you want to add.",
             accountVerify: "Open the sign-in page, enter this code, and complete authorization. This page will update automatically.", accountOpen: "Open sign-in page", accountOpenExternal: "Open in system browser",
 
@@ -3314,6 +3359,7 @@ window.__ModuleLoader__.load({
             accountEmbeddedTitle:"订阅授权浏览器",accountEmbeddedHint:"点击页面中的输入框，再在下方输入内容并发送；输入仅用于当前授权会话。如供应商要求使用其他浏览器，可使用下方的登录链接。",accountBrowserStarting:"正在打开授权浏览器…",accountBrowserInput:"向选中的页面输入框输入内容",accountBrowserType:"发送输入",
             accountEmbeddedVerify:"在下方授权页面完成登录；如有设备验证码，请在授权页面输入，账号状态会自动更新。",
             accountSignedIn: "已连接", accountSignedOut: "未连接", accountReconnect: "重新连接", accountLogin: "登录", accountLogout: "退出登录",
+            accountLogoutTitle: "确认退出账号", accountLogoutConfirm: "确认退出此账号", accountLogoutReading: "正在核对该账号的任务…", accountLogoutUnknown: "影响未知，请重试后再退出。", accountLogoutRetry: "重试影响查询", accountLogoutInvalid: "服务未返回有效的账号及任务影响信息。", accountLogoutRecheck: "请重新查询影响并确认后再退出。", accountLogoutImpact: "退出将停止绑定此账号的 {count} 个运行中任务。", accountLogoutQueue: "排队内容和会话记录保留，任务不会自动继续；API 密钥任务和其他账号的任务不受影响。", accountLogoutDone: "已退出账号；该账号任务已停止，排队内容保留且不会自动继续。",
             accountAdd: "登录另一个账号", accountSaved: "同一登录方式的账号", accountCurrent: "当前账号", accountSwitch: "切换账号", accountRemove: "移除账号", accountLabel: "账号", accountSavedLogin: "已保存登录", accountNeedsLogin: "需要重新登录", accountAddHint: "现有账号会保留，请在授权页面选择要添加的另一个账号。",
             accountVerify: "打开登录页面，输入验证码并完成授权，此处会自动更新。", accountOpen: "打开登录页面", accountOpenExternal: "在系统浏览器中打开",
 
