@@ -40,13 +40,15 @@ class _HostClient extends DshClient {
     calls.add((path, scope));
     if (path == '/__dsh-schedule/catalog') return scheduleCatalog.future;
     if (path == '/__dsh-knowledge/catalog') return knowledgeCatalog.future;
-    if (path == '/__dsh-knowledge/documents')
+    if (path == '/__dsh-knowledge/documents') {
       return Future.value({'documents': <Json>[]});
+    }
     if (path == '/__dsh-schedule/wait') {
       final pending = Completer<Json>();
       scope?.register(() {
-        if (!pending.isCompleted)
+        if (!pending.isCompleted) {
           pending.completeError(DshException('cancelled', 'closed'));
+        }
       });
       return pending.future;
     }

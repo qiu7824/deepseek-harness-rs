@@ -5,8 +5,8 @@
 ## 发布边界与证据规则
 
 - Web 发布入口为 `web/src/main.ts`，发布资源为 `web/dist`；`tools/stage_release_web.py` 校验清单内文件及内容摘要后复制到发布目录。
-- 当前 `web/dist/plugins/manifest.json` 列出 47 个模块。34 个文件具有同名 `web/src/runtime-plugins` 源文件，其余模块以当前发布文件为核对入口。快捷键管理已接入正式发布入口，相关源码和发布资源回归通过；发布前必须再次核对源文件、发布文件与清单摘要的一致性。
-- `release/plugins` 另外包含 9 个随包扩展：`dsh-artifacts`、`dsh-auto-review`、`dsh-better-sidebar`、`dsh-context-jump`、`dsh-schedule`、`dsh-sidebar-workbench-suite`、`dsh-skin-center`、`dsh-time-context`、`dsh-voice-input`；它们提供的页面、文件查看器和弹层均纳入验收。
+- Web 模块以当前 `web/dist/plugins/manifest.json` 为准；具有同名 `web/src/runtime-plugins` 源文件的模块同时核对源码，其余模块以发布文件为入口。快捷键管理已接入正式发布入口，相关源码和发布资源回归通过；发布前必须再次核对源文件、发布文件与清单摘要的一致性。
+- `release/plugins` 另外包含 8 个随包扩展：`dsh-artifacts`、`dsh-auto-review`、`dsh-better-sidebar`、`dsh-context-jump`、`dsh-schedule`、`dsh-sidebar-workbench-suite`、`dsh-time-context`、`dsh-voice-input`；它们提供的页面、文件查看器和弹层均纳入验收。
 - 页面以 slot、主面板 key、会话 view id、工作台 tab id 注册，不能只按 URL 路由枚举。
 - 所有矩阵行当前均为 **待完整实测**。测试列表示已找到的回归入口，执行版本、日志、截图和断言结果须另行补齐。已有 DOM harness 主要使用 JSDOM，不能证明真实浏览器文字换行、画布渲染、遮挡或滚动尺寸正确。
 
@@ -87,7 +87,9 @@
 | Computer Use 与设备 | 同上：`ControlledBrowserTab`、`suite:controlled-browser`、`ComputerUseSettings` | 浏览器/窗口、截图、刷新开关、断线、切换任务、关闭归属 | 工作台 harness；真实受控浏览器/窗口待实测 |
 | 子对话侧预览 | `R/ui-workbench-previews.js`：`SideConversation`、`suite:child-chat` | 辅助预览、转主区、输入草稿、停止、旧轮询迟到、关闭清理 | `H/collaboration_reliability_dom_harness.cjs` |
 | 计划预览 | 同上：`PlanPreview`、`suite:plan-preview`；`W/ui-plan.js` | 长计划、来源跳转、编辑/确认边界、切换任务 | 工作台 harness；计划流程待实测 |
-| 目标、工作流、定时计划 | `W/ui-goal.js`、`W/ui-workflow-run.js`、`W/ui-schedule.js` 的会话节点、输入栏和标题动作 | 创建、运行、暂停、中断、恢复、完成、Host 重启 | 协同/对话 harness；目标和定时计划完整闭环待实测 |
+| 目标与工作流 | `W/ui-goal.js`、`W/ui-workflow-run.js` 的会话节点、输入栏和标题动作 | 创建、运行、暂停、中断、恢复、完成、Host 重启 | 协同/对话 harness；完整闭环待实测 |
+| 提醒与定时执行任务 | 提醒插件管理入口；`web/src/runtime-plugins/ui-schedule.js` 与 Flutter `features/schedule/schedule_page.dart` 的独立执行任务页及会话角标 | 两域语义与存储隔离、规则、启停、立即运行、失败、回执、归档和删除 | 提醒回归及 `H/schedule_dom_harness.cjs` 已通过对应基线；最终安装后的投递和执行结果待实测 |
+| 知识库 | `web/src/runtime-plugins/ui-knowledge.js`、Flutter `features/knowledge/knowledge_page.dart` | 文档上传／路径导入、类型和大小错误、启停、检索及删除 | `H/knowledge_dom_harness.cjs` 已通过；真实资料及原生路径待验收 |
 | 审批与问题 | `R/ui-permission.js`、`R/ui-user-questions.js` | 多问题、超时、拒绝、断线恢复、重复提交、控制只作用于目标请求 | `H/approval_rpc_dom_harness.cjs`、`H/question_wait_dom_harness.cjs` |
 | 输入触发、文件上传、语音 | `R/ui-input-trigger.js`；`P/dsh-voice-input/lib/client.js`：`VoiceInputButton` | 按住/松开、实时中间文本、识别结束、麦克风失败、输入草稿、会话切换 | `H/file_upload_dom_harness.cjs`、`H/voice_input_dom_harness.cjs`、`H/composer_empty_dom_harness.cjs`；真实音频延迟须另测 |
 | 模型、预设、技能与命令选择 | `R/ui-model-selection.js`、`R/ui-agent-preset.js`、`W/ui-skill.js`、`W/ui-commands.js` | 搜索、当前项、不可用项、键盘选择、菜单定位、切换会话后的选择一致性 | `H/model_current_label_dom_harness.cjs`、`H/agent_preset_dom_harness.cjs`、`H/conversation_interactions_dom_harness.cjs` |
@@ -117,9 +119,10 @@
 | 服务连接和客户端资源 | `lib/src/controller.dart`、`lib/src/preferences.dart`；`packages/dsh_client_dart` | 关闭客户端不误终止 Host；断连、旧响应、取消与草稿隔离；Host 内存与 Flutter 进程分别记录 |
 | 对话和任务控制 | `lib/src/conversation.dart`、`lib/src/interactions.dart`、`lib/features/shell.dart` | 与 Web 的任务选择、停止、审批、编辑、重连语义一致 |
 | 设置 | `lib/features/settings/settings_shell.dart`、`models_page.dart`、`resource_page.dart` | 设置版本冲突、未保存输入、凭据隐藏、Host 重启项提示一致 |
+| 原生插件与时间上下文 | `lib/features/settings/plugin_operations_panel.dart`、`time_context_panel.dart` 已接入 | 安装／卸载确认、进度、取消、恢复、关闭页面保留 Host 操作；间隔／时区配置冲突与连接切换隔离，真实安装源和安装后操作待验收 |
 | 已有测试入口 | `test/controller_test.dart`、`test/workbench_test.dart`、`test/launcher_test.dart`、`integration_test/desktop_flow_test.dart` | 测试结果关联冻结源码和实际产物；旧 exe 或依赖清单不能证明当前源码可构建，组件测试不能替代原生界面验收 |
 
-2026-09-27 未安装 Flutter 候选的全量测试为 314 项通过、4 项条件跳过，静态分析无问题，Windows Release 已冻结 195 个文件。候选包含全局提醒、快捷键完善与账号退出确认界面。账号退出的 Host 修复基线已通过回合交接、暂停队列保留、冷恢复及新手工回合隔离回归，组合库测试及 62 项生命周期集成测试通过；普通 Release 按冻结构建独立验证，原生界面与真实账号流程仍待验收。已安装客户端仍为文字显示与工具标签修复版，具体构建摘要见[桌面平台支持与验收](../desktop-platforms.zh.md)。
+2026-09-27 历史未安装 Flutter 候选的全量测试为 314 项通过、4 项条件跳过，静态分析无问题，Windows Release 已冻结 195 个文件。该历史候选包含全局提醒、快捷键完善与账号退出确认界面，不代表最终合并客户端。账号退出的 Host 修复基线已通过回合交接、暂停队列保留、冷恢复及新手工回合隔离回归，组合库测试及 62 项生命周期集成测试通过；普通 Release 按冻结构建独立验证，原生界面与真实账号流程仍待验收。已安装客户端仍为文字显示与工具标签修复版，具体构建摘要见[桌面平台支持与验收](../desktop-platforms.zh.md)。
 
 ## 三轮实测记录结构
 
@@ -129,4 +132,4 @@
 
 每项结果以“通过、失败、不适用”记录；不适用须给出已核实的发布变体或平台条件。未运行项目维持待验收。发布前逐行补齐结果，任何必需项目失败均不满足验收门槛。
 
-2026-09-22 矩阵的 50,000,000 字节要求属于历史基线；2026-09-27 现行 Host 全过程工作集峰值上限为 70,000,000 字节。完整历史读取与旧会话恢复分别执行固定负载矩阵，重启后的较低峰值或局部诊断不能代替全过程结果。候选版本与实测结果见[v0.1.7-rc.2 兼容评估](../upstream-v0.1.7-rc.2-evaluation.zh.md)。
+2026-09-22 的 50,000,000 字节要求及后续 70,000,000 字节门槛均按历史性能基线保留。内存优化和性能门槛已延期，不作为当前发布阻塞；既往未达标结果不标记为通过。恢复性能验收时，完整历史读取与旧会话恢复分别执行固定负载矩阵，重启后的较低峰值或局部诊断不能代替全过程结果。候选版本与实测结果见[v0.1.7-rc.2 兼容评估](../upstream-v0.1.7-rc.2-evaluation.zh.md)。

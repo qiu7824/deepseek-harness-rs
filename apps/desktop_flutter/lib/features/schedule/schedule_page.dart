@@ -483,8 +483,9 @@ class _SchedulePageState extends State<SchedulePage> {
           oldWidget.api != widget.api,
       notify: false,
     );
-    if (oldWidget.initialTaskId != widget.initialTaskId)
+    if (oldWidget.initialTaskId != widget.initialTaskId) {
       selected = widget.initialTaskId;
+    }
   }
 
   void _hostChanged() => _bind();
@@ -495,8 +496,9 @@ class _SchedulePageState extends State<SchedulePage> {
     if (route == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final navigator = route.navigator;
-      if (navigator != null && navigator.mounted && route.isActive)
+      if (navigator != null && navigator.mounted && route.isActive) {
         navigator.removeRoute(route);
+      }
     });
   }
 
@@ -504,8 +506,9 @@ class _SchedulePageState extends State<SchedulePage> {
     final client = widget.api?.client ?? widget.controller.client;
     if (!force &&
         identical(client, _client) &&
-        identical(widget.api, _injected))
+        identical(widget.api, _injected)) {
       return;
+    }
     watcher?.dispose();
     watcher = null;
     _scope.cancel();
@@ -520,9 +523,10 @@ class _SchedulePageState extends State<SchedulePage> {
     error = client == null ? '请先连接本机服务' : null;
     if (notify && mounted) setState(() {});
     final owner = _api, generation = _generation;
-    if (owner != null)
+    if (owner != null) {
       watcher = ScheduleWatch(owner, (scope) => fetch(owner, generation, scope))
         ..start();
+    }
   }
 
   @override
@@ -550,8 +554,9 @@ class _SchedulePageState extends State<SchedulePage> {
       final value = await owner.call('catalog', const {}, scope);
       if (!current()) return null;
       final revision = (value['revision'] as num?)?.toInt();
-      if (request != _fetchRevision)
+      if (request != _fetchRevision) {
         return (catalog?['revision'] as num?)?.toInt() ?? revision;
+      }
       setState(() {
         catalog = value;
         error = revision == null
@@ -1095,8 +1100,9 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
       final value = await op.request(
         () => widget.api.call('history', {...binding, 'limit': 50}, op.scope),
       );
-      if (op.valid && request == _historyRevision)
+      if (op.valid && request == _historyRevision) {
         setState(() => history = value);
+      }
     } catch (e) {
       if (op.valid && request == _historyRevision) setState(() => error = '$e');
     }
@@ -1526,7 +1532,9 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
           'rule': draft.toRule(),
         }, op.scope),
       );
-      if (op.valid) Navigator.of(context).pop(object(value['task']));
+      if (mounted && op.valid) {
+        Navigator.of(context).pop(object(value['task']));
+      }
     } on DshException catch (e) {
       if (op.valid) setState(() => error = '$e');
     } catch (e) {
@@ -1656,8 +1664,9 @@ class _ScheduleSessionBadgeState extends State<ScheduleSessionBadge> {
     if (!force &&
         identical(client, _client) &&
         identical(widget.api, _injected) &&
-        session == _session)
+        session == _session) {
       return;
+    }
     watcher?.dispose();
     watcher = null;
     _client = client;

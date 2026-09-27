@@ -110,8 +110,9 @@ class _KnowledgePageState extends State<KnowledgePage> {
     if (route == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final navigator = route.navigator;
-      if (navigator != null && navigator.mounted && route.isActive)
+      if (navigator != null && navigator.mounted && route.isActive) {
         navigator.removeRoute(route);
+      }
     });
   }
 
@@ -119,8 +120,9 @@ class _KnowledgePageState extends State<KnowledgePage> {
     final client = widget.api?.client ?? widget.controller.client;
     if (!force &&
         identical(client, _client) &&
-        identical(widget.api, _injected))
+        identical(widget.api, _injected)) {
       return;
+    }
     _scope.cancel();
     _scope = RequestScope();
     _generation++;
@@ -166,16 +168,18 @@ class _KnowledgePageState extends State<KnowledgePage> {
       setState(() {
         catalog = value;
         error = null;
-        if (selected == null && bases.isNotEmpty)
+        if (selected == null && bases.isNotEmpty) {
           selected = bases.first['id'] as String?;
+        }
       });
     } catch (e) {
-      if (current())
+      if (current()) {
         setState(
           () => error = e is DshException && e.code == 'http-404'
               ? '本机服务不支持知识库，请更新到最新版本'
               : '$e',
         );
+      }
     }
   }
 
@@ -518,8 +522,9 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
     }
     if (rebound ||
         oldWidget.base['documentCount'] != widget.base['documentCount'] ||
-        oldWidget.base['updatedAt'] != widget.base['updatedAt'])
+        oldWidget.base['updatedAt'] != widget.base['updatedAt']) {
       unawaited(loadDocuments());
+    }
   }
 
   @override
@@ -540,11 +545,13 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
       final value = await op.request(
         () => widget.api.call('documents', {'id': id}, op.scope),
       );
-      if (op.valid && request == _documentsRevision)
+      if (op.valid && request == _documentsRevision) {
         setState(() => documents = objects(value['documents']));
+      }
     } catch (e) {
-      if (op.valid && request == _documentsRevision)
+      if (op.valid && request == _documentsRevision) {
         setState(() => error = '$e');
+      }
     }
   }
 
@@ -646,8 +653,9 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
         'limit': 10,
       }, op.scope),
     );
-    if (op.valid && query.text == text)
+    if (op.valid && query.text == text) {
       setState(() => results = objects(value['results']));
+    }
   });
 
   @override
@@ -969,8 +977,9 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                                         ),
                                       );
                                       await loadDocuments();
-                                      if (op.valid)
+                                      if (op.valid) {
                                         await op.request(widget.onChanged);
+                                      }
                                     }),
                             ),
                           ],
@@ -1114,7 +1123,9 @@ class _KnowledgeCreateDialogState extends State<KnowledgeCreateDialog> {
           'description': description.text,
         }, op.scope),
       );
-      if (op.valid) Navigator.of(context).pop(object(value['base']));
+      if (mounted && op.valid) {
+        Navigator.of(context).pop(object(value['base']));
+      }
     } on DshException catch (e) {
       if (op.valid) setState(() => error = '$e');
     } catch (e) {

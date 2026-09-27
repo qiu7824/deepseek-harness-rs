@@ -10,8 +10,9 @@ class ComposerClipboard {
 
   Future<List<XFile>?> readFiles() async {
     final contents = await NativeClipboard.read();
-    if (contents.files.isNotEmpty)
+    if (contents.files.isNotEmpty) {
       return contents.files.map(XFile.new).toList();
+    }
     final bytes = contents.png;
     if (bytes == null) return null;
     final name = pastedImageName(DateTime.now());
