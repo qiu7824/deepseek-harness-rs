@@ -53,6 +53,8 @@ impl PortableTerminalHandle {
         if spec.signal.as_ref().is_some_and(|signal| signal()) {
             return Err("subprocess-local: terminal allocation aborted before spawn".to_string());
         }
+        #[cfg(windows)]
+        enable_terminal_ctrl_c();
 
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
@@ -355,6 +357,30 @@ fn foreground_id_for(master: &dyn MasterPty, pid: u32) -> u32 {
 #[cfg(windows)]
 fn foreground_id_for(_master: &dyn MasterPty, pid: u32) -> u32 {
     pid
+}
+
+/// Children inherit the console "ignore Ctrl+C" state, which a Host started
+/// in a new process group carries. Terminal shells would then never see the
+/// Ctrl+C that SIGINT writes into their pseudo console, leaving foreground
+/// commands running. Clear it once before the first terminal. A windowless
+/// Host cannot receive a user's Ctrl+C, so it keeps ignoring the event itself.
+#[cfg(windows)]
+fn enable_terminal_ctrl_c() {
+    use windows_sys::Win32::System::Console::{
+        CTRL_C_EVENT, GetConsoleWindow, SetConsoleCtrlHandler,
+    };
+
+    unsafe extern "system" fn ignore_ctrl_c(event: u32) -> windows_sys::core::BOOL {
+        (event == CTRL_C_EVENT).into()
+    }
+
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        if GetConsoleWindow().is_null() {
+            SetConsoleCtrlHandler(Some(ignore_ctrl_c), 1);
+        }
+        SetConsoleCtrlHandler(None, 0);
+    });
 }
 
 impl SubprocessTerminalHandle for PortableTerminalHandle {
