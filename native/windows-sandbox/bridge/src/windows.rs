@@ -335,8 +335,35 @@ fn console_size() -> Option<codex_utils_pty::TerminalSize> {
     })
 }
 
+/// Relay terminal keystrokes byte-for-byte to the sandboxed console. In the
+/// default processed mode the outer console turns Ctrl+C into a control
+/// event for this bridge, which would end the whole shell instead of
+/// interrupting the inner foreground command; line mode also echoes input a
+/// second time. Returns the previous mode for restoration.
+fn raw_console_input() -> Option<u32> {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+        ENABLE_VIRTUAL_TERMINAL_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE,
+        SetConsoleMode,
+    };
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    let mut mode = 0;
+    if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+        return None;
+    }
+    let raw = (mode & !(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT))
+        | ENABLE_VIRTUAL_TERMINAL_INPUT;
+    (unsafe { SetConsoleMode(handle, raw) } != 0).then_some(mode)
+}
+
+fn restore_console_input(mode: u32) {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode};
+    unsafe { SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), mode) };
+}
+
 async fn forward(spawned: codex_utils_pty::SpawnedProcess, tty: bool, timeout_ms: Option<u64>) -> i32 {
     use std::io::{Read, Write};
+    let console_mode = if tty { raw_console_input() } else { None };
     let session = Arc::new(spawned.session);
     let input = session.writer_sender();
     let (eof_tx, eof_rx) = tokio::sync::oneshot::channel();
@@ -413,5 +440,8 @@ async fn forward(spawned: codex_utils_pty::SpawnedProcess, tty: bool, timeout_ms
         let _ = stderr.await;
     })
     .await;
+    if let Some(mode) = console_mode {
+        restore_console_input(mode);
+    }
     code
 }
