@@ -415,10 +415,13 @@ pub(crate) fn window_with_sink(
     id: &str,
     request: dsh_session_persistence::SessionReadWindowRequest,
     cancelled: &impl Fn() -> bool,
-    sink: Option<Box<dyn dsh_session_persistence::HistoryWindowSink>>,
+    mut sink: Option<Box<dyn dsh_session_persistence::HistoryWindowSink>>,
 ) -> Result<dsh_session_persistence::SessionReadWindowResult, String> {
     use dsh_session_persistence::{SessionReadWindowResult, select_history_window};
     use std::collections::VecDeque;
+    if let Some(sink) = sink.as_mut() {
+        sink.begin_read();
+    }
     let capacity = request.max_events.saturating_add(1).max(2);
     let revision =
         crate::index::file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
@@ -496,8 +499,11 @@ pub(crate) fn forward_window_with_sink(
     id: &str,
     request: dsh_session_persistence::SessionReadForwardWindowRequest,
     cancelled: &impl Fn() -> bool,
-    sink: Option<Box<dyn dsh_session_persistence::HistoryWindowSink>>,
+    mut sink: Option<Box<dyn dsh_session_persistence::HistoryWindowSink>>,
 ) -> Result<dsh_session_persistence::SessionReadWindowResult, String> {
+    if let Some(sink) = sink.as_mut() {
+        sink.begin_read();
+    }
     let revision =
         crate::index::file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
     let mut count = 0;

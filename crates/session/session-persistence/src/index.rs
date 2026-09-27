@@ -116,6 +116,10 @@ pub struct SessionReadWindowResult {
 /// can resolve later provenance without retaining the window's payloads.
 /// All output remains provisional until the read and `finish` succeed.
 pub trait HistoryWindowSink: Send {
+    /// A streaming reader calls this on its owning thread before its first
+    /// source scan. Already-materialized compatibility projections do not
+    /// promise this boundary and leave the default hook unused.
+    fn begin_read(&mut self) {}
     fn inspect(&mut self, event: &SessionEvent) -> Result<(), String>;
     fn push(&mut self, event: SessionEvent) -> Result<(), String>;
     /// The boolean reports a safely shortened window whose omitted events

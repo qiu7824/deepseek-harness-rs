@@ -5,6 +5,9 @@ use dsh_session_persistence::{SessionReadWindowRequest, select_history_window};
 use serde_json::json;
 use std::io::Write;
 
+#[path = "read_start_tests.rs"]
+mod read_start;
+
 fn event(seq: u64, kind: &str) -> SessionEvent {
     SessionEvent {
         type_: kind.into(),

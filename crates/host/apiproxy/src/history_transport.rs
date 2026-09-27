@@ -350,6 +350,10 @@ impl TransportSink {
 }
 
 impl HistoryWindowSink for TransportSink {
+    fn begin_read(&mut self) {
+        self.cleanup.run();
+    }
+
     fn inspect(&mut self, event: &SessionEvent) -> Result<(), String> {
         if self.first.is_none() {
             // Previous pages may have been freed remotely by the HTTP worker
@@ -512,20 +516,30 @@ mod tests {
             let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
             let observed = calls.clone();
             let cleanup: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                observed.lock().unwrap().push(std::thread::current().id());
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(("cleanup", std::thread::current().id()));
             });
+            // The async caller constructs the sink, but must not collect the
+            // caller's heap while the actual reader is still queued.
+            let mut sink = Box::new(
+                TransportSink::new(
+                    Direction::Forward,
+                    4096,
+                    8 * 1024 * 1024,
+                    if fail { 0 } else { usize::MAX },
+                )
+                .with_cleanup(Some(cleanup)),
+            );
+            assert!(calls.lock().unwrap().is_empty());
+            let stages = calls.clone();
             let (reader, result) = tokio::task::spawn_blocking(move || {
                 let reader = std::thread::current().id();
+                stages.lock().unwrap().push(("begin", reader));
+                sink.begin_read();
+                stages.lock().unwrap().push(("source", reader));
                 let source = fixture();
-                let mut sink = Box::new(
-                    TransportSink::new(
-                        Direction::Forward,
-                        4096,
-                        8 * 1024 * 1024,
-                        if fail { 0 } else { usize::MAX },
-                    )
-                    .with_cleanup(Some(cleanup)),
-                );
                 let result = (|| {
                     for event in &source {
                         sink.inspect(event)?;
@@ -535,14 +549,22 @@ mod tests {
                     }
                     sink.finish()
                 })();
+                stages.lock().unwrap().push(("returned", reader));
                 (reader, result)
             })
             .await
             .unwrap();
             assert_ne!(reader, caller);
             let calls = calls.lock().unwrap();
-            assert!(calls.len() >= if fail { 2 } else { 3 });
-            assert!(calls.iter().all(|thread| *thread == reader));
+            assert_eq!(
+                &calls[..3],
+                &[("begin", reader), ("cleanup", reader), ("source", reader)]
+            );
+            assert_eq!(
+                &calls[calls.len() - 2..],
+                &[("cleanup", reader), ("returned", reader)]
+            );
+            assert!(calls.iter().all(|(_, thread)| *thread == reader));
             if fail {
                 assert!(result.unwrap_err().contains("source budget"));
             } else {
