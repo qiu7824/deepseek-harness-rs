@@ -181,7 +181,7 @@ def main() -> int:
                     knowledge(port, "documents", {"id": state["base"]}, 404)
                     assert knowledge(port, "catalog", {})["bases"] == []
         evidence["passed"] = True
-        print(json.dumps(evidence, ensure_ascii=False))
+        print(json.dumps(evidence))
         return 0
     finally:
         if args.workdir is None:

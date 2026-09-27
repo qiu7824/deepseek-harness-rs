@@ -179,7 +179,7 @@ def main() -> int:
                     schedule(port, "history", {"id": state["daily"], "sessionId": state["session"]}, 404)
                     assert sorted(task["id"] for task in schedule(port, "catalog", {})["tasks"]) == sorted([state["once"], state["chatTask"]])
         evidence["passed"] = True
-        print(json.dumps(evidence, ensure_ascii=False))
+        print(json.dumps(evidence))
         return 0
     finally:
         if args.workdir is None:
