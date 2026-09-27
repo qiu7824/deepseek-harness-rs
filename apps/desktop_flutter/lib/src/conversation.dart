@@ -12,6 +12,7 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../design/primitives.dart';
+import '../design/shortcuts.dart';
 import '../design/typography.dart';
 import '../design/rich_content.dart';
 import '../design/text_document.dart';
@@ -1330,15 +1331,21 @@ class _ConversationState extends State<Conversation>
                   ),
                 Focus(
                   onKeyEvent: (_, event) {
+                    final keyboard = HardwareKeyboard.instance;
                     if (event is! KeyDownEvent ||
-                        event.logicalKey != LogicalKeyboardKey.enter ||
-                        HardwareKeyboard.instance.isShiftPressed ||
+                        (event.logicalKey != LogicalKeyboardKey.enter &&
+                            event.logicalKey !=
+                                LogicalKeyboardKey.numpadEnter) ||
+                        keyboard.isShiftPressed ||
+                        keyboard.isAltPressed ||
+                        (commandShortcuts
+                            ? keyboard.isControlPressed
+                            : keyboard.isMetaPressed) ||
                         input.value.composing.isValid &&
                             !input.value.composing.isCollapsed) {
                       return KeyEventResult.ignored;
                     }
-                    if (!c.running &&
-                        HardwareKeyboard.instance.isControlPressed) {
+                    if (!c.running && primaryShortcutPressed) {
                       final continued = continueNumberedDraft(input.value);
                       if (continued != null) {
                         input.value = continued;
@@ -1351,7 +1358,7 @@ class _ConversationState extends State<Conversation>
                         steer:
                             c.running &&
                             ((c.conversationSettings['busyEnter'] == 'steer') !=
-                                HardwareKeyboard.instance.isControlPressed),
+                                primaryShortcutPressed),
                       ),
                     );
                     return KeyEventResult.handled;
@@ -1536,7 +1543,7 @@ class _ConversationState extends State<Conversation>
                                 const SizedBox(width: 6),
                                 Tooltip(
                                   message: c.running
-                                      ? '加入队列；Ctrl+Enter 转向'
+                                      ? '加入队列；$primaryShortcutLabel+Enter ${c.conversationSettings['busyEnter'] == 'steer' ? '加入队列' : '转向'}'
                                       : '发送消息',
                                   child: Semantics(
                                     label: '发送消息',

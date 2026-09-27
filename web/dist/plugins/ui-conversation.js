@@ -10899,6 +10899,7 @@ window.__ModuleLoader__.load({
 		/** Services required by the conversation plugin. */
 		const inject = [
 			"slots",
+			"shortcuts",
 			"layout",
 			"sessions",
 			"workspaces",
@@ -10986,6 +10987,17 @@ window.__ModuleLoader__.load({
 		*/
 		function apply(ctx) {
 			const sessions = ctx.sessions;
+			if(ctx.shortcuts)ctx.effect(()=>{
+				const rows=[
+					["fixed.send","发送消息","Enter",[{code:"Enter",modifiers:[]}]],
+					["fixed.newline","换行","Shift+Enter",[{code:"Enter",modifiers:["shift"]}]],
+					["fixed.complementary","补充发送／续写编号",ctx.shortcuts.platform==="macos"?"Cmd+Enter":"Ctrl+Enter",[{code:"Enter",modifiers:["control"]},{code:"Enter",modifiers:["meta"]}]],
+					["fixed.slash","斜杠命令","/",[{code:"Slash",modifiers:[]}]],
+					["fixed.mention","提及文件","@",[{code:"Digit2",modifiers:["shift"]}]]
+				];
+				const disposers=rows.map(([id,label,keys,bindings])=>ctx.shortcuts.registerFixed({id,label,keys,bindings}));
+				return()=>disposers.forEach(dispose=>dispose());
+			},"conversation: fixed shortcuts");
 			const workspaces = ctx.workspaces;
 			const layout = ctx.layout;
 			const slots = ctx.slots;

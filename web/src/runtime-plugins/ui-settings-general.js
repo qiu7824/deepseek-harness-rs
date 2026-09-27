@@ -118,12 +118,13 @@ window.__ModuleLoader__.load({
 		* header button, a mask click, and document-level Escape (mounted only while
 		* open, so the listener lifetime is the panel's).
 		*/
-        function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose, t }) {
+        function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose, closeRequest, t }) {
             const active = rows.find((r) => r.id === activeId)?.id ?? rows[0]?.id;
             const titleId = (0, react.useId)();
             const [confirmClose,setConfirmClose]=(0,react.useState)(false);
             const panelRef=(0,react.useRef)(null);
             const requestClose=()=>{if(window.__DSH_SETTINGS_DIRTY__){setConfirmClose(true);return;}onClose()};
+            if(closeRequest)closeRequest.current=requestClose;
             (0, react.useEffect)(() => {
                 const onKeyDown = (e) => {
                     if (e.key === "Escape") {e.preventDefault();if(confirmClose)setConfirmClose(false);else requestClose();return;}
@@ -156,6 +157,7 @@ window.__ModuleLoader__.load({
 					className: SettingsRoot_module_css_default.panel,
 					role: "dialog",
 					"aria-modal": "true",
+                    "data-shortcut-modal": "settings",
 					"aria-labelledby": titleId,
 					children: [(0, react_jsx_runtime.jsxs)("nav", {
 						className: SettingsRoot_module_css_default.nav,
@@ -241,6 +243,9 @@ window.__ModuleLoader__.load({
 		function SettingsRoot(props) {
 			const { wide, reconnect, useConnectionState, useSections, useOnboardingSteps, useSessions, renderSlot, t } = props;
 			const [open, setOpen] = (0, react.useState)(false);
+			const shortcutOwner = react.useRef(null), closeRequest = react.useRef(null);
+			shortcutOwner.current = { open };
+			react.useEffect(() => props.shortcuts?.register({ id: "settings.open", label: "设置", aliases: ["settings", "preferences"], defaults: { "web:windows": { code: "Comma", modifiers: ["primary"] }, "web:macos": { code: "Comma", modifiers: ["primary"] } }, regions: ["page", "editable", "terminal"], modals: ["settings"], run: () => { if(shortcutOwner.current.open)closeRequest.current?.();else setOpen(true); } }), [props.shortcuts]);
 			const [activeId, setActiveId] = (0, react.useState)(() => { try { return window.sessionStorage.getItem("dsh-settings-section") || void 0; } catch { return void 0; } });
 			const [completedOnboarding, setCompletedOnboarding] = (0, react.useState)(() => /* @__PURE__ */ new Set());
 			const [showRecovery, setShowRecovery] = (0, react.useState)(false);
@@ -318,6 +323,7 @@ window.__ModuleLoader__.load({
 					})]
 				}),
 				open && (0, react_jsx_runtime.jsx)(SettingsPanel, {
+					closeRequest,
 					rows,
 					renderSlot,
 					activeId,
@@ -871,6 +877,7 @@ window.__ModuleLoader__.load({
 		*/
 		const inject = [
 			"slots",
+			"shortcuts",
 			"locale",
 			"connection"
 		];
@@ -924,6 +931,7 @@ window.__ModuleLoader__.load({
 			let onboardingVersion = -1;
 			let onboardingSteps = [];
 			const shellInjected = () => ({
+				shortcuts: ctx.shortcuts,
 				reconnect: () => {
 					connection.reconnect();
 				},

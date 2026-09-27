@@ -12,7 +12,9 @@ class DesktopPreferences {
     this.executable = '',
     this.sessionId,
     this.dark = false,
-  });
+    Future<void> Function(String content)? writer,
+  }) : _writer = writer ?? _writeFile;
+  final Future<void> Function(String content) _writer;
   String address, executable;
   String? sessionId;
   bool dark;
@@ -44,22 +46,36 @@ class DesktopPreferences {
   }
 
   Future<void> _saving = Future.value();
-  Future<void> save() {
-    final content = jsonEncode({
-      'address': address,
-      'executable': executable,
-      'sessionId': sessionId,
-      'dark': dark,
-      'drafts': drafts,
-      'layout': layout,
-    });
-    _saving = _saving.catchError((Object _) {}).then((_) async {
-      await file.parent.create(recursive: true);
-      final temporary = File('${file.path}.${newRequestId()}.tmp');
-      await temporary.writeAsString(content, flush: true);
-      await temporary.rename(file.path);
-    });
+  Future<void> _enqueue(Future<void> Function() action) {
+    _saving = _saving.catchError((Object _) {}).then((_) => action());
     return _saving;
+  }
+
+  String _snapshot(Json savedLayout) => jsonEncode({
+    'address': address,
+    'executable': executable,
+    'sessionId': sessionId,
+    'dark': dark,
+    'drafts': drafts,
+    'layout': savedLayout,
+  });
+
+  Future<void> save() => _enqueue(() => _writer(_snapshot(layout)));
+
+  /// Commits one layout entry after persistence without exposing a draft.
+  Future<void> saveLayoutValue(String key, Object? value) {
+    final captured = jsonDecode(jsonEncode(value));
+    return _enqueue(() async {
+      await _writer(_snapshot({...layout, key: captured}));
+      layout[key] = captured;
+    });
+  }
+
+  static Future<void> _writeFile(String content) async {
+    await file.parent.create(recursive: true);
+    final temporary = File('${file.path}.${newRequestId()}.tmp');
+    await temporary.writeAsString(content, flush: true);
+    await temporary.rename(file.path);
   }
 }
 

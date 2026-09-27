@@ -1956,7 +1956,9 @@ window.__ModuleLoader__.load({
             return react.createElement(_deepseek_ai_dsh_client_ui_primitives.Modal,{open:true,title:t("archive.stopSchedulesTitle"),closeLabel:t("close"),onClose:close,
                 footer:react.createElement(react.Fragment,null,react.createElement("button",{type:"button",disabled:state.busy,onClick:close},t("cancel")),react.createElement("button",{type:"button",disabled:state.busy,onClick:()=>void controller?.confirm()},t("archive.stopSchedulesConfirm")))},react.createElement("p",null,t("archive.stopSchedulesHint")));
         }
-		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, readSessionTitle, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, unarchiveSession, archiveConnection, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, t }) {
+		function WorkspaceBrowser({ wide, expandSidebar, useSessions, useWorkspaces, useStore, actions, startSession, open, renameSession, readSessionTitle, forkSession, renameWorkspace, deleteWorkspace, insertWorkspaceBefore, archiveSession, unarchiveSession, archiveConnection, insertSessionBefore, createWorkspace, searchSessions, searchResultLimit, useDirectoryFlow, renderSlot, shortcuts, t }) {
+			const shortcutSession = useSessions(state => state.current === undefined ? null : state.byId[state.current]);
+			const shortcutOwner = react.useRef(null);
 			const workspaces = useWorkspaces((state) => state.items);
 			const workspacePhase = useWorkspaces((state) => state.phase);
 			const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
@@ -2165,6 +2167,22 @@ window.__ModuleLoader__.load({
             const archiveOwner=react.useRef(null),[archiveState,setArchiveState]=react.useState({target:null,busy:false,error:""});
             react.useEffect(()=>{const controller=createArchiveController({archiveSession,unarchiveSession,generation:archiveConnection?.generation,publish:setArchiveState});archiveOwner.current=controller;setArchiveState(controller.getSnapshot());return()=>{controller.dispose();if(archiveOwner.current===controller)archiveOwner.current=null;};},[archiveSession,unarchiveSession,archiveConnection]);
 			const onSessionArchive = (sessionId, archived) => archiveOwner.current?.request(sessionId,archived);
+			shortcutOwner.current = { current: shortcutSession, startSession, onSessionRename, forkSession, onSessionArchive, directoryFlowAvailable,
+				search: () => { setWsPickerOpen(false); setSearchExpanded(true); if(!wide){setSearchOnExpand(true);expandSidebar();}else searchInput.current?.focus({preventScroll:true}); },
+				add: () => setWsPickerOpen(true) };
+			react.useEffect(() => {
+				if(!shortcuts)return;
+				const commands = [
+					["session.new","新建会话","new session new chat","KeyN",["primary","alt"],owner=>owner.startSession()],
+					["session.search","搜索会话","search sessions","KeyK",["primary","alt"],owner=>owner.search()],
+					["workspace.add","添加工作区","add workspace open folder","KeyO",["primary","alt"],owner=>owner.add(),owner=>owner.directoryFlowAvailable],
+					["session.rename","重命名会话","rename session","KeyR",["primary","shift"],owner=>owner.onSessionRename(owner.current.id,owner.current.displayTitle),owner=>!!owner.current],
+					["session.fork","分叉会话","fork session","KeyF",["primary","shift"],owner=>owner.forkSession(owner.current.id),owner=>!!owner.current&&!owner.current.blank],
+					["session.archive","归档会话","archive session","KeyA",["primary","alt"],owner=>owner.onSessionArchive(owner.current.id,false),owner=>!!owner.current]
+				];
+				const disposers=commands.map(([id,label,aliases,code,modifiers,run,available])=>shortcuts.register({id,label,aliases:[aliases],defaults:{"web:windows":{code,modifiers},"web:macos":{code,modifiers}},available:()=>!available||available(shortcutOwner.current),run:()=>run(shortcutOwner.current)}));
+				return()=>disposers.forEach(dispose=>dispose());
+			},[shortcuts]);
 			const [deleteTarget, setDeleteTarget] = (0, react.useState)(null);
 			const [deleting, setDeleting] = (0, react.useState)(false);
 			const [deleteCommittedId, setDeleteCommittedId] = (0, react.useState)(null);
@@ -2928,6 +2946,7 @@ window.__ModuleLoader__.load({
 		*/
 		const inject = [
 			"slots",
+			"shortcuts",
 			"layout",
 			"sessions",
 			"workspaces",
@@ -2957,6 +2976,7 @@ window.__ModuleLoader__.load({
 			const browserFlowSource = flowSource("sidebar.workspaces.directoryFlow");
 			const pickerFlowSource = flowSource("conversation.hero.workspace.directoryFlow");
 			const browserInjected = () => ({
+				shortcuts: ctx.shortcuts,
 				startSession: (workspaceId) => {
 					ctx.layout.selectPanel(null);
 					ctx.workspaces.startSession(workspaceId);

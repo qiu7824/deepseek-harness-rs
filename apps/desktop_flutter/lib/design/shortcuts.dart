@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../src/controller.dart';
@@ -12,18 +13,29 @@ const shortcutNames = {
   'composer': '聚焦消息输入框',
   'workbench': '展开／收起工作台',
 };
-const defaultShortcuts = {
-  'sidebar': SingleActivator(LogicalKeyboardKey.keyB, control: true),
-  'new': SingleActivator(LogicalKeyboardKey.keyN, control: true),
-  'search': SingleActivator(LogicalKeyboardKey.keyK, control: true),
-  'settings': SingleActivator(LogicalKeyboardKey.comma, control: true),
-  'composer': SingleActivator(LogicalKeyboardKey.keyL, control: true),
-  'workbench': SingleActivator(
-    LogicalKeyboardKey.keyJ,
-    control: true,
-    shift: true,
-  ),
-};
+bool get commandShortcuts => defaultTargetPlatform == TargetPlatform.macOS;
+String get primaryShortcutLabel => commandShortcuts ? 'Cmd' : 'Ctrl';
+bool get primaryShortcutPressed => commandShortcuts
+    ? HardwareKeyboard.instance.isMetaPressed
+    : HardwareKeyboard.instance.isControlPressed;
+
+Map<String, SingleActivator> get defaultShortcuts {
+  SingleActivator primary(LogicalKeyboardKey key, {bool shift = false}) =>
+      SingleActivator(
+        key,
+        control: !commandShortcuts,
+        meta: commandShortcuts,
+        shift: shift,
+      );
+  return {
+    'sidebar': primary(LogicalKeyboardKey.keyB),
+    'new': primary(LogicalKeyboardKey.keyN),
+    'search': primary(LogicalKeyboardKey.keyK),
+    'settings': primary(LogicalKeyboardKey.comma),
+    'composer': primary(LogicalKeyboardKey.keyL),
+    'workbench': primary(LogicalKeyboardKey.keyJ, shift: true),
+  };
+}
 
 Map<String, dynamic> encodeShortcut(SingleActivator binding) => {
   'key': binding.trigger.keyId,
@@ -55,9 +67,9 @@ Map<String, SingleActivator> configuredShortcuts(DesktopController c) {
 
 String shortcutLabel(SingleActivator value) => [
   if (value.control) 'Ctrl',
-  if (value.alt) 'Alt',
+  if (value.alt) commandShortcuts ? 'Option' : 'Alt',
   if (value.shift) 'Shift',
-  if (value.meta) 'Win',
+  if (value.meta) commandShortcuts ? 'Cmd' : 'Win',
   value.trigger.keyLabel,
 ].join('+');
 
@@ -71,7 +83,22 @@ class ShortcutEditor extends StatefulWidget {
 class _ShortcutEditorState extends State<ShortcutEditor> {
   late final bindings = configuredShortcuts(widget.controller);
   String? capturing, error;
+  bool saving = false;
   String query = '';
+
+  @override
+  void didUpdateWidget(ShortcutEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      bindings
+        ..clear()
+        ..addAll(configuredShortcuts(widget.controller));
+      capturing = null;
+      error = null;
+      saving = false;
+    }
+  }
+
   Iterable<MapEntry<String, String>> get visibleShortcuts {
     final filter = query.toLowerCase().replaceAll(RegExp(r'\s+'), '');
     return shortcutNames.entries.where((entry) {
@@ -84,7 +111,7 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
   }
 
   KeyEventResult capture(FocusNode node, KeyEvent event) {
-    if (capturing == null || event is! KeyDownEvent) {
+    if (saving || capturing == null || event is! KeyDownEvent) {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
@@ -105,13 +132,18 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
       return KeyEventResult.handled;
     }
     final keyboard = HardwareKeyboard.instance;
-    if (!keyboard.isControlPressed && !keyboard.isAltPressed) {
-      setState(() => error = '请使用 Ctrl 或 Alt 组合键，避免影响文字输入。');
+    if (!keyboard.isControlPressed &&
+        !keyboard.isAltPressed &&
+        !(commandShortcuts && keyboard.isMetaPressed)) {
+      setState(
+        () => error = commandShortcuts
+            ? '请使用 Cmd、Ctrl 或 Option 组合键，避免影响文字输入。'
+            : '请使用 Ctrl 或 Alt 组合键，避免影响文字输入。',
+      );
       return KeyEventResult.handled;
     }
-    if (keyboard.isMetaPressed ||
-        (keyboard.isControlPressed &&
-            !keyboard.isShiftPressed &&
+    if ((!commandShortcuts && keyboard.isMetaPressed) ||
+        ((keyboard.isControlPressed || keyboard.isMetaPressed) &&
             !keyboard.isAltPressed &&
             [
               LogicalKeyboardKey.keyC,
@@ -124,16 +156,28 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
       setState(() => error = '此组合键用于系统或文字编辑，请选择其他组合。');
       return KeyEventResult.handled;
     }
+    if ((key == LogicalKeyboardKey.enter ||
+            key == LogicalKeyboardKey.numpadEnter) &&
+        (keyboard.isControlPressed || keyboard.isMetaPressed) &&
+        !keyboard.isAltPressed) {
+      setState(() => error = '此组合键用于消息发送或换行，请选择其他组合。');
+      return KeyEventResult.handled;
+    }
     final binding = SingleActivator(
       key,
       control: keyboard.isControlPressed,
       alt: keyboard.isAltPressed,
       shift: keyboard.isShiftPressed,
+      meta: keyboard.isMetaPressed,
     );
     if (bindings.entries.any(
       (e) =>
           e.key != capturing &&
-          shortcutLabel(e.value) == shortcutLabel(binding),
+          e.value.trigger == binding.trigger &&
+          e.value.control == binding.control &&
+          e.value.alt == binding.alt &&
+          e.value.shift == binding.shift &&
+          e.value.meta == binding.meta,
     )) {
       setState(() => error = '此快捷键已绑定其他操作。');
       return KeyEventResult.handled;
@@ -144,6 +188,34 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
       error = null;
     });
     return KeyEventResult.handled;
+  }
+
+  Future<void> save() async {
+    if (saving || capturing != null) return;
+    final controller = widget.controller;
+    final next = {
+      for (final entry in bindings.entries)
+        entry.key: encodeShortcut(entry.value),
+    };
+    setState(() {
+      saving = true;
+      error = null;
+    });
+    try {
+      await controller.preferences.saveLayoutValue('shortcuts', next);
+      if (mounted && widget.controller == controller) {
+        controller.emit();
+        Navigator.pop(context);
+      }
+    } catch (exception) {
+      if (mounted && widget.controller == controller) {
+        setState(() => error = '保存失败，原快捷键仍然有效：$exception');
+      }
+    } finally {
+      if (mounted && widget.controller == controller) {
+        setState(() => saving = false);
+      }
+    }
   }
 
   @override
@@ -194,10 +266,12 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
                     DshButton(
                       outline: true,
                       width: 150,
-                      onPressed: () => setState(() {
-                        capturing = entry.key;
-                        error = null;
-                      }),
+                      onPressed: saving
+                          ? null
+                          : () => setState(() {
+                              capturing = entry.key;
+                              error = null;
+                            }),
                       child: SizedBox(
                         width: 126,
                         child: Text(
@@ -213,9 +287,9 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
                 ),
               ),
             const SizedBox(height: 10),
-            const Text(
-              'Enter 发送 · Shift+Enter 换行\n忙碌时 Ctrl+Enter 使用另一发送行为；空闲时可续写编号列表。',
-              style: TextStyle(fontSize: 12, height: 1.6),
+            Text(
+              'Enter 发送 · Shift+Enter 换行\n忙碌时 $primaryShortcutLabel+Enter 使用另一发送行为；空闲时可续写编号列表。',
+              style: const TextStyle(fontSize: 12, height: 1.6),
             ),
             if (error != null)
               Text(
@@ -227,35 +301,25 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
       ),
       actions: [
         DshButton(
-          onPressed: () => setState(() {
-            bindings
-              ..clear()
-              ..addAll(defaultShortcuts);
-            capturing = null;
-            error = null;
-          }),
+          onPressed: saving
+              ? null
+              : () => setState(() {
+                  bindings
+                    ..clear()
+                    ..addAll(defaultShortcuts);
+                  capturing = null;
+                  error = null;
+                }),
           child: const Text('恢复默认'),
         ),
         DshButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: saving ? null : () => Navigator.pop(context),
           child: const Text('取消'),
         ),
         DshButton(
           primary: true,
-          onPressed: capturing != null
-              ? null
-              : () async {
-                  widget.controller.preferences.layout['shortcuts'] = {
-                    for (final entry in bindings.entries)
-                      entry.key: encodeShortcut(entry.value),
-                  };
-                  await widget.controller.run(
-                    widget.controller.preferences.save,
-                  );
-                  widget.controller.emit();
-                  if (context.mounted) Navigator.pop(context);
-                },
-          child: const Text('保存'),
+          onPressed: capturing != null || saving ? null : save,
+          child: Text(saving ? '保存中…' : '保存'),
         ),
       ],
     ),

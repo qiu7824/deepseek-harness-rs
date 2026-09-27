@@ -1,0 +1,12 @@
+{
+  "entries": [
+    { "id": "@deepseek-ai/dsh-client-shortcuts", "url": "/plugins/shortcuts.js", "inject": [], "immediately": true },
+    { "id": "@deepseek-ai/dsh-client-ui-shortcuts", "url": "/plugins/ui-shortcuts.js", "inject": ["@deepseek-ai/dsh-client-shortcuts", "@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-settings-general"], "immediately": true }
+  ],
+  "dependencies": {
+    "@deepseek-ai/dsh-client-ui-layout": ["@deepseek-ai/dsh-client-shortcuts"],
+    "@deepseek-ai/dsh-client-ui-settings-general": ["@deepseek-ai/dsh-client-shortcuts"],
+    "@deepseek-ai/dsh-client-ui-workspace": ["@deepseek-ai/dsh-client-shortcuts"],
+    "@deepseek-ai/dsh-client-ui-conversation": ["@deepseek-ai/dsh-client-shortcuts"]
+  }
+}

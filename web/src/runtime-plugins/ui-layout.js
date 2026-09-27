@@ -446,7 +446,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region lib/types/client/index.js
 		/** Required services (cordis fiber inject — the loader passes all module exports as an object plugin). */
-		const inject = ["slots", "theme"];
+		const inject = ["slots", "theme", "shortcuts"];
 		/**
 		* Client plugin body: provide ctx.layout, then one register() call — AppFrame
 		* into 'root' with the four child-slot declarations, the layout store seat,
@@ -455,6 +455,7 @@ window.__ModuleLoader__.load({
 		*/
 		function apply(ctx) {
 			const layout = new LayoutController();
+			ctx.effect(() => ctx.shortcuts.register({ id: "sidebar.left.toggle", label: "展开／收起侧边栏", aliases: ["sidebar", "toggle left sidebar"], defaults: { "web:windows": { code: "KeyB", modifiers: ["primary", "alt"] }, "web:macos": { code: "KeyB", modifiers: ["primary", "alt"] } }, run: () => layout.toggleSidebar() }), "ui-layout: shortcut");
 			layout.hasMainPanel=id=>ctx.slots.entriesOfSlot("main").some(entry=>entry.options.key===id);
 			ctx.effect(() => {
 				const disposeService = ctx.reflect.provide("layout", layout);
