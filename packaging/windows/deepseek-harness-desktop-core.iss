@@ -10,7 +10,7 @@
 
 #define MyAppName "DeepSeek Harness Desktop (Preview)"
 #ifndef MyAppVersion
-#define MyAppVersion "0.1.3-alpha.35"
+#define MyAppVersion "0.1.3-alpha.36"
 #endif
 #define MyAppId "{{37BA446F-D181-493B-9703-23978B3C194A}"
 

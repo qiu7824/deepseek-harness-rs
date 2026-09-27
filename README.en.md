@@ -8,7 +8,7 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 Current release line: [`0.1.3-alpha.35`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.35).
 
-Development version: `0.1.3-alpha.35`; development source does not identify a published installer.
+Development version: `0.1.3-alpha.36`; development source does not identify a published installer.
 
 Development fixes cover legacy session visibility, Windows Flutter image paste, local Markdown image previews, MCP management, manual approval after automatic review denial, configuration lock recovery, and context error handling. See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and [development plan](docs/plans/更新计划.md) for implementation status and remaining work.
 
