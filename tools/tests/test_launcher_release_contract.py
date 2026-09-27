@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import shlex
 import unittest
 
 
@@ -100,34 +101,16 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("dispatch_windows_win32_status_item_callback", tray)
         self.assertIn("restore_windows_win32_status_items", tray)
 
-    def test_retained_skin_catalog_matches_the_user_selection(self):
-        expected = {
-            "blue-fantasy",
-            "deepseek-official",
-            "harbor",
-            "miku",
-            "minecraft",
-            "trading",
-            "xp",
-        }
-        actual = {path.name for path in SKINS.iterdir() if path.is_dir()}
-        self.assertEqual(actual, expected)
-
-        catalog = SKIN_CENTER.read_text(encoding="utf-8")
-        for skin in expected:
-            self.assertIn(f'id: "{skin}"', catalog)
-        for removed in ("whale-song", "dragon-heir"):
-            self.assertNotIn(f'id: "{removed}"', catalog)
-
-    def test_core_has_no_packaged_default_skin(self):
-        official = json.loads(
-            (SKINS / "deepseek-official" / "skin.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(official["source"], "https://www.deepseek.com/harness/")
+    def test_skins_are_retired_from_packages_and_updates(self):
+        self.assertFalse(SKINS.exists())
+        self.assertFalse(SKIN_CENTER.exists())
+        self.assertFalse((ROOT / "crates" / "host" / "dsh-skin-installer").exists())
         package = PACKAGE.read_text(encoding="utf-8")
         verifier = VERIFIER.read_text(encoding="utf-8")
-        self.assertIn('"default_skin": None', package)
-        self.assertIn('manifest.get("default_skin")', verifier)
+        self.assertNotIn("default_skin", package)
+        self.assertNotIn("default_skin", verifier)
+        updater = (ROOT / "crates" / "host" / "dsh-launcher" / "src" / "updater.rs").read_text(encoding="utf-8")
+        self.assertIn('"core" | "skin" => "core".to_string(),', updater)
 
     def test_package_defaults_use_the_real_host_schema_and_preserve_user_settings(self):
         package = PACKAGE.read_text(encoding="utf-8")
@@ -149,6 +132,35 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("DefaultGroupName={#MyAppName}", installer)
         self.assertIn('Name: "{group}\\{#MyAppName}"', installer)
         self.assertIn('Name: "{autodesktop}\\{#MyAppName}"', installer)
+
+    def test_installers_share_the_one_screen_surface_and_default_to_drive_d(self):
+        windows = ROOT / "packaging" / "windows"
+        desktop_path = windows / "deepseek-harness-desktop-core.iss"
+        ui_path = windows / "installer" / "installer-ui.iss"
+        for path in (INSTALLER, desktop_path, ui_path):
+            self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"), f"{path.name} needs a UTF-8 BOM for Inno 6.1.2")
+        web = INSTALLER.read_text(encoding="utf-8-sig")
+        desktop = desktop_path.read_text(encoding="utf-8-sig")
+        ui = ui_path.read_text(encoding="utf-8-sig")
+        self.assertIn("DefaultDirName=D:\\Program Files (x86)\\DeepSeek Harness-rs\\{#Variant}", web)
+        self.assertIn("DefaultDirName=D:\\Program Files (x86)\\DeepSeek Harness-rs\\desktop", desktop)
+        for script in (web, desktop):
+            include = script.index('#include ArtDir + "\\installer-ui.iss"')
+            # The behaviour verifier strips [Icons] through [Code]; the include precedes it.
+            self.assertLess(include, script.index("[Icons]"))
+            for hook in ("DshIsLanding(CurPageID)", "DshApplyChoices;", "DshShowError(Failure);", "Result := CheckInstallDirectory;"):
+                self.assertIn(hook, script)
+            self.assertIn("WizardResizable=no", script)
+        for required in ("chinesesimp.DshInstallNow=立即安装", "chinesesimp.DshChooseLocation=选择安装位置", "chinesesimp.DshLaunchNow=立即体验",
+                         "function ShouldSkipPage", "BrowseForFolder(", "procedure CurInstallProgressChanged", "WizardSelectTasks('desktopicon')"):
+            self.assertIn(required, ui)
+        for piece in ("logo", "wordmark", "button"):
+            for scale in ("1x", "2x"):
+                art = windows / "installer" / f"{piece}-{scale}.bmp"
+                self.assertTrue(art.read_bytes().startswith(b"BM"), art.name)
+                self.assertIn(f'Source: "{{#ArtDir}}\\{piece}-{scale}.bmp"; Flags: dontcopy', ui)
+        verifier = (ROOT / "tools" / "verify_windows_installer_behavior.py").read_text(encoding="utf-8")
+        self.assertEqual(verifier.count("f'/DArtDir={ROOT / \"packaging/windows/installer\"}'"), 2)
 
     def test_release_pipeline_builds_only_web_core(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -183,6 +195,21 @@ class LauncherReleaseContractTests(unittest.TestCase):
         self.assertIn("echo gate", gate)
         self.assertNotIn("旁路步骤", gate)
         self.assertNotIn("cargo test --locked -p dsh-launcher", gate)
+
+    def test_release_pipeline_runs_task_knowledge_and_atomic_write_unit_regressions(self):
+        gate = workflow_step(WORKFLOW.read_text(encoding="utf-8"), "Host 与启动器回归")
+        commands = [shlex.split(line.strip()) for line in gate.splitlines()
+                    if line.strip().startswith("cargo test ")]
+        library_packages = set()
+        for command in commands:
+            if "--lib" not in command:
+                continue
+            self.assertIn("--locked", command)
+            library_packages.update(command[index + 1] for index, item in enumerate(command)
+                                    if item == "-p")
+        self.assertTrue({"dsh-schedule-host", "dsh-knowledge-base", "dsh-atomic-write"}
+                        .issubset(library_packages), library_packages)
+        self.assertNotIn("if:", gate, "feature regressions run on every release platform")
 
     def test_launcher_uses_only_supported_native_desktop_services(self):
         source = LAUNCHER.read_text(encoding="utf-8")

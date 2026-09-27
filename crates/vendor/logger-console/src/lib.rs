@@ -178,6 +178,13 @@ pub fn format_message(message: &Message, exporter: &ConsoleExporter) -> String {
             output.push('%');
             continue;
         }
+        // Like Node's util.format, only a known specifier with an argument
+        // left consumes it; anything else (e.g. URL escapes) stays literal.
+        if !matches!(next, 's' | 'd' | 'i' | 'f' | 'o' | 'O' | 'c' | 'C') || args.is_empty() {
+            output.push('%');
+            output.push(next);
+            continue;
+        }
         let value = args.remove(0);
         let formatted = match next {
             's' => stringify(&value),
@@ -205,7 +212,7 @@ pub fn format_message(message: &Message, exporter: &ConsoleExporter) -> String {
         .split('\n')
         .map(|line| {
             if line.len() > max_length {
-                format!("{}...", &line[..max_length])
+                format!("{}...", &line[..line.floor_char_boundary(max_length)])
             } else {
                 line.to_string()
             }
@@ -377,5 +384,47 @@ impl Plugin for ConsolePlugin {
         let exporter = ConsoleExporter::new(&config);
         ctx.logger.exporter(ctx, exporter);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    fn message(args: Vec<ArcValue>) -> Message {
+        Message {
+            sn: 0,
+            ts: 0,
+            name: "test".into(),
+            r#type: LoggerType::Info,
+            level: LoggerLevel::Info,
+            args,
+        }
+    }
+
+    fn exporter(max_length: Option<usize>) -> Arc<ConsoleExporter> {
+        ConsoleExporter::new(&ConsoleConfig {
+            colors: Some(ColorLevel::Disabled),
+            max_length,
+            ..ConsoleConfig::default()
+        })
+    }
+
+    #[test]
+    fn escapes_and_unmatched_specifiers_stay_literal() {
+        let text = format_message(
+            &message(vec![
+                arc("GET /%E5%9B%BE?x=%s and %d".to_string()),
+                arc("a".to_string()),
+            ]),
+            &exporter(None),
+        );
+        assert_eq!(text, "GET /%E5%9B%BE?x=a and %d");
+    }
+
+    #[test]
+    fn long_lines_are_cut_on_a_character_boundary() {
+        let text = format_message(&message(vec![arc("图".repeat(10))]), &exporter(Some(10)));
+        assert_eq!(text, format!("{}...", "图".repeat(3)));
     }
 }

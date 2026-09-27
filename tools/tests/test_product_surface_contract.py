@@ -193,8 +193,6 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("for root in registry.roots()", schedule)
         self.assertIn("attach_root(root)", schedule)
 
-
-
     def test_approval_protocol_is_fail_closed_with_three_decisions(self):
         connection = CONNECTION.read_text(encoding="utf-8")
         conversation = CONVERSATION.read_text(encoding="utf-8")
@@ -290,65 +288,24 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn("@deepseek-ai/dsh-client-ui-goal", manifest)
         self.assertIn('goal.phase === "blocked"', source)
 
-    def test_skin_center_preserves_catalog_and_theme_activation(self):
+    def test_skins_are_retired_from_the_product_surface(self):
         theme = (ROOT / "web" / "dist" / "plugins" / "ui-theme.js").read_text(encoding="utf-8")
         host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
-        skin = (ROOT / "release" / "plugins" / "dsh-skin-center" / "lib" / "client.js").read_text(encoding="utf-8")
-        package = (ROOT / "release" / "plugins" / "dsh-skin-center" / "package.json").read_text(encoding="utf-8")
-        for theme_id in (
-            "light",
-            "dark",
-            "blue-fantasy",
-            "harbor",
-            "xp",
-            "minecraft",
-            "trading",
-            "miku",
-            "deepseek-official",
-        ):
-            self.assertIn(f'"{theme_id}"', theme)
-            self.assertIn(f'"{theme_id}"', host)
-            self.assertIn(f'"{theme_id}"', skin)
-        for removed in ("whale-song", "dragon-heir"):
-            self.assertNotIn(f'"{removed}"', theme)
-            self.assertNotIn(f'"{removed}"', skin)
-        preferences = theme.split("const THEME_PREFERENCES = [", 1)[1].split("];", 1)[0]
-        for retired in ("system", "catppuccin", "dracula", "nord", "tokyo-night", "linear", "notion"):
-            self.assertNotIn(f'"{retired}"', preferences)
+        plugins = (ROOT / "crates" / "host" / "dsh-host" / "src" / "client_plugins.rs").read_text(encoding="utf-8")
+        self.assertFalse((ROOT / "release" / "plugins" / "dsh-skin-center").exists())
+        self.assertNotIn("dsh-skin-center", (ROOT / "tools" / "stage_release_plugins.py").read_text(encoding="utf-8"))
+        self.assertIn('if plugin.id == "dsh-skin-center" {', plugins)
+        self.assertIn('ctx.slots.inject("settings.general.item"', theme)
+        self.assertIn("NO_SKIN", theme)
+        self.assertIn("function AppearanceRow", theme)
+        self.assertNotIn("BasicAppearanceSettings", theme)
         self.assertNotIn("SkinSettings", theme)
         self.assertNotIn("dshSkinPicker", theme)
-        self.assertIn('id: "appearance"', theme)
-        self.assertIn('ctx.slots.inject("settings.general.item"', theme)
-        self.assertIn('id: "skins"', skin)
-        self.assertIn('label: "皮肤"', skin)
-        self.assertIn("--dsw-alias-", skin)
-        self.assertIn("settings.section", skin)
-        self.assertIn("data-dsh-skin-center", skin)
-        self.assertIn("data-dsh-skin-option", skin)
-        self.assertIn('const offThemeChange = theme.ctx.on("theme/change", refresh)', skin)
-        self.assertIn("return offThemeChange", skin)
-        self.assertNotIn("theme.ctx.off", skin)
-        self.assertIn('value: selected.id', skin)
-        self.assertIn('disabled: busy', skin)
-        self.assertIn('"data-busy": busy || undefined', skin)
-        self.assertIn("theme.applyTheme(id)", skin)
-        self.assertNotIn("theme.setTheme(id)", skin)
-        self.assertIn('disabled: assetsReady === false && !["light", "dark"].includes(skin.id)', skin)
-        self.assertIn('data-dsh-skin-card', skin)
-        self.assertIn("Skin assets are not installed", skin)
-        self.assertIn('"platform": "web"', package)
-        self.assertIn("dsh-skin-center", (ROOT / "tools" / "stage_release_plugins.py").read_text(encoding="utf-8"))
-        self.assertNotIn("dshSkinPicker{", skin)
         self.assertNotIn('settings_namespace("ui-wallpaper")', host)
         self.assertNotIn('/__dsh-bing-wallpaper', host)
         self.assertNotIn('"ui-history"', host)
         self.assertNotIn("HistoryMemorySettings", theme)
         self.assertNotIn('id: "history-memory"', theme)
-        self.assertIn("NO_SKIN", theme)
-        self.assertIn("function AppearanceRow", theme)
-        self.assertNotIn("BasicAppearanceSettings", theme)
-        for retired_ui in ("全部皮肤", "浅色皮肤", "深色皮肤", "随机皮肤", "搜索皮肤", "主题详情"):
-            self.assertNotIn(retired_ui, skin)
 
     def test_code_graph_and_sidebar_editor_contract(self):
         graph = (ROOT / "web" / "dist" / "plugins" / "ui-code-graph.js").read_text(encoding="utf-8")
@@ -431,7 +388,6 @@ class ProductSurfaceContractTests(unittest.TestCase):
         package = (ROOT / "tools" / "package_release.py").read_text(encoding="utf-8")
         launcher = (ROOT / "crates" / "host" / "dsh-launcher" / "src" / "main.rs").read_text(encoding="utf-8")
         launcher_cargo = (ROOT / "crates" / "host" / "dsh-launcher" / "Cargo.toml").read_text(encoding="utf-8")
-        skin_installer = (ROOT / "crates" / "host" / "dsh-skin-installer" / "src" / "main.rs").read_text(encoding="utf-8")
         self.assertIn("tools.tests.test_rust_ui_contract", workflow)
         self.assertIn("python tools/verify_release_package.py", workflow)
         self.assertIn("--variant core", workflow)
@@ -496,22 +452,14 @@ class ProductSurfaceContractTests(unittest.TestCase):
         self.assertIn('english.LauncherName=', installer)
         self.assertIn("/DChineseMessages=$language", workflow)
         self.assertTrue((ROOT / "packaging" / "windows" / "ChineseSimplified.isl").is_file())
-        self.assertIn("skin executable leaks bundled skin assets", verifier)
-        self.assertIn("core archive leaks bundled skin assets", verifier)
-        self.assertIn("skin_payload", package)
+        self.assertIn("archive leaks retired skin assets", verifier)
+        self.assertNotIn("skin_payload", package)
         self.assertNotIn("build_skin_payload", package)
-        skin_cargo = (ROOT / "crates" / "host" / "dsh-skin-installer" / "Cargo.toml").read_text(encoding="utf-8")
-        skin_main = (ROOT / "crates" / "host" / "dsh-skin-installer" / "src" / "main.rs").read_text(encoding="utf-8")
-        self.assertIn("dsh-skin-installer", skin_cargo)
-        self.assertIn("PAYLOAD_MARKER", skin_main)
-        self.assertIn("zip::ZipArchive", skin_main)
+        self.assertFalse((ROOT / "crates" / "host" / "dsh-skin-installer").exists())
+        self.assertNotIn("dsh-skin-installer", (ROOT / "Cargo.toml").read_text(encoding="utf-8"))
         self.assertNotIn("skin_source = ", package)
         self.assertIn("sys.path.insert", package)
-        self.assertIn("core archive includes a retired skin payload", verifier)
-        self.assertIn("ZipArchive", skin_installer)
-        self.assertIn("PAYLOAD_MARKER", skin_installer)
-        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
-        self.assertIn('!packaged_resource("web/dist/skins").is_dir()', host)
+        self.assertIn("archive includes a retired skin payload", verifier)
 
 
 if __name__ == "__main__":

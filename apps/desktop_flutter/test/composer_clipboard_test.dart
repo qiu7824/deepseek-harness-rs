@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/src/composer_clipboard.dart';
+import 'package:dsh_desktop/features/conversation/attachment_view.dart';
 import 'package:dsh_desktop/src/controller.dart';
 import 'package:dsh_desktop/src/conversation.dart';
 import 'package:dsh_desktop/src/preferences.dart';
@@ -97,7 +98,7 @@ void main() {
       'describe this',
     );
     await pasteKey(tester);
-    expect(find.byType(InputChip), findsOneWidget);
+    expect(find.byType(PendingAttachmentTile), findsOneWidget);
     expect(find.byType(Image), findsOneWidget);
     await tester.tap(find.byKey(const Key('send-message')));
     await tester.pumpAndSettle();
@@ -106,7 +107,7 @@ void main() {
     expect(c.sent!.single['type'], 'image');
     expect(c.sent!.single['mediaType'], 'image/png');
     expect(base64Decode(c.sent!.single['data'] as String), png);
-    expect(find.byType(InputChip), findsNothing);
+    expect(find.byType(PendingAttachmentTile), findsNothing);
     await dispose(tester, c);
   });
 
@@ -140,7 +141,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(input.text, 'before 粘贴');
       expect(c.preferences.drafts['first'], input.text);
-      expect(find.byType(InputChip), findsNothing);
+      expect(find.byType(PendingAttachmentTile), findsNothing);
       await dispose(tester, c);
     },
   );
@@ -170,7 +171,7 @@ void main() {
       );
       paste.onPressed!();
       await tester.pumpAndSettle();
-      expect(find.byType(InputChip), findsOneWidget);
+      expect(find.byType(PendingAttachmentTile), findsOneWidget);
       await dispose(tester, c);
     },
   );
@@ -194,7 +195,7 @@ void main() {
     response.complete({'png': png});
     await importing;
     await tester.pumpAndSettle();
-    expect(find.byType(InputChip), findsNothing);
+    expect(find.byType(PendingAttachmentTile), findsNothing);
     expect(c.error, isNull);
     await dispose(tester, c);
   });
@@ -212,7 +213,7 @@ void main() {
     bytes.complete(png);
     await importing;
     await tester.pumpAndSettle();
-    expect(find.byType(InputChip), findsNothing);
+    expect(find.byType(PendingAttachmentTile), findsNothing);
     await dispose(tester, c);
   });
 
@@ -225,7 +226,7 @@ void main() {
         List.generate(9, (i) => XFile.fromData(png, name: '$i.png')),
       );
       await tester.pumpAndSettle();
-      expect(find.byType(InputChip), findsNothing);
+      expect(find.byType(PendingAttachmentTile), findsNothing);
       expect(c.error, contains('最多添加 8'));
       await dispose(tester, c);
     },

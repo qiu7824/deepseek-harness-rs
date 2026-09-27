@@ -405,3 +405,122 @@ async fn schedule_management_shares_control_admission_and_rejects_subagent_owner
     );
     child.close(false).await;
 }
+
+async fn install_execution_tasks(fixture: &Fixture) -> Arc<dsh_schedule_host::ScheduleService> {
+    let tasks = dsh_schedule_host::ScheduleService::open(
+        fixture.root.join("scheduled-tasks.json"),
+        dsh_schedule_host::ServiceConfig::default(),
+    );
+    tasks.set_controller(fixture.api.schedule_session_controller());
+    fixture.ctx.register_service(tasks.clone());
+    tasks
+}
+
+async fn create_execution_task(
+    tasks: &Arc<dsh_schedule_host::ScheduleService>,
+) -> dsh_schedule_host::TaskView {
+    tasks
+        .create(dsh_schedule_host::CreateTask {
+            session_id: "cold-reminder-owner".into(),
+            title: Some("Build report".into()),
+            prompt: "Summarize repository changes".into(),
+            rule: dsh_schedule_host::TaskRule::Every {
+                every_seconds: 3600,
+                anchor: String::new(),
+            },
+            origin: dsh_schedule_host::TaskOrigin::User,
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn scheduled_execution_tasks_share_archive_admission_and_keep_paused_history() {
+    let fixture = Fixture::new(None).await;
+    let tasks = install_execution_tasks(&fixture).await;
+    let task = create_execution_task(&tasks).await;
+    let denied = fixture
+        .rpc(
+            "workspace.archiveSession",
+            json!({"sessionId":"cold-reminder-owner"}),
+        )
+        .await;
+    assert_eq!(
+        denied["error"]["details"]["reason"], "active-schedules",
+        "{denied}"
+    );
+    let archived = fixture
+        .rpc(
+            "workspace.archiveSession",
+            json!({"sessionId":"cold-reminder-owner","stopSchedules":true}),
+        )
+        .await;
+    assert_eq!(archived["ok"], true, "{archived}");
+    assert_eq!(
+        tasks.task(&task.id).unwrap().status,
+        dsh_schedule_host::TaskStatus::Inactive
+    );
+    assert!(
+        tasks
+            .run_now(&task.id, None)
+            .await
+            .unwrap_err()
+            .message
+            .contains("session_archived")
+    );
+    assert!(tasks.set_active(&task.id, None, true).await.is_err());
+    let restored = fixture
+        .rpc(
+            "workspace.unarchiveSession",
+            json!({"sessionId":"cold-reminder-owner"}),
+        )
+        .await;
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(
+        tasks.task(&task.id).unwrap().status,
+        dsh_schedule_host::TaskStatus::Inactive
+    );
+    assert!(
+        fixture.api.agents().unwrap().roots().is_empty(),
+        "cold lifecycle checks must not instantiate Agents"
+    );
+    tasks.shutdown().await;
+    fixture.close(false).await;
+}
+
+#[tokio::test]
+async fn permanent_deletion_purges_reminders_and_execution_tasks_in_both_domains() {
+    let fixture = Fixture::new(None).await;
+    fixture.create().await;
+    let tasks = install_execution_tasks(&fixture).await;
+    let task = create_execution_task(&tasks).await;
+    fixture
+        .api
+        .workspace_registry()
+        .unwrap()
+        .archive_session(&dsh_session::session_id("cold-reminder-owner"))
+        .await
+        .unwrap();
+    let deleted = fixture
+        .rpc(
+            "workspace.deleteArchivedSession",
+            json!({"sessionId":"cold-reminder-owner"}),
+        )
+        .await;
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    assert!(fixture.schedule.catalog().await.unwrap().is_empty());
+    assert!(tasks.task(&task.id).is_none());
+    let reopened = dsh_schedule_host::ScheduleService::open(
+        tasks.path(),
+        dsh_schedule_host::ServiceConfig::default(),
+    );
+    assert!(
+        reopened.catalog(None)["tasks"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(tasks.run_now(&task.id, None).await.is_err());
+    tasks.shutdown().await;
+    fixture.close(true).await;
+}

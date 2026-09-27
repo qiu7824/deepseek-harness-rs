@@ -3994,6 +3994,11 @@ impl ApiProxyService {
                     schedule.purge_session(id.as_str()).await.map_err(schedule_api::rpc_error)?;
                 }
             }
+            if let Some(tasks) = self.scheduled_task_service() {
+                for id in &targets {
+                    tasks.purge_session(id.as_str()).await.map_err(|error| schedule_api::rpc_error(dsh_schedule::host_types::ScheduleError::new(error.code, error.message)))?;
+                }
+            }
             for id in targets.iter().rev() {
                 if id != &root {
                     registry.archive_session(id).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
@@ -4170,6 +4175,23 @@ impl ApiProxyService {
                         Ok(_) => {}
                         Err(error) => return err(request.rpc_id, schedule_api::rpc_error(error)),
                     }
+                }
+            }
+        }
+        if !unarchive {
+            if let Some(tasks) = self.scheduled_task_service() {
+                let outcome = if request.payload.stop_schedules {
+                    tasks.stop_session_tasks(session_id.as_str()).await.map(|_| false)
+                } else {
+                    tasks.has_active_session(session_id.as_str())
+                };
+                match outcome {
+                    Ok(true) => return err(request.rpc_id, RpcError::AgentBusy(RpcErrorBody {
+                        message: "Stop this session's active scheduled tasks before archiving it.".into(),
+                        details: crate::api::rpc::ReasonDetails { reason: "active-schedules".into() },
+                    })),
+                    Ok(false) => {},
+                    Err(error) => return err(request.rpc_id, schedule_api::rpc_error(dsh_schedule::host_types::ScheduleError::new(error.code, error.message))),
                 }
             }
         }

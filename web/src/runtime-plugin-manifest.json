@@ -7,6 +7,7 @@
     "@deepseek-ai/dsh-client-ui-layout": ["@deepseek-ai/dsh-client-shortcuts"],
     "@deepseek-ai/dsh-client-ui-settings-general": ["@deepseek-ai/dsh-client-shortcuts"],
     "@deepseek-ai/dsh-client-ui-workspace": ["@deepseek-ai/dsh-client-shortcuts"],
-    "@deepseek-ai/dsh-client-ui-conversation": ["@deepseek-ai/dsh-client-shortcuts"]
+    "@deepseek-ai/dsh-client-ui-conversation": ["@deepseek-ai/dsh-client-shortcuts"],
+    "@deepseek-ai/dsh-client-ui-schedule": ["@deepseek-ai/dsh-client-connection"]
   }
 }

@@ -1,5 +1,6 @@
 import 'package:dsh_desktop/design/rich_content.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
@@ -41,14 +42,13 @@ void main() {
           // Selecting the whole paragraph must include its code.
           final editable = find.byWidgetPredicate(
             (widget) =>
-                widget is EditableText && widget.controller.text.contains(code),
+                widget is RichText && widget.text.toPlainText().contains(code),
           );
           expect(editable, findsOneWidget);
-          final text = tester.widget<EditableText>(editable).controller.text;
+          final text = tester.widget<RichText>(editable).text.toPlainText();
           expect(text, paragraph);
-          final renderer = tester
-              .state<EditableTextState>(editable)
-              .renderEditable;
+          final renderer = tester.renderObject<RenderParagraph>(editable);
+          expect(find.byType(SelectionArea), findsOneWidget);
           expect(
             renderer.textScaler.scale(14),
             closeTo(14 * scale, .001),
@@ -130,15 +130,11 @@ void main() {
     await tester.pumpAndSettle();
     final markdownState = tester.state(find.byType(DshMarkdown));
     final editable = find.byWidgetPredicate(
-      (widget) => widget is EditableText && widget.controller.text == paragraph,
+      (widget) => widget is RichText && widget.text.toPlainText() == paragraph,
     );
     expect(editable, findsOneWidget);
     expect(
-      tester
-          .state<EditableTextState>(editable)
-          .renderEditable
-          .textScaler
-          .scale(14),
+      tester.renderObject<RenderParagraph>(editable).textScaler.scale(14),
       closeTo(14, .001),
     );
     final initialHeight = tester
@@ -149,11 +145,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.state(find.byType(DshMarkdown)), same(markdownState));
     expect(
-      tester
-          .state<EditableTextState>(editable)
-          .renderEditable
-          .textScaler
-          .scale(14),
+      tester.renderObject<RenderParagraph>(editable).textScaler.scale(14),
       closeTo(28, .001),
     );
     final paragraphRect = tester.getRect(find.byType(DshMarkdownBlock).first);

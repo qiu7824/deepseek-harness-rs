@@ -7,6 +7,8 @@
 //! `with_file_lock` serializes cross-process writers through an OS-owned
 //! lock on a persistent `<file>.lock` sibling. Cancellation and process exit
 //! release ownership without leaving a stale lock to block future writes.
+//! Complete legacy PID or JSON owner records are upgraded in place only
+//! after their local owner is proven to have exited.
 //!
 //! # Deviations
 //!
@@ -14,7 +16,7 @@
 //!   without extra crates); the `mode`/`dir_mode` arguments are validated and
 //!   otherwise no-ops on Windows.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -141,41 +143,72 @@ const LOCK_RETRY_INITIAL_MS: u64 = 20;
 const LOCK_RETRY_MAX_MS: u64 = 200;
 const LOCK_TIMEOUT_MS: u64 = 2_000;
 const LOCK_PROTOCOL: &[u8] = b"dsh-os-lock-v1\n";
+const MAX_LOCK_MARKER_BYTES: usize = 4_096;
 
 enum LockMarker {
     Native,
-    Legacy { pid: u32, suffix_offset: u64 },
+    Legacy {
+        pid: u32,
+        hostname: Option<String>,
+        nonce: String,
+        suffix_offset: u64,
+    },
     Unknown,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyJsonHolder {
+    pid: u32,
+    hostname: String,
+    nonce: String,
 }
 
 fn lock_marker(bytes: &[u8]) -> LockMarker {
     if bytes == LOCK_PROTOCOL {
         return LockMarker::Native;
     }
-    if bytes.len() > 128 {
+    if bytes.len() > MAX_LOCK_MARKER_BYTES {
         return LockMarker::Unknown;
     }
     let Some(end) = bytes.iter().position(|byte| *byte == b'\n') else {
         return LockMarker::Unknown;
     };
-    // A complete legacy PID ends with a newline. Never guess a process ID
-    // from a writer's partially written first line.
-    if end == 0 || !bytes[..end].iter().all(u8::is_ascii_digit) {
+    if end + 1 + LOCK_PROTOCOL.len() > MAX_LOCK_MARKER_BYTES {
         return LockMarker::Unknown;
     }
-    let Some(pid) = std::str::from_utf8(&bytes[..end])
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        .filter(|pid| *pid > 0)
-    else {
+    // Both legacy formats end with a newline. A parseable prefix without
+    // that terminator is still an incomplete writer record.
+    let Ok(record) = std::str::from_utf8(&bytes[..end]) else {
         return LockMarker::Unknown;
     };
+    let (pid, hostname, nonce) =
+        if !record.is_empty() && record.bytes().all(|byte| byte.is_ascii_digit()) {
+            let Some(pid) = record.parse::<u32>().ok().filter(|pid| *pid > 0) else {
+                return LockMarker::Unknown;
+            };
+            (pid, None, String::new())
+        } else {
+            let Ok(holder) = serde_json::from_str::<LegacyJsonHolder>(record) else {
+                return LockMarker::Unknown;
+            };
+            if holder.pid == 0
+                || holder.hostname.is_empty()
+                || holder.hostname.chars().any(char::is_control)
+                || holder.nonce.is_empty()
+            {
+                return LockMarker::Unknown;
+            }
+            (holder.pid, Some(holder.hostname), holder.nonce)
+        };
     let suffix = &bytes[end + 1..];
     if suffix == LOCK_PROTOCOL {
         LockMarker::Native
     } else if LOCK_PROTOCOL.starts_with(suffix) {
         LockMarker::Legacy {
             pid,
+            hostname,
+            nonce,
             suffix_offset: (end + 1) as u64,
         }
     } else {
@@ -310,6 +343,214 @@ fn lock_recovery_error(path: &Path, detail: impl std::fmt::Display) -> std::io::
     )
 }
 
+fn local_hostname() -> std::io::Result<String> {
+    #[cfg(windows)]
+    {
+        let mut buffer = [0u16; 256];
+        let mut length = buffer.len() as u32;
+        // Read the OS identity, not a caller-overridden COMPUTERNAME variable.
+        if unsafe {
+            windows_sys::Win32::System::WindowsProgramming::GetComputerNameW(
+                buffer.as_mut_ptr(),
+                &mut length,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        String::from_utf16(&buffer[..length as usize])
+            .ok()
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "local hostname is unavailable",
+                )
+            })
+    }
+    #[cfg(unix)]
+    {
+        let mut buffer = [0u8; 256];
+        if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let host = buffer
+            .iter()
+            .position(|byte| *byte == 0)
+            .and_then(|end| std::str::from_utf8(&buffer[..end]).ok())
+            .filter(|host| !host.is_empty());
+        host.map(str::to_owned).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "local hostname is unavailable",
+            )
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "local hostname cannot be checked",
+        ))
+    }
+}
+
+fn require_local_hostname(hostname: Option<&str>) -> std::io::Result<()> {
+    let Some(hostname) = hostname else {
+        return Ok(());
+    };
+    let local = local_hostname()?;
+    let same = if cfg!(windows) {
+        hostname.eq_ignore_ascii_case(&local)
+    } else {
+        hostname == local
+    };
+    if same {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "legacy writer belongs to another host; its process cannot be checked locally",
+        ))
+    }
+}
+
+fn read_lock_marker(file: &mut std::fs::File) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    let mut marker = Vec::new();
+    Read::take(file, MAX_LOCK_MARKER_BYTES as u64 + 1).read_to_end(&mut marker)?;
+    Ok(marker)
+}
+
+fn append_protocol(file: &mut std::fs::File, offset: u64) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    // Preserve the complete old owner line even if this process exits while
+    // writing the suffix; the next migration can recheck that same owner.
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(LOCK_PROTOCOL)?;
+    file.sync_data()
+}
+
+fn path_still_names_file(file: &std::fs::File, path: &Path) -> std::io::Result<bool> {
+    let current = match std::fs::File::open(path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let original = file.metadata()?;
+        let current = current.metadata()?;
+        Ok(original.dev() == current.dev() && original.ino() == current.ino())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        fn identity(file: &std::fs::File) -> std::io::Result<(u32, u32, u32)> {
+            let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) }
+                == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let info = unsafe { info.assume_init() };
+            Ok((
+                info.dwVolumeSerialNumber,
+                info.nFileIndexHigh,
+                info.nFileIndexLow,
+            ))
+        }
+        Ok(identity(file)? == identity(&current)?)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (file, current);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "lock file identity cannot be checked",
+        ))
+    }
+}
+
+fn migration_claim_path(lock_path: &Path, pid: u32, nonce: &str) -> PathBuf {
+    // Match the create-exclusive claim used by the older JSON lock recovery.
+    let tag: String = nonce
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(32)
+        .collect();
+    lock_path.with_file_name(format!(
+        "{}.takeover-{pid}-{tag}",
+        lock_path.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+fn migration_claim(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let mut claim = open_lock_file(path)?;
+    match claim.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => return Err(error),
+    }
+    let marker = read_lock_marker(&mut claim)?;
+    match lock_marker(&marker) {
+        LockMarker::Native => {}
+        LockMarker::Legacy {
+            pid,
+            hostname: None,
+            suffix_offset,
+            ..
+        } => {
+            if legacy_owner_alive(pid).map_err(|error| lock_recovery_error(path, error))? {
+                return Ok(None);
+            }
+            if !path_still_names_file(&claim, path)? || read_lock_marker(&mut claim)? != marker {
+                return Ok(None);
+            }
+            append_protocol(&mut claim, suffix_offset)?;
+        }
+        _ => {
+            return Err(lock_recovery_error(
+                path,
+                "incomplete or unrecognized takeover claim",
+            ));
+        }
+    }
+    // Keep this inode, like the primary OS lock. Old recovery contenders see
+    // an existing claim; new contenders recover ownership through the OS even
+    // after a crash during migration. Unlinking would split those contenders.
+    Ok(Some(claim))
+}
+
+fn migrate_legacy_marker(
+    file: &mut std::fs::File,
+    path: &Path,
+    marker: &[u8],
+    pid: u32,
+    nonce: &str,
+    suffix_offset: u64,
+) -> std::io::Result<bool> {
+    let claim_path = migration_claim_path(path, pid, nonce);
+    let Some(_claim) = migration_claim(&claim_path)? else {
+        return Ok(false);
+    };
+    // An older recovery may have replaced the path before this claim became
+    // available. Comparing bytes alone cannot detect an identical new inode.
+    if !path_still_names_file(file, path)? || read_lock_marker(file)? != marker {
+        return Ok(false);
+    }
+    if legacy_owner_alive(pid).map_err(|error| lock_recovery_error(path, error))? {
+        return Ok(false);
+    }
+    append_protocol(file, suffix_offset)?;
+    Ok(true)
+}
+
 /// Hold the cross-process writer lock for `filename` around one operation
 /// (TS `withFileLock`).
 pub async fn with_file_lock<T>(
@@ -328,7 +569,6 @@ pub async fn with_file_lock<T>(
     let deadline = Instant::now() + Duration::from_millis(LOCK_TIMEOUT_MS);
     let mut delay = LOCK_RETRY_INITIAL_MS;
     let file = loop {
-        use std::io::{Read, Seek, SeekFrom, Write};
         let mut file = match open_lock_file(&lock_path) {
             Ok(file) => file,
             Err(error)
@@ -341,22 +581,31 @@ pub async fn with_file_lock<T>(
         let mut ambiguous = false;
         match file.try_lock() {
             Ok(()) => {
-                let mut marker = Vec::new();
-                Read::take(&mut file, 129).read_to_end(&mut marker)?;
+                let marker = read_lock_marker(&mut file)?;
                 match lock_marker(&marker) {
                     LockMarker::Native => break file,
-                    LockMarker::Legacy { pid, suffix_offset }
+                    LockMarker::Legacy {
+                        pid,
+                        hostname,
+                        nonce,
+                        suffix_offset,
+                    } => {
+                        require_local_hostname(hostname.as_deref())
+                            .map_err(|error| lock_recovery_error(&lock_path, error))?;
                         if !legacy_owner_alive(pid)
-                            .map_err(|error| lock_recovery_error(&lock_path, error))? =>
-                    {
-                        // Keep the only recoverable owner record intact even
-                        // if the process dies partway through this upgrade.
-                        file.seek(SeekFrom::Start(suffix_offset))?;
-                        file.write_all(LOCK_PROTOCOL)?;
-                        file.sync_data()?;
-                        break file;
+                            .map_err(|error| lock_recovery_error(&lock_path, error))?
+                            && migrate_legacy_marker(
+                                &mut file,
+                                &lock_path,
+                                &marker,
+                                pid,
+                                &nonce,
+                                suffix_offset,
+                            )?
+                        {
+                            break file;
+                        }
                     }
-                    LockMarker::Legacy { .. } => {}
                     LockMarker::Unknown => ambiguous = true,
                 }
             }
@@ -390,6 +639,9 @@ pub async fn with_file_lock<T>(
     drop(file);
     Ok(result)
 }
+
+#[cfg(test)]
+mod legacy_json_tests;
 
 #[cfg(test)]
 mod tests {

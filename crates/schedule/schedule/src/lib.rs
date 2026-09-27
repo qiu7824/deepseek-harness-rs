@@ -55,6 +55,20 @@ pub const NAME: &str = "schedule";
 /// Services required before future root agents can receive Schedule.
 pub const INJECT: [&str; 4] = ["agents", "sessions", "tools", "sessionPersistence"];
 
+/// Register only the read-side projection over historical `schedule/change`
+/// events. Hosts that own scheduled tasks elsewhere use this instead of
+/// [`apply`], which would also install the session-local tools and runtime.
+pub fn apply_projection(ctx: &Context) {
+    if let Some(registry) = ctx
+        .get_typed::<Arc<SessionProjectionRegistry>>("sessionProjections", false)
+        .map(|slot| slot.as_ref().clone())
+    {
+        registry
+            .register(ctx, schedule_projection_definition())
+            .expect("schedule projection registration");
+    }
+}
+
 /// Install Schedule only for root agents published after this plugin loads
 /// (TS `apply`).
 pub fn apply(ctx: &Context) {

@@ -590,6 +590,23 @@ window.__ModuleLoader__.load({
 			};
 			return null;
 		}
+		/**
+		* Read the openable URL of a web_fetch call from its arguments.
+		* @param block - running or settled Tool block.
+		* @returns the http(s) URL, or undefined for another protocol or an unparsable argument.
+		*/
+		function webFetchHref(block) {
+			const argsRaw = ("kind" in block ? block.call?.argsRaw : block.argsRaw) ?? "";
+			const args = parseArgs(argsRaw);
+			const url = typeof args === "object" && args !== null ? args.url : void 0;
+			if (typeof url !== "string") return void 0;
+			try {
+				const { protocol } = new URL(url);
+				return protocol === "http:" || protocol === "https:" ? url : void 0;
+			} catch {
+				return void 0;
+			}
+		}
 		//#endregion
 		//#region ../../../node_modules/.pnpm/clsx@2.1.1/node_modules/clsx/dist/clsx.mjs
 		function r(e) {
@@ -692,7 +709,7 @@ window.__ModuleLoader__.load({
 			const action = summary.startsWith(prefix) ? summary.slice(prefix.length) : "";
 			return COMPUTER_ACTIONS.has(action) ? `${toolName} · ${t("tool.action." + action)}` : summary;
 		}
-		function ToolRow({ t, variant, toolName, icon, title, summary, summarySuffix, body, output, errorSummary, terminal, diff, read, search, web, image, state, filePath, onOpenFile, inspect }) {
+		function ToolRow({ t, variant, toolName, icon, title, summary, summarySuffix, body, output, errorSummary, terminal, diff, read, search, web, image, state, filePath, onOpenFile, inspect, href }) {
 			const [expanded, setExpanded] = (0, react.useState)(false);
 			const terminalBody = terminal ?? null;
 			const diffBody = diff ?? null;
@@ -713,6 +730,7 @@ window.__ModuleLoader__.load({
 			}, [diffBody]);
 			const suffix = failureLine === null ? summarySuffix ?? diffStat : null;
 			const fileLink = filePath !== void 0 && onOpenFile !== void 0 && failureLine === null;
+			const linkHref = failureLine === null ? href : void 0;
 			const toggleExpand = () => {
 				setExpanded((v) => !v);
 			};
@@ -722,6 +740,10 @@ window.__ModuleLoader__.load({
 			};
 			const fileLinkKeyDown = (event) => {
 				if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+			};
+			// A summary link opens in a new tab without toggling the row.
+			const stopLinkClick = (event) => {
+				event.stopPropagation();
 			};
 			const cardBody = variant === "code" ? null : body;
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -754,6 +776,14 @@ window.__ModuleLoader__.load({
 							type: "button",
 							className: ToolRow_module_css_default.fileLink,
 							onClick: openFile,
+							onKeyDown: fileLinkKeyDown,
+							children: summaryText
+						}) : linkHref !== void 0 ? (0, react_jsx_runtime.jsx)("a", {
+							className: ToolRow_module_css_default.fileLink,
+							href: linkHref,
+							target: "_blank",
+							rel: "noopener noreferrer",
+							onClick: stopLinkClick,
 							onKeyDown: fileLinkKeyDown,
 							children: summaryText
 						}) : (0, react_jsx_runtime.jsx)("span", {
@@ -1644,7 +1674,8 @@ window.__ModuleLoader__.load({
 				errorSummary: model.errorSummary,
 				web,
 				state: model.state,
-				inspect
+				inspect,
+				href: toolName === "web_fetch" ? webFetchHref(block) : void 0
 			});
 		}
 		/**

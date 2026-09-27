@@ -68,10 +68,12 @@ pub fn installation(root: &Path) -> Result<Installation, String> {
             .map(str::to_string)
             .ok_or_else(|| format!("PACKAGE.json 缺少 {key}"))
     };
-    let variant = get("variant")?;
-    if !["core", "skin", "free"].contains(&variant.as_str()) {
-        return Err("未知安装类型，未切换到其他版本".into());
-    }
+    let variant = match get("variant")?.as_str() {
+        // The skin edition is retired; its installs update to the core package.
+        "core" | "skin" => "core".to_string(),
+        "free" => "free".to_string(),
+        _ => return Err("未知安装类型，未切换到其他版本".into()),
+    };
     let version = get("version")?;
     if version != PRODUCT_VERSION {
         return Err(format!(
@@ -716,14 +718,38 @@ mod tests {
     fn current(distribution: Distribution) -> Installation {
         Installation {
             version: "0.1.3-alpha.17".into(),
-            variant: "skin".into(),
+            variant: "core".into(),
             platform: "windows".into(),
             arch: "x86_64".into(),
             distribution,
         }
     }
+    #[test]
+    fn retired_skin_installs_update_to_core() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-update-variant-{}-{}",
+            std::process::id(),
+            now_unix_millis()
+        ));
+        fs::create_dir(&root).unwrap();
+        let write = |variant: &str| {
+            let package = serde_json::json!({"variant": variant, "version": PRODUCT_VERSION, "platform": "windows", "arch": "x86_64"});
+            fs::write(
+                root.join("PACKAGE.json"),
+                serde_json::to_vec(&package).unwrap(),
+            )
+            .unwrap();
+        };
+        write("skin");
+        assert_eq!(installation(&root).unwrap().variant, "core");
+        write("free");
+        assert_eq!(installation(&root).unwrap().variant, "free");
+        write("gold");
+        assert!(installation(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
     fn release() -> Release {
-        Release{tag_name:"v0.1.3-alpha.18".into(),draft:false,assets:["deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-skin-setup.exe","deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-skin-portable.zip","SHA256SUMS.txt"].iter().map(|n|Asset{name:n.to_string(),browser_download_url:format!("https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.18/{n}"),size:123}).collect()}
+        Release{tag_name:"v0.1.3-alpha.18".into(),draft:false,assets:["deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-core-setup.exe","deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-core-portable.zip","SHA256SUMS.txt"].iter().map(|n|Asset{name:n.to_string(),browser_download_url:format!("https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.18/{n}"),size:123}).collect()}
     }
     #[test]
     fn preserves_installer_portable_and_variant() {
@@ -733,7 +759,7 @@ mod tests {
                 .unwrap()
                 .asset
                 .name
-                .ends_with("skin-setup.exe")
+                .ends_with("core-setup.exe")
         );
         assert!(
             select(vec![release()], current(Distribution::Portable))
@@ -741,7 +767,7 @@ mod tests {
                 .unwrap()
                 .asset
                 .name
-                .ends_with("skin-portable.zip")
+                .ends_with("core-portable.zip")
         );
         let mut r = release();
         r.assets.remove(0);

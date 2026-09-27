@@ -53,6 +53,9 @@ class DesktopController extends ChangeNotifier {
   Json conversationSettings = {};
   Json menuSettings = {};
   Json teamSettings = {};
+
+  /// `context-compaction` settings: `thresholds` keyed by `provider/model`.
+  Json contextCompaction = {};
   Set<String> disabledPlugins = {};
   int scheduleRevision = 0;
   bool? scheduleEnabled;
@@ -1003,6 +1006,11 @@ class DesktopController extends ChangeNotifier {
               .where((n) => n['ns'] == 'agent-teams')
               .firstOrNull?['value'],
         );
+        contextCompaction = object(
+          objects(description['namespaces'])
+              .where((n) => n['ns'] == 'context-compaction')
+              .firstOrNull?['value'],
+        );
       }
       await loadAccounts();
     } catch (_) {}
@@ -1178,6 +1186,39 @@ class DesktopController extends ChangeNotifier {
     if (_disposed || epoch != _epoch) return;
     if (!restore && selectedId == id) newConversation();
     await refreshSessions();
+  }
+
+  /// Automatic compaction threshold for one `provider/model`; null restores
+  /// the default.
+  Future<void> setCompactionThreshold(String key, double? ratio) async {
+    final api = _client;
+    if (api == null) throw StateError('请先连接本机服务');
+    final thresholds = {...object(contextCompaction['thresholds'])};
+    if (ratio == null) {
+      thresholds.remove(key);
+    } else {
+      thresholds[key] = ratio;
+    }
+    await api.call('settings.replace', {
+      'ns': 'context-compaction',
+      'section': {'thresholds': thresholds},
+    }, true);
+    if (_disposed || api != _client) return;
+    contextCompaction = {...contextCompaction, 'thresholds': thresholds};
+    emit();
+  }
+
+  /// Run the `/compact` command in the selected session now.
+  Future<void> compactNow() async {
+    final api = _client, id = selectedId;
+    if (api == null || id == null) throw StateError('请先打开一个会话');
+    final result = await api.call('commands.execute', {
+      'args': {'agentId': id, 'line': '/compact'},
+    }, true);
+    final outcome = object(result['result']);
+    if (outcome.isNotEmpty && outcome['kind'] != 'success') {
+      throw StateError('${outcome['text'] ?? '压缩未开始'}');
+    }
   }
 
   Future<void> setReasoning(String effort) async {

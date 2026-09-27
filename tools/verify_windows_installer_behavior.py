@@ -98,6 +98,7 @@ def main() -> None:
     stage = args.stage.resolve()
     script, manifest = prepare(stage, scratch)
     code = run([str(args.compiler.resolve()), f'/DSourceDir={stage}', f'/DOutputDir={scratch}',
+                f'/DArtDir={ROOT / "packaging/windows/installer"}',
                 f'/DChineseMessages={ROOT / "packaging/windows/ChineseSimplified.isl"}',
                 f'/DIconFile={ROOT / "packaging/windows/deepseek-black.ico"}',
                 f'/DVariant={manifest["variant"]}', str(script)], scratch / "compile.log")
@@ -106,6 +107,7 @@ def main() -> None:
     require_warning_free_compile(scratch / "compile.log")
     executable = scratch / "isolated-verification.exe"
     missing_code = run([str(args.compiler.resolve()), f'/DSourceDir={scratch / "missing-payload"}', f'/DOutputDir={scratch}',
+                        f'/DArtDir={ROOT / "packaging/windows/installer"}',
                         f'/DChineseMessages={ROOT / "packaging/windows/ChineseSimplified.isl"}',
                         f'/DIconFile={ROOT / "packaging/windows/deepseek-black.ico"}',
                         f'/DVariant={manifest["variant"]}', str(script)], scratch / "missing-payload-compile.log")

@@ -6,6 +6,7 @@ license = "MIT"
 description = "Host API gateway: four-quadrant RPC message model and the 62-method wire registry. Rust port of @deepseek-ai/dsh-host-apiproxy (contract layer first)"
 
 [dependencies]
+dsh-schedule-host = { path = "../../schedule/schedule-host" }
 sha2.workspace = true
 uuid.workspace = true
 cordis = { path = "../../vendor/cordis" }

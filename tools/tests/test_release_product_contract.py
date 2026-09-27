@@ -165,7 +165,7 @@ class ReleaseProductContractTests(unittest.TestCase):
         )
         for marker in (
             "core archive unexpectedly carries model-specific package defaults",
-            "core archive includes a retired skin payload",
+            "archive includes a retired skin payload",
             "packaged host version mismatch",
             'manifest["variant"]',
         ):

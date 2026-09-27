@@ -24,6 +24,7 @@ import '../features/conversation/artifacts_view.dart';
 import '../features/workbench/workbench_panel.dart' show previewUrl;
 import '../features/conversation/code_graph_view.dart';
 import '../features/workbench/project_tasks.dart';
+import 'composer_attachments.dart';
 import 'controller.dart';
 import 'composer_clipboard.dart';
 import 'interactions.dart';
@@ -37,6 +38,8 @@ import '../features/conversation/permission_control.dart';
 import '../features/conversation/streaming_presentation.dart';
 import '../features/conversation/turn_activity.dart';
 import '../features/conversation/read_aloud.dart';
+import '../features/conversation/reasoning_slider.dart';
+import '../features/conversation/context_quick_settings.dart';
 import '../features/conversation/turn_stats.dart';
 import 'resource_diagnostics.dart';
 import '../features/conversation/retry_message.dart';
@@ -114,7 +117,7 @@ class _ConversationState extends State<Conversation>
   final readAloud = ReadAloudController();
   MessageFeedbackController? feedback;
   bool feedbackConnected = false;
-  final attachments = <({String name, Uint8List data, String type})>[];
+  final attachments = <PendingAttachment>[];
   final clipboard = ComposerClipboard();
   int attachmentEpoch = 0, importingAttachments = 0;
   @override
@@ -466,7 +469,7 @@ class _ConversationState extends State<Conversation>
     final parts = [
       for (final file in submittedAttachments)
         {
-          'type': file.type.startsWith('image/') ? 'image' : 'file',
+          'type': imageMediaTypes.contains(file.type) ? 'image' : 'file',
           'name': file.name,
           'mediaType': file.type,
           'data': base64Encode(file.data),
@@ -501,6 +504,10 @@ class _ConversationState extends State<Conversation>
       var pendingBytes = 0;
       for (final file in files) {
         if (!valid()) return;
+        if (FileSystemEntity.typeSync(file.path) ==
+            FileSystemEntityType.directory) {
+          throw StateError('不能添加文件夹：${file.name}');
+        }
         if (attachments.length + pending.length >= 8) {
           throw StateError('单条消息最多添加 8 个附件');
         }
@@ -518,14 +525,7 @@ class _ConversationState extends State<Conversation>
             16 * 1024 * 1024) {
           throw StateError('附件总大小不能超过 16 MiB');
         }
-        final ext = file.name.split('.').last.toLowerCase();
-        final type = switch (ext) {
-          'png' => 'image/png',
-          'jpg' || 'jpeg' => 'image/jpeg',
-          'webp' => 'image/webp',
-          'gif' => 'image/gif',
-          _ => 'application/octet-stream',
-        };
+        final type = attachmentMediaType(file.name, data);
         pending.add((name: file.name, data: data, type: type));
         pendingBytes += data.length;
       }
@@ -574,11 +574,17 @@ class _ConversationState extends State<Conversation>
     try {
       final files = await clipboard.readFiles();
       if (!valid()) return;
-      if (files != null && files.isNotEmpty) {
+      final text = await Clipboard.getData(Clipboard.kTextPlain);
+      if (!valid()) return;
+      final imageOnly =
+          files?.length == 1 && files!.first.mimeType == 'image/png';
+      if (files != null &&
+          files.isNotEmpty &&
+          (!imageOnly || text?.text?.isNotEmpty != true)) {
         await addFiles(files);
         return;
       }
-      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final data = text;
       if (!valid() || data?.text == null) return;
       final value = input.value;
       final selection = value.selection.isValid
@@ -598,6 +604,51 @@ class _ConversationState extends State<Conversation>
       }
     }
   }
+
+  Future<void> previewAttachment(PendingAttachment file) => showDialog<void>(
+    context: context,
+    builder: (context) => Dialog(
+      child: SizedBox(
+        width: 1000,
+        height: 720,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      file.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  DshIcon(
+                    LucideIcons.x,
+                    label: '关闭',
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: InteractiveViewer(
+                minScale: .1,
+                maxScale: 5,
+                child: Image.memory(
+                  file.data,
+                  cacheWidth: 2000,
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -875,130 +926,140 @@ class _ConversationState extends State<Conversation>
                                   ),
                                 Align(
                                   alignment: Alignment.topCenter,
-                                  child: ListView.builder(
-                                    shrinkWrap:
-                                        c.transcript.length <= 8 &&
-                                        c.transcript.fold<int>(
-                                              0,
-                                              (size, item) =>
-                                                  size + item.text.length,
-                                            ) <=
-                                            16384 &&
-                                        c.transcript.fold<int>(
-                                              0,
-                                              (count, item) =>
-                                                  count + item.images.length,
-                                            ) <=
-                                            2,
-                                    key: PageStorageKey(
-                                      'messages-${c.selectedId}',
-                                    ),
-                                    scrollCacheExtent: ScrollCacheExtent.pixels(
-                                      240,
-                                    ),
-                                    controller: scroll,
-                                    reverse: true,
-                                    findChildIndexCallback: (key) =>
-                                        key is ValueKey<String>
-                                        ? messageIndices[key.value]
-                                        : null,
-                                    padding: const EdgeInsets.fromLTRB(
-                                      32,
-                                      16,
-                                      56,
-                                      16,
-                                    ),
-                                    itemCount:
-                                        activityCount +
-                                        c.transcript.length +
-                                        (c.window.hasBefore ? 1 : 0),
-                                    itemBuilder: (context, rawIndex) {
-                                      if (activityCount == 1 && rawIndex == 0) {
+                                  // One selection spans every visible message.
+                                  child: SelectionArea(
+                                    child: ListView.builder(
+                                      shrinkWrap:
+                                          c.transcript.length <= 8 &&
+                                          c.transcript.fold<int>(
+                                                0,
+                                                (size, item) =>
+                                                    size + item.text.length,
+                                              ) <=
+                                              16384 &&
+                                          c.transcript.fold<int>(
+                                                0,
+                                                (count, item) =>
+                                                    count + item.images.length,
+                                              ) <=
+                                              2,
+                                      key: PageStorageKey(
+                                        'messages-${c.selectedId}',
+                                      ),
+                                      scrollCacheExtent:
+                                          ScrollCacheExtent.pixels(240),
+                                      controller: scroll,
+                                      reverse: true,
+                                      findChildIndexCallback: (key) =>
+                                          key is ValueKey<String>
+                                          ? messageIndices[key.value]
+                                          : null,
+                                      padding: const EdgeInsets.fromLTRB(
+                                        32,
+                                        16,
+                                        56,
+                                        16,
+                                      ),
+                                      itemCount:
+                                          activityCount +
+                                          c.transcript.length +
+                                          (c.window.hasBefore ? 1 : 0),
+                                      itemBuilder: (context, rawIndex) {
+                                        if (activityCount == 1 &&
+                                            rawIndex == 0) {
+                                          return Align(
+                                            key: const ValueKey(
+                                              'turn-activity',
+                                            ),
+                                            alignment: Alignment.topCenter,
+                                            child: ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                maxWidth: contentWidth,
+                                              ),
+                                              child: TurnActivity(
+                                                controller: c,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        final index = rawIndex - activityCount;
+                                        if (index == c.transcript.length) {
+                                          return Center(
+                                            child: DshButton(
+                                              onPressed: c.loading
+                                                  ? null
+                                                  : () => c.run(
+                                                      () => c.loadHistory(
+                                                        before:
+                                                            c.window.firstSeq,
+                                                        merge: true,
+                                                      ),
+                                                    ),
+                                              child: Text(
+                                                c.loading ? '正在读取…' : '加载更早记录',
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        final item =
+                                            c.transcript[c.transcript.length -
+                                                1 -
+                                                index];
                                         return Align(
-                                          key: const ValueKey('turn-activity'),
+                                          key: ValueKey(item.id),
                                           alignment: Alignment.topCenter,
                                           child: ConstrainedBox(
+                                            key:
+                                                item.kind == 'user' &&
+                                                    item.seq != null
+                                                ? userAnchors.putIfAbsent(
+                                                    item.seq!,
+                                                    () => GlobalKey(),
+                                                  )
+                                                : null,
                                             constraints: BoxConstraints(
                                               maxWidth: contentWidth,
                                             ),
-                                            child: TurnActivity(controller: c),
-                                          ),
-                                        );
-                                      }
-                                      final index = rawIndex - activityCount;
-                                      if (index == c.transcript.length) {
-                                        return Center(
-                                          child: DshButton(
-                                            onPressed: c.loading
-                                                ? null
-                                                : () => c.run(
-                                                    () => c.loadHistory(
-                                                      before: c.window.firstSeq,
-                                                      merge: true,
-                                                    ),
-                                                  ),
-                                            child: Text(
-                                              c.loading ? '正在读取…' : '加载更早记录',
+                                            child: MessageCard(
+                                              key: ValueKey(item.id),
+                                              item: item,
+                                              bottomSpacing: rawIndex == 0
+                                                  ? 0
+                                                  : 16,
+                                              animateUpdates:
+                                                  follow && !c.readingHistory,
+                                              cwd: c.selected?.cwd,
+                                              onOpenPath: widget.onOpenPath,
+                                              onOpenPlan: widget.onOpenPlan,
+                                              feedback: feedback,
+                                              readAloud:
+                                                  item.kind == 'turn-tail'
+                                                  ? readAloud
+                                                  : null,
+                                              hintDisplay:
+                                                  '${c.conversationSettings['hintDisplay'] ?? 'both'}',
+                                              client: c.client,
+                                              sessionId: c.selectedId,
+                                              onDetails: () => details(item),
+                                              onBranch:
+                                                  item.kind == 'turn-tail' &&
+                                                      !item.streaming &&
+                                                      item.seq != null &&
+                                                      c.connected
+                                                  ? () => branch(item.seq!)
+                                                  : null,
+                                              onOpenFile:
+                                                  widget.onOpenWorkbench == null
+                                                  ? null
+                                                  : () =>
+                                                        widget.onOpenWorkbench!(
+                                                          'files',
+                                                        ),
                                             ),
                                           ),
                                         );
-                                      }
-                                      final item =
-                                          c.transcript[c.transcript.length -
-                                              1 -
-                                              index];
-                                      return Align(
-                                        key: ValueKey(item.id),
-                                        alignment: Alignment.topCenter,
-                                        child: ConstrainedBox(
-                                          key:
-                                              item.kind == 'user' &&
-                                                  item.seq != null
-                                              ? userAnchors.putIfAbsent(
-                                                  item.seq!,
-                                                  () => GlobalKey(),
-                                                )
-                                              : null,
-                                          constraints: BoxConstraints(
-                                            maxWidth: contentWidth,
-                                          ),
-                                          child: MessageCard(
-                                            key: ValueKey(item.id),
-                                            item: item,
-                                            bottomSpacing: rawIndex == 0
-                                                ? 0
-                                                : 16,
-                                            animateUpdates:
-                                                follow && !c.readingHistory,
-                                            cwd: c.selected?.cwd,
-                                            onOpenPath: widget.onOpenPath,
-                                            onOpenPlan: widget.onOpenPlan,
-                                            feedback: feedback,
-                                            readAloud: item.kind == 'turn-tail'
-                                                ? readAloud
-                                                : null,
-                                            hintDisplay:
-                                                '${c.conversationSettings['hintDisplay'] ?? 'both'}',
-                                            client: c.client,
-                                            sessionId: c.selectedId,
-                                            onDetails: () => details(item),
-                                            onBranch:
-                                                item.kind == 'turn-tail' &&
-                                                    !item.streaming &&
-                                                    item.seq != null &&
-                                                    c.connected
-                                                ? () => branch(item.seq!)
-                                                : null,
-                                            onOpenFile:
-                                                widget.onOpenWorkbench == null
-                                                ? null
-                                                : () => widget.onOpenWorkbench!(
-                                                    'files',
-                                                  ),
-                                          ),
-                                        ),
-                                      );
-                                    },
+                                      },
+                                    ),
                                   ),
                                 ),
                                 if (c.readingHistory ||
@@ -1297,37 +1358,27 @@ class _ConversationState extends State<Conversation>
             child: Column(
               children: [
                 if (attachments.isNotEmpty)
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      for (final file in attachments)
-                        InputChip(
-                          label: Text(
-                            file.name,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          avatar: file.type.startsWith('image/')
-                              ? ClipRRect(
-                                  borderRadius: BorderRadius.circular(4),
-                                  child: Image.memory(
-                                    file.data,
-                                    width: 24,
-                                    height: 24,
-                                    cacheWidth: 48,
-                                    cacheHeight: 48,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, _, _) => const DshGlyph(
-                                      LucideIcons.image,
-                                      size: 14,
-                                    ),
-                                  ),
-                                )
-                              : const DshGlyph(LucideIcons.paperclip, size: 14),
-                          onDeleted: () =>
-                              setState(() => attachments.remove(file)),
-                        ),
-                    ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final (index, file) in attachments.indexed)
+                            PendingAttachmentTile(
+                              key: ValueKey('pending-attachment-$index'),
+                              file: file,
+                              onPreview: imageMediaTypes.contains(file.type)
+                                  ? () => previewAttachment(file)
+                                  : null,
+                              onRemove: () =>
+                                  setState(() => attachments.remove(file)),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 Focus(
                   onKeyEvent: (_, event) {
@@ -1847,7 +1898,7 @@ class _ModelPickerState extends State<ModelPicker> {
     return Dialog(
       child: SizedBox(
         width: 500,
-        height: 550,
+        height: 660,
         child: Padding(
           padding: const EdgeInsets.all(18),
           child: Column(
@@ -1914,35 +1965,33 @@ class _ModelPickerState extends State<ModelPicker> {
                   },
                 ),
               ),
-              Wrap(
-                spacing: 4,
-                children: [
-                  const Text('推理等级', style: TextStyle(fontSize: 12)),
-                  for (final effort
-                      in c.catalog!.choices
-                              .where((m) => m.key == c.catalog!.currentKey)
-                              .firstOrNull
-                              ?.reasoning ??
-                          <Json>[])
-                    DshButton(
-                      height: 26,
-                      onPressed: busy
-                          ? null
-                          : () async {
-                              try {
-                                await c.setReasoning('${effort['id']}');
-                                if (context.mounted) Navigator.pop(context);
-                              } catch (e) {
-                                if (mounted) setState(() => error = '$e');
-                              }
-                            },
-                      child: Text(
-                        '${effort['name'] ?? effort['id']}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                ],
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: ReasoningSlider(
+                  levels:
+                      c.catalog!.choices
+                          .where((m) => m.key == c.catalog!.currentKey)
+                          .firstOrNull
+                          ?.reasoning ??
+                      const <Json>[],
+                  value: c.catalog!.current['reasoningEffort'] as String?,
+                  enabled: !busy,
+                  onChanged: (id) async {
+                    setState(() {
+                      busy = true;
+                      error = null;
+                    });
+                    try {
+                      await c.setReasoning(id);
+                    } catch (e) {
+                      if (mounted) setState(() => error = '$e');
+                    } finally {
+                      if (mounted) setState(() => busy = false);
+                    }
+                  },
+                ),
               ),
+              ContextQuickSettings(controller: c),
               const Divider(),
               Align(
                 alignment: Alignment.centerRight,
@@ -2217,7 +2266,7 @@ class MessageCard extends StatelessWidget {
             ],
           ),
         if (item.text.isNotEmpty && item.kind == 'user')
-          SelectableText(
+          Text(
             displayText,
             style: DshTypography.composer.copyWith(color: colors.text),
           )
@@ -2232,6 +2281,7 @@ class MessageCard extends StatelessWidget {
                 data: visible,
                 fontSize: 14,
                 conversationStyle: item.kind == 'assistant',
+                imageBaseDirectory: cwd,
                 onTapLink: (_, url, _) {
                   if (url != null) unawaited(openLink(url));
                 },

@@ -20,6 +20,9 @@ import 'workbench/plan_preview.dart';
 import '../src/resource_diagnostics.dart';
 import 'workspace_tree_row.dart';
 import 'workspace_source_dialog.dart';
+import 'knowledge/knowledge_page.dart';
+import 'schedule/schedule_page.dart';
+import 'sidebar_entries.dart';
 
 String relativeSessionAge(int updatedAt, {int? nowMillis}) {
   final elapsed =
@@ -57,6 +60,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     if (identical(previewClient, c.client) && previewSession == c.selectedId) {
       return;
     }
+    if (!identical(previewClient, c.client)) scheduleFocus = null;
     previewClient = c.client;
     previewSession = c.selectedId;
     planPreviews.scope(c.client, c.selectedId);
@@ -95,6 +99,20 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   final scaffoldKey = GlobalKey<ScaffoldState>();
   final workspaceAnchor = GlobalKey();
   final conversationViewRequest = ValueNotifier<String>('');
+
+  /// Global page shown in place of the conversation, e.g. `schedule`.
+  String? mainPanel;
+  String? scheduleFocus;
+
+  void openPanel(String id, {String? focus}) {
+    scaffoldKey.currentState?.closeDrawer();
+    setState(() {
+      mainPanel = id;
+      scheduleFocus = focus;
+    });
+  }
+
+  void closePanel() => setState(() => mainPanel = null);
   final Map<String, bool> groupExpansion = {};
   bool showSearch = false, sideOpen = true, dockOpen = false;
   double sidebarWidth = 280, dockWidth = 470, chatWidth = 0;
@@ -410,18 +428,49 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                       Expanded(
                         child: Stack(
                           children: [
-                            Conversation(
-                              controller: c,
-                              headerInset: !wide ? 56 : 28,
-                              maxContentWidth: chatWidth,
-                              onOpenSettings: () => settings('models'),
-                              onOpenWorkbench: openDock,
-                              onOpenPath: openFile,
-                              onOpenPlan: openPlan,
-                              onSelectWorkspace: chooseWorkspace,
-                              workspaceAnchor: workspaceAnchor,
-                              viewRequest: conversationViewRequest,
+                            Offstage(
+                              offstage: mainPanel != null,
+                              child: TickerMode(
+                                enabled: mainPanel == null,
+                                child: Conversation(
+                                  controller: c,
+                                  headerInset: !wide ? 56 : 28,
+                                  maxContentWidth: chatWidth,
+                                  onOpenSettings: () => settings('models'),
+                                  onOpenWorkbench: openDock,
+                                  onOpenPath: openFile,
+                                  onOpenPlan: openPlan,
+                                  onSelectWorkspace: chooseWorkspace,
+                                  workspaceAnchor: workspaceAnchor,
+                                  viewRequest: conversationViewRequest,
+                                ),
+                              ),
                             ),
+                            if (mainPanel == 'schedule')
+                              Positioned.fill(
+                                child: SchedulePage(
+                                  key: ValueKey((
+                                    c.client,
+                                    'schedule-page',
+                                    scheduleFocus,
+                                  )),
+                                  controller: c,
+                                  initialTaskId: scheduleFocus,
+                                  onClose: closePanel,
+                                  onOpenSession: (id) {
+                                    closePanel();
+                                    unawaited(c.run(() => c.select(id)));
+                                  },
+                                ),
+                              ),
+                            if (mainPanel == 'knowledge')
+                              Positioned.fill(
+                                child: KnowledgePage(
+                                  key: ValueKey((c.client, 'knowledge-page')),
+                                  controller: c,
+                                  onClose: closePanel,
+                                ),
+                              ),
                             if (!wide)
                               Positioned(
                                 top: 10,
@@ -441,13 +490,26 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                                   ),
                                 ),
                               ),
-                            if (c.selectedId != null && !c.blankConversation)
+                            if (mainPanel == null &&
+                                c.selectedId != null &&
+                                !c.blankConversation)
                               Positioned(
                                 top: 8,
                                 right: 28,
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
+                                    ScheduleSessionBadge(
+                                      key: ValueKey((
+                                        c.client,
+                                        'schedule-badge',
+                                        c.selectedId,
+                                      )),
+                                      controller: c,
+                                      sessionId: c.selectedId!,
+                                      onOpen: (task) =>
+                                          openPanel('schedule', focus: task),
+                                    ),
                                     SessionLogExportAction(
                                       controller: c,
                                       sessionId: c.selectedId!,
@@ -678,6 +740,27 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           ),
           const SizedBox(height: 12),
           DshIcon(
+            LucideIcons.alarmClock,
+            label: '定时任务',
+            size: 36,
+            active: mainPanel == 'schedule',
+            color: colors.text,
+            onPressed: () =>
+                mainPanel == 'schedule' ? closePanel() : openPanel('schedule'),
+          ),
+          const SizedBox(height: 12),
+          DshIcon(
+            LucideIcons.bookOpen,
+            label: '知识',
+            size: 36,
+            active: mainPanel == 'knowledge',
+            color: colors.text,
+            onPressed: () => mainPanel == 'knowledge'
+                ? closePanel()
+                : openPanel('knowledge'),
+          ),
+          const SizedBox(height: 12),
+          DshIcon(
             LucideIcons.grid2x2,
             label: '插件',
             size: 36,
@@ -855,19 +938,34 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           ),
           const SizedBox(height: 12),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Semantics(
-                label: '插件',
-                button: true,
-                child: DshButton(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: SidebarEntryRow(
+              entries: [
+                SidebarEntry(
+                  key: const Key('open-schedule'),
+                  icon: LucideIcons.alarmClock,
+                  label: '定时任务',
+                  active: mainPanel == 'schedule',
+                  onPressed: () => mainPanel == 'schedule'
+                      ? closePanel()
+                      : openPanel('schedule'),
+                ),
+                SidebarEntry(
+                  key: const Key('open-knowledge'),
+                  icon: LucideIcons.bookOpen,
+                  label: '知识',
+                  active: mainPanel == 'knowledge',
+                  onPressed: () => mainPanel == 'knowledge'
+                      ? closePanel()
+                      : openPanel('knowledge'),
+                ),
+                SidebarEntry(
                   key: const Key('open-plugins'),
                   icon: LucideIcons.grid2x2,
+                  label: '插件',
                   onPressed: () => settings('plugins'),
-                  child: const Text('插件'),
                 ),
-              ),
+              ],
             ),
           ),
           Padding(
@@ -1125,9 +1223,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           if (!mounted || !identical(owner, c.client)) return;
           final confirmed = await confirmAction(
             context,
-            '停止提醒并归档？',
+            '停止提醒和定时任务并归档？',
             '此会话仍有有效提醒。继续归档会停止这些提醒；取消后提醒保持原状。',
-            action: '停止提醒并归档',
+            action: '停止并归档',
           );
           if (!confirmed || !mounted || !identical(owner, c.client)) return;
           await c.archive(session.id, stopSchedules: true);

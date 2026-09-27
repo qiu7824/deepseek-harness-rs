@@ -157,19 +157,48 @@ class RustRuntimeContractTests(unittest.TestCase):
         framework = (ROOT / "crates" / "session" / "session-projection" / "src" / "index.rs").read_text(encoding="utf-8")
         self.assertNotIn("header.seed_length", projection)
         self.assertNotIn("if event.seq < seed_length", projection)
-        self.assertIn("including inherited events", projection)
+        self.assertIn("init: Arc::new(|_header| arc(empty_state()))", projection)
+        self.assertIn("decode_schedule_change(&event.data)", projection)
+        self.assertIn("apply_change(&mut folded, &change)", projection)
         self.assertIn("Fn(&SessionHeader)", framework)
         self.assertIn("dsh-session-projection", cargo)
         self.assertTrue(any(row["url"] == "/plugins/ui-schedule.js" for row in manifest["entries"]))
+        # Tasks are Host-owned: the page, the header clock and the sidebar
+        # entry read /__dsh-schedule, not the historical session projection.
         ui = self.source("ui-schedule.js")
-        self.assertIn("ScheduleCatalogAction", ui)
-        self.assertIn('useProjection("schedule")', ui)
-        self.assertIn('name: "conversation.session.header.actions"', ui)
-        self.assertIn("createPortal", ui)
-        self.assertIn("useAnchoredPosition", ui)
-        self.assertIn("catalogRef", ui)
-        self.assertIn("position:fixed", ui)
-        self.assertIn("margin: 16", ui)
+        self.assertIn("function TaskManager", ui)
+        self.assertIn("function ScheduleHeaderAction", ui)
+        self.assertIn("/__dsh-schedule/", ui)
+        self.assertIn('name:"conversation.session.header.actions"', ui)
+        self.assertIn('name:"main",key:"schedule"', ui)
+        self.assertIn('name:"sidebar.panellist",id:"schedule"', ui)
+        self.assertNotIn('useProjection("schedule")', ui)
+        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn("dsh_schedule::schedule_projection_definition()", host)
+        self.assertIn("dsh_schedule::host_service::ScheduleService::install(", host)
+        self.assertIn("schedule_tasks::install(ctx, &data_root)", host)
+        task_tools = (ROOT / "crates" / "schedule" / "schedule-host" / "src" / "tools.rs").read_text(encoding="utf-8")
+        reminder_tools = (ROOT / "crates" / "schedule" / "schedule" / "src" / "host_tools.rs").read_text(encoding="utf-8")
+        for operation in ("create", "list", "update", "delete"):
+            self.assertIn(f'name: "scheduled_task_{operation}"', task_tools)
+            self.assertNotIn(f'name: "schedule_{operation}"', task_tools)
+            self.assertIn(f'"schedule_{operation}"', reminder_tools)
+
+    def test_knowledge_bases_are_served_searched_and_listed(self):
+        manifest = json.loads((PLUGINS / "manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(any(row["url"] == "/plugins/ui-knowledge.js" for row in manifest["entries"]))
+        ui = self.source("ui-knowledge.js")
+        self.assertIn("/__dsh-knowledge/", ui)
+        self.assertIn('name:"main",key:"knowledge"', ui)
+        self.assertIn('name:"sidebar.panellist",id:"knowledge"', ui)
+        host = (ROOT / "crates" / "host" / "dsh-host" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn("knowledge_base::install(ctx, &data_root)", host)
+        self.assertIn("knowledge_base::attach(knowledge_store", host)
+        route = (ROOT / "crates" / "host" / "dsh-host" / "src" / "knowledge_base.rs").read_text(encoding="utf-8")
+        self.assertIn('"/__dsh-knowledge"', route)
+        self.assertIn("trusted_web_request", route)
+        discovery = (ROOT / "crates" / "core" / "tools" / "src" / "discovery.rs").read_text(encoding="utf-8")
+        self.assertIn('"knowledge_search"', discovery)
 
     def test_turn_usage_and_time_details_are_available(self):
         chat = self.source("ui-conversation.js")
@@ -281,11 +310,56 @@ class RustRuntimeContractTests(unittest.TestCase):
         self.assertIn("isDSHRemoteError", gateway)
         self.assertIn('new RemoteError("gateway/internal"', gateway)
         self.assertIn("rebuiltFailure", gateway)
-        connection = self.source("connection.js")
-        self.assertIn("const rpcErrorSchema = object({", connection)
-        self.assertIn("code: string()", connection)
-        self.assertIn("details: record(string(), unknown())", connection)
-        self.assertNotIn('code: literal("gateway/internal")', connection)
+        # Exercise the public connection RPC with the shipped bundle: domain
+        # errors are not restricted to the closed legacy api error schema.
+        script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+let plugin, connection, result;
+const sandbox = {
+  crypto: require("node:crypto").webcrypto, URL, URLSearchParams,
+  setTimeout, clearTimeout, AbortController, console,
+  window: { __ModuleLoader__: { load(spec) { plugin = spec.factory(() => {
+    throw Error("unexpected connection dependency");
+  }); } } },
+  __DSH_TRANSPORT__: { ownsHost: true, async fetch(url, init) {
+    assert.equal(url.pathname, "/api/contract.error");
+    const request = JSON.parse(init.body);
+    return { ok: true, status: 200, async text() {
+      return JSON.stringify({ type: "server-response", rpcId: request.rpcId, result });
+    } };
+  } }
+};
+vm.runInNewContext(fs.readFileSync("web/dist/plugins/connection.js", "utf8"), sandbox);
+plugin.apply({ provide(name, value) {
+  assert.equal(name, "connection"); connection = value;
+} });
+(async () => {
+  for (const code of ["gateway/internal", "schedule-rejected", "plugin/custom-error"]) {
+    result = { ok: false, error: { code, message: "readable error",
+      details: { reason: "disabled", nested: { values: [1, "中文"] } } } };
+    const received = await connection.rpc.call("/api", "contract.error", {});
+    assert.deepEqual(JSON.parse(JSON.stringify(received)), result);
+  }
+  for (const error of [
+    { code: 1, message: "bad", details: {} },
+    { code: "domain/error", message: null, details: {} },
+    { code: "domain/error", message: "bad" },
+    { code: "domain/error", message: "bad", details: [] }
+  ]) {
+    result = { ok: false, error };
+    await assert.rejects(connection.rpc.call("/api", "contract.error", {}),
+      /invalid server-response failure/);
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script], cwd=ROOT, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_ignorable_compatibility_is_retained(self):
         event = (ROOT / "crates" / "core" / "session" / "src" / "types.rs").read_text(encoding="utf-8")

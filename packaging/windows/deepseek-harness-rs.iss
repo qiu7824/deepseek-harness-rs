@@ -34,6 +34,11 @@
 #define MyAppId "{{A6F42843-79DD-4FA1-91D2-0B71F8974B78}"
 #define MyVariantDisplay "Core"
 #define MyAppName "DeepSeek Harness-rs (" + MyVariantDisplay + ")"
+#define DshTitle "DeepSeek Harness-rs"
+#define DshAppSubdir "DeepSeek Harness-rs\" + Variant
+#ifndef ArtDir
+#define ArtDir SourcePath + "installer"
+#endif
 [Setup]
 AppId={#MyAppId}
 AppName={#MyAppName}
@@ -42,6 +47,10 @@ AppPublisher=DeepSeek Harness-rs
 DefaultDirName=D:\Program Files (x86)\DeepSeek Harness-rs\{#Variant}
 UsePreviousAppDir=yes
 DisableDirPage=no
+DisableWelcomePage=yes
+DisableReadyPage=yes
+DisableProgramGroupPage=yes
+WizardResizable=no
 DefaultGroupName={#MyAppName}
 OutputDir={#OutputDir}
 OutputBaseFilename=deepseek-harness-rs-v{#MyAppVersion}-windows-x86_64-{#Variant}-setup
@@ -79,6 +88,7 @@ chinesesimp.NativeUpgradeFailed=原生沙箱升级校验失败，原配置已保
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:AdditionalTasks}"; Flags: unchecked
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#include ArtDir + "\installer-ui.iss"
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\deepseek-black.ico"; IconIndex: 0
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\deepseek-black.ico"; IconIndex: 0; Tasks: desktopicon
@@ -157,6 +167,16 @@ var
   Failure: String;
 begin
   Result := True;
+  if DshIsLanding(CurPageID) and not WizardSilent then
+  begin
+    DshApplyChoices;
+    Failure := CheckInstallDirectory;
+    if Failure <> '' then
+    begin
+      DshShowError(Failure);
+      Result := False;
+    end;
+  end;
   if (CurPageID = wpSelectDir) and not WizardSilent then
   begin
     Failure := CheckInstallDirectory;

@@ -57,69 +57,19 @@ class RustUiContractTests(unittest.TestCase):
         self.assertIn("dsh-subagent-claude-code", cargo)
         self.assertIn("dsh_subagent_claude_code::apply", host)
 
-    def test_skin_catalog_matches_product_scope(self):
+    def test_skins_are_retired_and_modes_remain(self):
         theme = THEME.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")
-        skin_center = (ROOT / "release" / "plugins" / "dsh-skin-center" / "lib" / "client.js").read_text(encoding="utf-8")
-        skin_root = ROOT / "web" / "dist" / "skins"
-        market = (
-            "blue-fantasy",
-            "harbor",
-            "xp",
-            "minecraft",
-            "trading",
-            "miku",
-        )
-        expected = ("light", "dark", *market, "deepseek-official")
-        for skin in expected:
-            self.assertIn(f'"{skin}"', theme)
-            self.assertIn(f'"{skin}"', host)
-            self.assertIn(f'"{skin}"', skin_center)
-        preferences = theme.split("const THEME_PREFERENCES = [", 1)[1].split("];", 1)[0]
-        self.assertEqual(tuple(__import__("re").findall(r'"([a-z0-9-]+)"', preferences)), expected)
-        self.assertNotIn('"system"', preferences)
-        for retired in ("catppuccin", "dracula", "nord", "tokyo-night", "linear", "notion"):
-            self.assertNotIn(f'"{retired}"', preferences)
-        self.assertNotIn("dshSkinPicker", theme)
-        self.assertIn('"data-dsh-skin-option": skin.id', skin_center)
-        self.assertIn('document.documentElement.setAttribute("data-dsh-skin", skinId)', theme)
-        self.assertIn("activateSkinAssets", theme)
-        self.assertIn("await activateSkinAssets(id)", theme)
-        self.assertIn("restoreActiveSkinAssets", theme)
-        self.assertIn("responseContentType", theme)
-        self.assertIn("skin manifest returned", theme)
-        self.assertIn("skin stylesheet returned", theme)
-        self.assertIn("clearActiveSkinAssets()", theme)
-        self.assertIn("clearActiveSkinAssets();", theme)
-        self.assertIn("await restoreActiveSkinAssets(previous);", theme)
+        self.assertFalse((ROOT / "web" / "dist" / "skins").exists())
+        self.assertFalse((ROOT / "release" / "plugins" / "dsh-skin-center").exists())
+        # The prebuilt theme plugin keeps its no-skin boundary: only light and
+        # dark are offered and any other stored preference falls back.
+        self.assertIn('NO_SKIN && !["light", "dark"].includes(section.preference)', theme)
         self.assertIn('id: "appearance"', theme)
-        self.assertIn('id: "skins"', skin_center)
-        catalog = skin_center.split("const SKINS = Object.freeze([", 1)[1].split("]);", 1)[0]
-        self.assertEqual(catalog.count("{ id:"), 9)
-        self.assertNotIn('id: "system"', catalog)
-        for skin in market:
-            directory = skin_root / skin
-            for filename in ("skin.css", "skin.json"):
-                self.assertTrue((directory / filename).is_file(), f"missing {skin}/{filename}")
-            manifest = (directory / "skin.json").read_text(encoding="utf-8")
-            self.assertIn(f'"id": "{skin}"', manifest)
-            self.assertTrue((directory / "compiled-skin.css").is_file(), f"missing {skin}/compiled-skin.css")
-            if '"patches":' in manifest:
-                self.assertTrue((directory / "patches.css").is_file(), f"missing {skin}/patches.css")
-                self.assertTrue((directory / "compiled-patches.css").is_file(), f"missing {skin}/compiled-patches.css")
-            if '"entry": "hooks.mjs"' in manifest:
-                self.assertTrue((directory / "hooks.mjs").is_file(), f"missing {skin}/hooks.mjs")
-        self.assertIn('"light",\n            "dark",', host)
-        host_preferences = host.split("let theme_preference_schema", 1)[1].split("]", 1)[0]
-        self.assertNotIn('"system"', host_preferences)
-        for retired in ("catppuccin", "dracula", "nord", "tokyo-night", "linear", "notion"):
-            self.assertNotIn(f'"{retired}"', host_preferences)
-        self.assertIn('Data::String("light".to_string())', host)
-        official = skin_root / "deepseek-official" / "skin.css"
-        self.assertTrue(official.is_file(), "missing official DeepSeek Harness skin")
-        official_css = official.read_text(encoding="utf-8")
-        for reference_color in ("#1e232c", "#4d6bfe", "#f9f8f8", "#101113", "#0a0a0a", "#6799fe"):
-            self.assertIn(reference_color, official_css.lower())
+        self.assertIn('object.insert("noSkin".to_string(), serde_json::Value::Bool(true));', host)
+        retired = host.split("const RETIRED:", 1)[1].split("];", 1)[0]
+        for skin in ("blue-fantasy", "deepseek-official", "harbor", "miku", "minecraft", "trading", "xp"):
+            self.assertIn(f'"{skin}"', retired)
 
     def test_legacy_theme_preferences_have_a_startup_migration(self):
         host = HOST.read_text(encoding="utf-8")

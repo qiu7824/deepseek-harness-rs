@@ -1,4 +1,4 @@
-#ifndef SourceDir
+﻿#ifndef SourceDir
 #error SourceDir must point to the verified desktop and core payload
 #endif
 #ifndef OutputDir
@@ -13,6 +13,11 @@
 #define MyAppVersion "0.1.3-alpha.36"
 #endif
 #define MyAppId "{{37BA446F-D181-493B-9703-23978B3C194A}"
+#define DshTitle "DeepSeek Harness Desktop"
+#define DshAppSubdir "DeepSeek Harness-rs\desktop"
+#ifndef ArtDir
+#define ArtDir SourcePath + "installer"
+#endif
 
 #if !FileExists(SourceDir + "\dsh_desktop.exe")
 #error The Flutter desktop executable is missing
@@ -44,8 +49,13 @@ AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=DeepSeek Harness-rs
-DefaultDirName={localappdata}\Programs\DeepSeek Harness Desktop
+DefaultDirName=D:\Program Files (x86)\DeepSeek Harness-rs\desktop
 UsePreviousAppDir=yes
+DisableDirPage=no
+DisableWelcomePage=yes
+DisableReadyPage=yes
+DisableProgramGroupPage=yes
+WizardResizable=no
 DefaultGroupName={#MyAppName}
 OutputDir={#OutputDir}
 OutputBaseFilename=deepseek-harness-rs-v{#MyAppVersion}-windows-x86_64-flutter-setup
@@ -73,13 +83,18 @@ english.DesktopShortcut=Create a desktop shortcut
 english.AdditionalTasks=Additional tasks:
 english.LaunchAfterInstall=Launch DeepSeek Harness Desktop
 english.NativeUpgradeFailed=Native sandbox upgrade verification failed. Check the installation log.
+english.DirectoryUnavailable=The selected drive or folder is unavailable. Please choose another installation folder.
+english.DirectoryNotWritable=The selected folder is not writable. Choose a folder you can write to, or restart Setup with appropriate permissions.
 chinesesimp.DesktopShortcut=创建桌面快捷方式
 chinesesimp.AdditionalTasks=附加任务：
 chinesesimp.LaunchAfterInstall=启动 DeepSeek Harness Desktop
 chinesesimp.NativeUpgradeFailed=原生沙箱升级校验失败，请查看安装日志。
+chinesesimp.DirectoryUnavailable=所选磁盘或文件夹不可用，请选择其他安装目录。
+chinesesimp.DirectoryNotWritable=无法写入所选目录，请选择有写入权限的目录，或使用适当权限重新运行安装程序。
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#include ArtDir + "\installer-ui.iss"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\dsh_desktop.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dsh_desktop.exe"; IconIndex: 0
@@ -103,4 +118,61 @@ begin
     if ResultCode <> 0 then
       RaiseException(CustomMessage('NativeUpgradeFailed'));
   end;
+end;
+
+function CheckInstallDirectory: String;
+var
+  Directory, ExistingParent, Probe: String;
+  Attempt: Integer;
+begin
+  Result := '';
+  Directory := ExpandFileName(WizardDirValue);
+  ExistingParent := Directory;
+  while not DirExists(ExistingParent) do
+  begin
+    if FileExists(ExistingParent) or (ExistingParent = '') or
+       (ExtractFileDir(ExistingParent) = ExistingParent) then
+    begin
+      Result := CustomMessage('DirectoryUnavailable');
+      Exit;
+    end;
+    ExistingParent := ExtractFileDir(ExistingParent);
+  end;
+  { Probe the nearest existing parent without creating the app tree. }
+  for Attempt := 1 to 100 do
+  begin
+    Probe := AddBackslash(ExistingParent) + '.dsh-install-check-' +
+      IntToStr(Random(2147483647));
+    if not DirExists(Probe) and not FileExists(Probe) then
+    begin
+      if not CreateDir(Probe) then
+        Result := CustomMessage('DirectoryNotWritable')
+      else if not RemoveDir(Probe) then
+        Result := CustomMessage('DirectoryNotWritable');
+      Exit;
+    end;
+  end;
+  Result := CustomMessage('DirectoryNotWritable');
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Failure: String;
+begin
+  Result := True;
+  if DshIsLanding(CurPageID) and not WizardSilent then
+  begin
+    DshApplyChoices;
+    Failure := CheckInstallDirectory;
+    if Failure <> '' then
+    begin
+      DshShowError(Failure);
+      Result := False;
+    end;
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := CheckInstallDirectory;
 end;

@@ -121,7 +121,7 @@ window.__ModuleLoader__.load({
 						id: props.id,
 						className: fields_module_css_default.input,
 						type: "password",
-						autoComplete: "off",
+						autoComplete: "new-password",
 						value: props.text,
 						disabled: props.disabled,
 						onChange: (event) => {

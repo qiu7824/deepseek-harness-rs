@@ -10,6 +10,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter_mermaid/flutter_mermaid.dart';
 import 'package:markdown/markdown.dart' as md;
+import 'package:path/path.dart' as paths;
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import 'primitives.dart';
@@ -23,10 +24,12 @@ class DshMarkdown extends StatefulWidget {
     this.fontSize = 14,
     this.conversationStyle = false,
     this.onSecondaryTapLink,
+    this.imageBaseDirectory,
   });
   final String data;
   final double fontSize;
   final bool conversationStyle;
+  final String? imageBaseDirectory;
   final MarkdownTapLinkCallback? onTapLink;
   final void Function(String text, String? href, Offset position)?
   onSecondaryTapLink;
@@ -48,7 +51,8 @@ class _DshMarkdownState extends State<DshMarkdown> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.data != widget.data ||
         oldWidget.fontSize != widget.fontSize ||
-        oldWidget.conversationStyle != widget.conversationStyle) {
+        oldWidget.conversationStyle != widget.conversationStyle ||
+        oldWidget.imageBaseDirectory != widget.imageBaseDirectory) {
       _body = null;
       _nodes = null;
     }
@@ -61,6 +65,13 @@ class _DshMarkdownState extends State<DshMarkdown> {
 
   @override
   Widget build(BuildContext context) {
+    final body = _buildBody(context);
+    return SelectionContainer.maybeOf(context) == null
+        ? SelectionArea(child: body)
+        : body;
+  }
+
+  Widget _buildBody(BuildContext context) {
     if (_body != null) return _body!;
     final colors = DshColors(context);
     final fontSize = widget.fontSize;
@@ -169,6 +180,7 @@ class _DshMarkdownState extends State<DshMarkdown> {
                 : style,
             onTapLink: _link,
             onSecondaryTapLink: _linkMenu,
+            imageBaseDirectory: widget.imageBaseDirectory,
           ),
         ],
       ],
@@ -217,11 +229,13 @@ class DshMarkdownBlock extends StatefulWidget {
     required this.style,
     required this.onTapLink,
     this.onSecondaryTapLink,
+    this.imageBaseDirectory,
   });
   final md.Node node;
   final String signature;
   final MarkdownStyleSheet style;
   final MarkdownTapLinkCallback onTapLink;
+  final String? imageBaseDirectory;
   final void Function(String text, String? href, Offset position)?
   onSecondaryTapLink;
   @override
@@ -250,7 +264,8 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
   void didUpdateWidget(DshMarkdownBlock oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.signature != widget.signature ||
-        oldWidget.style != widget.style) {
+        oldWidget.style != widget.style ||
+        oldWidget.imageBaseDirectory != widget.imageBaseDirectory) {
       _clear();
     }
   }
@@ -284,11 +299,12 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
     if (_rendered != null) return _rendered!;
     final children = MarkdownBuilder(
       delegate: this,
-      selectable: true,
+      selectable: false,
       styleSheet: widget.style,
       imageDirectory: null,
       imageBuilder: (uri, title, alt) => MarkdownImage(
         uri: uri,
+        baseDirectory: widget.imageBaseDirectory,
         label: alt?.isNotEmpty == true ? alt! : title ?? '图片',
         onSecondaryTap: (position) => widget.onSecondaryTapLink?.call(
           alt ?? title ?? '图片',
@@ -342,22 +358,52 @@ String? markdownImageFilePath(Uri uri, {bool? windows}) {
   }
 }
 
+String? markdownImageFile(Uri uri, String? base, {bool? windows}) {
+  final onWindows = windows ?? Platform.isWindows;
+  if (!onWindows && RegExp(r'^[a-zA-Z]$').hasMatch(uri.scheme)) return null;
+  final context = paths.Context(
+    style: onWindows ? paths.Style.windows : paths.Style.posix,
+  );
+  if (onWindows &&
+      RegExp(r'^[a-zA-Z]$').hasMatch(uri.scheme) &&
+      !uri.hasAuthority) {
+    try {
+      final drivePath =
+          '${uri.scheme.toUpperCase()}:${Uri.decodeComponent(uri.path)}';
+      return context.isAbsolute(drivePath)
+          ? context.normalize(drivePath)
+          : null;
+    } on FormatException {
+      return null;
+    }
+  }
+  final path = markdownImageFilePath(uri, windows: onWindows);
+  if (path == null || path.isEmpty) return null;
+  if (context.isAbsolute(path)) return context.normalize(path);
+  if (base == null || base.isEmpty) return null;
+  return context.normalize(context.join(base, path));
+}
+
 class MarkdownImage extends StatelessWidget {
   const MarkdownImage({
     super.key,
     required this.uri,
     required this.label,
     this.onSecondaryTap,
+    this.baseDirectory,
   });
   final Uri uri;
   final String label;
+  final String? baseDirectory;
   final ValueChanged<Offset>? onSecondaryTap;
 
   ImageProvider? provider() {
     if (uri.scheme == 'http' || uri.scheme == 'https') {
       return NetworkImage('$uri');
     }
-    final path = markdownImageFilePath(uri);
+    final path = baseDirectory == null
+        ? markdownImageFilePath(uri)
+        : markdownImageFile(uri, baseDirectory);
     if (path != null) return FileImage(File(path));
     if (uri.scheme == 'data' && '$uri'.length <= 24 * 1024 * 1024) {
       try {
@@ -579,7 +625,7 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                             color: Colors.orange,
                           ),
                         ),
-                        SelectableText(
+                        Text(
                           widget.code,
                           style: const TextStyle(
                             fontFamily: 'Consolas',
@@ -591,7 +637,7 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                   )
                 : SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
-                    child: SelectableText(
+                    child: Text(
                       widget.code,
                       style: TextStyle(
                         fontFamily: 'Consolas',

@@ -1340,7 +1340,7 @@ window.__ModuleLoader__.load({
 							(0, react_jsx_runtime.jsx)("input", {
 								className: ModelsSection_module_css_default["input"],
 								type: "password",
-								autoComplete: "off",
+								autoComplete: "new-password",
 								value: keyDraft,
 								placeholder: t("keyPlaceholder"),
 								"aria-label": t("keyInput"),
@@ -1629,7 +1629,7 @@ window.__ModuleLoader__.load({
 						(0, react_jsx_runtime.jsx)("input", {
 							className: ModelsSection_module_css_default["input"],
 							type: "password",
-							autoComplete: "off",
+							autoComplete: "new-password",
 							value: keyDraft,
 							placeholder: keyPlaceholder,
 							"aria-label": t("keyInput"),

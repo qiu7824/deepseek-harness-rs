@@ -38,6 +38,7 @@ mod free_catalog;
 mod free_probe;
 mod hosted_search;
 mod image_generation;
+mod knowledge_base;
 mod learning_bridge;
 mod memory_import;
 mod model_capabilities;
@@ -53,6 +54,7 @@ mod provider_auth_catalog;
 mod provider_compatibility;
 mod remote_execution_http;
 pub mod runtime_paths;
+mod schedule_tasks;
 mod sidebar_settings;
 mod skill_validation;
 mod task_execution;
@@ -1620,7 +1622,8 @@ fn package_settings_defaults() -> Result<serde_json::Map<String, serde_json::Val
 fn migrate_legacy_theme_settings(
     mut document: indexmap::IndexMap<String, dsh_schemastery::Data>,
 ) -> indexmap::IndexMap<String, dsh_schemastery::Data> {
-    const RETIRED: [&str; 9] = [
+    // Earlier themes and every skin are retired; they fall back to light.
+    const RETIRED: [&str; 16] = [
         "system",
         "catppuccin",
         "dracula",
@@ -1630,6 +1633,13 @@ fn migrate_legacy_theme_settings(
         "notion",
         "whale-song",
         "dragon-heir",
+        "blue-fantasy",
+        "deepseek-official",
+        "harbor",
+        "miku",
+        "minecraft",
+        "trading",
+        "xp",
     ];
     let Some(dsh_schemastery::Data::Object(theme)) = document.get_mut("ui-theme") else {
         return document;
@@ -1692,9 +1702,15 @@ mod theme_settings_migration_tests {
     }
 
     #[test]
-    fn current_skin_preference_is_preserved() {
-        let migrated = migrate_legacy_theme_settings(document("blue-fantasy"));
-        assert_eq!(preference(&migrated), Some("blue-fantasy"));
+    fn retired_skin_preferences_migrate_to_light_and_modes_stay() {
+        for skin in ["blue-fantasy", "deepseek-official", "xp"] {
+            let migrated = migrate_legacy_theme_settings(document(skin));
+            assert_eq!(preference(&migrated), Some("light"));
+        }
+        for mode in ["light", "dark"] {
+            let migrated = migrate_legacy_theme_settings(document(mode));
+            assert_eq!(preference(&migrated), Some(mode));
+        }
     }
 
     #[test]
@@ -4298,11 +4314,49 @@ fn compose_host_in_fiber(
         watched_approval.set_runtime_options(timeout, unattended);
         async move {}.boxed()
     }));
+    // Automatic compaction thresholds chosen from the model menu, keyed by
+    // `provider/model` (or `*`), applied live to the compaction policy.
+    let context_scope = settings
+        .register(
+            ctx,
+            dsh_settings::settings_namespace("context-compaction")
+                .map_err(|error| format!("settings namespace: {error}"))?,
+            dsh_schemastery::Schema::object(indexmap::IndexMap::from([(
+                "thresholds".to_string(),
+                dsh_schemastery::Schema::dict(
+                    dsh_schemastery::Schema::number().min(0.3).max(0.98),
+                    None,
+                )
+                .default(dsh_schemastery::Data::Object(Default::default())),
+            )])),
+            dsh_settings::SettingsRegisterOptions::default(),
+        )
+        .map_err(|error| format!("settings context-compaction: {error}"))?;
+    let read_thresholds = |value: &dsh_schemastery::Data| {
+        let mut thresholds = std::collections::HashMap::new();
+        if let dsh_schemastery::Data::Object(object) = value
+            && let Some(dsh_schemastery::Data::Object(entries)) = object.get("thresholds")
+        {
+            for (key, value) in entries {
+                if let dsh_schemastery::Data::Number(ratio) = value {
+                    thresholds.insert(key.clone(), *ratio);
+                }
+            }
+        }
+        thresholds
+    };
+    dsh_compaction::basic::set_threshold_overrides(read_thresholds(&(context_scope.get)()));
+    let _context_settings_watch = (context_scope.watch)(Arc::new(move |next, _previous| {
+        dsh_compaction::basic::set_threshold_overrides(read_thresholds(next));
+        async move {}.boxed()
+    }));
     let permission_presets =
         dsh_permission_presets::PermissionPresetService::install(ctx, Default::default())
             .map_err(|error| format!("permission-presets: {error}"))?;
     futures::executor::block_on(permission_presets.ready())
         .map_err(|error| format!("permission-presets ready: {error}"))?;
+    let schedule_service = schedule_tasks::install(ctx, &data_root);
+    let knowledge_store = knowledge_base::install(ctx, &data_root);
     // ---- M6 shell: the web face over the spine ----
     // The loader service anchors the plugin inventory and profile
     // composition (the Rust static registry serves empty for now).
@@ -4767,13 +4821,8 @@ fn compose_host_in_fiber(
             .into()
         });
     object.insert("variant".into(), serde_json::json!(variant));
-    object.insert(
-        "noSkin".to_string(),
-        serde_json::Value::Bool(
-            variant != "skin" && variant != "development"
-                || !packaged_resource("web/dist/skins").is_dir(),
-        ),
-    );
+    // Skins are retired: the theme plugin offers light and dark only.
+    object.insert("noSkin".to_string(), serde_json::Value::Bool(true));
     object.insert("apiBase".to_string(), serde_json::json!("/api"));
     object.insert(
         "provider".to_string(),
@@ -5018,6 +5067,14 @@ fn compose_host_in_fiber(
         &system_prompt,
     )?;
     open_in_app::register(&web_server, ctx, allow_remote_host);
+    let _knowledge_route = knowledge_base::attach(knowledge_store, &web_server, allow_remote_host);
+    let _schedule_route = schedule_tasks::attach(
+        ctx,
+        schedule_service,
+        &api_proxy,
+        &web_server,
+        allow_remote_host,
+    );
     feedback_delivery::register(
         &web_server,
         ctx,

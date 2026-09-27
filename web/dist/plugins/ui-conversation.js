@@ -4447,7 +4447,7 @@ window.__ModuleLoader__.load({
 								}), (0, react_jsx_runtime.jsxs)("div", {
 									className: InputBar_module_css_default.trailing,
 										children: [
-											renderSlot("conversation.input.model", { locked: modelSeatLocked }),
+											renderSlot("conversation.input.model", { locked: modelSeatLocked, useProjection }),
 											rightItems,
 
 										(0, react_jsx_runtime.jsx)(ContextMeter, {

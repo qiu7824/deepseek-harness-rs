@@ -69,6 +69,18 @@ impl Default for DiscoveryConfig {
                 "get_goal",
                 "create_goal",
                 "update_goal",
+                // Scheduling is requested in plain chat ("remind me every
+                // morning"); keep creation, listing and removal one call away.
+                "schedule_create",
+                "schedule_list",
+                "schedule_delete",
+                "scheduled_task_create",
+                "scheduled_task_list",
+                "scheduled_task_update",
+                "scheduled_task_delete",
+                // The runtime context names enabled knowledge bases and asks the
+                // model to search them first.
+                "knowledge_search",
                 "tool_search",
                 "tool_describe",
                 "environment_probe",

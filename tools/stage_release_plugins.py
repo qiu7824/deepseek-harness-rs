@@ -23,7 +23,6 @@ required = {
     "dsh-better-sidebar",
     "dsh-sidebar-workbench-suite",
     "dsh-artifacts",
-    "dsh-skin-center",
 }
 missing = sorted(name for name in required if not (target / name / "package.json").is_file())
 if missing:

@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "win32_window.h"
+#include "clipboard_reader.h"
 #include "voice_recognizer.h"
 #include "speech_speaker.h"
 

@@ -188,6 +188,37 @@ pub fn resolve_config(config: BasicCompactionConfig) -> Result<ResolvedConfig, S
     })
 }
 
+/// User-chosen automatic compaction thresholds, keyed by `provider/model`
+/// or `*` for every model. They take precedence over configured policies.
+static THRESHOLD_OVERRIDES: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashMap<String, f64>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Lowest and highest accepted user threshold ratio.
+pub const THRESHOLD_OVERRIDE_RANGE: (f64, f64) = (0.3, 0.98);
+
+/// Replace the user threshold overrides. Out-of-range ratios are dropped.
+pub fn set_threshold_overrides(overrides: std::collections::HashMap<String, f64>) {
+    let (low, high) = THRESHOLD_OVERRIDE_RANGE;
+    let accepted = overrides
+        .into_iter()
+        .filter(|(_, ratio)| ratio.is_finite() && (low..=high).contains(ratio))
+        .collect();
+    *THRESHOLD_OVERRIDES
+        .write()
+        .unwrap_or_else(|poison| poison.into_inner()) = accepted;
+}
+
+fn threshold_override(provider: &str, model: &str) -> Option<f64> {
+    let overrides = THRESHOLD_OVERRIDES
+        .read()
+        .unwrap_or_else(|poison| poison.into_inner());
+    overrides
+        .get(&format!("{provider}/{model}"))
+        .or_else(|| overrides.get("*"))
+        .copied()
+}
+
 pub fn resolve_target_policy(
     config: &ResolvedConfig,
     provider: &str,
@@ -197,15 +228,25 @@ pub fn resolve_target_policy(
         .model_policies
         .iter()
         .find(|entry| entry.provider == provider && entry.model == model);
+    let retention = override_
+        .and_then(|value| value.retention.clone())
+        .unwrap_or_else(|| config.retention.clone());
+    let configured = override_
+        .and_then(|value| value.threshold_ratio)
+        .unwrap_or(config.threshold_ratio);
+    // A user threshold must stay above a ratio retention, which the summary
+    // keeps; otherwise the configured threshold applies.
+    let threshold_ratio = threshold_override(provider, model)
+        .filter(|ratio| match &retention {
+            RetentionConfig::Ratio(retain) => ratio > retain,
+            RetentionConfig::Tokens(_) => true,
+        })
+        .unwrap_or(configured);
     ResolvedTargetPolicy {
         provider: provider.into(),
         model: model.into(),
-        threshold_ratio: override_
-            .and_then(|value| value.threshold_ratio)
-            .unwrap_or(config.threshold_ratio),
-        retention: override_
-            .and_then(|value| value.retention.clone())
-            .unwrap_or_else(|| config.retention.clone()),
+        threshold_ratio,
+        retention,
         summarization_provider: override_
             .and_then(|value| value.summarization_provider.clone())
             .unwrap_or_else(|| config.summarization_provider.clone()),
@@ -877,3 +918,51 @@ pub fn install_automatic(
 
 include!("policy.rs");
 include!("basic_impl.rs");
+
+#[cfg(test)]
+mod threshold_override_tests {
+    use super::*;
+
+    #[test]
+    fn user_thresholds_apply_per_model_and_stay_above_ratio_retention() {
+        let config = resolve_config(BasicCompactionConfig {
+            summarization_provider: Some("summary".into()),
+            summarization_model: Some("model".into()),
+            max_tokens: Some(1024),
+            ..Default::default()
+        })
+        .unwrap();
+        let provider = "threshold-override-test";
+        set_threshold_overrides(std::collections::HashMap::from([
+            (format!("{provider}/fast"), 0.6),
+            (format!("{provider}/low"), 0.1),
+        ]));
+        assert_eq!(
+            resolve_target_policy(&config, provider, "fast").threshold_ratio,
+            0.6
+        );
+        // Out of range ratios are dropped; the configured threshold applies.
+        assert_eq!(
+            resolve_target_policy(&config, provider, "low").threshold_ratio,
+            config.threshold_ratio
+        );
+        assert_eq!(
+            resolve_target_policy(&config, provider, "other").threshold_ratio,
+            config.threshold_ratio
+        );
+        let retaining = resolve_config(BasicCompactionConfig {
+            retention: Some(RetentionConfig::Ratio(0.7)),
+            summarization_provider: Some("summary".into()),
+            summarization_model: Some("model".into()),
+            max_tokens: Some(1024),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            resolve_target_policy(&retaining, provider, "fast").threshold_ratio,
+            retaining.threshold_ratio,
+            "a threshold at or below the retained share would loop compaction"
+        );
+        set_threshold_overrides(Default::default());
+    }
+}

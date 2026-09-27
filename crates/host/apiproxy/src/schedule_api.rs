@@ -102,6 +102,12 @@ impl ApiProxyService {
             .map(|slot| slot.as_ref().clone())
     }
 
+    pub(super) fn scheduled_task_service(&self) -> Option<Arc<dsh_schedule_host::ScheduleService>> {
+        self.ctx
+            .get_typed::<Arc<dsh_schedule_host::ScheduleService>>("scheduledTasks", false)
+            .map(|slot| slot.as_ref().clone())
+    }
+
     async fn validate_schedule_session(
         &self,
         id: &dsh_session::SessionId,
