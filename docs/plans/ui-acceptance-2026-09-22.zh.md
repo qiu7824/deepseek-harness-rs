@@ -1,12 +1,12 @@
 # UI 功能、布局与状态验收矩阵
 
-核对日期：2026-09-22。验收基准为实际发布清单、组件注册位置、安装包及运行中的 Host；组件存在、DOM 测试存在、静态扫描通过均不等于页面实测通过。
+矩阵建立日期：2026-09-22；构建与发布状态核对日期：2026-09-27。验收基准为实际发布清单、组件注册位置、安装包及运行中的 Host；组件存在、DOM 测试存在、静态扫描通过均不等于页面实测通过。
 
 ## 发布边界与证据规则
 
 - Web 发布入口为 `web/src/main.ts`，发布资源为 `web/dist`；`tools/stage_release_web.py` 校验清单内文件及内容摘要后复制到发布目录。
-- 当前 `web/dist/plugins/manifest.json` 列出 45 个模块。29 个文件具有同名 `web/src/runtime-plugins` 源文件，其余模块以当前发布文件为核对入口。发布前必须再次核对源文件、发布文件与清单摘要的一致性。
-- `release/plugins` 另外包含 6 个随包扩展：`dsh-artifacts`、`dsh-better-sidebar`、`dsh-context-jump`、`dsh-sidebar-workbench-suite`、`dsh-skin-center`、`dsh-voice-input`；它们提供的页面、文件查看器和弹层均纳入验收。
+- 当前 `web/dist/plugins/manifest.json` 列出 47 个模块。34 个文件具有同名 `web/src/runtime-plugins` 源文件，其余模块以当前发布文件为核对入口。快捷键管理已接入正式发布入口，相关源码和发布资源回归通过；发布前必须再次核对源文件、发布文件与清单摘要的一致性。
+- `release/plugins` 另外包含 9 个随包扩展：`dsh-artifacts`、`dsh-auto-review`、`dsh-better-sidebar`、`dsh-context-jump`、`dsh-schedule`、`dsh-sidebar-workbench-suite`、`dsh-skin-center`、`dsh-time-context`、`dsh-voice-input`；它们提供的页面、文件查看器和弹层均纳入验收。
 - 页面以 slot、主面板 key、会话 view id、工作台 tab id 注册，不能只按 URL 路由枚举。
 - 所有矩阵行当前均为 **待完整实测**。测试列表示已找到的回归入口，执行版本、日志、截图和断言结果须另行补齐。已有 DOM harness 主要使用 JSDOM，不能证明真实浏览器文字换行、画布渲染、遮挡或滚动尺寸正确。
 
@@ -108,18 +108,18 @@
 
 ## Flutter 集成边界
 
-独立工作区中的 `E:\rust\deepseek-harness-rs\apps\desktop_flutter` 与 `packages\dsh_client_dart` 当前仍是未跟踪开发目录，不属于上述隔离 Web 发布树。它们通过同一 Host 的 HTTP RPC/WebSocket 连接服务；共享的任务、取消、历史分页、审批与设置协议必须兼容。
+`apps/desktop_flutter` 与 `packages/dsh_client_dart` 已纳入仓库，分别提供原生客户端和共享协议 SDK。Flutter 与 Web 通过同一 Host 的 HTTP RPC/WebSocket 连接服务；共享的任务、取消、历史分页、审批与设置协议必须兼容，客户端和 Host 的构建身份分别记录。
 
-已核对的真实入口为 `lib/main.dart` → `lib/src/app.dart` → `lib/features/shell.dart`：使用 `ShadApp`，具有浅深主题、可调整侧栏/对话/工作台、任务菜单和连接弹层。`lib/features/settings/settings_shell.dart` 声明 14 个设置入口：general、models、plugins、environment、memory、presets、collaboration、security、skills、discovery、sandbox、archive、menu、trash。文件和依赖正在变化，旧 README 的“仅文本任务”说明不能替代当前代码的能力验收。
+已核对的真实入口为 `lib/main.dart` → `lib/src/app.dart` → `lib/features/shell.dart`：使用 `ShadApp`，具有浅深主题、可调整侧栏/对话/工作台、任务菜单和连接弹层。`lib/features/settings/settings_shell.dart` 声明 14 个设置入口：general、models、plugins、environment、memory、presets、collaboration、security、skills、discovery、archive、schedule、menu、trash。设置入口、客户端构建与实际操作验收分别记录。
 
 | 集成面 | 独立代码位置 | 验收要求 |
 |---|---|---|
 | 服务连接和客户端资源 | `lib/src/controller.dart`、`lib/src/preferences.dart`；`packages/dsh_client_dart` | 关闭客户端不误终止 Host；断连、旧响应、取消与草稿隔离；Host 内存与 Flutter 进程分别记录 |
 | 对话和任务控制 | `lib/src/conversation.dart`、`lib/src/interactions.dart`、`lib/features/shell.dart` | 与 Web 的任务选择、停止、审批、编辑、重连语义一致 |
 | 设置 | `lib/features/settings/settings_shell.dart`、`models_page.dart`、`resource_page.dart` | 设置版本冲突、未保存输入、凭据隐藏、Host 重启项提示一致 |
-| 已有测试入口 | `test/controller_test.dart`、`test/workbench_test.dart`、`test/launcher_test.dart`、`integration_test/desktop_flow_test.dart` | 在该客户端负责人集成后的实际源码和产物上重跑；旧 exe 或依赖清单不能证明当前源码可构建 |
+| 已有测试入口 | `test/controller_test.dart`、`test/workbench_test.dart`、`test/launcher_test.dart`、`integration_test/desktop_flow_test.dart` | 测试结果关联冻结源码和实际产物；旧 exe 或依赖清单不能证明当前源码可构建，组件测试不能替代原生界面验收 |
 
-磁盘上存在旧 `build/windows/x64/runner/Release/dsh_desktop.exe`，时间戳为 2026-09-21 19:08:49；当前源码已有后续修改，因此旧二进制不能作为当前 Flutter 页面完成证据。该目录的代码、测试、构建和发布由其所属开发任务集成；Web 修复不覆盖或删除它的修改。
+2026-09-27 未安装 Flutter 候选的全量测试为 314 项通过、4 项条件跳过，静态分析无问题，Windows Release 已冻结 195 个文件。候选包含全局提醒、快捷键完善与账号退出确认界面；账号退出的 Host 回合交接竞态仍未关闭，不能将客户端测试通过视为完整账号流程验收通过。已安装客户端仍为文字显示与工具标签修复版，具体构建摘要见[桌面平台支持与验收](../desktop-platforms.zh.md)。
 
 ## 三轮实测记录结构
 
@@ -127,4 +127,6 @@
 2. 异常与恢复轮：故障注入、取消、迟到响应、冲突、关闭重开、断线及 Host 重启；检查对应任务、草稿和资源归属。
 3. 连续运行轮：长对话、多子任务、多文档与工作台反复开关、设置反复编辑；同步记录 Host 内核峰值工作集、当前工作集、私有提交、子进程及客户端资源。
 
-每项结果以“通过、失败、不适用”记录；不适用须给出已核实的发布变体或平台条件。未运行项目维持待验收。发布前逐行补齐结果；任何必需项目失败或 Host 执行峰值超过 50,000,000 字节均不满足验收门槛。
+每项结果以“通过、失败、不适用”记录；不适用须给出已核实的发布变体或平台条件。未运行项目维持待验收。发布前逐行补齐结果，任何必需项目失败均不满足验收门槛。
+
+2026-09-22 矩阵的 50,000,000 字节要求属于历史基线；2026-09-27 现行 Host 全过程工作集峰值上限为 70,000,000 字节。完整历史读取与旧会话恢复分别执行固定负载矩阵，重启后的较低峰值或局部诊断不能代替全过程结果。候选版本与实测结果见[v0.1.7-rc.2 兼容评估](../upstream-v0.1.7-rc.2-evaluation.zh.md)。
