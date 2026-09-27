@@ -1127,7 +1127,13 @@ class _KnowledgeCreateDialogState extends State<KnowledgeCreateDialog> {
         Navigator.of(context).pop(object(value['base']));
       }
     } on DshException catch (e) {
-      if (op.valid) setState(() => error = '$e');
+      if (op.valid) {
+        setState(
+          () => error = e.outcomeUnknown
+              ? '${e.message}；操作结果尚未确认，请核对知识库后再试。'
+              : e.message,
+        );
+      }
     } catch (e) {
       if (op.valid) setState(() => error = '$e');
     } finally {

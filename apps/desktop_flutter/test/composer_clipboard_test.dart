@@ -92,12 +92,17 @@ void main() {
       ComposerClipboard.channel,
       (_) async => {'png': png},
     );
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.hasStrings') return {'value': false};
+      return null;
+    });
     final c = await mount(tester);
     await tester.enterText(
       find.byKey(const Key('prompt-input')),
       'describe this',
     );
     await pasteKey(tester);
+    expect(c.error, isNull);
     expect(find.byType(PendingAttachmentTile), findsOneWidget);
     expect(find.byType(Image), findsOneWidget);
     await tester.tap(find.byKey(const Key('send-message')));
