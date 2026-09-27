@@ -8,6 +8,8 @@ import '../../design/primitives.dart';
 import '../../design/select.dart';
 import '../../src/controller.dart';
 import 'learning_panel.dart';
+import 'plugin_operations_panel.dart';
+import 'time_context_panel.dart';
 
 class SettingsResourcePage extends StatefulWidget {
   const SettingsResourcePage({
@@ -37,6 +39,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
   final scope = RequestScope(), search = TextEditingController();
   Json data = {};
   bool loading = true, busy = false;
+  bool pluginManagerOpen = false;
   String? error, notice;
   int loadGeneration = 0;
   @override
@@ -162,6 +165,15 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
               label: '刷新',
               onPressed: loading || busy ? null : load,
             ),
+            if (widget.page == 'plugins')
+              DshButton(
+                outline: true,
+                icon: LucideIcons.puzzle,
+                onPressed: busy || pluginManagerOpen || staleConnection
+                    ? null
+                    : openPluginManager,
+                child: const Text('安装与维护'),
+              ),
             if (widget.page == 'skills')
               DshButton(
                 outline: true,
@@ -241,7 +253,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
     final description = displayPathText(
       '${row['description'] ?? row['content'] ?? row['cwd'] ?? row['fiberPhase'] ?? row['trust'] ?? ''}',
     );
-    return Container(
+    final entry = Container(
       padding: const EdgeInsets.symmetric(vertical: 12),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: DshColors(context).border)),
@@ -398,6 +410,77 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         ],
       ),
     );
+    if (widget.page == 'plugins' &&
+        const {
+          'dsh-time-context',
+          '@deepseek-ai/dsh-time-context',
+        }.contains(row['moduleName']) &&
+        row['entryId'] is String) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          entry,
+          TimeContextPanel(
+            key: ValueKey('time-context-${row['entryId']}'),
+            controller: widget.controller,
+            entryId: row['entryId'] as String,
+          ),
+        ],
+      );
+    }
+    return entry;
+  }
+
+  Future<void> openPluginManager() async {
+    if (!mounted || staleConnection || pluginManagerOpen || busy) return;
+    final capturedApi = boundApi;
+    setState(() => pluginManagerOpen = true);
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720, maxHeight: 700),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          '插件安装与维护',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      DshIcon(
+                        LucideIcons.x,
+                        label: '关闭插件管理',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: PluginOperationsPanel(
+                        controller: widget.controller,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => pluginManagerOpen = false);
+    }
+    if (mounted && capturedApi == widget.controller.client) await load();
   }
 
   Widget archiveRow(Json row) {
