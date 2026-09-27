@@ -17,7 +17,7 @@ assert.equal(skillContext.rankSkillNames(catalog, '').length, catalog.length);
 
 const jsx = (type, props, key) => ({ type, props, key });
 const effects = [];
-const react = { memo: fn => fn, useState: () => [true, () => {}], useMemo: fn => fn(), useEffect: fn => effects.push(fn), useRef: value => ({ current: value }), useCallback: fn => fn };
+const react = { memo: fn => fn, useState: () => [true, () => {}], useMemo: fn => fn(), useEffect: fn => effects.push(fn), useRef: value => ({ current: value }), useCallback: fn => fn, Fragment: 'fragment', createElement: (type, props, ...children) => jsx(type, { ...props, children }) };
 const primitives = new Proxy({}, { get: (_, name) => name });
 let exported;
 let source = fs.readFileSync(path.join(plugins, 'ui-tool.js'), 'utf8');
@@ -84,7 +84,7 @@ const opened = [];
 const workspaceState = {items: [], phase: 'ready', archivedSessionIds: []};
 const view = {groupBy: 'workspace', orderBy: 'updated', groupExpansion: {}, sessionOrderByAccount: {}, sessionUpdatedAtByAccount: {}};
 const workspaceProps = {
-    wide: true, useWorkspaces: select => select(workspaceState), useStore: select => select(view), useDirectoryFlow: select => select(true),
+    wide: true, useSessions: select => select({byId: {}}), useWorkspaces: select => select(workspaceState), useStore: select => select(view), useDirectoryFlow: select => select(true),
     actions: {}, open: id => opened.push(id), t: key => key,
 };
 function findElement(value, name) {
