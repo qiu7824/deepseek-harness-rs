@@ -572,10 +572,13 @@ impl DeepSeekAdapter {
 
     pub fn frozen(&self) -> Result<Arc<dyn dsh_llm::LlmAdapter>, LlmError> {
         let options = (self.config.options)()?;
-        let authentication = self.authentication.clone().unwrap_or_else(|| dsh_llm::RequestAuthentication::new(
-            if options.keyless { dsh_llm::RequestAuthenticationIdentity::Anonymous }
-            else { dsh_llm::RequestAuthenticationIdentity::ApiKey }
-        ));
+        let authentication = self.authentication.clone().unwrap_or_else(|| {
+            dsh_llm::RequestAuthentication::new(if options.keyless {
+                dsh_llm::RequestAuthenticationIdentity::Anonymous
+            } else {
+                dsh_llm::RequestAuthenticationIdentity::ApiKey
+            })
+        });
         Ok(Arc::new(Self {
             config: DeepSeekAdapterOptions {
                 options: Arc::new(move || Ok(options.clone())),

@@ -2510,7 +2510,8 @@ impl PersistenceBackend<JsonlTornMarker> for JsonlSessionPersistence {
         let path = self.upgrade_to_current(&path, id).await?;
         let prepared = crate::native_reader::run(&path, id, crate::native_reader::prepare).await?;
         if let Some(prepared) = &prepared {
-            self.assert_stored_identity(&path, prepared.session.header(), Some(id)).await?;
+            self.assert_stored_identity(&path, prepared.session.header(), Some(id))
+                .await?;
         }
         Ok(prepared)
     }

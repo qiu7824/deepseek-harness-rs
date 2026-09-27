@@ -92,10 +92,11 @@ async fn logout_invalidates_all_provider_attempts_before_late_commit() {
     let p = pending(&auth, "first");
     pending(&auth, "second");
     auth.save("openai-codex", &tokens()).await.unwrap();
-    let impact = auth.handle("logout-impact", &json!({"provider":"openai-codex"})).await.unwrap();
-    auth.handle("logout", &impact)
+    let impact = auth
+        .handle("logout-impact", &json!({"provider":"openai-codex"}))
         .await
         .unwrap();
+    auth.handle("logout", &impact).await.unwrap();
     assert!(!auth.pending.lock().contains_key("first"));
     assert!(!auth.pending.lock().contains_key("second"));
     assert!(auth.commit("first", p, &tokens()).await.is_err());

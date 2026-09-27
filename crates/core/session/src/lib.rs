@@ -34,7 +34,8 @@ pub use request_header::{
     RequestHeaderPayload, canonical_header, fold_request_header, header_equals,
 };
 pub use store::{
-    ForkError, Session, SessionEventReader, SessionForkError, SessionForkErrorCode, SessionForkSource, SessionStore,
+    ForkError, Session, SessionEventReader, SessionForkError, SessionForkErrorCode,
+    SessionForkSource, SessionStore,
 };
 pub use surface::{
     SURFACE_EVENT_TYPES, SessionSurface, StreamingSurfaceFold, SurfaceFoldReplacement,

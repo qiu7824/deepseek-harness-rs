@@ -4181,17 +4181,35 @@ impl ApiProxyService {
         if !unarchive {
             if let Some(tasks) = self.scheduled_task_service() {
                 let outcome = if request.payload.stop_schedules {
-                    tasks.stop_session_tasks(session_id.as_str()).await.map(|_| false)
+                    tasks
+                        .stop_session_tasks(session_id.as_str())
+                        .await
+                        .map(|_| false)
                 } else {
                     tasks.has_active_session(session_id.as_str())
                 };
                 match outcome {
-                    Ok(true) => return err(request.rpc_id, RpcError::AgentBusy(RpcErrorBody {
-                        message: "Stop this session's active scheduled tasks before archiving it.".into(),
-                        details: crate::api::rpc::ReasonDetails { reason: "active-schedules".into() },
-                    })),
-                    Ok(false) => {},
-                    Err(error) => return err(request.rpc_id, schedule_api::rpc_error(dsh_schedule::host_types::ScheduleError::new(error.code, error.message))),
+                    Ok(true) => return err(
+                        request.rpc_id,
+                        RpcError::AgentBusy(RpcErrorBody {
+                            message:
+                                "Stop this session's active scheduled tasks before archiving it."
+                                    .into(),
+                            details: crate::api::rpc::ReasonDetails {
+                                reason: "active-schedules".into(),
+                            },
+                        }),
+                    ),
+                    Ok(false) => {}
+                    Err(error) => {
+                        return err(
+                            request.rpc_id,
+                            schedule_api::rpc_error(dsh_schedule::host_types::ScheduleError::new(
+                                error.code,
+                                error.message,
+                            )),
+                        );
+                    }
                 }
             }
         }
@@ -6612,14 +6630,18 @@ impl ApiProxyService {
                         "message submission was stopped before execution",
                     ));
                 }
-                agent.send_with_context_checked(
-                    message,
-                    match request.payload.mode {
-                        PromptMode::Steer => dsh_agent::InboxTarget::NextStep,
-                        PromptMode::Queue => dsh_agent::InboxTarget::NextTurn,
-                    },
-                    prepared.additional_context,
-                ).map_err(|error| dsh_subagent::SubagentError::new("AUTH_CONTINUATION_CONTROL_FAILED", error))?;
+                agent
+                    .send_with_context_checked(
+                        message,
+                        match request.payload.mode {
+                            PromptMode::Steer => dsh_agent::InboxTarget::NextStep,
+                            PromptMode::Queue => dsh_agent::InboxTarget::NextTurn,
+                        },
+                        prepared.additional_context,
+                    )
+                    .map_err(|error| {
+                        dsh_subagent::SubagentError::new("AUTH_CONTINUATION_CONTROL_FAILED", error)
+                    })?;
                 Ok(())
             })
         });

@@ -483,10 +483,14 @@ async fn multiple_logins_preserve_legacy_account_switch_identity_and_remove_cred
     assert!(!directory.to_string().contains("fixture-refresh"));
 
     // Removing a saved account leaves the current account usable and cannot be undone by switch.
-    let impact = auth.handle("logout-impact", &json!({"provider":p.id,"accountScope":b.account_scope})).await.unwrap();
-    auth.handle("logout", &impact)
-    .await
-    .unwrap();
+    let impact = auth
+        .handle(
+            "logout-impact",
+            &json!({"provider":p.id,"accountScope":b.account_scope}),
+        )
+        .await
+        .unwrap();
+    auth.handle("logout", &impact).await.unwrap();
     assert!(
         auth.handle(
             "switch",
@@ -501,18 +505,20 @@ async fn multiple_logins_preserve_legacy_account_switch_identity_and_remove_cred
     );
     assert_eq!(auth.saved_sessions(p.id).await.unwrap().len(), 1);
     auth.save(p.id, &b).await.unwrap();
-    let impact = auth.handle("logout-impact", &json!({"provider":p.id})).await.unwrap();
-    auth.handle("logout", &impact)
+    let impact = auth
+        .handle("logout-impact", &json!({"provider":p.id}))
         .await
         .unwrap();
+    auth.handle("logout", &impact).await.unwrap();
     assert_eq!(
         auth.session(p.id).await.unwrap().unwrap().account_scope,
         a.account_scope
     );
-    let impact = auth.handle("logout-impact", &json!({"provider":p.id})).await.unwrap();
-    auth.handle("logout", &impact)
+    let impact = auth
+        .handle("logout-impact", &json!({"provider":p.id}))
         .await
         .unwrap();
+    auth.handle("logout", &impact).await.unwrap();
     assert!(auth.session(p.id).await.unwrap().is_none());
     assert!(
         auth.credentials

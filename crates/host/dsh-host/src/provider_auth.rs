@@ -1,21 +1,21 @@
 //! Account authorization and renewal. Tokens stay in the credential provider;
 //! the browser receives a user code, an opaque attempt id, and account status.
 #[cfg(test)]
+#[path = "provider_auth_flush_tests.rs"]
+mod flush_tests;
+#[cfg(test)]
 #[path = "provider_auth_models_tests.rs"]
 mod model_tests;
 #[path = "provider_auth_models.rs"]
 mod models;
 #[cfg(test)]
-#[path = "provider_auth_review_tests.rs"]
-mod review_tests;
+#[path = "provider_auth_requests_tests.rs"]
+mod request_tests;
 #[path = "provider_auth_requests.rs"]
 mod requests;
 #[cfg(test)]
-#[path = "provider_auth_requests_tests.rs"]
-mod request_tests;
-#[cfg(test)]
-#[path = "provider_auth_flush_tests.rs"]
-mod flush_tests;
+#[path = "provider_auth_review_tests.rs"]
+mod review_tests;
 use dsh_credentials::CredentialProvider;
 use dsh_host_webserver::{RouteDisposer, WebRoute, WebRouteKind, WebServer};
 use serde::{Deserialize, Serialize};
@@ -414,7 +414,8 @@ impl Pending {
 }
 pub(crate) struct AccountAuth {
     agents: parking_lot::RwLock<std::sync::Weak<dsh_agent::AgentRegistry>>,
-    request_identities: parking_lot::Mutex<HashMap<(String, String), dsh_llm::RequestAuthentication>>,
+    request_identities:
+        parking_lot::Mutex<HashMap<(String, String), dsh_llm::RequestAuthentication>>,
     account_usage: crate::codex_account::CodexAccountService,
     client: reqwest::Client,
     credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
@@ -731,10 +732,15 @@ impl AccountAuth {
         expected_scope: Option<&str>,
     ) -> Result<Option<String>, String> {
         let _guard = self.refresh.lock().await;
-        self.resolve_request_token_for_scope_locked(id, base, headers, expected_scope).await
+        self.resolve_request_token_for_scope_locked(id, base, headers, expected_scope)
+            .await
     }
     async fn resolve_request_token_for_scope_locked(
-        &self, id: &str, base: &str, headers: &[(String, String)], expected_scope: Option<&str>,
+        &self,
+        id: &str,
+        base: &str,
+        headers: &[(String, String)],
+        expected_scope: Option<&str>,
     ) -> Result<Option<String>, String> {
         // Compare the captured route before repair: a legacy active profile may
         // legitimately be migrated by resolve_token_locked below, but a route

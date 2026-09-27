@@ -207,11 +207,20 @@ pub const ACCOUNT_SIGNED_OUT_REASON: &str = "account-signed-out";
 
 /// Public live-agent handle.
 pub trait Agent: Send + Sync + 'static {
-    fn authentication_observer(&self) -> Option<dsh_llm::RequestAuthenticationObserver> { None }
-    fn authentication_binding(&self) -> Option<AgentAuthenticationBinding> { None }
+    fn authentication_observer(&self) -> Option<dsh_llm::RequestAuthenticationObserver> {
+        None
+    }
+    fn authentication_binding(&self) -> Option<AgentAuthenticationBinding> {
+        None
+    }
     /// Cancel only while the same turn still owns this exact authentication.
     /// Queued input is preserved and requires an explicit subsequent wake.
-    fn cancel_authentication(&self, _expected: &AgentAuthenticationBinding) -> Result<bool, String> { Ok(false) }
+    fn cancel_authentication(
+        &self,
+        _expected: &AgentAuthenticationBinding,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
     fn flush_authentication_control(&self) -> BoxFuture<'static, Result<(), String>> {
         Box::pin(async { Err("authentication continuation durability is unavailable".into()) })
     }
@@ -306,7 +315,10 @@ pub trait Agent: Send + Sync + 'static {
     }
 
     fn send_with_context_checked(
-        &self, message: UserMessage, target: InboxTarget, context: Option<UserMessage>,
+        &self,
+        message: UserMessage,
+        target: InboxTarget,
+        context: Option<UserMessage>,
     ) -> Result<(), String> {
         self.send_with_context(message, target, context);
         Ok(())

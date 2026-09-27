@@ -1113,7 +1113,10 @@ impl Session {
             data: data_snapshot,
             ignorable: matches!(
                 type_,
-                "request/phase" | "tools/discovery" | "computer-use/activity" | "agent/account-continuation"
+                "request/phase"
+                    | "tools/discovery"
+                    | "computer-use/activity"
+                    | "agent/account-continuation"
             )
             .then_some(true),
             surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),

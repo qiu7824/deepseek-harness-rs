@@ -1008,7 +1008,9 @@ impl LlmRuntime {
                 .unwrap_or_else(|| registration.retry_policy.clone()),
         };
         let authentication = adapter.request_authentication();
-        if let Some(observer) = observer { observer(authentication.clone())?; }
+        if let Some(observer) = observer {
+            observer(authentication.clone())?;
+        }
         let (resolved_config, context, system_prompt_update) =
             Self::resolve_call_for(&frozen, config, signal).await?;
         let adapter_defaults = LlmCallConfigAdapterDefaults {
@@ -1117,7 +1119,11 @@ impl LlmRuntime {
     ) -> ChunkStream {
         let runtime = Arc::clone(self);
         Box::pin(futures::stream::unfold(
-            AdapterPhase::Setup { options, prepared, observer },
+            AdapterPhase::Setup {
+                options,
+                prepared,
+                observer,
+            },
             move |phase| {
                 let runtime = Arc::clone(&runtime);
                 async move { runtime.adapter_phase(phase).await }
@@ -1130,7 +1136,11 @@ impl LlmRuntime {
         phase: AdapterPhase,
     ) -> Option<(StreamChunk, AdapterPhase)> {
         match phase {
-            AdapterPhase::Setup { options, prepared, observer } => {
+            AdapterPhase::Setup {
+                options,
+                prepared,
+                observer,
+            } => {
                 let signal = options.signal.clone();
                 let (registration, resolved_config, adapter) = match &prepared {
                     Some(binding) => (
@@ -1182,7 +1192,10 @@ impl LlmRuntime {
                 if let Some(observer) = observer
                     && let Err(error) = observer(adapter.request_authentication())
                 {
-                    return Some((adapter_failure_chunk(error.failure, signal.as_ref()), AdapterPhase::Done));
+                    return Some((
+                        adapter_failure_chunk(error.failure, signal.as_ref()),
+                        AdapterPhase::Done,
+                    ));
                 }
                 if prepared.is_some() && !generate_options_config_equals(&options, &resolved_config)
                 {
@@ -1269,7 +1282,11 @@ impl LlmRuntime {
     }
 
     fn authentication_observer(&self) -> Option<crate::RequestAuthenticationObserver> {
-        self.ctx.get_typed::<Arc<crate::RequestAuthenticationObservers>>("llmAuthenticationObservers", false)
+        self.ctx
+            .get_typed::<Arc<crate::RequestAuthenticationObservers>>(
+                "llmAuthenticationObservers",
+                false,
+            )
             .and_then(|observers| (observers.capture)())
     }
 

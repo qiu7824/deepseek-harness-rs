@@ -18,8 +18,8 @@ use dsh_agent::{Agent, AgentRegistry};
 use dsh_llm::{ContentBlock, MessageSource, create_user_message};
 
 use crate::domain::{
-    FoldedSchedules, render_every_reminder_batch_framing,
-    render_reminder_framing, resolve_every_occurrence,
+    FoldedSchedules, render_every_reminder_batch_framing, render_reminder_framing,
+    resolve_every_occurrence,
 };
 use crate::persistence::flush_schedule_persistence;
 use crate::transaction::run_schedule_transaction;
