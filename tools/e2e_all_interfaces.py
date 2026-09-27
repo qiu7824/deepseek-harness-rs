@@ -9,6 +9,7 @@ import queue
 import re
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -127,22 +128,35 @@ def main() -> int:
     lan = non_loopback_ipv4()
     with tempfile.TemporaryDirectory(prefix="dsh-bind-e2e-") as temporary:
         root = pathlib.Path(temporary)
-        exposed, advertised, port, output = launch(binary, root / "all", "0.0.0.0")
-        try:
-            connection = http.client.HTTPConnection(lan, port, timeout=10)
-            connection.request("GET", "/", headers={"Host": f"{lan}:{port}"})
-            root_status = connection.getresponse().status
-            connection.close()
-            api_status, api = api_call(lan, port, f"http://{lan}:{port}")
-            cross_status, _ = api_call(lan, port, "http://attacker.invalid")
-            if advertised != "0.0.0.0" or root_status != 200 or api_status != 200:
-                raise AssertionError("all-interface route was not usable")
-            if api.get("type") != "server-response" or cross_status != 403:
-                raise AssertionError("all-interface API origin policy failed")
-            if not any("WARNING:" in line for line in output):
-                raise AssertionError("all-interface launch omitted its exposure warning")
-        finally:
-            stop(exposed)
+        api_status = cross_status = root_status = None
+        if sys.platform == "win32":
+            # Every Windows sandbox backend is controlled through a same-user
+            # loopback interface, so the Host must refuse other bind addresses.
+            try:
+                exposed, *_ = launch(binary, root / "all", "0.0.0.0")
+            except RuntimeError as error:
+                if "same-user loopback control interface" not in str(error):
+                    raise
+            else:
+                stop(exposed)
+                raise AssertionError("Windows Host accepted an all-interface listener")
+        else:
+            exposed, advertised, port, output = launch(binary, root / "all", "0.0.0.0")
+            try:
+                connection = http.client.HTTPConnection(lan, port, timeout=10)
+                connection.request("GET", "/", headers={"Host": f"{lan}:{port}"})
+                root_status = connection.getresponse().status
+                connection.close()
+                api_status, api = api_call(lan, port, f"http://{lan}:{port}")
+                cross_status, _ = api_call(lan, port, "http://attacker.invalid")
+                if advertised != "0.0.0.0" or root_status != 200 or api_status != 200:
+                    raise AssertionError("all-interface route was not usable")
+                if api.get("type") != "server-response" or cross_status != 403:
+                    raise AssertionError("all-interface API origin policy failed")
+                if not any("WARNING:" in line for line in output):
+                    raise AssertionError("all-interface launch omitted its exposure warning")
+            finally:
+                stop(exposed)
 
         local, default_advertised, default_port, _ = launch(binary, root / "default", None)
         try:

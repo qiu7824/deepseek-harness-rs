@@ -40,8 +40,10 @@ def main():
     run=args.workdir.resolve()/str(time.time_ns());workspace=run/'workspace';workspace.mkdir(parents=True);home=run/'home';env=isolated_environment(run,home)
     env['DSH_NODE_COMMAND']=str(node.resolve())
     Model.workspace=workspace;Model.protected=run/'protected.txt';Model.protected.write_text('preserve',encoding='utf-8')
-    if os.name=='nt':
-        (home/'windows-sandbox.json').write_text(json.dumps({'version':1,'backend':'windows-native','runner':str(run/'missing-native.exe'),'stateDirectory':str(run/'private-native-state'),'workspaces':[str(run/'different-workspace')],'sha256':'0'*64,'commandRunnerSha256':'0'*64,'setupSha256':'0'*64}),encoding='utf-8')
+    # Windows commands run through the packaged native sandbox: a stale
+    # windows-sandbox.json fails closed for every workspace (sandbox-local
+    # invalid_native_identity_never_falls_back_to_appcontainer), so confinement
+    # is proven with the real helpers.
     server=ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=server.serve_forever,daemon=True).start()
     settings={'computer-use':{'enabled':True,'adapter':'command','command':sys.executable},'llm-pi-ai':{'providers':{'js-fixture':{'keyless':True,'api':'openai-completions','baseURL':f'http://127.0.0.1:{server.server_port}/v1','models':[{'id':'js-fixture','contextWindow':131072,'maxTokens':4096}]}}},'agent-default-model':{'provider':'js-fixture','model':'js-fixture'}}
     (home/'settings.json').write_text(json.dumps(settings),encoding='utf-8')

@@ -112,11 +112,11 @@ def require_ok(response: dict[str, object], method: str) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
-def file_manifest(root: pathlib.Path) -> dict[str, tuple[int, str]]:
+def file_manifest(root: pathlib.Path, include=lambda name: True) -> dict[str, tuple[int, str]]:
     if not root.exists():
         return {}
     manifest: dict[str, tuple[int, str]] = {}
-    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file() and include(candidate.name)):
         digest = hashlib.sha256()
         size = 0
         with path.open("rb") as stream:
@@ -128,12 +128,15 @@ def file_manifest(root: pathlib.Path) -> dict[str, tuple[int, str]]:
 
 
 def session_manifest(root: pathlib.Path) -> dict[str, tuple[int, str]]:
-    """Fingerprint only published session logs, never atomic-write temporaries."""
-    return {
-        path: fingerprint
-        for path, fingerprint in file_manifest(root).items()
-        if re.fullmatch(r"session(?:\.v[0-4])?\.jsonl(?:\.zstd)?", pathlib.PurePosixPath(path).name)
-    }
+    """Fingerprint only published session logs, never atomic-write temporaries.
+
+    The name filter runs before any file is opened: a live Host holds
+    `.session-writer.lock` with an OS lock, which Windows refuses to read.
+    """
+    return file_manifest(
+        root,
+        lambda name: re.fullmatch(r"session(?:\.v[0-4])?\.jsonl(?:\.zstd)?", name) is not None,
+    )
 
 
 def wait_for_session_manifest(
