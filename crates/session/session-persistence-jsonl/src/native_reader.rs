@@ -67,10 +67,10 @@ pub(crate) struct NativeSummary {
 pub(crate) fn prepare(
     path: &Path,
     expected_id: &str,
-) -> Result<Option<dsh_session_persistence::StoredPreparation<crate::index::JsonlTornMarker>>, String> {
-    let revision = crate::index::file_revision(
-        &std::fs::metadata(path).map_err(|error| error.to_string())?,
-    );
+) -> Result<Option<dsh_session_persistence::StoredPreparation<crate::index::JsonlTornMarker>>, String>
+{
+    let revision =
+        crate::index::file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?);
     let mut archive = dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir())?;
     let mut repair = dsh_session::repair::InterruptedTurnRepair::default();
     let summary = visit(path, expected_id, &|| false, |event| {
@@ -85,10 +85,15 @@ pub(crate) fn prepare(
         serde_json::to_value(&summary.meta).map_err(|error| error.to_string())?,
         summary.inherited.get(),
     )?;
-    archive.visit(0..archive.len(), |event| {
-        validator
-            .push(&serde_json::to_value(event).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("invalid V4 lifecycle at {} {}: {error}", event.seq, event.type_))?;
+    archive.visit_owned(0..archive.len(), |event| {
+        let seq = event.seq;
+        let row = event.into_json_value();
+        validator.push(&row).map_err(|error| {
+            format!(
+                "invalid V4 lifecycle at {seq} {}: {error}",
+                row["type"].as_str().unwrap()
+            )
+        })?;
         Ok(true)
     })?;
     validator.finish()?;
@@ -102,9 +107,7 @@ pub(crate) fn prepare(
         closers.clone(),
     )?;
     if revision
-        != crate::index::file_revision(
-            &std::fs::metadata(path).map_err(|error| error.to_string())?,
-        )
+        != crate::index::file_revision(&std::fs::metadata(path).map_err(|error| error.to_string())?)
     {
         return Err("Session source changed during native restore".into());
     }

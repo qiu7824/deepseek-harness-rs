@@ -16,6 +16,7 @@
 //! - Pre-commit hooks run outside the state mutex while publication ownership
 //!   serializes writers; recursive writes are rejected.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
@@ -230,9 +231,7 @@ fn assert_message_event_shape(
     }
     let source = source.unwrap();
     if type_ == "assistant/message" {
-        if source_kind != Some("model")
-            || !has_provider_model(Some(&JsonValue::Object(source.clone())))
-        {
+        if source_kind != Some("model") || !has_provider_model(message_record.get("source")) {
             return Err(format!("{subject} message must have model source"));
         }
         return Ok(());
@@ -358,17 +357,26 @@ impl SessionState {
         end: usize,
         mut visitor: impl FnMut(&SessionEvent) -> Result<bool, String>,
     ) -> Result<(), String> {
+        self.visit_cow(start, end, |event| visitor(event.as_ref()))
+    }
+
+    fn visit_cow<'a>(
+        &'a self,
+        start: usize,
+        end: usize,
+        mut visitor: impl FnMut(Cow<'a, SessionEvent>) -> Result<bool, String>,
+    ) -> Result<(), String> {
         let prefix = self.prefix_len();
         let mut keep_going = true;
         if let Some(archive) = &self.archive {
-            archive.visit(start.min(prefix)..end.min(prefix), |event| {
-                keep_going = visitor(event)?;
+            archive.visit_owned(start.min(prefix)..end.min(prefix), |event| {
+                keep_going = visitor(Cow::Owned(event))?;
                 Ok(keep_going)
             })?;
         }
         if keep_going && end > prefix {
             for event in &self.log[start.saturating_sub(prefix)..end - prefix] {
-                if !visitor(event)? {
+                if !visitor(Cow::Borrowed(event))? {
                     break;
                 }
             }
@@ -447,6 +455,19 @@ impl SessionEventReader<'_> {
         let end = to_seq_exclusive.unwrap_or(self.len()).min(self.len()) as usize;
         let start = from_seq.min(end as u64) as usize;
         self.state.visit(start, end, visitor)
+    }
+
+    /// Archived events are temporary owned values; resident events remain
+    /// borrowed from the coherent prefix and must not be mutated in place.
+    pub fn visit_cow<'a>(
+        &'a self,
+        from_seq: u64,
+        to_seq_exclusive: Option<u64>,
+        visitor: impl FnMut(Cow<'a, SessionEvent>) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let end = to_seq_exclusive.unwrap_or(self.len()).min(self.len()) as usize;
+        let start = from_seq.min(end as u64) as usize;
+        self.state.visit_cow(start, end, visitor)
     }
 
     pub fn find_rev(
@@ -548,19 +569,20 @@ impl Session {
         let mut last_type = None;
         let mut header_fold = None;
         let mut context_fold = None;
-        archive.visit(0..archive.len(), |event| {
+        archive.visit_owned(0..archive.len(), |event| {
             let index = event.seq.get() as usize;
-            let value = serde_json::to_value(event).map_err(|error| error.to_string())?;
+            let value = event.into_json_value();
             assert_session_event_envelope(&value, index)?;
-            drop(value);
+            let event: SessionEvent =
+                serde_json::from_value(value).map_err(|error| error.to_string())?;
             assert_supported_request_header(
                 &event.type_,
                 &event.data,
                 &format!("seed event at index {index}"),
             )?;
-            surface.push(event)?;
+            surface.push(&event)?;
             header_fold = crate::request_header::fold_request_header(
-                std::slice::from_ref(event),
+                std::slice::from_ref(&event),
                 header_fold.take(),
             );
             if event.type_ == "request/context" {
@@ -1956,6 +1978,123 @@ mod ownership_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn cow_reader_moves_only_archive_events_and_preserves_mixed_source() {
+        let seed = record(0);
+        let mut builder =
+            crate::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        builder.push(&seed).unwrap();
+        let header = snapshot_session_header(&session_id("cow-reader"), None).unwrap();
+        let restored = Session::from_event_archive(
+            header.id.clone(),
+            builder.finish().unwrap(),
+            &header,
+            SessionLogOffset::ZERO,
+            vec![],
+        )
+        .unwrap();
+        restored
+            .append(
+                "session/title",
+                serde_json::json!({"title":"resident"}),
+                None,
+            )
+            .unwrap();
+        let original = restored.events();
+        restored.with_event_reader(|reader| {
+            let mut kinds = Vec::new();
+            reader
+                .visit_cow(0, None, |event| {
+                    match event {
+                        Cow::Owned(mut event) => {
+                            assert_eq!(event, seed);
+                            event.data["content"][0]["text"] = "local edit".into();
+                            kinds.push("owned");
+                        }
+                        Cow::Borrowed(event) => {
+                            assert!(std::ptr::eq(
+                                event,
+                                &reader.state.log[event.seq.get() as usize - 1]
+                            ));
+                            kinds.push("borrowed");
+                        }
+                    }
+                    assert_eq!(reader.read(0)?, Some(seed.clone()));
+                    Ok(true)
+                })
+                .unwrap();
+            assert_eq!(kinds, vec!["owned", "borrowed", "borrowed"]);
+            let mut stopped = Vec::new();
+            reader
+                .visit_cow(0, None, |event| {
+                    stopped.push(event.seq.get());
+                    Ok(false)
+                })
+                .unwrap();
+            assert_eq!(stopped, vec![0]);
+            let mut tail = Vec::new();
+            reader
+                .visit_cow(1, Some(3), |event| {
+                    assert!(matches!(event, Cow::Borrowed(_)));
+                    tail.push(event.seq.get());
+                    Ok(true)
+                })
+                .unwrap();
+            assert_eq!(tail, vec![1, 2]);
+            reader
+                .visit_cow(u64::MAX, None, |_| panic!("empty clamped range"))
+                .unwrap();
+        });
+        assert_eq!(restored.events(), original);
+    }
+
+    #[test]
+    fn archived_envelope_validation_preserves_replay_and_rejects_invalid_model_source() {
+        let header = snapshot_session_header(&session_id("archive-envelope"), None).unwrap();
+        let valid: SessionEvent = serde_json::from_value(serde_json::json!({
+            "seq":0,"time":0,"type":"assistant/message","surfaceOp":"append",
+            "data":{"turn":1,"step":1,"message":{"id":"assistant","role":"assistant",
+                "source":{"kind":"model","provider":"fixture","model":"fixture",
+                    "replayState":{"opaque":"private".repeat(32 * 1024)}},
+                "content":[{"type":"text","text":"complete"}]}}
+        }))
+        .unwrap();
+        for corruption in [
+            None,
+            Some("provider"),
+            Some("model"),
+            Some("ignorable"),
+            Some("content"),
+        ] {
+            let mut input = valid.clone();
+            match corruption {
+                Some("provider" | "model") => {
+                    input.data["message"]["source"][corruption.unwrap()] = "".into()
+                }
+                Some("ignorable") => input.ignorable = Some(false),
+                Some("content") => input.data["message"]["content"] = serde_json::json!({}),
+                _ => {}
+            }
+            let mut builder =
+                crate::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+            builder.push(&input).unwrap();
+            let result = Session::from_event_archive(
+                header.id.clone(),
+                builder.finish().unwrap(),
+                &header,
+                SessionLogOffset::ZERO,
+                vec![],
+            );
+            if corruption.is_some() {
+                assert!(result.is_err(), "accepted corruption: {corruption:?}");
+            } else {
+                let session = result.unwrap();
+                assert_eq!(session.read_event(0).unwrap(), Some(valid.clone()));
+                assert_eq!(session.events()[0], valid);
+            }
+        }
     }
 
     #[test]

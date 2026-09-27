@@ -187,6 +187,16 @@ impl EventArchive {
         range: Range<usize>,
         mut visitor: impl FnMut(&SessionEvent) -> Result<bool, String>,
     ) -> Result<(), String> {
+        self.visit_owned(range, |event| visitor(&event))
+    }
+
+    /// Transfer each temporary decoded event to its consumer without changing
+    /// the immutable archive or retaining decoded bodies between visits.
+    pub fn visit_owned(
+        &self,
+        range: Range<usize>,
+        mut visitor: impl FnMut(SessionEvent) -> Result<bool, String>,
+    ) -> Result<(), String> {
         if range.start > range.end || range.end > self.len() {
             return Err("Session archive range exceeds its captured prefix".into());
         }
@@ -210,7 +220,7 @@ impl EventArchive {
             if event.seq.get() != index as u64 {
                 return Err("Session archive sequence mismatch".into());
             }
-            if !visitor(&event)? {
+            if !visitor(event)? {
                 return Ok(());
             }
         }
@@ -264,6 +274,78 @@ mod tests {
             .unwrap();
         assert_eq!(repeated, vec![event(7), event(8)]);
         assert!(archive.visit(8..10, |_| Ok(true)).is_err());
+    }
+
+    #[test]
+    fn owned_visits_keep_independent_cursors_and_leave_source_events_unchanged() {
+        let seed: Vec<_> = (0..4)
+            .map(|seq| {
+                let mut event = event(seq);
+                event.data["large"] = "x".repeat(96 * 1024).into();
+                event
+            })
+            .collect();
+        let mut builder = EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        for event in &seed {
+            builder.push(event).unwrap();
+        }
+        let archive = builder.finish().unwrap();
+        let mut seen = Vec::new();
+        archive
+            .visit_owned(0..4, |mut value| {
+                let index = value.seq.get() as usize;
+                assert_eq!(value, seed[index]);
+                archive.visit_owned(3..4, |nested| {
+                    assert_eq!(nested, seed[3]);
+                    Ok(true)
+                })?;
+                assert_eq!(archive.read(0)?, Some(seed[0].clone()));
+                value.data["large"] = "local edit".into();
+                assert_eq!(archive.read(index)?, Some(seed[index].clone()));
+                seen.push(index);
+                Ok(index < 2)
+            })
+            .unwrap();
+        assert_eq!(seen, vec![0, 1, 2]);
+        let mut repeated = Vec::new();
+        archive
+            .visit_owned(0..4, |event| {
+                repeated.push(event);
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(repeated, seed);
+        assert!(
+            archive
+                .visit_owned(Range { start: 2, end: 1 }, |_| Ok(true))
+                .is_err()
+        );
+        assert!(archive.visit_owned(0..5, |_| Ok(true)).is_err());
+        assert_eq!(archive.visit_owned(4..4, |_| panic!("empty range")), Ok(()));
+        assert_eq!(
+            archive.visit_owned(0..4, |_| Err("visitor failed".into())),
+            Err("visitor failed".into())
+        );
+    }
+
+    #[test]
+    fn owned_visits_reject_corrupted_archive_sequences() {
+        let mut builder = EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        builder.push(&event(0)).unwrap();
+        let archive = builder.finish().unwrap();
+        {
+            let mut file = archive.file.lock();
+            let mut corrupted = event(0);
+            corrupted.seq = SessionSeq::new(1).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            serde_json::to_writer(&mut *file, &corrupted).unwrap();
+            file.write_all(b"\n").unwrap();
+        }
+        assert_eq!(
+            archive.visit_owned(0..1, |_| panic!("invalid event reached visitor")),
+            Err("Session archive sequence mismatch".into())
+        );
+        assert!(archive.visit(0..1, |_| Ok(true)).is_err());
     }
 
     #[test]

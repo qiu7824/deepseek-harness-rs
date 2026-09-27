@@ -151,6 +151,59 @@ fn fixture(events: &[SessionEvent], compression: JsonlCompression) -> Fixture {
 }
 
 #[test]
+fn native_prepare_preserves_private_payloads_and_full_lifecycle_validation() {
+    let rows = vec![
+        json!({"type":"turn/start","data":{"turn":1}}),
+        json!({"type":"step/start","data":{"turn":1,"step":1}}),
+        json!({"type":"user/message","surfaceOp":"append","data":{"id":"user","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"prompt"}]}}),
+        json!({"type":"request/header","data":{"header":{"config":{"provider":"fixture","model":"fixture"}}}}),
+        json!({"type":"assistant/message","surfaceOp":"append","data":{"turn":1,"step":1,"message":{"id":"assistant","role":"assistant","source":{"kind":"model","provider":"fixture","model":"fixture","replayState":{"opaque":"private".repeat(32 * 1024)}},"content":[{"type":"text","text":"complete".repeat(32 * 1024)}]}}}),
+        json!({"type":"step/end","data":{"turn":1,"step":1}}),
+        json!({"type":"turn/end","data":{"turn":1,"reason":{"kind":"completed"}}}),
+    ];
+    let seed: Vec<SessionEvent> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(seq, mut row)| {
+            row["seq"] = json!(seq);
+            row["time"] = json!(seq);
+            serde_json::from_value(row).unwrap()
+        })
+        .collect();
+    for compression in [JsonlCompression::None, JsonlCompression::Zstd] {
+        for corruption in [None, Some("step"), Some("ignorable"), Some("inherited")] {
+            let mut input = seed.clone();
+            match corruption {
+                Some("step") => input[5].data["step"] = json!(2),
+                Some("ignorable") => input[4].ignorable = Some(false),
+                Some("inherited") => {
+                    let mut marker = event(input.len() as u64, "session/end-seed");
+                    marker.data = json!({"inherited":true});
+                    input.push(marker);
+                }
+                _ => {}
+            }
+            let fixture = fixture(&input, compression);
+            let bytes = std::fs::read(&fixture.0).unwrap();
+            let result = prepare(&fixture.0, "fixture");
+            if corruption.is_some() {
+                assert!(result.is_err(), "accepted corruption: {corruption:?}");
+            } else {
+                let prepared = result.unwrap().unwrap();
+                assert_eq!(prepared.inspection_length, seed.len());
+                assert!(prepared.closers.is_empty());
+                assert_eq!(&prepared.session.events()[..seed.len()], seed.as_slice());
+                assert_eq!(
+                    prepared.session.read_event(4).unwrap(),
+                    Some(seed[4].clone())
+                );
+            }
+            assert_eq!(std::fs::read(&fixture.0).unwrap(), bytes);
+        }
+    }
+}
+
+#[test]
 fn native_window_reads_only_the_selected_payload_and_pages_back_to_its_sources() {
     let mut events = vec![event(0, "user/message")];
     for seq in 1..=8 {

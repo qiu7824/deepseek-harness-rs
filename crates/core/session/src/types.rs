@@ -487,6 +487,46 @@ pub struct SessionEvent {
     pub source_event_seqs: Option<Vec<u64>>,
 }
 
+impl SessionEvent {
+    /// The Serialize envelope with owned payloads moved into its JSON tree.
+    /// Unlike `serde_json::to_value`, this does not copy strings in `data`.
+    pub fn into_json_value(self) -> JsonValue {
+        let Self {
+            type_,
+            seq,
+            time,
+            data,
+            ignorable,
+            surface_op,
+            source_event_seqs,
+        } = self;
+        let mut record = serde_json::Map::with_capacity(7);
+        record.insert("type".into(), JsonValue::String(type_));
+        record.insert("seq".into(), seq.get().into());
+        record.insert("time".into(), time.into());
+        record.insert("data".into(), data);
+        if let Some(ignorable) = ignorable {
+            record.insert("ignorable".into(), ignorable.into());
+        }
+        if let Some(surface) = surface_op {
+            let value = match surface {
+                SurfaceOp::Append => JsonValue::String("append".into()),
+                SurfaceOp::Replace { start, end } => serde_json::json!({
+                    "op": "replace", "startSeq": start, "endSeq": end,
+                }),
+            };
+            record.insert("surfaceOp".into(), value);
+        }
+        if let Some(sources) = source_event_seqs {
+            record.insert(
+                "sourceEventSeqs".into(),
+                JsonValue::Array(sources.into_iter().map(JsonValue::from).collect()),
+            );
+        }
+        JsonValue::Object(record)
+    }
+}
+
 // ---- Core event data constructors ----
 
 /// `turn/start` event data.
@@ -701,5 +741,99 @@ fn render_unknown(value: Option<&JsonValue>) -> String {
     match value {
         Some(value) => value.to_string(),
         None => "undefined".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod owned_event_tests {
+    use super::*;
+
+    #[test]
+    fn owned_json_envelope_matches_serialization_for_every_optional_shape() {
+        for surface in [
+            None,
+            Some(SurfaceOp::Append),
+            Some(SurfaceOp::Replace { start: 1, end: 7 }),
+        ] {
+            for sources in [None, Some(vec![]), Some(vec![7, 1, 5])] {
+                for ignorable in [None, Some(false), Some(true)] {
+                    for data in [
+                        JsonValue::Null,
+                        serde_json::json!({"unknown":[false,-7,1.25,{"text":"\"\\\n历史"}]}),
+                    ] {
+                        let event = SessionEvent {
+                            type_: "opaque/event".into(),
+                            seq: SessionSeq::new(10).unwrap(),
+                            time: -12,
+                            data,
+                            ignorable,
+                            surface_op: surface.clone(),
+                            source_event_seqs: sources.clone(),
+                        };
+                        let expected = serde_json::to_value(&event).unwrap();
+                        let owned = event.clone().into_json_value();
+                        assert_eq!(owned, expected);
+                        assert_eq!(
+                            serde_json::from_value::<SessionEvent>(owned).unwrap(),
+                            event
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn owned_json_validation_roundtrip_keeps_payload_and_replay_allocations() {
+        let event = SessionEvent {
+            type_: "assistant/message".into(),
+            seq: SessionSeq::new(1).unwrap(),
+            time: 0,
+            data: serde_json::json!({"message":{
+                "id":"assistant", "role":"assistant",
+                "source":{"kind":"model","provider":"fixture","model":"fixture",
+                    "replayState":{"opaque":"private".repeat(32 * 1024)}},
+                "content":[{"type":"text","text":"message".repeat(32 * 1024)}]
+            }}),
+            ignorable: None,
+            surface_op: Some(SurfaceOp::Append),
+            source_event_seqs: Some(vec![0]),
+        };
+        let paths = [
+            "/message/content/0/text",
+            "/message/source/replayState/opaque",
+        ];
+        let addresses: Vec<_> = paths
+            .iter()
+            .map(|path| event.data.pointer(path).unwrap().as_str().unwrap().as_ptr())
+            .collect();
+        let expected = serde_json::to_value(&event).unwrap();
+        let row = event.into_json_value();
+        assert_eq!(row, expected);
+        for (path, address) in paths.iter().zip(&addresses) {
+            assert_eq!(
+                row["data"]
+                    .pointer(path)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .as_ptr(),
+                *address
+            );
+        }
+        let restored: SessionEvent = serde_json::from_value(row).unwrap();
+        for (path, address) in paths.iter().zip(&addresses) {
+            assert_eq!(
+                restored
+                    .data
+                    .pointer(path)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .as_ptr(),
+                *address
+            );
+        }
+        assert_eq!(serde_json::to_value(restored).unwrap(), expected);
     }
 }

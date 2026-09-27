@@ -1,5 +1,6 @@
 //! Bounded history pagination over resident and archived Session events.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -44,8 +45,11 @@ fn compact(
     if oversized {
         return Ok(None);
     }
-    reader.visit(first, Some(end), |event| {
-        sink.push(crate::public_event::clone_for_browser(event))?;
+    reader.visit_cow(first, Some(end), |event| {
+        sink.push(match event {
+            Cow::Owned(event) => event,
+            Cow::Borrowed(event) => crate::public_event::clone_for_browser(event),
+        })?;
         Ok(true)
     })?;
     sink.finish().map(Some)
@@ -298,6 +302,73 @@ mod tests {
                         "forward archived={archived}, after={after}, messages={messages}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn owned_and_borrowed_pages_match_without_mutating_replay_or_source_payloads() {
+        let seed = vec![
+            event(
+                0,
+                "user/message",
+                json!({"id":"user","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"replayState is literal user text"}]}),
+                None,
+            ),
+            event(
+                1,
+                "assistant/chunk",
+                json!({"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"stop"},"replayState":{"opaque":"private".repeat(32 * 1024)}}}),
+                None,
+            ),
+            event(
+                2,
+                "assistant/message",
+                json!({"turn":1,"step":1,"message":{"id":"assistant","role":"assistant","source":{"kind":"model","provider":"fixture","model":"fixture","replayState":{"opaque":"private".repeat(32 * 1024)}},"content":[{"type":"text","text":"complete"}]}}),
+                None,
+            ),
+        ];
+        let header =
+            dsh_session::snapshot_session_header(&dsh_session::session_id("mixed-page"), None)
+                .unwrap();
+        let mut archive =
+            dsh_session::event_archive::EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        for event in &seed[..2] {
+            archive.push(event).unwrap();
+        }
+        let mixed = Session::from_event_archive(
+            header.id.clone(),
+            archive.finish().unwrap(),
+            &header,
+            SessionLogOffset::ZERO,
+            vec![seed[2].clone()],
+        )
+        .unwrap();
+        for session in [session(&seed, false), session(&seed, true), mixed] {
+            let source = session.events();
+            for direction in [Direction::Forward, Direction::Backward] {
+                let expected = crate::history_transport::compact_page(
+                    seed.iter()
+                        .map(crate::public_event::clone_for_browser)
+                        .collect(),
+                    direction,
+                    HISTORY_TRANSPORT_EVENT_LIMIT,
+                    HISTORY_TRANSPORT_BYTE_LIMIT,
+                )
+                .unwrap();
+                let actual = session
+                    .with_event_reader(|reader| {
+                        compact(reader, 0, seed.len() as u64, direction, None)
+                    })
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(actual, expected);
+                let serialized = serde_json::to_string(&actual.0).unwrap();
+                assert!(!serialized.contains("private"));
+                assert!(serialized.contains("replayState is literal user text"));
+                assert_eq!(session.events(), source);
+                assert_eq!(session.read_event(1).unwrap(), Some(seed[1].clone()));
+                assert_eq!(session.read_event(2).unwrap(), Some(seed[2].clone()));
             }
         }
     }
