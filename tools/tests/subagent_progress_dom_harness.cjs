@@ -47,7 +47,12 @@ assert.equal(childProgress(hiddenReasoning, 'running').preview, '', 'reasoning i
 function blockFor(row) {
   const events = row.parentHistory.events.map(item => item.event);
   const call = events.find(event => event.type === 'tool/call').data;
-  const result = events.find(event => event.type === 'tool/result').data.message.content[0];
+  const message = events.find(event => event.type === 'tool/result').data.message;
+  // Native V4 tool messages carry the result directly; migrated legacy
+  // messages wrap it in a tool-result block (see tools/e2e_tool_results.py).
+  const result = message.role === 'tool'
+    ? { content: message.content, isError: message.isError === true }
+    : message.content.find(block => block.type === 'tool-result');
   return { kind: 'tool-result', callId: call.callId, call: { name: call.name, argsRaw: call.arguments }, content: result.content, isError: result.isError, subCalls: [] };
 }
 const parentId = success.sessionId;
