@@ -588,10 +588,12 @@ fn materialize_range(
     if let Some(mut sink) = sink {
         scan(&mut |event| sink.inspect(&event))?;
         if let Some((first, _)) = range {
-            let mut staged = dsh_session::event_archive::EventArchiveBuilder::new_at_seq(
-                &std::env::temp_dir(),
-                dsh_session::SessionSeq::new(first)?,
-            )?;
+            let mut staged =
+                dsh_session::event_archive::EventArchiveBuilder::new_at_seq_with_capacity(
+                    &std::env::temp_dir(),
+                    dsh_session::SessionSeq::new(first)?,
+                    count,
+                )?;
             // Complete the same physical scan and revision checks before any
             // page bodies accumulate beside the decoder's tail-read buffers.
             scan(&mut |event| staged.push_cancellable(&event, cancelled))?;

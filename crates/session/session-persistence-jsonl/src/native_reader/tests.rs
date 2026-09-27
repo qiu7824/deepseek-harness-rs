@@ -388,6 +388,38 @@ fn projected_native_windows_inspect_then_consume_the_unchanged_source_range() {
 }
 
 #[test]
+fn large_staged_native_slices_keep_exact_sequences_references_and_source_bytes() {
+    const FIRST: usize = 8;
+    const COUNT: usize = 4_097;
+    let mut events = (0..(FIRST + COUNT) as u64)
+        .map(|seq| event(seq, "assistant/chunk"))
+        .collect::<Vec<_>>();
+    let last = events.last_mut().unwrap();
+    last.type_ = "assistant/message".into();
+    last.surface_op = Some(SurfaceOp::Append);
+    last.source_event_seqs = Some(vec![0, 7, FIRST as u64, last.seq.get() - 1]);
+    for compression in [JsonlCompression::None, JsonlCompression::Zstd] {
+        let fixture = fixture(&events, compression);
+        let original = std::fs::read(&fixture.0).unwrap();
+        let revision = crate::index::file_revision(&std::fs::metadata(&fixture.0).unwrap());
+        let (actual, reduced) = materialize_range(
+            &fixture.0,
+            "fixture",
+            Some((FIRST as u64, events.last().unwrap().seq.get())),
+            COUNT,
+            &revision,
+            &|| false,
+            true,
+            Some(checked_sink(&events[FIRST..])),
+        )
+        .unwrap();
+        assert!(!reduced);
+        assert_eq!(actual, events[FIRST..]);
+        assert_eq!(std::fs::read(&fixture.0).unwrap(), original);
+    }
+}
+
+#[test]
 fn projected_native_window_rejects_append_between_inspection_and_consumption() {
     struct AppendingSink(std::path::PathBuf);
     impl dsh_session_persistence::HistoryWindowSink for AppendingSink {

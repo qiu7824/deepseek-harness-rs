@@ -111,9 +111,26 @@ impl EventArchiveBuilder {
 
     /// Archive a slice without renumbering events or their source references.
     pub fn new_at_seq(directory: &Path, first_seq: SessionSeq) -> Result<Self, String> {
+        Self::new_at_seq_with_capacity(directory, first_seq, 0)
+    }
+
+    /// Reserve the offset index for a known event count, including its end offset.
+    pub fn new_at_seq_with_capacity(
+        directory: &Path,
+        first_seq: SessionSeq,
+        event_capacity: usize,
+    ) -> Result<Self, String> {
+        let offset_capacity = event_capacity
+            .checked_add(1)
+            .ok_or("Session archive index capacity overflow")?;
+        let mut offsets = Vec::new();
+        offsets
+            .try_reserve_exact(offset_capacity)
+            .map_err(|error| format!("cannot allocate Session archive index: {error}"))?;
+        offsets.push(0);
         Ok(Self {
             writer: BufWriter::with_capacity(64 * 1024, temporary_file(directory)?),
-            offsets: vec![0],
+            offsets,
             first_seq,
             failed: false,
         })
@@ -146,6 +163,14 @@ impl EventArchiveBuilder {
                 "Session archive expected seq {}, got {}",
                 expected, event.seq
             ));
+        }
+        if self.offsets.len() == self.offsets.capacity() {
+            // Bound spare index memory during dense restores. A small geometric
+            // increment keeps growth amortized linear without doubling capacity;
+            // shrinking at finish need not release the allocator's original block.
+            self.offsets
+                .try_reserve_exact((self.offsets.capacity() / 8).max(64))
+                .map_err(|error| format!("cannot grow Session archive index: {error}"))?;
         }
         // Stream serialization through a byte counter. Large result bodies
         // never acquire a second complete serialized allocation.
@@ -481,6 +506,94 @@ mod tests {
             })
             .unwrap();
         assert_eq!(all, seed);
+    }
+
+    #[test]
+    fn dense_archives_bound_spare_index_memory_before_finish() {
+        const EVENT_COUNT: usize = 65_536;
+        let mut builder = EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        let mut value = event(0);
+        for seq in 0..EVENT_COUNT as u64 {
+            value.seq = SessionSeq::new(seq).unwrap();
+            value.source_event_seqs = (seq > 0).then(|| vec![seq - 1]);
+            builder.push(&value).unwrap();
+        }
+        assert_eq!(builder.len(), EVENT_COUNT);
+        assert!(
+            builder.offsets.capacity() <= (EVENT_COUNT + 1) * 5 / 4,
+            "dense index retains more than 25% spare capacity before finish: {}",
+            builder.offsets.capacity()
+        );
+        let archive = builder.finish().unwrap();
+        let mut seen = 0;
+        archive
+            .visit_owned(0..EVENT_COUNT, |actual| {
+                assert_eq!(actual.seq.get(), seen);
+                assert_eq!(actual.data, value.data);
+                assert_eq!(actual.source_event_seqs, (seen > 0).then(|| vec![seen - 1]));
+                seen += 1;
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(seen, EVENT_COUNT as u64);
+        assert_eq!(archive.read(EVENT_COUNT - 1).unwrap(), Some(value));
+    }
+
+    #[test]
+    fn known_archive_capacity_includes_the_end_offset_without_reallocation() {
+        const EVENT_COUNT: usize = 65_536;
+        let first = SessionSeq::new(37).unwrap();
+        let mut builder = EventArchiveBuilder::new_at_seq_with_capacity(
+            &std::env::temp_dir(),
+            first,
+            EVENT_COUNT,
+        )
+        .unwrap();
+        assert_eq!(builder.offsets.capacity(), EVENT_COUNT + 1);
+        let index = builder.offsets.as_ptr();
+        let mut value = event(37);
+        for offset in 0..EVENT_COUNT {
+            value.seq = sequence_at(first, offset).unwrap();
+            builder.push(&value).unwrap();
+        }
+        assert_eq!(builder.offsets.as_ptr(), index);
+        assert_eq!(builder.offsets.capacity(), EVENT_COUNT + 1);
+        let archive = builder.finish().unwrap();
+        assert_eq!(archive.first_seq(), first);
+        assert_eq!(archive.len(), EVENT_COUNT);
+        assert_eq!(archive.read(0).unwrap(), Some(event(37)));
+        assert_eq!(archive.read(EVENT_COUNT - 1).unwrap(), Some(value));
+
+        let empty = EventArchiveBuilder::new_at_seq_with_capacity(&std::env::temp_dir(), first, 0)
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(empty.first_seq(), first);
+        assert_eq!(empty.read(0).unwrap(), None);
+    }
+
+    #[test]
+    fn archive_index_capacity_overflow_is_rejected_before_creating_a_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "dsh-archive-capacity-{}-{}",
+            std::process::id(),
+            NEXT_ARCHIVE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        for count in [usize::MAX, isize::MAX as usize / std::mem::size_of::<u64>()] {
+            let error =
+                EventArchiveBuilder::new_at_seq_with_capacity(&directory, SessionSeq::ZERO, count)
+                    .err()
+                    .expect("overflowing index capacity must be rejected");
+            assert!(
+                error.contains("index capacity overflow")
+                    || error.contains("cannot allocate Session archive index"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        }
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]
