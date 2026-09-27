@@ -415,9 +415,17 @@ async fn forward(spawned: codex_utils_pty::SpawnedProcess, tty: bool, timeout_ms
         tokio::spawn({
             let session = session.clone();
             async move {
+                // Every pseudo console resize repaints the screen; resizing on
+                // each poll kept the terminal from ever falling quiet enough
+                // for the Host to observe its startup prompt.
+                let mut applied = None;
                 loop {
                     if let Some(size) = console_size() {
-                        let _ = session.resize(size);
+                        let current = (size.rows, size.cols);
+                        if applied != Some(current) {
+                            let _ = session.resize(size);
+                            applied = Some(current);
+                        }
                     }
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
