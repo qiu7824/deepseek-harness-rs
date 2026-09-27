@@ -640,6 +640,9 @@ struct OwnedAgentHandle {
 type OwnedAgentHandles =
     Arc<parking_lot::Mutex<std::collections::HashMap<dsh_session::SessionId, OwnedAgentHandle>>>;
 
+/// Returns `true` when retirement was deferred only because the Agent itself
+/// is busy again (running, or holding accepted input that has not started);
+/// the caller retries once that work settles. Every other outcome is final.
 async fn retire_idle_agent(
     resolver: &Arc<crate::agent_lookup::AgentResolver>,
     handles: &OwnedAgentHandles,
@@ -650,17 +653,19 @@ async fn retire_idle_agent(
     jobs: Option<Arc<dyn dsh_jobs::JobRegistry>>,
     computer_use: Option<Arc<dsh_tool_computer_use_command::ComputerUseRuntime>>,
     agent: Arc<dyn Agent>,
-) {
+) -> bool {
     let session_id = agent.id().clone();
     let _retirement = resolver.begin_retirement(&session_id);
-    if agent.status() != dsh_agent::AgentStatus::Idle || agent.inbox().has_pending() {
-        return;
+    let agent_busy =
+        || agent.status() != dsh_agent::AgentStatus::Idle || agent.inbox().has_pending();
+    if agent_busy() {
+        return true;
     }
     if subagents
         .as_ref()
         .is_some_and(|runtime| runtime.has_pending_descendants(&agent))
     {
-        return;
+        return false;
     }
     if terminals
         .as_ref()
@@ -672,10 +677,10 @@ async fn retire_idle_agent(
             .as_ref()
             .is_some_and(|runtime| runtime.has_owner_activity(&agent))
     {
-        return;
+        return false;
     }
     let Some(agents) = agents else {
-        return;
+        return false;
     };
     if agents
         .get(&session_id)
@@ -685,19 +690,20 @@ async fn retire_idle_agent(
             .iter()
             .any(|child| agents.is_owned_by(child.id(), &agent))
     {
-        return;
+        return false;
     }
     let Some(sessions) = sessions else {
-        return;
+        return false;
     };
     if sessions.flush(agent.session()).await.is_err() {
-        return;
+        return false;
     }
-    if agent.status() != dsh_agent::AgentStatus::Idle
-        || agent.inbox().has_pending()
-        || subagents
-            .as_ref()
-            .is_some_and(|runtime| runtime.has_pending_descendants(&agent))
+    if agent_busy() {
+        return true;
+    }
+    if subagents
+        .as_ref()
+        .is_some_and(|runtime| runtime.has_pending_descendants(&agent))
         || terminals
             .as_ref()
             .is_some_and(|runtime| runtime.has_owner_activity(&agent))
@@ -708,7 +714,7 @@ async fn retire_idle_agent(
             .as_ref()
             .is_some_and(|runtime| runtime.has_owner_activity(&agent))
     {
-        return;
+        return false;
     }
     let dispose = {
         let mut handles = handles.lock();
@@ -716,7 +722,7 @@ async fn retire_idle_agent(
             .get(&session_id)
             .is_some_and(|owned| Arc::ptr_eq(&owned.agent, &agent));
         if !exact {
-            return;
+            return false;
         }
         handles
             .remove(&session_id)
@@ -725,6 +731,7 @@ async fn retire_idle_agent(
     if let Some(dispose) = dispose {
         dispose.await;
     }
+    false
 }
 
 #[cfg(test)]
@@ -1317,6 +1324,65 @@ mod idle_retirement_tests {
     }
 
     #[tokio::test]
+    async fn retirement_retries_when_queued_work_starts_after_idle_observation() {
+        let ctx = Context::root();
+        let sessions = dsh_session::SessionStore::install(&ctx);
+        let agents = dsh_agent::AgentRegistry::install(&ctx);
+        let service = ApiProxyService::install(&ctx, ApiProxyDefaults::default());
+        let id = session_id("queued-work-retirement");
+        let session = sessions
+            .create(&ctx, Some(id.clone()), None)
+            .await
+            .expect("session");
+        let inbox = Inbox::new(&session, InboxNotifications::default()).expect("inbox");
+        // `when_idle` resolves at once while the Agent already runs the turn
+        // that a released prompt lease queued.
+        let concrete = Arc::new(StatusAgent {
+            id,
+            options: AgentOptions::default(),
+            session,
+            inbox,
+            ctx: ctx.clone(),
+            scope_key: ScopeKey::new(),
+            running: AtomicBool::new(true),
+            idle_wait: None,
+            idle_observed: None,
+        });
+        let agent: Arc<dyn Agent> = concrete.clone();
+        let detach = agents.enter(agent.clone(), None).expect("enter agent");
+        agents.announce(&agent).await.expect("announce agent");
+
+        let disposed = Arc::new(AtomicBool::new(false));
+        let disposed_for_future = Arc::clone(&disposed);
+        service.retain_owned_handle(dsh_agent::AgentHandle {
+            agent: agent.clone(),
+            dispose: Box::pin(async move {
+                disposed_for_future.store(true, Ordering::SeqCst);
+            }),
+        });
+
+        assert!(service.retire_idle_agent_for_test(agent.clone()).await);
+        service.spawn_idle_retirement(agent.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(
+            !disposed.load(Ordering::SeqCst),
+            "a running Agent is never retired"
+        );
+
+        concrete.running.store(false, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !disposed.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the retried attempt retires the Agent once its turn settles");
+        assert!(!service.owned_agent_handles.lock().contains_key(agent.id()));
+
+        detach().await;
+    }
+
+    #[tokio::test]
     async fn terminal_admission_defers_retirement_until_last_close() {
         let ctx = Context::root();
         let sessions = dsh_session::SessionStore::install(&ctx);
@@ -1789,25 +1855,39 @@ impl ApiProxyService {
         let jobs = self.jobs();
         let computer_use = self.computer_use();
         tokio::spawn(async move {
-            agent.when_idle().await;
-            let _admission = admission.lock().await;
-            retire_idle_agent(
-                &resolver,
-                &handles,
-                sessions,
-                agents,
-                subagents,
-                terminals,
-                jobs,
-                computer_use,
-                agent,
-            )
-            .await;
+            // An accepted prompt waits in the inbox until its driver starts, so
+            // `when_idle` can resolve before that turn begins. Retry after the
+            // turn instead of losing the session's only retirement attempt; the
+            // backoff bounds polling while queued input has not started yet.
+            let mut backoff = std::time::Duration::from_millis(20);
+            loop {
+                agent.when_idle().await;
+                let busy = {
+                    let _admission = admission.lock().await;
+                    retire_idle_agent(
+                        &resolver,
+                        &handles,
+                        sessions.clone(),
+                        agents.clone(),
+                        subagents.clone(),
+                        terminals.clone(),
+                        jobs.clone(),
+                        computer_use.clone(),
+                        agent.clone(),
+                    )
+                    .await
+                };
+                if !busy {
+                    break;
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+            }
         });
     }
 
     #[cfg(test)]
-    async fn retire_idle_agent_for_test(&self, agent: Arc<dyn Agent>) {
+    async fn retire_idle_agent_for_test(&self, agent: Arc<dyn Agent>) -> bool {
         retire_idle_agent(
             &self.resolver,
             &self.owned_agent_handles,
@@ -1819,7 +1899,7 @@ impl ApiProxyService {
             self.computer_use(),
             agent,
         )
-        .await;
+        .await
     }
 
     fn sessions(&self) -> Option<Arc<dsh_session::SessionStore>> {
