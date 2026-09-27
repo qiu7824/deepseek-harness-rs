@@ -283,7 +283,7 @@ impl EventArchive {
         if range.is_empty() {
             return Ok(());
         }
-        let reader = BufReader::with_capacity(
+        let mut reader = BufReader::with_capacity(
             64 * 1024,
             ArchiveRange {
                 archive: self,
@@ -292,15 +292,20 @@ impl EventArchive {
                 end: self.offsets[range.end],
             },
         );
-        let mut events = serde_json::Deserializer::from_reader(reader).into_iter::<SessionEvent>();
         for index in range {
             if cancelled() {
                 return Err("Session archive read cancelled".into());
             }
-            let event = events
-                .next()
-                .ok_or("Session archive ended before its captured prefix")?
-                .map_err(|error| error.to_string())?;
+            // Bound each deserializer to one indexed record. Its string
+            // scratch is released before the visitor retains the event;
+            // end-of-value validation cannot consume the next record.
+            let length = self.offsets[index + 1] - self.offsets[index];
+            let mut record = (&mut reader).take(length);
+            let event: SessionEvent =
+                serde_json::from_reader(&mut record).map_err(|error| error.to_string())?;
+            if record.limit() != 0 {
+                return Err("Session archive ended before its captured prefix".into());
+            }
             if event.seq != sequence_at(self.first_seq, index)? {
                 return Err("Session archive sequence mismatch".into());
             }
@@ -331,6 +336,86 @@ mod tests {
             source_event_seqs: Some((0..seq).collect()),
             ignorable: Some(true),
         }
+    }
+
+    fn archive_records(records: &[Vec<u8>]) -> EventArchive {
+        let mut builder = EventArchiveBuilder::new(&std::env::temp_dir()).unwrap();
+        for bytes in records {
+            builder.writer.write_all(bytes).unwrap();
+            builder
+                .offsets
+                .push(builder.offsets.last().unwrap() + bytes.len() as u64);
+        }
+        builder.finish().unwrap()
+    }
+
+    #[test]
+    fn record_scoped_decoders_preserve_escaped_payloads_whitespace_and_buffered_successors() {
+        let seed: Vec<_> = (0..4)
+            .map(|seq| {
+                let mut value = event(seq);
+                if seq % 2 == 0 {
+                    value.data["escaped"] = "\"\\\n\r\t历史🙂".repeat(20_000).into();
+                }
+                value
+            })
+            .collect();
+        let records: Vec<_> = seed
+            .iter()
+            .map(|value| {
+                let mut bytes = b" \t\r\n".to_vec();
+                serde_json::to_writer(&mut bytes, value).unwrap();
+                bytes.extend_from_slice(b" \n\t\r");
+                bytes
+            })
+            .collect();
+        assert!(records[0].len() > 64 * 1024);
+        let archive = archive_records(&records);
+        let mut output = Vec::new();
+        archive
+            .visit_owned(0..4, |value| {
+                assert_eq!(archive.read(0)?, Some(seed[0].clone()));
+                output.push(value);
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(output, seed);
+        let mut partial = Vec::new();
+        archive
+            .visit_owned(1..4, |value| {
+                partial.push(value);
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(partial, seed[1..4]);
+    }
+
+    #[test]
+    fn record_scoped_decoders_reject_extra_json_and_truncation_before_delivery() {
+        let first = serde_json::to_vec(&event(0)).unwrap();
+        let mut extra = first.clone();
+        extra.extend_from_slice(b" {}\n");
+        let mut truncated = first.clone();
+        truncated.pop();
+        truncated.push(b'\n');
+        for damaged in [extra, truncated] {
+            let archive = archive_records(&[damaged, serde_json::to_vec(&event(1)).unwrap()]);
+            assert!(
+                archive
+                    .visit_owned(0..2, |_| panic!("invalid record reached visitor"))
+                    .is_err()
+            );
+        }
+        let mut complete = first;
+        complete.push(b'\n');
+        let archive = archive_records(&[complete]);
+        archive.file.lock().set_len(archive.offsets[1] - 1).unwrap();
+        assert_eq!(
+            archive.visit_owned(0..1, |_| panic!(
+                "truncated captured record reached visitor"
+            )),
+            Err("Session archive ended before its captured prefix".into())
+        );
     }
 
     #[test]

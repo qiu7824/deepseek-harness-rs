@@ -119,7 +119,7 @@
 | 设置 | `lib/features/settings/settings_shell.dart`、`models_page.dart`、`resource_page.dart` | 设置版本冲突、未保存输入、凭据隐藏、Host 重启项提示一致 |
 | 已有测试入口 | `test/controller_test.dart`、`test/workbench_test.dart`、`test/launcher_test.dart`、`integration_test/desktop_flow_test.dart` | 测试结果关联冻结源码和实际产物；旧 exe 或依赖清单不能证明当前源码可构建，组件测试不能替代原生界面验收 |
 
-2026-09-27 未安装 Flutter 候选的全量测试为 314 项通过、4 项条件跳过，静态分析无问题，Windows Release 已冻结 195 个文件。候选包含全局提醒、快捷键完善与账号退出确认界面。账号退出的 Host 修复基线已通过回合交接、暂停队列保留、冷恢复及新手工回合隔离回归，组合 Session、AgentLoop、API 与 Host 库测试通过；最终生命周期集成回归、普通 Release、原生界面与真实账号流程仍待验收。已安装客户端仍为文字显示与工具标签修复版，具体构建摘要见[桌面平台支持与验收](../desktop-platforms.zh.md)。
+2026-09-27 未安装 Flutter 候选的全量测试为 314 项通过、4 项条件跳过，静态分析无问题，Windows Release 已冻结 195 个文件。候选包含全局提醒、快捷键完善与账号退出确认界面。账号退出的 Host 修复基线已通过回合交接、暂停队列保留、冷恢复及新手工回合隔离回归，组合库测试及 62 项生命周期集成测试通过；普通 Release 按冻结构建独立验证，原生界面与真实账号流程仍待验收。已安装客户端仍为文字显示与工具标签修复版，具体构建摘要见[桌面平台支持与验收](../desktop-platforms.zh.md)。
 
 ## 三轮实测记录结构
 
