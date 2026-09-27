@@ -91,6 +91,23 @@ pub fn canonical_time_zone(value: &str) -> Result<String, TimeZoneError> {
     Ok(canonical.to_string())
 }
 
+/// Canonical display name for the zone the operating system reports. Unlike
+/// user input, link spellings are resolved rather than rejected (TS
+/// `resolvedOptions().timeZone`): Linux commonly reports `Etc/UTC` and macOS
+/// may report `GMT`, which strict validation would refuse on every save.
+fn system_time_zone(value: &str) -> Result<String, TimeZoneError> {
+    if let Ok(canonical) = canonical_time_zone(value) {
+        return Ok(canonical);
+    }
+    let target = crate::tz_links::TZ_LINKS
+        .iter()
+        .find(|(link, _)| *link == value)
+        .map_or(value, |(_, target)| *target);
+    let parsed = jiff::tz::TimeZone::get(target)
+        .map_err(|_| TimeZoneError::Unsupported(value.to_string()))?;
+    canonical_time_zone(collapse_cldr_alias(parsed.iana_name().unwrap_or(target)))
+}
+
 /// The exact formatter used by durable time-context readings (TS
 /// `createTimestampFormatter`): stable numeric local fields and a long
 /// numeric offset.
@@ -109,7 +126,7 @@ impl TimestampFormatter {
             None => {
                 let system = iana_time_zone::get_timezone()
                     .map_err(|_| TimeZoneError::SystemUnresolvable)?;
-                canonical_time_zone(&system)?
+                system_time_zone(&system)?
             }
         };
         let tz = jiff::tz::TimeZone::get(&canonical)
@@ -135,4 +152,34 @@ pub fn format_timestamp(now: i64, formatter: &TimestampFormatter, time_zone: &st
         .to_zoned(formatter.tz.clone());
     let local = zoned.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
     format!("{local}[{time_zone}]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_zone_link_spellings_resolve_to_canonical_names() {
+        assert_eq!(system_time_zone("Etc/UTC").unwrap(), "UTC");
+        assert_eq!(system_time_zone("Etc/Universal").unwrap(), "UTC");
+        assert_eq!(system_time_zone("GMT").unwrap(), "Etc/GMT");
+        assert_eq!(system_time_zone("Asia/Calcutta").unwrap(), "Asia/Kolkata");
+        assert_eq!(system_time_zone("Asia/Shanghai").unwrap(), "Asia/Shanghai");
+        assert!(matches!(
+            system_time_zone("Nowhere/Zone"),
+            Err(TimeZoneError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn explicit_zones_still_require_canonical_input() {
+        assert!(matches!(
+            canonical_time_zone("Etc/UTC"),
+            Err(TimeZoneError::NotCanonical(_))
+        ));
+        assert!(matches!(
+            canonical_time_zone("Asia/Calcutta"),
+            Err(TimeZoneError::NotCanonical(_))
+        ));
+    }
 }
