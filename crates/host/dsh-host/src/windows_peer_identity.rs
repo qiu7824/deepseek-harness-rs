@@ -203,7 +203,7 @@ mod tests {
         )
         .unwrap();
         for result in results {
-            assert_eq!(result["backendId"], "windows-native", "{result}");
+            assert_eq!(result["backendId"], "windows-elevated", "{result}");
             assert_eq!(result["status"], "ready", "{result}");
         }
     }
