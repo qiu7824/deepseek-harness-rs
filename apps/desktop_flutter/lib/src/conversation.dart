@@ -432,8 +432,18 @@ class _ConversationState extends State<Conversation>
     if (!scroll.hasClients) return;
     updateRailHighlight();
     if (navigating) return;
+    if (scroll.offset < 60 &&
+        c.holdingLiveHistory &&
+        !c.window.hasAfter &&
+        !c.loading) {
+      unawaited(returnToLatest());
+      return;
+    }
     final nextFollow = scroll.offset < 60 && !c.readingHistory;
     if (follow != nextFollow) setState(() => follow = nextFollow);
+    if (!nextFollow && !c.readingHistory && !c.window.hasAfter) {
+      c.holdLiveHistory();
+    }
     if (scroll.position.extentAfter < 200 && c.window.hasBefore && !c.loading) {
       unawaited(
         c.run(() => c.loadHistory(before: c.window.firstSeq, merge: true)),
@@ -689,7 +699,10 @@ class _ConversationState extends State<Conversation>
                 !c.loading &&
                 !c.sending;
             final activityCount =
-                !c.readingHistory && (c.interruptible || c.compacting) ? 1 : 0;
+                c.holdingHistoryActivity ||
+                    (!c.readingHistory && (c.interruptible || c.compacting))
+                ? 1
+                : 0;
             final messageIndices = {
               for (var i = 0; i < c.transcript.length; i++)
                 c.transcript[i].id: c.transcript.length - 1 - i + activityCount,
@@ -929,20 +942,13 @@ class _ConversationState extends State<Conversation>
                                   // One selection spans every visible message.
                                   child: SelectionArea(
                                     child: ListView.builder(
-                                      shrinkWrap:
-                                          c.transcript.length <= 8 &&
-                                          c.transcript.fold<int>(
-                                                0,
-                                                (size, item) =>
-                                                    size + item.text.length,
-                                              ) <=
-                                              16384 &&
-                                          c.transcript.fold<int>(
-                                                0,
-                                                (count, item) =>
-                                                    count + item.images.length,
-                                              ) <=
-                                              2,
+                                      // Keep the same viewport while replies
+                                      // grow; switching at a message/byte
+                                      // threshold moves short conversations
+                                      // to the bottom and remounts their text.
+                                      // The finite viewport still bounds lazy
+                                      // row construction for long histories.
+                                      shrinkWrap: true,
                                       key: PageStorageKey(
                                         'messages-${c.selectedId}',
                                       ),
@@ -978,6 +984,8 @@ class _ConversationState extends State<Conversation>
                                               ),
                                               child: TurnActivity(
                                                 controller: c,
+                                                readingHistory:
+                                                    c.holdingLiveHistory,
                                               ),
                                             ),
                                           );

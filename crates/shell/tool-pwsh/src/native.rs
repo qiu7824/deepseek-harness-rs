@@ -188,7 +188,7 @@ pub(super) fn install(
             "workdir":{"type":"string"},
             "timeout_ms":{"type":"integer", "minimum":1, "maximum":600000},
             "allow_nonzero":{"type":"boolean", "description":"Return a diagnostic result on nonzero exit; never runs dependent steps after failure."},
-            "sandbox_permissions":{"type":"string", "enum":["use_default","with_additional_permissions","require_escalated"]},
+            "sandbox_permissions":{"type":"string", "enum":["use_default","with_additional_permissions","require_escalated"], "description":"with_additional_permissions changes read-only to workspace-write only; it grants no external paths and is invalid when already workspace-write. require_escalated requests unsandboxed execution for this command with explicit approval. Never escalate automatically after access denied."},
             "justification":{"type":"string"}
         });
         let required;
@@ -257,6 +257,9 @@ pub(super) fn install(
                     let escalation = super::escalation_mode_for_permissions(permissions, justification).map_err(input_error)?;
                     if let Some(mode) = escalation {
                         let owner = owner.clone().ok_or_else(|| input_error("sandbox changes require an initiating agent"))?;
+                        let current = policy.as_ref().ok_or_else(|| input_error("sandbox changes require sandboxPolicy"))?
+                            .try_resolve(&SandboxPolicyRequest {session:Some(Arc::new(owner.session().clone())),mode:None}).map_err(ToolBodyError::plain)?;
+                        super::validate_escalation_scope(mode, current.mode)?;
                         let service = approval.as_ref().ok_or_else(|| ToolBodyError::coded("Approval service unavailable", "ApprovalError", "APPROVAL_UNAVAILABLE"))?;
                         let outcome = service.request(&ApprovalRequest { agent:owner, tool_name:name.into(), call_id:Some(call_id.clone()), reason:Some(format!("Native execution requests {}: {}", mode.as_str(), justification.unwrap_or_default())), grant_key:None, rememberable:false, signal:Some(signal.clone()) }).await.map_err(ToolBodyError::plain)?;
                         if !matches!(outcome, ApprovalOutcome::AllowedOnce | ApprovalOutcome::AllowedAlways) {

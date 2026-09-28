@@ -3,12 +3,92 @@ import 'dart:async';
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/src/controller.dart';
 import 'package:dsh_desktop/src/app.dart';
+import 'package:dsh_desktop/features/workspace_tree_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'controller_test.dart' show FakeClient, MemoryPreferences;
 
 void main() {
+  testWidgets(
+    'selecting a sidebar workspace is inherited by New Conversation',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      final api = FakeClient();
+      final c = DesktopController(
+        MemoryPreferences(),
+        clientFactory: (_) => api,
+      );
+      await c.connect('http://127.0.0.1');
+      await tester.pump();
+      final workspaces = [
+        {
+          'workspaceId': 'first',
+          'path': r'E:\first',
+          'title': '工作区一',
+          'sessionIds': ['old'],
+        },
+        {
+          'workspaceId': 'second',
+          'path': r'E:\second',
+          'title': '工作区二',
+          'sessionIds': <String>[],
+        },
+      ];
+      c.workspaces = workspaces;
+      c.workspaceId = 'first';
+      c.selectedId = 'old';
+      c.sessions = [
+        SessionSummary.fromJson({'sessionId': 'old', 'cwd': r'E:\first'}),
+      ];
+      Json? createdWith;
+      api.handleCall = (method, payload) async {
+        if (method == 'workspace.list') return {'items': workspaces};
+        if (method == 'session.create') {
+          createdWith = payload;
+          api.liveSessions = [
+            SessionSummary.fromJson({
+              'sessionId': 'new',
+              'cwd': payload['cwd'],
+              'blank': true,
+            }),
+          ];
+          api.histories['new'] = Future.value(
+            HistoryPage.fromJson({'events': []}),
+          );
+          return {'sessionId': 'new'};
+        }
+        return {'items': []};
+      };
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        c.dispose();
+        await tester.binding.setSurfaceSize(null);
+      });
+      await tester.pumpWidget(DesktopApp(controller: c));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('工作区二'));
+      await tester.pumpAndSettle();
+      expect(c.workspaceId, 'second');
+      expect(c.selectedId, 'old');
+      expect(createdWith, isNull);
+      expect(
+        tester
+            .widgetList<WorkspaceTreeRow>(find.byType(WorkspaceTreeRow))
+            .where((w) => w.active)
+            .single
+            .title,
+        '工作区二',
+      );
+      await tester.tap(find.byKey(const Key('new-task')));
+      await tester.pumpAndSettle();
+      expect(createdWith?['workspaceId'], 'second');
+      expect(createdWith?['cwd'], r'E:\second');
+      expect(c.selectedId, 'new');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   test('new conversation creates one selected blank session; a queued prompt uses it', () async {
     final api = FakeClient();
     final c = DesktopController(MemoryPreferences(), clientFactory: (_) => api);

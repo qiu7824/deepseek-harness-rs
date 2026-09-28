@@ -43,6 +43,7 @@ mod learning_bridge;
 mod memory_import;
 mod model_capabilities;
 mod model_discovery;
+mod native_tool_compatibility;
 mod office_preview;
 mod office_render;
 mod open_in_app;
@@ -57,6 +58,7 @@ pub mod runtime_paths;
 mod schedule_tasks;
 mod sidebar_settings;
 mod skill_validation;
+mod task_effects;
 mod task_execution;
 mod task_models;
 mod tool_present;
@@ -3847,6 +3849,7 @@ fn compose_host_in_fiber(
     let install_repeat_reminder = dsh_repeat_tool_reminder::apply(ctx, &Default::default())
         .map_err(|error| format!("repeat-tool-reminder: {error}"))?;
     futures::executor::block_on(install_repeat_reminder());
+    futures::executor::block_on(dsh_repeat_tool_reminder::progress::install(ctx));
     let _fs = dsh_fs_local::LocalFileSystem::install(
         ctx,
         dsh_fs_local::Config {

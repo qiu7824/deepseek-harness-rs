@@ -172,6 +172,10 @@ impl AttachmentStore for LocalAttachmentStore {
         crate::file_store::path(&self.root, reference).ok()
     }
 
+    fn image_host_path(&self, reference: &ImageAttachmentRef) -> Option<PathBuf> {
+        crate::store::host_path(&self.root, reference).ok()
+    }
+
     fn image_limits(&self) -> &ImageAttachmentLimits {
         &self.limits
     }

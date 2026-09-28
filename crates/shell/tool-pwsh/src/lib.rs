@@ -60,6 +60,25 @@ fn escalation_mode_for_permissions(
     }
 }
 
+fn validate_escalation_scope(
+    requested: dsh_sandbox::SandboxMode,
+    current: dsh_sandbox::SandboxMode,
+) -> Result<(), ToolBodyError> {
+    use dsh_sandbox::SandboxMode;
+    if requested == current || current == SandboxMode::DangerFullAccess {
+        return Err(ToolBodyError::coded(
+            format!(
+                "Requested sandbox mode {} does not expand current mode {}. No approval was requested and no command was started. with_additional_permissions only changes read-only to workspace-write; it does not grant arbitrary external paths. Inspect the selected execution directory and admitted attachment access before retrying. Do not repeat the same permission request or automatically request full access.",
+                requested.as_str(),
+                current.as_str()
+            ),
+            "SandboxPermissionError",
+            "SANDBOX_PERMISSION_UNCHANGED",
+        ));
+    }
+    Ok(())
+}
+
 struct PwshJobHooks {
     process: Arc<dyn ShellProcess>,
     profiles: Option<Arc<dyn dsh_shell::ExecutionProfileResolver>>,
@@ -164,8 +183,7 @@ fn execution_directory(
                 .resolve(owner.id().as_str(), &path)
                 .map_err(ToolBodyError::plain)?
             {
-                policy.workspace_root = copy.root;
-                policy.read_only_roots = copy.read_only_roots;
+                apply_execution_workspace(policy, copy);
                 request
                     .dsh_env
                     .as_mut()
@@ -176,6 +194,18 @@ fn execution_directory(
         request.workdir = Some(path);
     }
     Ok(())
+}
+
+fn apply_execution_workspace(
+    policy: &mut dsh_sandbox::SandboxExecutionPolicy,
+    workspace: dsh_workspace_resources::ExecutionWorkspace,
+) {
+    policy.workspace_root = workspace.root;
+    for root in workspace.read_only_roots {
+        if !policy.read_only_roots.contains(&root) {
+            policy.read_only_roots.push(root);
+        }
+    }
 }
 
 fn outside_execution_directory(request: &ShellExecRequest) -> Option<String> {
@@ -471,7 +501,7 @@ impl ToolPwshService {
                             "command": { "type": "string" },
                             "workdir": { "type": "string", "description": "Working directory. An external directory automatically requests one-command scoped approval before launch; the session workspace is unchanged. Managed copies preserve the source project as read-only." },
                             "description": { "type": "string" },
-                            "sandbox_permissions": { "type": "string", "enum": ["use_default", "with_additional_permissions", "require_escalated"], "description": "Request a wider sandbox for this exact command; requires justification and user approval." },
+                            "sandbox_permissions": { "type": "string", "enum": ["use_default", "with_additional_permissions", "require_escalated"], "description": "Request a wider sandbox for this exact command with justification and approval. with_additional_permissions changes read-only to workspace-write only; it grants no external paths and is invalid when already workspace-write. require_escalated requests unsandboxed execution; never escalate automatically after access denied." },
                             "justification": { "type": "string", "description": "Why this command needs the requested wider sandbox." },
                         "timeout_ms": { "type": "integer", "description": "Foreground execution budget in milliseconds, from 1 to 600000; use a short budget for simple probes and background jobs for long work." },
                         "run_in_background": { "type": "boolean" },
@@ -551,6 +581,12 @@ impl ToolPwshService {
                                     "sandbox escalation requires an initiating agent",
                                 )
                             })?;
+                            let current = sandbox_policy.as_ref().ok_or_else(||
+                                ToolBodyError::plain("sandbox escalation requires sandboxPolicy"))?
+                                .try_resolve(&SandboxPolicyRequest {
+                                    session: Some(Arc::new(agent.session().clone())), mode: None,
+                                }).map_err(ToolBodyError::plain)?;
+                            validate_escalation_scope(mode, current.mode)?;
                             let approval = approval.clone().ok_or_else(|| {
                                 ToolBodyError::coded(
                                     "sandbox escalation requires an approval service",
@@ -724,6 +760,43 @@ impl ToolPwshService {
 #[cfg(test)]
 mod tests {
     use super::escalation_mode_for_permissions;
+
+    #[test]
+    fn managed_scratch_keeps_admitted_attachment_access_without_broadening_writes() {
+        let mut policy = dsh_sandbox::SandboxExecutionPolicy {
+            mode: dsh_sandbox::SandboxMode::WorkspaceWrite,
+            workspace_root: "project".into(),
+            read_only_roots: vec!["attachments/exact-image".into(), "project".into()],
+            session_id: None,
+        };
+        super::apply_execution_workspace(
+            &mut policy,
+            dsh_workspace_resources::ExecutionWorkspace {
+                root: "owned-scratch".into(),
+                project: "project".into(),
+                read_only_roots: vec!["project".into()],
+            },
+        );
+        assert_eq!(policy.workspace_root, "owned-scratch");
+        assert_eq!(
+            policy.read_only_roots,
+            ["attachments/exact-image", "project"]
+        );
+        assert_eq!(policy.mode, dsh_sandbox::SandboxMode::WorkspaceWrite);
+    }
+
+    #[test]
+    fn identical_permission_requests_fail_before_prompting_or_dispatch() {
+        use dsh_sandbox::SandboxMode::*;
+        for mode in [ReadOnly, WorkspaceWrite, DangerFullAccess] {
+            let error = super::validate_escalation_scope(mode, mode).unwrap_err();
+            assert_eq!(error.info.unwrap().code, "SANDBOX_PERMISSION_UNCHANGED");
+            assert!(error.message.contains("No approval was requested"));
+        }
+        assert!(super::validate_escalation_scope(WorkspaceWrite, ReadOnly).is_ok());
+        assert!(super::validate_escalation_scope(DangerFullAccess, WorkspaceWrite).is_ok());
+        assert!(super::validate_escalation_scope(WorkspaceWrite, DangerFullAccess).is_err());
+    }
 
     #[tokio::test]
     async fn external_workdir_is_gated_and_missing_approval_fails_closed() {

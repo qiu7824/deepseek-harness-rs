@@ -134,6 +134,13 @@ impl SandboxPolicyService {
                             paths.insert(path.to_string_lossy().into_owned());
                         }
                     }
+                    for reference in
+                        dsh_attachment::image_references_for_event(&event.type_, &event.data)
+                    {
+                        if let Some(path) = store.image_host_path(&reference) {
+                            paths.insert(path.to_string_lossy().into_owned());
+                        }
+                    }
                 }
                 Ok(true)
             })?;
@@ -181,6 +188,110 @@ impl SandboxPolicyService {
 impl Service for SandboxPolicyService {
     fn service_name(&self) -> &'static str {
         "sandboxPolicy"
+    }
+}
+
+#[cfg(test)]
+mod image_access_tests {
+    use super::*;
+    use dsh_attachment::*;
+    use serde_json::json;
+
+    struct Images(ImageAttachmentLimits);
+    #[async_trait::async_trait]
+    impl AttachmentStore for Images {
+        fn image_limits(&self) -> &ImageAttachmentLimits {
+            &self.0
+        }
+        fn image_host_path(&self, image: &ImageAttachmentRef) -> Option<std::path::PathBuf> {
+            Some(std::env::temp_dir().join(image.attachment_id.as_str().strip_prefix("sha256:")?))
+        }
+        async fn validate_image(&self, _: &SaveImageAttachment) -> Result<(), AttachmentError> {
+            unreachable!()
+        }
+        async fn save_image(
+            &self,
+            _: &SaveImageAttachment,
+        ) -> Result<ImageAttachmentRef, AttachmentError> {
+            unreachable!()
+        }
+        async fn read_image(
+            &self,
+            _: &ImageAttachmentRef,
+            _: Option<&AttachmentAbort>,
+        ) -> Result<StoredImageAttachment, AttachmentError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn only_own_admitted_images_become_exact_read_only_roots() {
+        let ctx = Context::root();
+        let store: Arc<dyn AttachmentStore> = Arc::new(Images(ImageAttachmentLimits {
+            max_image_bytes: 0,
+            max_images_per_message: 0,
+            max_message_image_bytes: 0,
+            max_image_pixels: 0,
+            media_types: vec![ImageMediaType::Png],
+        }));
+        ctx.register_service(store);
+        let service = SandboxPolicyService::install(
+            &ctx,
+            Config {
+                mode: Some(SandboxMode::WorkspaceWrite),
+                ..Default::default()
+            },
+        );
+        let session = Arc::new(
+            Session::create(dsh_session::session_id("images-owned"), None, None, None).unwrap(),
+        );
+        let other = Arc::new(
+            Session::create(dsh_session::session_id("images-other"), None, None, None).unwrap(),
+        );
+        let block = |c: &str| json!({"type":"image","attachment":{"attachmentId":format!("sha256:{}",c.repeat(64)),"mediaType":"image/png","bytes":80,"width":1,"height":1}});
+        session
+            .append(
+                "user/message",
+                json!({"id":"u","role":"user","source":{"kind":"user"},"content":[block("a")]}),
+                Some(dsh_session::SurfaceIntent {
+                    surface_op: dsh_session::SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
+        session
+            .append(
+                "tool/call",
+                json!({"arguments":{"reference":block("b")}}),
+                None,
+            )
+            .unwrap();
+        let policy = service
+            .try_resolve(&SandboxPolicyRequest {
+                session: Some(session),
+                mode: None,
+            })
+            .unwrap();
+        assert_eq!(policy.mode, SandboxMode::WorkspaceWrite);
+        assert_eq!(
+            policy.read_only_roots,
+            vec![
+                std::env::temp_dir()
+                    .join("a".repeat(64))
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        assert!(
+            service
+                .try_resolve(&SandboxPolicyRequest {
+                    session: Some(other),
+                    mode: None
+                })
+                .unwrap()
+                .read_only_roots
+                .is_empty()
+        );
     }
 }
 

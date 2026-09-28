@@ -1,0 +1,118 @@
+# Agent 执行可靠性对照与改进优先级
+
+日期：2026-09-28。Hermes 源码基准：[d9d122a003633250d22f786bf3d2fa1b63d99e1d](https://github.com/NousResearch/hermes-agent/tree/d9d122a003633250d22f786bf3d2fa1b63d99e1d)。本项目基准：`4dcfc9bab3` 及当天正在修改的工作树。
+
+## 结论
+
+现有 Agent 已具备工具发现、技能、记忆、上下文压缩、持久会话、任务验收、后台作业和权限控制。主要不足集中在模块之间的约束：模型最终答复未绑定任务验收结果，重复失败检测主要提供提醒，工具执行阶段与副作用状态仍依赖各适配器准确上报，客户端流式窗口需要独立保护。
+
+Hermes 的可借鉴之处是具体失败路径的处理，而非功能数量。采用其机制也不能直接证明同一模型在 Windows 沙箱、WPS、图片处理和本项目客户端中能够成功完成任务。
+
+本报告为源码与现有故障证据分析，未进行两个产品的同模型实机对跑，未将上游测试文件的存在视为测试已经通过。
+
+## 1. P0：最终答复与验收状态必须关联
+
+**已确认缺口。** 本项目 `task_execution` 已经拦截未完成验收的 `present` 和 `update_goal complete`；`task-runtime` 也会检查产物身份和未决副作用。但 `agent-loop` 在收到普通非空文本、没有工具调用、无需回复续接时，直接返回 `TurnEndReason::Completed`，没有同时查询任务验收状态。
+
+因此“完成操作被拒绝”和“模型随后声称完成”可以同时出现。回合结束本身可以是合法的失败说明，但界面和模型输出不能把它表示成任务验收通过。
+
+Hermes 在文本结束分支调用 `apply_stop_gates`，具备结束前验证机制；另有文件修改失败清单，防止失败的 `write_file`／`patch` 被总结为全部成功。限制也很明确：`verify_on_stop` 当前默认关闭，启用后主要针对代码修改，最多追加两次验证提醒；它不是通用业务验收器。文件失败清单也不覆盖任意 Shell 命令的全部影响。
+
+**建议：** 为已有任务契约增加统一结束检查，输出 `verified`、`incomplete`、`blocked`、`cancelled` 等结构化状态。验收失败、过期或存在未知副作用时允许结束并解释，但不得显示“验收通过”。需要继续验证时采用有限续接预算；预算用完后明确未完成。原始模型文本保留，状态卡独立呈现。合同尚未创建的多步骤任务也要明确显示“未建立验收”，不能自动视为通过。
+
+本项目证据：`crates/host/dsh-host/src/task_execution.rs` 的工具 guard；`crates/core/agent-loop/src/agent.rs` 的文本结束分支；`crates/core/agent-loop/src/response_continuation.rs`；`crates/workflow/task-runtime/src/store.rs`。
+
+上游证据：[结束检查](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/turn_stop_gates.py)、[验证开关与预算](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/verification_stop.py)、[文件失败清单](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/turn_finalizer.py)。
+
+## 2. P0：从重复调用提醒升级为无进展检测
+
+**已确认差距。** `repeat-tool-reminder` 会规范化参数，在默认第 3、5、8 次连续重复时注入提醒；还会将若干执行失败和疑似权限失败跨包装工具累计。它已经比单纯重复字符串检测完善，但仍是 advisory，不阻止执行；普通重复检测不比较结果是否变化，也没有识别 A→B→A→B 的多工具循环。
+
+Hermes 对照了工具、参数与结果，识别连续重复及最长 4 项的循环，排除正常轮询，并将实际修改后的重试与原样重放分开。硬停止在交互界面默认关闭，在无人值守平台默认开启，不能描述成所有场景都会自动熔断。它还对较大的相同成功结果提供引用式表示，减少重复内容占用。
+
+**建议：** 增加有界调用历史和结果指纹，按任务、执行环境及权限修订记录失败。相同条件连续失败时暂停该路径，要求新的诊断证据、环境变化或真实修复后再试。正常作业轮询、修改后重测和结果持续变化应继续允许。不要仅凭一条“拒绝访问”文本就宣判沙箱故障，更不能自动放宽权限。
+
+本项目证据：`crates/guard/repeat-tool-reminder/src/lib.rs` 的 `Chain`、`execution_access_failure` 与提醒生成逻辑。
+
+上游证据：[工具循环控制](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/tool_guardrails.py)、[循环和轮询回归场景](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/tests/agent/test_stall_guards.py)。
+
+## 3. P0：统一“未执行、执行失败、效果未知”的凭据
+
+**已有基础，适配器覆盖仍需核验。** 本项目已有 `body_invoked`、效果开始标记、执行回执和持久步骤状态。当天工作树已补充图片请求发出前后的标记、Shell 未启动回执，以及浏览器只读动作分类。这些是现有修复，不应继续列为完全缺失。
+
+剩余风险是工具各自决定如何上报：不支持的连接、审批拒绝、参考图不可读都可能在主体函数内部发生；进入主体并不证明外部请求或进程已经启动。反过来，超时也不证明外部写入没有发生。
+
+Hermes 的执行器显式记录 `blocked`、`dispatched` 与 `effect_disposition`，并在工具调用前保存记录、结果保存后再发布完成通知。被跳过的调用也生成配对结果。
+
+**建议：** 将执行回执作为工具基础契约，统一携带执行身份、失败阶段、是否启动、效果类别、证据引用和重试条件。已知未分派的失败记录为 `not_started / effects=none`；已发出写入而结果不明时保留 `unknown`，通过查询核对后决定后续动作。禁止为了清除阻塞而把未知状态批量改成成功或无效果。
+
+本项目证据：`crates/core/tools/src/index.rs`、`crates/host/dsh-host/src/task_execution.rs`、`crates/host/dsh-host/src/task_effects.rs`、`crates/host/dsh-host/src/image_generation.rs`、`crates/shell/tool-pwsh/src/native.rs`。
+
+上游证据：[工具执行器](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/tool_executor.py)、[执行前持久化](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/turn_tool_round.py)。
+
+## 4. P0：审批必须改变此次调用的实际可执行条件
+
+**具体缺陷已有修复，完整场景尚需实机验证。** 当前工作树已加入图片附件只读路径，保留临时目录执行所需读取范围，并在请求同等或更弱权限时提前拒绝无效升级。审批卡被点击不能替代执行环境获得相应能力。
+
+**建议：** 将工作区、临时目录、附件集合、运行器、权限策略及其修订绑定为同一次执行上下文。展示审批前计算所需权限差异，批准后校验实际执行身份和授权范围；切换工作目录只影响 cwd，不应隐式清空附件读取能力。相同无效请求返回明确原因，不重复弹卡。遇到父目录穿越权限或运行器账户问题时，按实际拒绝阶段诊断。
+
+Hermes 的审批等待计时与执行超时分开，并约束并行审批等待；其终端按会话维护 cwd，区分宿主与容器路径。这些设计可借鉴，但不能据此宣称其权限实现可以直接替换 Windows ACL／受限令牌适配。
+
+本项目证据：`crates/sandbox/sandbox-policy/src/index.rs`、`crates/attachment/attachment/src/references.rs`、`crates/shell/tool-pwsh/src/lib.rs`、`crates/shell/tool-pwsh/src/native.rs`。
+
+上游证据：[审批等待与执行期限](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/tool_executor.py)、[会话工作目录](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/tools/terminal_tool.py)。
+
+## 5. P1：工具存在、协议兼容和账户能力分开呈现
+
+**修复正在覆盖。** 当前工作树已有 `native_tool_compatibility.rs`，区分连接的图像／托管搜索协议兼容性，并对确定不支持的连接返回 `NATIVE_TOOL_UNSUPPORTED`。兼容仍不等于具体模型支持，也不等于账户有额度和授权。
+
+**建议：** 工具发现和设置页共用能力记录，至少区分已注册、协议兼容、已配置、已授权、已验证可用、暂时失败和确定不支持。确定不支持时在分派前失败，给出具体设置入口；不要把重试同一连接或改用浏览器搜索表现为能力修复。缓存应绑定连接、模型、执行环境与权限版本。
+
+Hermes 的工具目录提供作用域过滤、延迟 schema 校验和可用来源提示，可减少“没找到就认为不存在”。本项目已有渐进发现和环境探针，应补齐能力接线及失效条件，不重复建设工具目录。
+
+本项目证据：`crates/host/dsh-host/src/native_tool_compatibility.rs`、`crates/host/dsh-host/src/image_generation.rs`、`crates/host/dsh-host/src/environment_capabilities.rs`、`docs/tool-discovery-and-environment-cache.zh.md`。
+
+上游证据：[工具发现与来源提示](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/tools/tool_search.py)。
+
+## 6. P1：识别“说要继续，却结束”的普通文本响应
+
+**已确认差距。** 本项目已经处理空答复、缺失工具调用、输出截断，以及 Responses 的 `commentary` 阶段。但没有阶段标记的普通非空文本会通过完成判定；“我接下来检查一下”可能因此结束回合。
+
+Hermes 在文本分支另外检测宣布后续行动、只有简短应答、工具执行后退化成短片段等情况，采用有界续接；还有异常重复文本检测，避免把重复内容持续续写。
+
+**建议：** 优先采用模型明确阶段和结构化任务状态，再对支持范围内的中文／英文行动承诺做保守检测，共享整回合续接预算。不能只按答复长度续接，也不能把真实结论、拒绝或用户取消误判为未完成。此项是跨提供方行为兼容，不能靠给所有模型添加同一段强硬提示词解决。
+
+本项目证据：`crates/core/agent-loop/src/response_continuation.rs`。
+
+上游证据：[文本结束分支](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/turn_final_response.py)、[重复文本检测](https://github.com/NousResearch/hermes-agent/blob/d9d122a003633250d22f786bf3d2fa1b63d99e1d/agent/repetition_guard.py)。
+
+## 7. P0：文字保留与任务正确性分别验收
+
+**客户端缺陷已有针对性修复。** Flutter SDK 的 `ConversationWindow` 有事件数和字节预算；当前工作树增加同一消息连续 delta 的有界合并，避免大量 token 事件挤出可见历史。这属于消息投影与窗口管理，不能归因于模型能力，也不能据此推断 Web 必然存在相同缺陷。
+
+本项目已有语义检查点和持久会话。Hermes 将工具结果落盘置于完成通知之前，这为崩溃恢复提供清晰边界；本项目仍应独立检查事件落盘、消息快照、流式投影和前端补页的时序，不能把存在检查点等同于所有界面事件均已耐久。
+
+**建议：** 明确三层身份：耐久事件、完整消息、临时 delta。按消息身份及序号合并、去重和补全；逐出内存窗口后仍可从历史恢复。长会话、断网重连、历史响应晚到、新消息交错以及 Host 重启必须重放同一组原始事件，比较最终正文和消息顺序。滚动锚点单独验收。
+
+本项目证据：`packages/dsh_client_dart/lib/src/transcript.dart`、`apps/desktop_flutter/lib/src/controller.dart`、`crates/session/session-checkpoint-policy/src/index.rs`、`crates/core/agent-loop/src/tool_calls.rs`。
+
+## 8. 已有能力与低优先级增强
+
+- **技能与记忆：** 已有按需技能加载、内容指纹、经验验证和开关，不能列为缺失。可继续增强技能与环境版本、成功证据、失败撤回的关联；不应恢复未经验证的自动经验注入。
+- **上下文压缩：** 已要求保留目标、约束、路径、命令、错误、已完成及待办事项，并保护工具调用配对。后续可增加结构化检查，防止被裁剪的占位内容进入具有写入效果的参数；这一项属于建议增强，未证明它是近期故障的原因。
+- **并行与后台任务：** 已有调度和取消机制。扩展工具数量、频道或多 Agent 编排，不能替代执行正确性和结果验收。
+- **模型差异：** 需要用同一任务、文件、权限、工具集及验收条件对跑后比较；单个长会话的失败不足以量化某个模型的能力差距。
+
+## 实施顺序与回归标准
+
+| 顺序 | 交付项 | 最小验收场景 |
+|---|---|---|
+| 1 | 结束状态关联任务契约，并展示真实失败项 | 验收失败后模型声称成功；回合可以结束，但任务明确未完成 |
+| 2 | 完成执行回执、能力预检及权限修复 | 不支持的接口、审批拒绝、缺少参考图均无外部请求；超时写入保留未知状态 |
+| 3 | 跨工具无进展检测 | 相同失败、A/B 循环受到控制；正常轮询及修改后重测不误拦 |
+| 4 | 固化两端消息恢复与展示回归 | 万级 delta、刷新、重连、切会话后，正文可恢复且顺序一致 |
+| 5 | 跨模型停止行为及任务评测 | 中文行动承诺获得有限续接；真实结论、取消和拒绝正常结束 |
+
+执行回归还应覆盖：中文和空格路径、附件位于工作区外、切换临时目录、批准前后执行身份、进程启动后取消、请求发出后断线、结果保存失败、压缩后恢复，以及源代码与安装包版本一致性。
+
+核心指标为任务实际通过率、错误宣称完成率、重复无进展调用数、无效审批次数、历史消息恢复一致性和总耗时。按模型、操作系统、权限模式、客户端及发行包分别记录，测试数量不替代任务结果。

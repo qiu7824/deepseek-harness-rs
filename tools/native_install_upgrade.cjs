@@ -32,15 +32,23 @@ function migrate(installRoot,home,expected){
     if(typeof config.stateDirectory!=='string'||!path.isAbsolute(config.stateDirectory)||
        (config.workspaces!==undefined&&(!Array.isArray(config.workspaces)||config.workspaces.some(p=>typeof p!=='string'||!path.isAbsolute(p))))||
        Object.values(files).some(key=>typeof config[key]!=='string'||!/^[a-fA-F0-9]{64}$/.test(config[key])))throw Error('Incomplete native selection: '+file);
-    let selected;
-    try{selected=identity(config.runner)}catch(error){if(error.code==='ENOENT')continue;throw error}
-    if(selected!==identity(path.join(native,'dsh-windows-native.exe')))continue;
-    if(Object.entries(hashes).every(([key,value])=>config[key]===value))continue;
+    const runner=path.join(native,'dsh-windows-native.exe');
+    const sameHashes=Object.entries(hashes).every(([key,value])=>config[key].toLowerCase()===value);
+    let selected,relocated=false;
+    try{selected=identity(config.runner)}catch(error){
+      if(error.code!=='ENOENT')throw error;
+      // A moved installation may retain an absolute path to a removed copy.
+      // Relocate only the exact helper set already trusted by this selection.
+      if(path.basename(config.runner).toLowerCase()!=='dsh-windows-native.exe'||!sameHashes)continue;
+      relocated=true;
+    }
+    if(!relocated&&selected!==identity(runner))continue;
+    if(!relocated&&sameHashes)continue;
     const suffix=crypto.randomUUID(),backup=file+'.before-upgrade-'+suffix;
     fs.copyFileSync(file,backup,fs.constants.COPYFILE_EXCL);
     const temporary=file+'.'+suffix+'.tmp';
     const handle=fs.openSync(temporary,'wx',0o600);
-    try{fs.writeFileSync(handle,JSON.stringify({...config,...hashes},null,2)+'\n');fs.fsyncSync(handle)}finally{fs.closeSync(handle)}
+    try{fs.writeFileSync(handle,JSON.stringify({...config,...hashes,...(relocated?{runner}: {})},null,2)+'\n');fs.fsyncSync(handle)}finally{fs.closeSync(handle)}
     fs.renameSync(temporary,file);changed.push({file,backup});
   }
   return {migrated:changed.length,changed};

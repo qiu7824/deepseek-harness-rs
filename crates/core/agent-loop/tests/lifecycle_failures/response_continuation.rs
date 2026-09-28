@@ -13,6 +13,136 @@ use serde_json::json;
 
 use super::support::{harness, message, quick_tool, register_adapter, turn_end_kinds};
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identical_calls_are_stopped_before_dispatch_and_new_user_input_resets_the_guard() {
+    let harness = harness().await;
+    dsh_repeat_tool_reminder::progress::install(&harness.ctx).await;
+    let runs = Arc::new(AtomicUsize::new(0));
+    let observed = runs.clone();
+    let mut tool = quick_tool(Arc::new(AtomicBool::new(false)));
+    tool.execute = Arc::new(move |_, _| {
+        let runs = observed.clone();
+        Box::pin(async move {
+            runs.fetch_add(1, Ordering::SeqCst);
+            Ok(json!("unchanged"))
+        })
+    });
+    harness.tools.register(&harness.ctx, tool).unwrap();
+    let adapter = Arc::new(Adapter::new(vec![
+        Reply::Tool,
+        Reply::Tool,
+        Reply::Tool,
+        Reply::Tool,
+        Reply::Tool,
+        Reply::Tool,
+        Reply::Plain("blocked"),
+        Reply::Tool,
+        Reply::Plain("done"),
+    ]));
+    register_adapter(&harness, adapter);
+    harness.agent.followup(message("work"));
+    tokio::time::timeout(Duration::from_secs(5), harness.agent.when_idle())
+        .await
+        .unwrap();
+    assert_eq!(runs.load(Ordering::SeqCst), 5);
+    assert!(
+        harness
+            .agent
+            .session()
+            .events()
+            .iter()
+            .any(|e| e.type_ == "tool/result" && e.data.to_string().contains("TOOL_NO_PROGRESS"))
+    );
+    harness
+        .agent
+        .followup(message("try again after my correction"));
+    tokio::time::timeout(Duration::from_secs(5), harness.agent.when_idle())
+        .await
+        .unwrap();
+    assert_eq!(runs.load(Ordering::SeqCst), 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acceptance_review_retains_prose_but_cannot_report_a_failed_task_as_verified() {
+    let harness = harness().await;
+    let adapter = Arc::new(Adapter::new(vec![Reply::Plain("已完成。")]));
+    register_adapter(&harness, adapter.clone());
+    harness
+        .ctx
+        .register_service(Arc::new(dsh_agent::CompletionReview {
+            review: Arc::new(|_| {
+                Box::pin(async {
+                    Ok(Some(dsh_agent::CompletionAssessment {
+                        status: "incomplete".into(),
+                        summary: "任务验收未通过。".into(),
+                        task_id: Some("task".into()),
+                        blockers: vec!["wrong file".into()],
+                        follow_up: Some("修复验收或明确报告未完成".into()),
+                    }))
+                })
+            }),
+        }));
+    harness.agent.followup(message("finish the task"));
+    tokio::time::timeout(Duration::from_secs(5), harness.agent.when_idle())
+        .await
+        .unwrap();
+    assert_eq!(
+        adapter.calls.load(Ordering::SeqCst),
+        3,
+        "completion retries are bounded even when the host keeps requesting them"
+    );
+    let events = harness.agent.session().events();
+    let end = events.iter().find(|e| e.type_ == "turn/end").unwrap();
+    assert_eq!(end.data["acceptance"]["status"], "incomplete");
+    assert!(end.data["acceptance"].get("followUp").is_none());
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.type_ == "assistant/message")
+            .count(),
+        3
+    );
+    assert_eq!(
+        turn_end_kinds(&harness.agent),
+        ["completed"],
+        "a finished reply does not imply accepted work"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_interrupts_a_pending_completion_review() {
+    let harness = harness().await;
+    register_adapter(&harness, Arc::new(Adapter::new(vec![Reply::Plain("done")])));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let notify = entered.clone();
+    harness
+        .ctx
+        .register_service(Arc::new(dsh_agent::CompletionReview {
+            review: Arc::new(move |_| {
+                notify.notify_one();
+                Box::pin(futures::future::pending())
+            }),
+        }));
+    harness.agent.followup(message("work"));
+    tokio::time::timeout(Duration::from_secs(3), entered.notified())
+        .await
+        .unwrap();
+    harness.agent.cancel(AgentCancelCause::User, None);
+    tokio::time::timeout(Duration::from_secs(3), harness.agent.when_idle())
+        .await
+        .unwrap();
+    assert_eq!(turn_end_kinds(&harness.agent), ["aborted"]);
+    assert!(
+        harness
+            .agent
+            .session()
+            .events()
+            .iter()
+            .filter(|e| e.type_ == "turn/end")
+            .all(|e| e.data.get("acceptance").is_none())
+    );
+}
+
 #[derive(Clone, Copy)]
 enum Reply {
     Commentary(&'static str),

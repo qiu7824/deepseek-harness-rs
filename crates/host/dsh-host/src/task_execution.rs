@@ -51,6 +51,8 @@ mod input_snapshot;
 mod requirements;
 #[path = "task_validation_work.rs"]
 mod validation_work;
+#[path = "task_completion.rs"]
+mod completion;
 
 #[derive(Debug)]
 pub(crate) enum TaskActionError {
@@ -181,35 +183,13 @@ fn exempt(name: &str) -> bool {
     )
 }
 fn effect(name: &str, arguments: &Value) -> EffectKind {
-    if matches!(
-        name,
-        "read"
-            | "read_file"
-            | "read_image"
-            | "read_video"
-            | "office_render"
-            | "list_directory"
-            | "glob"
-            | "grep"
-            | "environment_probe"
-            | "environment_validate"
-            | "consult_model"
-            | "web_search"
-            | "web_fetch"
-            | "job_output"
-            | "job_list"
-    ) || name == "agent_team" && matches!(arguments["action"].as_str(), Some("status" | "wait"))
-        || name == "workspace_scratch"
-            && matches!(
-                arguments["action"].as_str(),
-                Some("read" | "list" | "inspect")
-            )
-    {
+    if crate::task_effects::read_only(name, arguments) {
         EffectKind::ReadOnly
     } else {
         EffectKind::Write
     }
 }
+
 fn execution_id(execution: &ToolExecution) -> String {
     format!("call-{}", digest(execution.call_id.as_str().as_bytes()))
 }
@@ -930,6 +910,7 @@ pub(crate) async fn install(
         validation_work: Default::default(),
     });
     goals::install(&service)?;
+    completion::install(&service);
     let for_preflight = service.clone();
     ctx.on(
         "tools/pre-execute",

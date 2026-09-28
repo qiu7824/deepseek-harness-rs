@@ -188,12 +188,57 @@ class ConversationWindow {
       needsRefresh = true;
       return false;
     }
-    _insert(event);
+    _appendLive(event);
     revision++;
     lastSeq = event.endSeq;
     firstSeq ??= event.startSeq;
     _bound();
     return true;
+  }
+
+  void _appendLive(HistoryEvent event) {
+    final previous = _events.isEmpty ? null : _events[_events.lastKey()!];
+    if (previous != null &&
+        previous.type == 'assistant/chunk' &&
+        event.type == previous.type &&
+        previous.endSeq + 1 == event.startSeq &&
+        previous.data['turn'] == event.data['turn'] &&
+        previous.data['step'] == event.data['step']) {
+      final before = object(previous.data['chunk']);
+      final after = object(event.data['chunk']);
+      final kind = after['type'];
+      final field = kind == 'tool-call-delta' ? 'argumentsDelta' : 'text';
+      final prefix = before[field], delta = after[field];
+      if (['text-delta', 'reasoning-delta', 'tool-call-delta'].contains(kind) &&
+          before['type'] == kind &&
+          before['index'] == after['index'] &&
+          before['id'] == after['id'] &&
+          before['name'] == after['name'] &&
+          previous.view == null &&
+          event.view == null &&
+          prefix is String &&
+          delta is String &&
+          prefix.length + delta.length <= 4096) {
+        final merged = HistoryEvent.fromJson({
+          ...previous.raw,
+          'time': event.raw['time'],
+          'data': {
+            ...previous.data,
+            '__historyStartSeq': previous.startSeq,
+            '__historyEndSeq': event.endSeq,
+            'chunk': {...before, field: prefix + delta},
+          },
+        });
+        if (merged.retainedBytes <= maxBytes) {
+          _insert(merged);
+          return;
+        }
+      }
+    }
+    // Bound each run so appending a token never recopies an entire long reply.
+    // Event limits apply to these runs, rather than evicting visible messages
+    // merely because a provider sends one event per token.
+    _insert(event);
   }
 
   void _insert(HistoryEvent event) {
@@ -474,9 +519,8 @@ List<TranscriptItem> projectTranscript(
         final failed =
             resultData['error'] != null ||
             object(resultData['message'])['isError'] == true ||
-            objects(
-              object(resultData['message'])['content'],
-            ).any((b) => b['isError'] == true);
+            objects(object(resultData['message'])['content'])
+                .any((b) => b['isError'] == true);
         final name = '${data['name'] ?? '工具调用'}';
         final errorCode = object(resultData['error'])['code'] as String?;
         final status = result != null
@@ -571,6 +615,27 @@ List<TranscriptItem> projectTranscript(
           }),
         );
       case 'turn/end':
+        final acceptance = object(data['acceptance']);
+        if (object(data['reason'])['kind'] == 'completed' &&
+            [
+              'verified',
+              'incomplete',
+              'blocked',
+              'cancelled',
+              'unverified',
+            ].contains(acceptance['status']) &&
+            acceptance['summary'] is String) {
+          final blockers = acceptance['blockers'];
+          add(
+            acceptance['status'] == 'verified' ? 'notice' : 'error',
+            [
+              acceptance['summary'] as String,
+              if (blockers is List) ...blockers.take(8).map((item) => '$item'),
+            ].join('\n'),
+            title: '任务验收',
+            status: acceptance['status'] as String,
+          );
+        }
         final reason = object(data['reason']);
         if (reason['kind'] == 'aborted' &&
             object(reason['reason'])['kind'] == 'user') {

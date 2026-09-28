@@ -84,7 +84,11 @@ class DesktopController extends ChangeNotifier {
       _planChange != null && _planSelection == _selection;
   int _historyRequest = 0;
   int? historyTargetSeq;
-  bool get readingHistory => historyTargetSeq != null;
+  bool _holdingLiveHistory = false;
+  bool _heldActivity = false;
+  bool get holdingLiveHistory => _holdingLiveHistory;
+  bool get holdingHistoryActivity => _holdingLiveHistory && _heldActivity;
+  bool get readingHistory => historyTargetSeq != null || _holdingLiveHistory;
   Map<String, Object> get resourceDiagnostics => {
     'historyBytes': window.retainedBytes,
     'historyEvents': window.eventCount,
@@ -293,6 +297,7 @@ class DesktopController extends ChangeNotifier {
     catalog = null;
     selectedId = null;
     historyTargetSeq = null;
+    _holdingLiveHistory = false;
     sessions = [];
     archivedSessionIds = {};
     archivedSessions = [];
@@ -349,6 +354,7 @@ class DesktopController extends ChangeNotifier {
         _subscriptions.add(
           channel.states.listen((ready) {
             if (epoch != _epoch) return;
+            final wasConnected = connected;
             if (name == 'mux') {
               _muxReady = ready;
               if (ready) {
@@ -359,28 +365,10 @@ class DesktopController extends ChangeNotifier {
             } else {
               _hostReady = ready;
             }
-            if (connected) {
+            if (connected && !wasConnected) {
               error = null;
-              unawaited(
-                run(() async {
-                  await refreshSessions();
-                  if (epoch != _epoch || _disposed) return;
-                  await loadCatalogs();
-                  if (selectedId != null) {
-                    await refreshCommandActivity();
-                    await loadHistory(
-                      after: historyTargetSeq,
-                      targetSeq: historyTargetSeq,
-                    );
-                  } else {
-                    final saved = preferences.sessionId;
-                    final id = sessions.any((s) => s.id == saved)
-                        ? saved
-                        : null;
-                    if (id != null) await select(id);
-                  }
-                }),
-              );
+              unawaited(run(() => _restoreConnection(epoch)));
+              unawaited(loadCatalogs());
             }
             emit();
           }),
@@ -392,6 +380,55 @@ class DesktopController extends ChangeNotifier {
         connecting = false;
         emit();
       }
+    }
+  }
+
+  Future<void> _restoreConnection(int epoch) async {
+    final restoring = selectedId == null;
+    final id = selectedId ?? preferences.sessionId;
+    Object? historyError;
+    StackTrace? historyStack;
+    // Read the saved conversation immediately. Neither the complete sidebar
+    // inventory nor provider/plugin discovery is needed to render its history.
+    final history = id == null
+        ? Future<void>.value()
+        : restoring
+        ? select(id)
+        : Future.wait([
+            refreshCommandActivity(),
+            loadHistory(after: historyTargetSeq, targetSeq: historyTargetSeq),
+          ]).then((_) {});
+    final selection = _selection, workspace = workspaceId;
+    bool current() => !_disposed && epoch == _epoch && selection == _selection;
+    await Future.wait([
+      history.catchError((Object e, StackTrace stack) {
+        historyError = e;
+        historyStack = stack;
+      }),
+      refreshSessions().then((_) {
+        if (!current() || !restoring || id == null) return;
+        if (!sessions.any((s) => s.id == id)) {
+          // A deleted saved session must not remain selected or overwrite a
+          // session the user chose while the sidebar was still loading.
+          newConversation();
+          return;
+        }
+        preset = selected?.agentPreset ?? preset;
+        if (workspaceId == workspace || workspace == null) {
+          workspaceId =
+              workspaces
+                      .where(
+                        (w) => (w['sessionIds'] as List? ?? []).contains(id),
+                      )
+                      .firstOrNull?['workspaceId']
+                  as String? ??
+              workspaceId;
+        }
+        emit();
+      }),
+    ]);
+    if (current() && historyError != null) {
+      Error.throwWithStackTrace(historyError!, historyStack!);
     }
   }
 
@@ -432,10 +469,13 @@ class DesktopController extends ChangeNotifier {
     }
     final task = () async {
       final revisions = Map<String, int>.of(_sessionRevisions);
-      final result = await api.sessions();
+      final responses = await Future.wait<Object>([
+        api.sessions(),
+        api.call('workspace.list'),
+      ]);
       if (epoch != _epoch || _disposed) return;
-      final workspaces = await api.call('workspace.list');
-      if (epoch != _epoch || _disposed) return;
+      final result = responses[0] as List<SessionSummary>;
+      final workspaces = responses[1] as Json;
       final archived = (workspaces['archivedSessionIds'] as List? ?? [])
           .whereType<String>()
           .toSet();
@@ -491,6 +531,7 @@ class DesktopController extends ChangeNotifier {
     _draftAdoptionRevision = adoptDraft ? _selection : null;
     selectedId = id;
     historyTargetSeq = null;
+    _holdingLiveHistory = false;
     preset = selected?.agentPreset ?? preset;
     catalog = null;
     clearProjections();
@@ -531,6 +572,15 @@ class DesktopController extends ChangeNotifier {
   }) async {
     final id = selectedId, api = _client;
     if (id == null || api == null || (loading && !force)) return;
+    if (_holdingLiveHistory &&
+        !force &&
+        !merge &&
+        before == null &&
+        after == null &&
+        targetSeq == null) {
+      window.needsRefresh = true;
+      return;
+    }
     final generation = _selection, epoch = _epoch;
     final request = ++_historyRequest;
     final oldTarget = historyTargetSeq;
@@ -569,6 +619,7 @@ class DesktopController extends ChangeNotifier {
         }
         window = next;
         historyTargetSeq = targetSeq;
+        _holdingLiveHistory = false;
       }
       if (page.projections.isNotEmpty) {
         _title(
@@ -626,7 +677,27 @@ class DesktopController extends ChangeNotifier {
     _paint?.cancel();
     loading = false;
     historyTargetSeq = seq;
+    _holdingLiveHistory = false;
     if (_buffer.isNotEmpty) window.needsRefresh = true;
+    _buffer.clear();
+    _bufferBytes = 0;
+    emit();
+  }
+
+  /// Wheel/trackpad readers keep their current rows until they return to latest.
+  /// Live events are represented by a refresh marker, as with indexed history.
+  void holdLiveHistory() {
+    if (_client == null || selectedId == null || readingHistory) return;
+    _heldActivity = interruptible || compacting;
+    _holdingLiveHistory = true;
+    _historyScope?.cancel();
+    _historyRequest++;
+    _refresh?.cancel();
+    if (_paint?.isActive == true || _buffer.isNotEmpty) {
+      window.needsRefresh = true;
+    }
+    _paint?.cancel();
+    loading = false;
     _buffer.clear();
     _bufferBytes = 0;
     emit();
@@ -996,9 +1067,16 @@ class DesktopController extends ChangeNotifier {
   Future<void> loadCatalogs() async {
     final api = _client, epoch = _epoch;
     if (api == null) return;
-    try {
-      final result = await api.call('agentPreset.list');
-      if (epoch == _epoch) {
+    Future<void> optional(Future<void> Function() action) async {
+      try {
+        await action();
+      } catch (_) {}
+    }
+
+    await Future.wait([
+      optional(() async {
+        final result = await api.call('agentPreset.list');
+        if (_disposed || epoch != _epoch) return;
         presets = objects(result['presets']);
         if (selectedId == null) {
           preset =
@@ -1006,35 +1084,24 @@ class DesktopController extends ChangeNotifier {
                   as String? ??
               preset;
         }
-      }
-      final description = await api.call('settings.describe');
-      if (epoch == _epoch && !_disposed) {
-        conversationSettings = object(
-          objects(description['namespaces'])
-              .where((n) => n['ns'] == 'ui-conversation')
-              .firstOrNull?['value'],
+        emit();
+      }),
+      optional(() async {
+        final description = await api.call('settings.describe');
+        if (_disposed || epoch != _epoch) return;
+        final namespaces = objects(description['namespaces']);
+        Json settings(String name) => object(
+          namespaces.where((n) => n['ns'] == name).firstOrNull?['value'],
         );
-        menuSettings = object(
-          objects(description['namespaces'])
-              .where((n) => n['ns'] == 'mini-menu')
-              .firstOrNull?['value'],
-        );
-        teamSettings = object(
-          objects(description['namespaces'])
-              .where((n) => n['ns'] == 'agent-teams')
-              .firstOrNull?['value'],
-        );
-        contextCompaction = object(
-          objects(description['namespaces'])
-              .where((n) => n['ns'] == 'context-compaction')
-              .firstOrNull?['value'],
-        );
-      }
-      await loadAccounts();
-    } catch (_) {}
-    try {
-      await loadPlugins();
-    } catch (_) {}
+        conversationSettings = settings('ui-conversation');
+        menuSettings = settings('mini-menu');
+        teamSettings = settings('agent-teams');
+        contextCompaction = settings('context-compaction');
+        emit();
+      }),
+      optional(loadAccounts),
+      optional(loadPlugins),
+    ]);
   }
 
   Future<void> loadPlugins() async {
@@ -1071,6 +1138,7 @@ class DesktopController extends ChangeNotifier {
     _refresh?.cancel();
     selectedId = null;
     historyTargetSeq = null;
+    _holdingLiveHistory = false;
     catalog = null;
     loading = false;
     clearProjections();

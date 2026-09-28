@@ -113,6 +113,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   }
 
   void closePanel() => setState(() => mainPanel = null);
+
+  Future<void> openConversation(String id) async {
+    scaffoldKey.currentState?.closeDrawer();
+    closePanel();
+    await c.run(() => c.select(id));
+  }
+
   final Map<String, bool> groupExpansion = {};
   bool showSearch = false, sideOpen = true, dockOpen = false;
   double sidebarWidth = 280, dockWidth = 470, chatWidth = 0;
@@ -243,6 +250,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   );
 
   void startConversation() {
+    scaffoldKey.currentState?.closeDrawer();
+    closePanel();
     final workspace = c.workspaceId;
     if (workspace != null) setGroupExpanded(workspace, true);
     unawaited(c.run(c.startConversation));
@@ -427,6 +436,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                         ),
                       Expanded(
                         child: Stack(
+                          fit: StackFit.expand,
                           children: [
                             Offstage(
                               offstage: mainPanel != null,
@@ -457,10 +467,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                                   controller: c,
                                   initialTaskId: scheduleFocus,
                                   onClose: closePanel,
-                                  onOpenSession: (id) {
-                                    closePanel();
-                                    unawaited(c.run(() => c.select(id)));
-                                  },
+                                  onOpenSession: (id) =>
+                                      unawaited(openConversation(id)),
                                 ),
                               ),
                             if (mainPanel == 'knowledge')
@@ -852,8 +860,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
             title: '${workspace['title']}',
             path: '${workspace['path']}',
             expanded: groupExpanded(id),
-            active: c.workspaceId == id || c.selected?.cwd == workspace['path'],
-            onPressed: () => setGroupExpanded(id, !groupExpanded(id)),
+            active: c.workspaceId == id,
+            onPressed: () {
+              final expanded = c.workspaceId != id || !groupExpanded(id);
+              c.workspaceId = id;
+              setGroupExpanded(id, expanded);
+              c.emit();
+            },
             onMenu: (position) => workspaceMenu(workspace, position),
           ),
         ),
@@ -1102,7 +1115,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       child: InkWell(
         key: ValueKey('session-${session.id}'),
         borderRadius: BorderRadius.circular(7),
-        onTap: () => c.run(() => c.select(session.id)),
+        onTap: () => unawaited(openConversation(session.id)),
         onSecondaryTapDown: (d) => sessionMenu(session, d.globalPosition),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(28, 5, 7, 5),
@@ -1241,6 +1254,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           'sessionId': session.id,
         }, true);
         await c.refreshSessions();
+        closePanel();
         await c.select(result['sessionId'] as String);
       });
     }

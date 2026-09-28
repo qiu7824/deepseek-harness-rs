@@ -1574,6 +1574,7 @@ dependencies = [
  "dsh-compaction-tool-result-pruner",
  "dsh-invariants",
  "dsh-llm",
+ "dsh-repeat-tool-reminder",
  "dsh-schemastery",
  "dsh-scope",
  "dsh-session",

@@ -46,8 +46,13 @@ String turnActivityLabel(DesktopController c) {
 }
 
 class TurnActivity extends StatefulWidget {
-  const TurnActivity({super.key, required this.controller});
+  const TurnActivity({
+    super.key,
+    required this.controller,
+    this.readingHistory = false,
+  });
   final DesktopController controller;
+  final bool readingHistory;
   @override
   State<TurnActivity> createState() => _TurnActivityState();
 }
@@ -66,7 +71,7 @@ class _TurnActivityState extends State<TurnActivity>
 
   void syncTimer() {
     timer?.cancel();
-    if (!foreground) return;
+    if (!foreground || widget.readingHistory) return;
     timer = Timer.periodic(
       Duration(
         milliseconds: MediaQuery.disableAnimationsOf(context) ? 1000 : 350,
@@ -90,6 +95,12 @@ class _TurnActivityState extends State<TurnActivity>
   }
 
   @override
+  void didUpdateWidget(TurnActivity oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.readingHistory != widget.readingHistory) syncTimer();
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
@@ -104,7 +115,9 @@ class _TurnActivityState extends State<TurnActivity>
       widget.controller.messageChanges,
     ]),
     builder: (_, _) {
-      final label = turnActivityLabel(widget.controller),
+      final label = widget.readingHistory
+              ? '正在查看历史消息'
+              : turnActivityLabel(widget.controller),
           color = DshColors(context).muted;
       if (label.isEmpty) return const SizedBox.shrink();
       final stamp = widget.controller.window.events
@@ -144,13 +157,15 @@ class _TurnActivityState extends State<TurnActivity>
               ),
               ExcludeSemantics(
                 child: Text(
-                  MediaQuery.disableAnimationsOf(context)
+                  widget.readingHistory
+                      ? ''
+                      : MediaQuery.disableAnimationsOf(context)
                       ? '…'
                       : '.' * (ticks % 3 + 1),
                   style: TextStyle(color: color),
                 ),
               ),
-              if (seconds >= 5)
+              if (seconds >= 5 && !widget.readingHistory)
                 Text(
                   '  ${seconds}s',
                   style: TextStyle(fontSize: 12, color: color),

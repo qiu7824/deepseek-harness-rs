@@ -58,6 +58,47 @@ fn ensure_reference(reference: &ImageAttachmentRef) -> Result<String, Attachment
         })
 }
 
+pub(crate) fn host_path(
+    root: &Path,
+    reference: &ImageAttachmentRef,
+) -> Result<PathBuf, AttachmentError> {
+    let path = object_path(root, &ensure_reference(reference)?);
+    check_path(&path)?;
+    if !path.is_file() {
+        return Err(error(
+            "ATTACHMENT_NOT_FOUND",
+            "Image attachment is not a regular file.",
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod host_path_tests {
+    use super::*;
+    #[test]
+    fn image_host_path_is_exact_and_rejects_invalid_ids_and_missing_objects() {
+        let root = std::env::temp_dir().join(format!("dsh-image-path-{}", uuid::Uuid::new_v4()));
+        let digest = "a".repeat(64);
+        let path = object_path(&root, &digest);
+        let mut reference = ImageAttachmentRef {
+            attachment_id: attachment_id(format!("sha256:{digest}")),
+            media_type: ImageMediaType::Png,
+            bytes: 4,
+            width: 1,
+            height: 1,
+            name: None,
+        };
+        assert!(host_path(&root, &reference).is_err());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"data").unwrap();
+        assert_eq!(host_path(&root, &reference).unwrap(), path);
+        reference.attachment_id = attachment_id("sha256:../../outside");
+        assert!(host_path(&root, &reference).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 /// Make a directory's entries durable (fsync on a read-only directory
 /// handle); a no-op on Windows (TS `syncDirectory`).
 fn sync_directory(path: &Path) -> std::io::Result<()> {

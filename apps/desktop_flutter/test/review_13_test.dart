@@ -42,8 +42,11 @@ void main() {
       );
       c.messageChanges.value++;
       await tester.pumpAndSettle();
-      expect(tester.widget<ListView>(list).shrinkWrap, isFalse);
-      expect(find.byType(MessageCard).evaluate().length, lessThan(100));
+      expect(
+        tester.widget<ListView>(list).controller!.position.maxScrollExtent,
+        greaterThan(0),
+      );
+      expect(find.byType(MessageCard).evaluate().length, lessThan(30));
       await tester.pumpWidget(const SizedBox());
       c.dispose();
     },

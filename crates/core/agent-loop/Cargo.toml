@@ -28,6 +28,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+dsh-repeat-tool-reminder = { path = "../../guard/repeat-tool-reminder" }
 dsh-subagent = { path = "../../subagent/subagent" }
 dsh-subagent-spawn-in-process = { path = "../../subagent/subagent-spawn" }
 dsh-session-persistence-jsonl = { path = "../../session/session-persistence-jsonl" }

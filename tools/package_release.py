@@ -117,34 +117,40 @@ def main() -> None:
     parser.add_argument("--arch", required=True)
     parser.add_argument("--variant", choices=["core"], default="core")
     parser.add_argument("--version", required=True)
+    parser.add_argument("--target-dir", type=pathlib.Path, default=ROOT / "target")
+    parser.add_argument("--native-dir", type=pathlib.Path)
+    parser.add_argument("--output-dir", type=pathlib.Path, default=ROOT / "dist")
     args = parser.parse_args()
     arch = validated_release_component("arch", args.arch)
     version = validated_release_component("version", args.version)
 
-    staged_web = ROOT / "target" / "release" / "web" / "dist"
+    target = args.target_dir.resolve()
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    staged_web = target / "release" / "web" / "dist"
     verify_staged_web(ROOT / "web" / "dist", staged_web)
     verify_docx_runtime(ROOT)
-    core_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh")
+    core_source = target / "release" / binary_name(args.platform, "dsh")
     verify_release_version(version, core_source)
-    remote_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-remote-helper")
+    remote_source = target / "release" / binary_name(args.platform, "dsh-remote-helper")
     verify_remote_helper(remote_source)
 
     suffix = f"deepseek-harness-rs-v{version}-{args.platform}-{arch}-{args.variant}"
-    stage = ROOT / "dist" / suffix
+    stage = output_dir / suffix
     if stage.exists():
-        shutil.rmtree(stage)
+        raise ValueError(f"release output already exists: {stage}")
     stage.mkdir(parents=True)
-    stage_node_runtime(stage, args.platform, arch)
-    stage_search_runtime(stage, args.platform, arch)
+    stage_node_runtime(stage, args.platform, arch, target / "node-runtime-downloads")
+    stage_search_runtime(stage, args.platform, arch, target / "search-runtime-downloads")
 
-    launcher_source = ROOT / "target" / "release" / binary_name(args.platform, "dsh-launcher")
+    launcher_source = target / "release" / binary_name(args.platform, "dsh-launcher")
     core_output = binary_name(args.platform, "deepseek-harness-rs")
     launcher_output = binary_name(args.platform, "dsh-launcher")
     shutil.copy2(core_source, stage / core_output)
     shutil.copy2(launcher_source, stage / launcher_output)
     shutil.copy2(remote_source, stage / remote_source.name)
     if args.platform == "windows":
-        native_source = ROOT / "target" / "native-windows-sandbox" / "release"
+        native_source = args.native_dir.resolve() if args.native_dir else target / "native-windows-sandbox" / "release"
         verify_native_directory(ROOT, native_source)
         native_stage = stage / "native-sandbox"
         native_stage.mkdir()
@@ -160,7 +166,7 @@ def main() -> None:
         migration=(ROOT/'tools/native_install_upgrade.cjs').read_text(encoding='utf-8').replace('__DSH_NATIVE_EXPECTED_HASHES__',json.dumps(native_hashes))
         (stage/'runtime/native-install-upgrade.cjs').write_text(migration,encoding='utf-8')
         for controller in ("dsh-desktop-controller", "dsh-uu-controller"):
-            controller_source = ROOT / "target" / "release" / f"{controller}.exe"
+            controller_source = target / "release" / f"{controller}.exe"
             if not controller_source.is_file():
                 raise SystemExit(f"missing controller binary: build {controller} before packaging")
             shutil.copy2(controller_source, stage / controller_source.name)
@@ -218,13 +224,13 @@ def main() -> None:
     )
 
     if args.platform == "windows":
-        output = ROOT / "dist" / f"{suffix}-portable.zip"
+        output = output_dir / f"{suffix}-portable.zip"
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             for file in stage.rglob("*"):
                 if file.is_file():
                     archive.write(file, pathlib.Path(suffix) / file.relative_to(stage))
     else:
-        output = ROOT / "dist" / f"{suffix}-portable.tar.gz"
+        output = output_dir / f"{suffix}-portable.tar.gz"
         with tarfile.open(output, "w:gz") as archive:
             archive.add(stage, arcname=suffix)
     print(stage)

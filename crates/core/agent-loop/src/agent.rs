@@ -961,6 +961,8 @@ impl ReactLoopAgent {
         }));
         let mut turn_ends: Option<TurnEndReason> = None;
         let mut continuation = crate::response_continuation::ResponseContinuation::default();
+        let mut completion_assessment = None;
+        let mut completion_attempts = 0u8;
         let mut target = InboxTarget::NextTurn;
         let step_outcome: Result<(), LoopCancelled> = async {
             let _run_permit = if let Some(gate) = self
@@ -1068,6 +1070,64 @@ impl ReactLoopAgent {
                     throw_if_aborted(&signal)?;
                 }
                 if turn_ends.is_some() && self.inbox.next_step().is_empty() {
+                    if let Some(review) = self
+                        .ctx
+                        .get_typed::<Arc<dsh_agent::CompletionReview>>("completionReview", false)
+                    {
+                        let cancelled = signal.clone();
+                        let review_future = (review.review)(dsh_agent::CompletionRequest {
+                            agent: self.weak.upgrade().expect("live agent"),
+                            turn,
+                            attempts: completion_attempts,
+                            cancelled: Arc::new(move || cancelled.aborted()),
+                        });
+                        let assessment = tokio::select! {
+                            biased;
+                            _ = signal.cancelled() => { throw_if_aborted(&signal)?; unreachable!() },
+                            result = review_future => result,
+                        }
+                        .map_err(|error| {
+                            LoopCancelled::failure(LlmFailure {
+                                message: format!("Completion review failed: {error}"),
+                                code: "COMPLETION_REVIEW_FAILED".into(),
+                                offload_images: None,
+                                status: None,
+                                provider_retry_after_ms: None,
+                                request_id: None,
+                            })
+                        })?;
+                        throw_if_aborted(&signal)?;
+                        if let Some(notice) = assessment
+                            .as_ref()
+                            .and_then(|value| value.follow_up.as_ref())
+                            .filter(|_| completion_attempts < 2)
+                        {
+                            completion_attempts += 1;
+                            self.inbox
+                                .splice(
+                                    InboxTarget::NextStep,
+                                    self.inbox.next_step().len() as f64,
+                                    0.0,
+                                    vec![dsh_llm::create_user_message(
+                                        vec![ContentBlock::Text {
+                                            text: notice.clone(),
+                                        }],
+                                        dsh_llm::MessageSource::Plugin {
+                                            plugin: "agent-loop:response-recovery".into(),
+                                            form: Some(dsh_llm::ContextForm::Notice),
+                                            sections: None,
+                                            summary: Some("任务验收尚未完成".into()),
+                                            compaction_id: None,
+                                            source_command_id: None,
+                                        },
+                                    )],
+                                )
+                                .map_err(LoopCancelled::hook)?;
+                        }
+                        completion_assessment = assessment;
+                    }
+                }
+                if turn_ends.is_some() && self.inbox.next_step().is_empty() {
                     return Ok(());
                 }
                 target = InboxTarget::NextStep;
@@ -1118,12 +1178,17 @@ impl ReactLoopAgent {
         {
             *authentication_open = false;
         }
+        let mut turn_end_data =
+            serde_json::json!({ "turn": turn, "reason": turn_ends.expect("turn ending") });
+        if let Some(assessment) = completion_assessment {
+            // An interruption/error supersedes any earlier, provisional review.
+            if turn_end_data["reason"]["kind"] == "completed" {
+                turn_end_data["acceptance"] =
+                    serde_json::to_value(assessment).expect("completion assessment");
+            }
+        }
         self.session
-            .append(
-                "turn/end",
-                serde_json::json!({ "turn": turn, "reason": turn_ends.expect("turn ending") }),
-                None,
-            )
+            .append("turn/end", turn_end_data, None)
             .expect("turn/end");
         self.dispatcher()
             .serial("agent/turn-finished", |agent| {
@@ -1562,6 +1627,7 @@ impl ReactLoopAgent {
                         assembler.replay_state(),
                         &message.content,
                         saw_tool_call,
+                        !assembly.tools.is_empty(),
                     )
                     .map_err(LoopCancelled::failure)?
                 {

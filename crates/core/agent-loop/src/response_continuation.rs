@@ -14,6 +14,7 @@ pub(crate) struct ResponseContinuation {
     empty_recoveries: u8,
     truncation_recoveries: u8,
     no_answer_recovery_used: bool,
+    intent_recoveries: u8,
 }
 
 fn incomplete(code: &str, message: &str) -> LlmFailure {
@@ -41,6 +42,7 @@ impl ResponseContinuation {
         state: Option<&Value>,
         content: &[ContentBlock],
         saw_tool_call: bool,
+        can_act: bool,
     ) -> Result<Option<&'static str>, LlmFailure> {
         let has_text = content
             .iter()
@@ -91,6 +93,23 @@ impl ResponseContinuation {
                 })
         });
         let dropped_tool = *finish == FinishReason::ToolCalls;
+        let promised_action = can_act
+            && *finish == FinishReason::Stop
+            && content.iter().any(
+                |block| matches!(block, ContentBlock::Text { text } if unfinished_action(text)),
+            );
+        if promised_action {
+            if self.intent_recoveries >= 2 {
+                return Err(incomplete(
+                    "ACTION_NOT_EXECUTED",
+                    "模型连续承诺继续操作，但没有执行；任务尚未完成",
+                ));
+            }
+            self.intent_recoveries += 1;
+            return Ok(Some(
+                "上一条回复只承诺继续操作，但没有发出工具调用。若当前请求需要操作，请在现有权限内实际执行；否则直接说明结果或无法继续的原因。不要只说稍后继续，也不要扩大任务范围。",
+            ));
+        }
         if !commentary && !missing_final && has_visible && !dropped_tool {
             self.reset();
             return Ok(None);
@@ -118,5 +137,100 @@ impl ResponseContinuation {
         } else {
             EMPTY_NUDGE
         }))
+    }
+}
+
+fn unfinished_action(text: &str) -> bool {
+    let text = text.trim().trim_end_matches(['。', '.', '！', '!']);
+    if text.chars().count() > 120 || text.contains(['\n', '?', '？', ':', '：', '`', '"', '“', '”'])
+    {
+        return false;
+    }
+    if [
+        "已完成",
+        "已经",
+        "无法",
+        "不能",
+        "无需",
+        "不需要",
+        "don't",
+        "cannot",
+        "can't",
+    ]
+    .iter()
+    .any(|s| text.contains(s))
+    {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    [
+        "我再检查",
+        "我先检查",
+        "我继续检查",
+        "我接下来检查",
+        "我先运行",
+        "我再运行",
+        "我继续修复",
+        "我先核对",
+        "我继续核对",
+        "let me check",
+        "let me inspect",
+        "let me run",
+        "i'll check",
+        "i will check",
+        "i'll run",
+        "i'll inspect",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod intent_tests {
+    use super::*;
+    #[test]
+    fn promises_are_distinct_from_answers_quotes_and_blockers() {
+        for text in ["我再检查一下。", "我先运行测试。", "Let me check the file."] {
+            assert!(unfinished_action(text), "{text}");
+        }
+        for text in [
+            "已完成检查。",
+            "我无法继续检查。",
+            "翻译：我再检查一下",
+            "我先检查以下内容：\n1.版本",
+            "我再检查一下？",
+            "结果是 42。",
+        ] {
+            assert!(!unfinished_action(text), "{text}");
+        }
+    }
+    #[test]
+    fn promise_budget_survives_tool_progress_and_requires_tools() {
+        let content = vec![ContentBlock::Text {
+            text: "我再检查一下。".into(),
+        }];
+        let mut recovery = ResponseContinuation::default();
+        assert!(
+            recovery
+                .observe(&FinishReason::Stop, None, &content, false, false)
+                .unwrap()
+                .is_none()
+        );
+        for _ in 0..2 {
+            assert!(
+                recovery
+                    .observe(&FinishReason::Stop, None, &content, false, true)
+                    .unwrap()
+                    .is_some()
+            );
+            recovery.reset();
+        }
+        assert_eq!(
+            recovery
+                .observe(&FinishReason::Stop, None, &content, false, true)
+                .unwrap_err()
+                .code,
+            "ACTION_NOT_EXECUTED"
+        );
     }
 }

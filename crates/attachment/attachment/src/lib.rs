@@ -4,7 +4,7 @@
 
 pub mod invariant;
 mod references;
-pub use references::{file_references_for_event, find_image_reference};
+pub use references::{file_references_for_event, find_image_reference, image_references_for_event};
 
 use dsh_brand::Branded;
 use serde::{Deserialize, Serialize};
@@ -258,6 +258,12 @@ pub trait AttachmentStore: Send + Sync + 'static {
 
     /// Local read-only handle path; callers must authorize the reference first.
     fn file_host_path(&self, _reference: &FileAttachmentRef) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// Local read-only image path; callers must authorize the owning session's
+    /// admitted reference before exposing this path to an execution environment.
+    fn image_host_path(&self, _reference: &ImageAttachmentRef) -> Option<std::path::PathBuf> {
         None
     }
 

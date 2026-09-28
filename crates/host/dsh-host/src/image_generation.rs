@@ -154,11 +154,16 @@ impl ImageGeneration {
             parameters:json!({"type":"object","additionalProperties":false,"properties":{"prompt":{"type":"string","minLength":1,"maxLength":32000},"reference_images":{"type":"array","maxItems":16,"items":{"type":"string"}},"mask":{"type":"string"},"size":{"type":"string"},"quality":{"type":"string","enum":["auto","low","medium","high","xhigh","max"]},"n":{"type":"integer","minimum":1,"maximum":4}},"required":["prompt"]}),
             output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:Some(Arc::new(|_,value|{let mut meta=value.clone();meta["kind"]=json!("image-generation");Ok(meta)}))},
             timeout_ms:Some(600000),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:Some(Arc::new(|args|Some(dsh_tools::ToolCallView::Generic{title:if args["reference_images"].as_array().is_some_and(|v|!v.is_empty()){"编辑图片"}else{"生成图片"}.into(),kind:None,raw_input:None,content:None,locations:None}))),present_result:None,
-            execute:Arc::new(move|args,run|{let service=tool_service.clone();let args=args.clone();let execution=run.execution.clone();Box::pin(async move{service.run(&args,&execution).await.map_err(failure)})})
+            execute:Arc::new(move|args,run|{let service=tool_service.clone();let args=args.clone();let execution=run.execution.clone();let mark_effects=run.track_cancellable_effects();Box::pin(async move{service.run(&args,&execution,mark_effects.as_ref()).await.map_err(failure)})})
         })?;
         Ok(service)
     }
-    async fn run(&self, args: &Value, execution: &ToolExecution) -> Result<Value, String> {
+    async fn run(
+        &self,
+        args: &Value,
+        execution: &ToolExecution,
+        mark_effects: &(dyn Fn() -> Result<(), String> + Send + Sync),
+    ) -> Result<Value, String> {
         execution.agent.as_ref().ok_or("图像操作需要当前会话")?;
         let signal = execution.signal.lock().clone();
         if signal() {
@@ -338,6 +343,9 @@ impl ImageGeneration {
                 .multipart(form)
         };
         let pending = async {
+            // Route/credentials/reference validation can fail without making an
+            // image request. Only dispatch makes generation or billing possible.
+            mark_effects()?;
             let mut response = request
                 .send()
                 .await

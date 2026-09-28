@@ -5850,6 +5850,15 @@ window.__ModuleLoader__.load({
 		const TurnMaxTokensNodeView = (0, react.memo)(function TurnMaxTokensNodeView({ t }) {
 			return (0, react_jsx_runtime.jsx)(TurnMaxTokensItem, { t });
 		});
+		const TurnAcceptanceNodeView = (0, react.memo)(function TurnAcceptanceNodeView({ node, t }) {
+			const value = node.data.acceptance;
+			return react.createElement("section", { className: MessageItem_module_css_default.contextRow, role: "status", "data-task-acceptance": value.status, "aria-label": t("message.acceptance") },
+				react.createElement("strong", null, t("message.acceptance")),
+				react.createElement("p", null, value.summary),
+				Array.isArray(value.blockers) && value.blockers.length > 0 && react.createElement("details", null,
+					react.createElement("summary", null, t("message.acceptanceDetails")),
+					react.createElement("ul", null, value.blockers.map((text, index) => react.createElement("li", { key: index }, String(text))))));
+		});
 		/** Explicit unknown-surface keyed Chat renderer. */
 		const UnknownNodeView = (0, react.memo)(function UnknownNodeView({ node, t }) {
 			const data = node.data;
@@ -6868,6 +6877,8 @@ window.__ModuleLoader__.load({
 			"message.compaction.expand": "点击查看压缩摘要",
 			"message.compaction.unavailable": "压缩摘要不可用",
 			"message.unknownSurface": "未知 surface 事件：{type}",
+			"message.acceptance": "任务验收",
+			"message.acceptanceDetails": "查看验收详情",
 			"message.unknownBlock": "未知内容块",
 			"message.stopped": "已停止",
 			"message.branch": "在新对话中分支",
@@ -7205,6 +7216,8 @@ window.__ModuleLoader__.load({
 			"message.compaction.expand": "View compaction summary",
 			"message.compaction.unavailable": "Compaction summary unavailable",
 			"message.unknownSurface": "Unknown surface event: {type}",
+			"message.acceptance": "Task acceptance",
+			"message.acceptanceDetails": "Acceptance details",
 			"message.unknownBlock": "Unknown content block",
 			"message.stopped": "Stopped",
 			"message.branch": "Branch into a new conversation",
@@ -8964,6 +8977,7 @@ window.__ModuleLoader__.load({
 				case "compaction":
 				case "turn-error":
 				case "turn-max-tokens":
+				case "turn-acceptance":
 				case "unknown": return {
 					anchorSeq: node.anchorSeq,
 					nodes: [node.data],
@@ -10067,7 +10081,17 @@ window.__ModuleLoader__.load({
 		*/
 		function registerTurnMaxTokensConversationNode(ctx) {
 			ctx.conversationEvents.register(turnMaxTokensDefinition);
+			ctx.conversationEvents.register(turnAcceptanceDefinition);
 		}
+		const turnAcceptanceDefinition = {
+			kind: "turn-acceptance", target: "chat",
+			match: event => event.type === "turn/end" && event.data.reason?.kind === "completed" &&
+				["verified", "incomplete", "blocked", "cancelled", "unverified"].includes(event.data.acceptance?.status) && typeof event.data.acceptance.summary === "string"
+				? { id: String(event.data.turn), role: "start" } : null,
+			start: (_context, match) => ({ turn: match.event.data.turn, seq: match.event.seq, time: match.event.time, acceptance: match.event.data.acceptance }),
+			update: context => context.state,
+			buildViewNode: context => context.state ? chatNode(context, "turn-acceptance", noticeAnchor(context, context.state.seq), { ...context.state, kind: "turn-acceptance" }) : null
+		};
 		//#endregion
 		//#region lib/types/client/conversation-nodes/turn-tail.js
 		function hasTextAssistant(event) {
@@ -10873,6 +10897,7 @@ window.__ModuleLoader__.load({
 				key: "turn-max-tokens",
 				locale: NS
 			}, TurnMaxTokensNodeView));
+			ctx.slots.inject("conversation.chat.node", () => ctx.slots.register({ name: "conversation.chat.node", key: "turn-acceptance", locale: NS }, TurnAcceptanceNodeView));
 			ctx.slots.inject("conversation.chat.node", () => ctx.slots.register({
 				name: "conversation.chat.node",
 				key: "turn-tail",

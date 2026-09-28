@@ -13,6 +13,7 @@
 //!   matches JS for the remaining cases; the input domain is JSON values).
 
 pub mod invariant;
+pub mod progress;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

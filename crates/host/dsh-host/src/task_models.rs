@@ -109,6 +109,12 @@ impl TaskModels {
             .as_str()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(current_provider);
+        if matches!(role, "image" | "search") {
+            crate::native_tool_compatibility::ensure_supported(
+                provider,
+                self.native_tool_status(provider),
+            )?;
+        }
         let models = self
             .llm
             .list_models(provider)
@@ -123,11 +129,33 @@ impl TaskModels {
         )?;
         Ok(route)
     }
+    fn native_tool_status(&self, provider: &str) -> &'static str {
+        let settings = self.settings.describe(Default::default());
+        let namespace = if provider == "deepseek-official" {
+            "llm-deepseek"
+        } else {
+            "llm-pi-ai"
+        };
+        let value = settings
+            .iter()
+            .find(|s| s.ns.as_str() == namespace)
+            .and_then(|s| s.value.to_json());
+        let profile = value.as_ref().and_then(|value| {
+            if provider == "deepseek-official" {
+                Some(value)
+            } else {
+                value["providers"].get(provider)
+            }
+        });
+        crate::native_tool_compatibility::status(profile)
+    }
+
     async fn snapshot(&self) -> Result<Value, String> {
         let mut providers = vec![];
         for provider in self.llm.list_providers() {
             let models = self.llm.list_models(&provider.id).await.unwrap_or_default();
-            providers.push(json!({"id":provider.id,"name":provider.name,"models":models}));
+            let native = self.native_tool_status(&provider.id);
+            providers.push(json!({"id":provider.id,"name":provider.name,"models":models,"nativeTools":{"image":native,"search":native}}));
         }
         let settings = self.settings.describe(Default::default());
         let task = settings
@@ -205,6 +233,12 @@ impl TaskModels {
                                                 .any(|v| v.id == p)
                                         {
                                             return Err(format!("模型连接不可用：{p}"));
+                                        }
+                                        if matches!(*role, "image" | "search") && !p.is_empty() {
+                                            crate::native_tool_compatibility::ensure_supported(
+                                                p,
+                                                service.native_tool_status(p),
+                                            )?;
                                         }
                                         if *role != "image" && !p.is_empty() && !m.is_empty() {
                                             if image_only(m) {

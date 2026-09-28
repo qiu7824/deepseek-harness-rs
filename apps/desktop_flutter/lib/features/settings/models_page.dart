@@ -10,6 +10,8 @@ import '../../design/primitives.dart';
 import '../../design/select.dart';
 import 'account_login.dart';
 import 'model_editor_widgets.dart';
+import 'task_models_page.dart';
+export 'task_models_page.dart' show TaskModelsPage;
 import '../../src/controller.dart';
 
 class _DashedBorderPainter extends CustomPainter {
@@ -1911,115 +1913,6 @@ class _AccountLoginDialogState extends State<AccountLoginDialog> {
       DshButton(
         onPressed: () => Navigator.pop(context),
         child: Text(login.complete ? '关闭' : '取消'),
-      ),
-    ],
-  );
-}
-
-class TaskModelsPage extends StatefulWidget {
-  const TaskModelsPage({super.key, required this.api, this.namespace});
-  final DshClient api;
-  final Json? namespace;
-  @override
-  State<TaskModelsPage> createState() => _TaskModelsPageState();
-}
-
-class _TaskModelsPageState extends State<TaskModelsPage> {
-  final fields = <String, TextEditingController>{};
-  String? error;
-  bool busy = false;
-  @override
-  void dispose() {
-    for (final f in fields.values) {
-      f.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => ListView(
-    children: [
-      const Text('为辅助任务指定模型', style: TextStyle(fontSize: 14)),
-      for (final role in {
-        'diagnose': '排错',
-        'optimize': '优化',
-        'vision': '看图',
-        'image': '生图',
-        'search': '搜索',
-      }.entries)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(role.value),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  for (final key in ['provider', 'model', 'reasoningEffort'])
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: DshField(
-                          controller: fields.putIfAbsent(
-                            '${role.key}/$key',
-                            () => TextEditingController(
-                              text:
-                                  object(
-                                        object(
-                                          widget.namespace?['value'],
-                                        )[role.key],
-                                      )[key]
-                                      as String? ??
-                                  '',
-                            ),
-                          ),
-                          hint: {
-                            'provider': '提供方',
-                            'model': '模型 ID',
-                            'reasoningEffort': '推理等级',
-                          }[key],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      if (error != null)
-        Text(error!, style: const TextStyle(color: Colors.red)),
-      Align(
-        alignment: Alignment.centerRight,
-        child: DshButton(
-          primary: true,
-          onPressed: busy
-              ? null
-              : () async {
-                  setState(() => busy = true);
-                  try {
-                    await widget.api.call('settings.mutate', {
-                      'ns': 'task-models',
-                      'expectedRevision': widget.namespace?['revision'],
-                      'ops': [
-                        for (final entry in fields.entries)
-                          {
-                            'op': entry.value.text.isEmpty ? 'unset' : 'set',
-                            'path': entry.key.split('/'),
-                            if (entry.value.text.isNotEmpty)
-                              'value': entry.value.text,
-                          },
-                      ],
-                    }, true);
-                    if (mounted) setState(() => error = '已保存');
-                  } catch (e) {
-                    if (mounted) setState(() => error = '$e');
-                  } finally {
-                    if (mounted) setState(() => busy = false);
-                  }
-                },
-          child: const Text('保存任务模型'),
-        ),
       ),
     ],
   );

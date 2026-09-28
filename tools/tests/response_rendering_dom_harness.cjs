@@ -47,12 +47,21 @@ async function main() {
   primitives = new Proxy({ DisclosureRow: disclosure.Component, MarkdownText: await nativeMarkdown(), Menu: ({ anchor, open, items, onSelect }) => React.createElement(React.Fragment, null, anchor, open && React.createElement('div', { role: 'menu' }, items.map(item => React.createElement('button', { key: item.id, title: item.detail, role: 'menuitem', onClick: () => onSelect?.(item.id) }, item.label)))) }, { get: (target, key) => target[key] ?? (() => null) });
   Object.assign(runtime, load('client-runtime.js', 'contextProvenance,contextForm,createRevisionDraftStore'));
   const tool = load('ui-tool.js', 'GenericToolCard,ToolImage,toolDisplayTitle,toolDisplaySummary');
-  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect,registerChatNodeRenderers,StatsLine');
+  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect,registerChatNodeRenderers,StatsLine,turnAcceptanceDefinition,TurnAcceptanceNodeView');
   const subagent = load('ui-subagent.js', 'SubagentMarkdownOutput,SubagentToolRow,subagentFileLinks,zh,en');
   const trajectory = load('ui-trajectory.js', 'TrajectoryLocale,LaneLabels,RecordTiming,AssistantTimingPanel,StartedAtValue,zh,en');
   const modelUi = load('ui-model-selection.js', 'ModelSelect,zh,en');
   const permissionUi = load('ui-permission.js', 'optionsOf,accessZh,accessEn');
   const zh = translate(conversation.zh), en = translate(conversation.en);
+  const acceptanceEvent={type:'turn/end',seq:42,time:1,data:{turn:1,reason:{kind:'completed'},acceptance:{status:'incomplete',summary:'任务验收未通过，尚未完成。',blockers:['文件内容不匹配']}}};
+  assert.ok(conversation.turnAcceptanceDefinition.match(acceptanceEvent));
+  assert.equal(conversation.turnAcceptanceDefinition.match({...acceptanceEvent,data:{...acceptanceEvent.data,acceptance:undefined}}),null);
+  assert.equal(conversation.turnAcceptanceDefinition.match({...acceptanceEvent,data:{...acceptanceEvent.data,reason:{kind:'aborted'}}}),null);
+  await act(()=>root.render(React.createElement(conversation.TurnAcceptanceNodeView,{node:{data:acceptanceEvent.data},t:zh})));
+  assert.match(document.body.textContent,/任务验收未通过/);
+  assert.equal(document.querySelector('[data-task-acceptance]').getAttribute('data-task-acceptance'),'incomplete');
+  assert.match(document.body.textContent,/文件内容不匹配/);
+
   assert.deepEqual(Object.keys(conversation.zh).sort(), Object.keys(conversation.en).sort());
   assert.deepEqual(Object.keys(trajectory.zh).sort(), Object.keys(trajectory.en).sort());
   const cancelledStats={turns:1,steps:1,llmMs:22035,toolMs:0,ttftMs:0,ttftSteps:0,decodeMs:0,decodeTokens:0,requestMs:0,requestOutputTokens:0,requestSamples:0,requestSources:[]};

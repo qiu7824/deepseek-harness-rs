@@ -10,6 +10,7 @@
 //! initiator scope. Concrete creation and driving belong to the loop.
 //! Rust port of `@deepseek-ai/dsh-agent`.
 
+pub mod completion;
 pub mod consumed_work;
 pub mod dispatch;
 pub mod inbox;
@@ -19,6 +20,7 @@ pub mod registry;
 pub mod runtime_types;
 pub mod types;
 
+pub use completion::{CompletionAssessment, CompletionRequest, CompletionReview};
 pub use consumed_work::{ConsumedWork, ConsumedWorkFold, fold_consumed_work};
 pub use dispatch::{AgentEventDispatch, agent_carrier, assemble_context_for, emit_agent_event};
 pub use inbox::{Inbox, InboxNotifications};
