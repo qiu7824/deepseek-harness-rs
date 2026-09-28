@@ -136,8 +136,43 @@ class ConversationWindow {
   int get eventCount => _events.length;
   void mergePage(HistoryPage page, {required bool older}) {
     revision++;
+    final merged = SplayTreeMap<int, HistoryEvent>.of(_events);
     for (final event in page.events) {
-      _insert(event);
+      final previousKey = merged.containsKey(event.startSeq)
+          ? event.startSeq
+          : merged.lastKeyBefore(event.startSeq);
+      final previous = previousKey == null ? null : merged[previousKey];
+      if (previous != null && previous.endSeq >= event.endSeq) continue;
+      if (previous != null &&
+          previous.startSeq < event.startSeq &&
+          previous.endSeq >= event.startSeq) {
+        // A packed delta cannot be sliced without its original token boundaries.
+        // Keep the current window intact and request an authoritative replacement.
+        needsRefresh = true;
+        return;
+      }
+      final covered = <int>[];
+      var key = merged.containsKey(event.startSeq)
+          ? event.startSeq
+          : merged.firstKeyAfter(event.startSeq);
+      while (key != null && key <= event.endSeq) {
+        if (merged[key]!.endSeq > event.endSeq) {
+          needsRefresh = true;
+          return;
+        }
+        covered.add(key);
+        key = merged.firstKeyAfter(key);
+      }
+      for (final key in covered) {
+        merged.remove(key);
+      }
+      merged[event.seq] = event;
+    }
+    _events.clear();
+    _sizes.clear();
+    _bytes = 0;
+    for (final event in merged.values) {
+      _appendLive(event);
     }
     if (older) {
       hasBefore = page.hasBefore;
@@ -173,7 +208,7 @@ class ConversationWindow {
     firstSeq = page.firstSeq;
     lastSeq = page.lastSeq;
     for (final event in page.events) {
-      _insert(event);
+      _appendLive(event);
     }
     _bound();
   }

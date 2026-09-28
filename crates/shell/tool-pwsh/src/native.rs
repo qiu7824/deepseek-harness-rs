@@ -243,7 +243,8 @@ pub(super) fn install(
                 let owner = run.execution.agent.clone();
                 let signal = run.execution.signal.lock().clone();
                 let call_id = run.execution.call_id.to_string();
-                let mark_effects=run.track_requested_effects();
+                let mark_effects=run.track_cancellable_effects();
+                let bind_context=run.bind_execution_context();
                 Box::pin(async move {
                     let mut commands = if script {
                         Vec::new()
@@ -294,7 +295,8 @@ pub(super) fn install(
                         request.native_argv = Some(commands.remove(0));
                         if let (Some(sandbox),Some(policy)) = (&sandbox, &request.sandbox_policy) { sandbox.prepare(policy).await.map_err(super::shell_runtime_failure)?; }
                         let spec = shell.resolve(request);
-                        mark_effects();
+                        bind_context(super::executor_context(&spec)).map_err(ToolBodyError::plain)?;
+                        mark_effects().map_err(|error| ToolBodyError::coded(error, "ExecutionContextError", "EXECUTION_CONTEXT_CHANGED"))?;
                         let id = jobs.start(JobStart { kind:"native".into(), label:args["description"].as_str().unwrap_or("native process").into(), output_limit_bytes:None, owner,
                             run:Arc::new(move || Arc::new(super::PwshJobHooks { process:shell.start(spec.clone()), profiles:profiles.clone(), execution_context_id:spec.execution_context_id.clone(), capability:capabilities[0].clone() }))
                         }).map_err(ToolBodyError::plain)?;
@@ -307,8 +309,10 @@ pub(super) fn install(
                         if signal() { return Err(ToolBodyError::coded(format!("Execution cancelled before step {}; no further steps dispatched. Previous results: {}", index+1, Value::Array(results)), "AbortError", "SHELL_ABORTED")); }
                         let mut step = request.clone();
                         step.native_argv = Some(command.clone());
-                        mark_effects();
-                        let result = match shell.run(shell.resolve(step)).await {
+                        let spec=shell.resolve(step);
+                        bind_context(super::executor_context(&spec)).map_err(ToolBodyError::plain)?;
+                        mark_effects().map_err(|error| ToolBodyError::coded(error, "ExecutionContextError", "EXECUTION_CONTEXT_CHANGED"))?;
+                        let result = match shell.run(spec).await {
                             Ok(result)=>result,
                             Err(error)=> {
                                 if let (Some(profiles),Some(context),Some(capability)) = (&profiles,&request.execution_context_id,&capabilities[index]) { profiles.report_failure(context,capability); }

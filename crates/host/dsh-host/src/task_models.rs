@@ -15,6 +15,8 @@ pub(crate) struct TaskModels {
     pub settings: Arc<SettingsProvider>,
     pub llm: Arc<LlmRuntime>,
     scope: SettingsScope,
+    pub native_capabilities: crate::native_capabilities::NativeCapabilities,
+    auth: Arc<crate::provider_auth::AccountAuth>,
 }
 impl Service for TaskModels {
     fn service_name(&self) -> &'static str {
@@ -26,6 +28,8 @@ impl TaskModels {
         ctx: &Context,
         settings: Arc<SettingsProvider>,
         llm: Arc<LlmRuntime>,
+        auth: Arc<crate::provider_auth::AccountAuth>,
+        data_root: &std::path::Path,
     ) -> Result<Arc<Self>, String> {
         let route = Schema::object(indexmap::IndexMap::from([
             ("provider".into(), Schema::string()),
@@ -53,9 +57,12 @@ impl TaskModels {
             settings,
             llm,
             scope,
+            native_capabilities: crate::native_capabilities::NativeCapabilities::open(data_root),
+            auth,
         });
         ctx.register_service(service.clone());
         service.register_tool()?;
+        super::native_tool_discovery::install(ctx, &service);
         Ok(service)
     }
     pub async fn route(
@@ -65,6 +72,25 @@ impl TaskModels {
     ) -> Result<Value, String> {
         self.route_for_agent(role, execution.agent.as_ref().ok_or("需要当前会话")?)
             .await
+    }
+    pub(super) fn admission_identity(
+        &self,
+        role: &str,
+        agent: &Arc<dyn dsh_agent::Agent>,
+    ) -> Value {
+        let routes = (self.scope.get)().to_json().unwrap_or(Value::Null);
+        let selected = agent
+            .ctx()
+            .get_typed::<Arc<parking_lot::Mutex<dsh_agent::ModelSelectionRef>>>(
+                &dsh_agent::model_selection_service_name(agent.ctx()),
+                false,
+            )
+            .and_then(|selection| {
+                let state = selection.lock();
+                state.assembled.clone().or_else(|| state.resolved_current())
+            });
+        json!({"role":role,"configured":routes[role],"current":selected.map(|s|json!({"provider":s.provider,"model":s.model})),
+            "fallback":{"provider":agent.options().provider,"model":agent.options().model}})
     }
     pub async fn route_for_agent(
         &self,
@@ -120,13 +146,25 @@ impl TaskModels {
             .list_models(provider)
             .await
             .map_err(|e| e.to_string())?;
-        let route = resolve_route(
+        let mut route = resolve_route(
             role,
             configured,
             current_provider,
             current_model,
             &models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
         )?;
+        if role == "image" {
+            route["driverModel"] = json!(if provider == current_provider
+                && !image_only(current_model)
+            {
+                Some(current_model.to_owned())
+            } else {
+                models
+                    .iter()
+                    .find(|model| !image_only(&model.id))
+                    .map(|model| model.id.clone())
+            });
+        }
         Ok(route)
     }
     fn native_tool_status(&self, provider: &str) -> &'static str {
@@ -149,13 +187,35 @@ impl TaskModels {
         });
         crate::native_tool_compatibility::status(profile)
     }
+    pub(super) async fn observe_native(
+        &self,
+        ticket: &crate::native_capabilities::Ticket,
+        state: &str,
+        code: Option<&str>,
+    ) {
+        if let Err(error) = self.native_capabilities.observe(ticket, state, code).await {
+            self.ctx
+                .named_logger(Some("native-capabilities"))
+                .warn(vec![cordis::arc(format!(
+                    "Capability observation could not be cached: {error}"
+                ))]);
+        }
+    }
 
-    async fn snapshot(&self) -> Result<Value, String> {
+    pub(super) async fn snapshot(&self) -> Result<Value, String> {
         let mut providers = vec![];
         for provider in self.llm.list_providers() {
             let models = self.llm.list_models(&provider.id).await.unwrap_or_default();
             let native = self.native_tool_status(&provider.id);
-            providers.push(json!({"id":provider.id,"name":provider.name,"models":models,"nativeTools":{"image":native,"search":native}}));
+            let readiness = match self.auth.native_connection_snapshot(&provider.id).await {
+                Ok((profile, key, authorization)) => {
+                    json!({"image":self.native_capabilities.view(&provider.id,&profile,key.as_deref(),authorization,"image"),"search":self.native_capabilities.view(&provider.id,&profile,key.as_deref(),authorization,"search")})
+                }
+                Err(_) => {
+                    json!({"image":{"registered":true,"state":"unconfigured","authorization":"unknown","observations":[]},"search":{"registered":true,"state":"unconfigured","authorization":"unknown","observations":[]}})
+                }
+            };
+            providers.push(json!({"id":provider.id,"name":provider.name,"models":models,"nativeTools":{"image":native,"search":native},"nativeCapabilities":readiness}));
         }
         let settings = self.settings.describe(Default::default());
         let task = settings

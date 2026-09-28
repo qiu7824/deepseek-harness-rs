@@ -32,6 +32,7 @@ mod deepseek_settings;
 mod devin_auth;
 mod discovery_settings;
 mod environment_capabilities;
+mod execution_evidence;
 mod execution_profiles;
 mod feedback_delivery;
 mod free_catalog;
@@ -43,7 +44,9 @@ mod learning_bridge;
 mod memory_import;
 mod model_capabilities;
 mod model_discovery;
+mod native_capabilities;
 mod native_tool_compatibility;
+mod native_tool_discovery;
 mod office_preview;
 mod office_render;
 mod open_in_app;
@@ -53,6 +56,7 @@ mod project_tasks;
 mod provider_auth;
 mod provider_auth_catalog;
 mod provider_compatibility;
+mod pruned_arguments;
 mod remote_execution_http;
 pub mod runtime_paths;
 mod schedule_tasks;
@@ -3828,7 +3832,15 @@ fn compose_host_in_fiber(
         environment_capabilities,
     );
     execution_profiles.install_tools(ctx, &tools, &system_prompt)?;
-    let task_models = task_models::TaskModels::install(ctx, settings.clone(), llm.clone())?;
+    execution_evidence::install(ctx);
+    futures::executor::block_on(pruned_arguments::install(ctx));
+    let task_models = task_models::TaskModels::install(
+        ctx,
+        settings.clone(),
+        llm.clone(),
+        account_auth.clone(),
+        &data_root,
+    )?;
     let _image_generation =
         image_generation::ImageGeneration::install(ctx, task_models.clone(), account_auth.clone())?;
     video_reader::install(ctx, settings.clone())?;

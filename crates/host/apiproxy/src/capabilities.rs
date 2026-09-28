@@ -378,6 +378,24 @@ impl CapabilityManager {
             .get("expectedRevision")
             .and_then(Value::as_u64)
             .ok_or("expectedRevision is required")?;
+        // Verification is an explicit control action; passive listing stays cold.
+        let _validation_owner = if matches!(
+            method,
+            "capabilities.skillRevisionValidate"
+                | "capabilities.skillRevisionActivate"
+                | "capabilities.skillRevisionRestore"
+        ) {
+            let record = self.lifecycle.get(required(&payload, "id")?).await?;
+            match self
+                .ctx
+                .get_typed::<Arc<crate::ApiProxyService>>("apiProxy", false)
+            {
+                Some(api) => Some(api.resolve_control_agent(&record.owner_session_id).await?),
+                None => None,
+            }
+        } else {
+            None
+        };
         match method {
             "capabilities.skillRevisionToggle" => {
                 let enabled = payload["enabled"].as_bool().ok_or("enabled is required")?;

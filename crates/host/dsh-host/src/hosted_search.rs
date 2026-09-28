@@ -15,11 +15,17 @@ pub(super) struct RoutedSearch {
 }
 fn error(message: impl Into<String>) -> WebError {
     let message = message.into();
-    let code = if message.starts_with("NATIVE_TOOL_UNSUPPORTED:") {
-        "NATIVE_TOOL_UNSUPPORTED"
-    } else {
-        "WEB_HOSTED_SEARCH_ERROR"
-    };
+    let code = [
+        "NATIVE_TOOL_UNSUPPORTED",
+        "NATIVE_TOOL_TEMPORARILY_UNAVAILABLE",
+        "AUTH_TARGET_MISMATCH",
+        "AUTHENTICATION_REQUIRED",
+        "AUTHENTICATION_REVOKED",
+        "EXECUTION_CONTEXT_CHANGED",
+    ]
+    .into_iter()
+    .find(|code| message.starts_with(&format!("{code}:")))
+    .unwrap_or("WEB_HOSTED_SEARCH_ERROR");
     WebError::new(code, message)
 }
 
@@ -80,10 +86,14 @@ impl RoutedSearch {
         let model = route["model"]
             .as_str()
             .ok_or_else(|| error("Select a model"))?;
-        let (profile, key) = self.auth.image_connection(provider).await.map_err(error)?;
+        let (profile, key, lease) = self
+            .auth
+            .native_connection_for_agent(provider, &agent)
+            .await
+            .map_err(error)?;
         if key.is_none() && profile["keyless"] != true {
             return Err(error(
-                "The selected search connection has no usable credentials",
+                "AUTHENTICATION_REQUIRED: The selected search connection has no usable credentials",
             ));
         }
         if profile["authProvider"] != "openai-codex"
@@ -147,56 +157,117 @@ impl RoutedSearch {
                 None,
             )
             .map_err(error)?;
-        let client = reqwest::Client::builder()
+        let client = dsh_http_proxy::builder()
+            .map_err(error)?
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| error(e.to_string()))?;
-        let mut response = client
-            .post(&endpoint)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| error(format!("Hosted search transport failed: {e}")))?;
-        let status = response.status();
-        let stream = status.is_success()
-            && response
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.contains("text/event-stream"));
-        let mut bytes = Vec::new();
-        let mut total = 0usize;
-        while let Some(chunk) = response.chunk().await.map_err(|e| error(e.to_string()))? {
-            total = total.saturating_add(chunk.len());
-            if total > 8 * 1024 * 1024 {
-                return Err(error("Hosted search response exceeded 8 MiB"));
+        let ticket = tasks.native_capabilities.ticket(
+            provider,
+            &profile,
+            key.as_deref(),
+            "search",
+            model,
+            None,
+            if live { "live_search" } else { "cached_search" },
+        );
+        tasks
+            .native_capabilities
+            .preflight(&ticket)
+            .map_err(error)?;
+        let operation = async {
+            self.auth
+                .check_native_connection(provider, &profile, key.as_deref(), &lease)
+                .await
+                .map_err(error)?;
+            if cancelled() || lease.revoked() {
+                return Err(WebError::new(
+                    if lease.revoked() {
+                        "AUTHENTICATION_REVOKED"
+                    } else {
+                        "WEB_ABORTED"
+                    },
+                    "Search request cancelled before dispatch",
+                ));
             }
-            bytes.extend_from_slice(&chunk);
-            if stream {
-                while let Some((end, width)) = sse_boundary(&bytes) {
-                    let packet = std::str::from_utf8(&bytes[..end])
-                        .map_err(|_| error("Search returned non-UTF8 data"))?;
-                    if let Some(result) = parse_packet(packet) {
-                        return result;
+            let mut response = match client
+                .post(&endpoint)
+                .headers(headers)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => {
+                    tasks
+                        .observe_native(&ticket, "temporary_failure", Some("TRANSPORT_FAILED"))
+                        .await;
+                    return Err(error("Hosted search transport failed"));
+                }
+            };
+            let status = response.status();
+            if let Some((state, code)) = crate::native_capabilities::http_state(status.as_u16()) {
+                tasks.observe_native(&ticket, state, Some(code)).await;
+            }
+            let stream = status.is_success()
+                && response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|v| v.contains("text/event-stream"));
+            let mut bytes = Vec::new();
+            let mut total = 0usize;
+            while let Some(chunk) = response.chunk().await.map_err(|e| error(e.to_string()))? {
+                total = total.saturating_add(chunk.len());
+                if total > 8 * 1024 * 1024 {
+                    return Err(error("Hosted search response exceeded 8 MiB"));
+                }
+                bytes.extend_from_slice(&chunk);
+                if stream {
+                    while let Some((end, width)) = sse_boundary(&bytes) {
+                        let packet = std::str::from_utf8(&bytes[..end])
+                            .map_err(|_| error("Search returned non-UTF8 data"))?;
+                        if let Some(result) = parse_packet(packet) {
+                            return result;
+                        }
+                        bytes.drain(..end + width);
                     }
-                    bytes.drain(..end + width);
                 }
             }
-        }
-        if !status.is_success() {
-            let mut detail = String::from_utf8_lossy(&bytes).into_owned();
-            if let Some(key) = key.filter(|k| !k.is_empty()) {
-                detail = detail.replace(&key, "[redacted]");
+            if !status.is_success() {
+                let mut detail = String::from_utf8_lossy(&bytes).into_owned();
+                if let Some(key) = key.as_deref().filter(|k| !k.is_empty()) {
+                    detail = detail.replace(key, "[redacted]");
+                }
+                return Err(error(format!(
+                    "Hosted search HTTP {status}: {}",
+                    detail.chars().take(2048).collect::<String>()
+                )));
             }
-            return Err(error(format!(
-                "Hosted search HTTP {status}: {}",
-                detail.chars().take(2048).collect::<String>()
-            )));
+            parse_response(&bytes)
+        };
+        tokio::pin!(operation);
+        let result = loop {
+            tokio::select! {
+                biased;
+                _=tokio::time::sleep(Duration::from_millis(20))=>if lease.revoked() || cancelled() {
+                    return Err(WebError::new(if lease.revoked(){"AUTHENTICATION_REVOKED"}else{"WEB_ABORTED"},"Search cancelled; a signed-out account requires a new user instruction"));
+                },
+                result=&mut operation=>break result,
+            }
+        };
+        match &result {
+            Ok(_) => tasks.observe_native(&ticket, "ready", None).await,
+            Err(error) if error.code() == "NATIVE_TOOL_UNSUPPORTED" => {
+                tasks
+                    .observe_native(&ticket, "unsupported", Some("NATIVE_TOOL_NOT_EXECUTED"))
+                    .await
+            }
+            _ => {}
         }
-        parse_response(&bytes)
+        result
     }
 }
 fn endpoint(base: &str) -> Result<String, WebError> {

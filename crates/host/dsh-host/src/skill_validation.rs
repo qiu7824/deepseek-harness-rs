@@ -28,9 +28,6 @@ pub(crate) fn environment_fingerprint(
         session,
         mode: None,
     });
-    let mut roots = policy.read_only_roots.clone();
-    roots.sort();
-    roots.dedup();
     let backend = if policy.mode == dsh_sandbox::SandboxMode::DangerFullAccess {
         "unconfined".to_string()
     } else {
@@ -38,7 +35,9 @@ pub(crate) fn environment_fingerprint(
             .map(|provider| provider.backend_fingerprint_for(&policy))
             .unwrap_or_else(|| "unavailable".into())
     };
-    let identity = serde_json::json!({"version":2,"contextId":profile.context_id,"backend":backend,"mode":policy.mode.as_str(),"workspace":policy.workspace_root,"readOnlyRoots":roots});
+    // Attachment grants belong to each call's receipt, not the environment:
+    // rendering or generating an image must not invalidate its own task.
+    let identity = serde_json::json!({"version":3,"contextId":profile.context_id,"backend":backend,"mode":policy.mode.as_str(),"workspace":policy.workspace_root});
     Ok(format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&identity).map_err(|e| e.to_string())?)

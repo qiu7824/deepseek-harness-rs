@@ -14,6 +14,54 @@ use serde_json::json;
 use super::support::{harness, message, quick_tool, register_adapter, turn_end_kinds};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_output_stops_both_truncation_and_plain_final_recovery_without_losing_text() {
+    let repeated: &'static str = Box::leak(
+        "正在继续同样的检查，但没有新增结果。"
+            .repeat(1000)
+            .into_boxed_str(),
+    );
+    for reply in [
+        Reply::Limit(repeated),
+        Reply::Plain(repeated),
+        Reply::Final(repeated),
+    ] {
+        let harness = harness().await;
+        let adapter = Arc::new(Adapter::new(vec![reply]));
+        register_adapter(&harness, adapter.clone());
+        harness.agent.followup(message("检查文件并报告实际结果"));
+        tokio::time::timeout(Duration::from_secs(5), harness.agent.when_idle())
+            .await
+            .unwrap();
+        assert_eq!(
+            adapter.calls.load(Ordering::SeqCst),
+            1,
+            "repeated output must not be expanded by another model call"
+        );
+        let events = harness.agent.session().events();
+        assert!(
+            events.iter().any(|e| e.type_ == "turn/end"
+                && e.data["reason"]["error"]["code"] == "OUTPUT_REPETITION")
+        );
+        assert!(
+            events.iter().any(|e| e.type_ == "assistant/message"
+                && e.data["message"]["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.iter().any(|block| block["text"] == repeated))),
+            "the actual provider output remains recoverable"
+        );
+    }
+    let harness = harness().await;
+    let adapter = Arc::new(Adapter::new(vec![Reply::Plain(repeated)]));
+    register_adapter(&harness, adapter.clone());
+    harness.agent.followup(message("请输出重复文本 1000 次"));
+    tokio::time::timeout(Duration::from_secs(5), harness.agent.when_idle())
+        .await
+        .unwrap();
+    assert_eq!(turn_end_kinds(&harness.agent), ["completed"]);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identical_calls_are_stopped_before_dispatch_and_new_user_input_resets_the_guard() {
     let harness = harness().await;
     dsh_repeat_tool_reminder::progress::install(&harness.ctx).await;

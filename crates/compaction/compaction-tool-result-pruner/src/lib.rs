@@ -6,7 +6,7 @@ use dsh_session::{Session, SurfaceIntent, SurfaceOp};
 use dsh_token_meter::TokenMeter;
 use serde::{Deserialize, Serialize};
 
-pub const PRUNE_MARKER: &str = "\n\n[... tool result middle pruned ...]\n\n";
+pub const PRUNE_MARKER: &str = dsh_llm::TOOL_RESULT_PRUNE_MARKER;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -197,7 +197,32 @@ impl ToolResultPruner {
                 .meter
                 .as_ref()
                 .ok_or("prune_session requires an installed token meter")?;
-            session.append("compaction/prune", serde_json::json!({ "shadowedRange": { "start": seq, "end": seq }, "shadowedSeqs": [seq], "shadowedTokenCount": meter.estimate_message(&message) }), None)?;
+            let mut original_seq = seq;
+            let mut original = event.clone();
+            for _ in 0..64 {
+                let Some(source) = original
+                    .source_event_seqs
+                    .as_ref()
+                    .filter(|sources| sources.len() == 1)
+                    .and_then(|sources| sources.first())
+                    .copied()
+                    .filter(|source| *source < original_seq)
+                else {
+                    break;
+                };
+                let Some(previous) = session.event_at(dsh_session::SessionSeq::new(source)?) else {
+                    break;
+                };
+                if previous.type_ != "tool/result"
+                    || previous.data["message"]["source"]["callId"] != tool_call_id.as_str()
+                {
+                    break;
+                }
+                original_seq = source;
+                original = previous;
+            }
+            session.append("compaction/prune", serde_json::json!({ "shadowedRange": { "start": seq, "end": seq }, "shadowedSeqs": [seq], "shadowedTokenCount": meter.estimate_message(&message),
+                "contextPrune":{"version":1,"originalSeq":original_seq,"callId":tool_call_id.as_str(),"charsBefore":before,"charsAfter":after} }), None)?;
             let mut data = event.data.clone();
             data["message"] =
                 serde_json::to_value(&replacement_message).map_err(|error| error.to_string())?;
@@ -226,6 +251,65 @@ impl ToolResultPruner {
 }
 
 pub struct ToolResultPrunerPlugin;
+
+#[cfg(test)]
+mod reliability_tests {
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn actual_pruning_keeps_receipts_immutable_and_tracks_original_bytes_after_repeated_pruning()
+     {
+        let ctx = Context::root();
+        let meter = TokenMeter::install(&ctx, Default::default());
+        let session = Session::create(
+            dsh_session::session_id("prune-provenance"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let receipt = json!({"executionReceipt":{"authority":"tool-runtime","effects":"none","executionId":"read"}});
+        let original=session.append("tool/result",json!({"turn":1,"meta":receipt,"message":{"id":"result","role":"tool","content":[{"type":"text","text":"完整原始结果🙂".repeat(1000)}],"source":{"kind":"tool","callId":"read"},"toolCallId":"read"}}),Some(SurfaceIntent{surface_op:SurfaceOp::Append,source_event_seqs:None})).unwrap();
+        for (threshold, head, tail) in [(400, 150, 80), (180, 30, 20)] {
+            let pruner = ToolResultPruner {
+                config: ResolvedConfig {
+                    threshold_chars: threshold,
+                    head_chars: head,
+                    tail_chars: tail,
+                },
+                meter: Some(meter.clone()),
+            };
+            let result = pruner.prune_session(&session).unwrap();
+            assert_eq!(result.pruned.len(), 1);
+            let replacement = session
+                .event_at(dsh_session::SessionSeq::new(result.pruned[0].replacement_seq).unwrap())
+                .unwrap();
+            assert_eq!(replacement.data["meta"], receipt);
+            let proof = session
+                .find_event_rev(|e| e.type_ == "compaction/prune")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                proof.data["contextPrune"]["originalSeq"],
+                original.seq.get()
+            );
+            assert_eq!(proof.data["contextPrune"]["callId"], "read");
+        }
+        let restored = Session::from_restore(
+            session.id().clone(),
+            session.events().to_vec(),
+            &session.header(),
+            session.inherited_event_count(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.surface().unwrap().nodes,
+            session.surface().unwrap().nodes
+        );
+        assert_eq!(restored.event_at(original.seq).unwrap().data, original.data);
+    }
+}
+
 #[async_trait::async_trait]
 impl Plugin for ToolResultPrunerPlugin {
     fn name(&self) -> Option<&'static str> {

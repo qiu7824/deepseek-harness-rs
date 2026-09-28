@@ -5,6 +5,8 @@ pub(crate) fn read_only(name: &str, arguments: &Value) -> bool {
     matches!(
         name,
         "read"
+            | "tool_search"
+            | "tool_describe"
             | "read_file"
             | "read_image"
             | "read_video"

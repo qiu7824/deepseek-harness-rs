@@ -151,8 +151,65 @@ fn history_read_error(session_id: &str, message: String) -> RpcError {
     }
 }
 
+/// A cold read may race an append or atomic persistence replacement. Recreate
+/// the entire bounded sink; never publish the rejected snapshot or relax its
+/// source identity check. Only these persistence-owned errors are retryable.
+async fn retry_history_read<T, F, Future>(mut read: F) -> Result<T, String>
+where
+    F: FnMut() -> Future,
+    Future: std::future::Future<Output = Result<T, String>>,
+{
+    for attempt in 0..3 {
+        match read().await {
+            Err(error)
+                if attempt < 2
+                    && matches!(
+                        error.as_str(),
+                        "Session source changed between native history scans"
+                            | "Session source changed during staged history replay"
+                    ) =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt + 1))).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
 #[cfg(test)]
 mod history_error_tests {
+    #[tokio::test]
+    async fn changing_history_reopens_a_fresh_read_but_never_retries_corruption_or_exceeds_budget()
+    {
+        let mut calls = 0;
+        let value = super::retry_history_read(|| {
+            calls += 1;
+            std::future::ready(if calls == 1 {
+                Err("Session source changed during staged history replay".into())
+            } else {
+                Ok("fresh checked page")
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, "fresh checked page");
+        assert_eq!(calls, 2);
+        for (error, expected) in [
+            ("Session source changed between native history scans", 3),
+            ("corrupt JSONL record", 1),
+            ("replay consumer rejected", 1),
+        ] {
+            let mut calls = 0;
+            let result: Result<(), String> = super::retry_history_read(|| {
+                calls += 1;
+                std::future::ready(Err(error.into()))
+            })
+            .await;
+            assert_eq!(result.unwrap_err(), error);
+            assert_eq!(calls, expected);
+        }
+    }
     #[test]
     fn corrupt_or_oversized_history_is_not_reported_as_missing() {
         let id = "agent-session-test";
@@ -5198,8 +5255,8 @@ impl ApiProxyService {
         ),
         String,
     > {
-        let window = persistence
-            .read_forward_window_with_sink(
+        let window = retry_history_read(|| {
+            persistence.read_forward_window_with_sink(
                 session_id,
                 dsh_session_persistence::SessionReadForwardWindowRequest {
                     after_seq: from_seq,
@@ -5213,10 +5270,11 @@ impl ApiProxyService {
                         HISTORY_TRANSPORT_BYTE_LIMIT,
                         HISTORY_SOURCE_BYTE_LIMIT,
                     )
-                    .with_cleanup(cleanup),
+                    .with_cleanup(cleanup.clone()),
                 ),
             )
-            .await?;
+        })
+        .await?;
         if let Some(required) = window.oversized_event_count {
             return Err(format!(
                 "one safe history group requires {required} events, above the {HISTORY_SCAN_EVENT_LIMIT} event scan budget"
@@ -5247,8 +5305,8 @@ impl ApiProxyService {
     > {
         let mut messages = max_messages.max(1);
         let window = loop {
-            let window = persistence
-                .read_window_with_sink(
+            let window = retry_history_read(|| {
+                persistence.read_window_with_sink(
                     session_id,
                     dsh_session_persistence::SessionReadWindowRequest {
                         before_seq,
@@ -5265,7 +5323,8 @@ impl ApiProxyService {
                         .with_cleanup(cleanup.clone()),
                     ),
                 )
-                .await?;
+            })
+            .await?;
             if let Some(required) = window.oversized_event_count {
                 if messages > 1 {
                     messages = messages

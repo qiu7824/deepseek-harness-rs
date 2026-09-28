@@ -458,15 +458,36 @@ pub struct ToolRunContext {
     /// The live execution view (identity, arguments, signal).
     pub execution: Arc<ToolExecution>,
     state: Arc<Mutex<ExecutionState>>,
+    evidence_provider: Option<Arc<crate::receipt::ExecutionEvidenceProvider>>,
 }
 
 impl ToolRunContext {
+    /// Trusted adapters record their effective executor and approved scope.
+    /// Values must contain no credentials or process environment variables.
+    pub fn bind_execution_context(
+        &self,
+    ) -> Arc<dyn Fn(JsonValue) -> Result<(), String> + Send + Sync> {
+        let state = self.state.clone();
+        Arc::new(move |value| {
+            let mut state = state.lock();
+            if state.result_notified {
+                return Err("TOOL_ABORTED: execution already settled".into());
+            }
+            if state.effective_contexts.last() != Some(&value)
+                && state.effective_contexts.len() < 32
+            {
+                state.effective_contexts.push(value);
+            }
+            Ok(())
+        })
+    }
     /// A checked effect boundary for work that can outlive its awaiting future.
     /// Result publication and this marker use the same lock: a late worker must
     /// stop when the marker refuses, so no-effects evidence cannot become stale.
     pub fn track_cancellable_effects(&self) -> Arc<dyn Fn() -> Result<(), String> + Send + Sync> {
         let state = self.state.clone();
         let execution = self.execution.clone();
+        let evidence_provider = self.evidence_provider.clone();
         {
             let mut state = state.lock();
             if state.effects_started.is_none() {
@@ -476,8 +497,40 @@ impl ToolRunContext {
         Arc::new(move || {
             let signal = execution.signal.lock().clone();
             let cancelled = signal();
+            {
+                let mut state = state.lock();
+                if state.result_notified {
+                    return Err("TOOL_ABORTED: Execution has already settled".into());
+                }
+                if cancelled {
+                    state.effect_rejection = Some("TOOL_ABORTED");
+                    return Err(
+                        "TOOL_ABORTED: Execution was cancelled before the requested effect".into(),
+                    );
+                }
+            }
+            if let Some(provider) = &evidence_provider {
+                let current = (provider.snapshot)(&execution).map_err(|error| {
+                    let mut state = state.lock();
+                    if !state.result_notified {
+                        state.effect_rejection = Some("EXECUTION_CONTEXT_UNAVAILABLE");
+                    }
+                    format!("EXECUTION_CONTEXT_UNAVAILABLE: {error}")
+                })?;
+                let mut locked = state.lock();
+                if !crate::receipt::context_matches(&locked.evidence_context, &current) {
+                    if !locked.result_notified {
+                        locked.effect_rejection = Some("EXECUTION_CONTEXT_CHANGED");
+                    }
+                    return Err("EXECUTION_CONTEXT_CHANGED: 执行环境或权限在等待期间发生变化，尚未启动此操作；请重新检查执行上下文。".into());
+                }
+            }
+            let cancelled = signal();
             let mut state = state.lock();
             if cancelled || state.result_notified {
+                if !state.result_notified {
+                    state.effect_rejection = Some("TOOL_ABORTED");
+                }
                 return Err(
                     "Execution has ended or was cancelled before the requested effect".into(),
                 );
@@ -523,6 +576,11 @@ impl std::ops::Deref for ToolRunContext {
 }
 
 struct ExecutionState {
+    effect_rejection: Option<&'static str>,
+    adapter_receipt: Option<JsonValue>,
+    effective_contexts: Vec<JsonValue>,
+    evidence_context: JsonValue,
+    effect_class: crate::receipt::EffectClass,
     effects_started: Option<bool>,
     result_notified: bool,
     deferred: Vec<UserMessage>,
@@ -1137,7 +1195,27 @@ impl ToolRuntime {
             parent,
             signal: Mutex::new(signal.clone()),
         });
+        let evidence = self
+            .ctx
+            .get_typed::<Arc<crate::receipt::ExecutionEvidenceProvider>>(
+                "executionEvidence",
+                false,
+            );
+        let evidence_context = evidence
+            .as_ref()
+            .map(|provider| (provider.snapshot)(&execution))
+            .transpose();
+        let evidence_error = evidence_context.as_ref().err().cloned();
+        let effect_class = evidence
+            .as_ref()
+            .map(|provider| (provider.classify)(&execution))
+            .unwrap_or_default();
         let state = Arc::new(Mutex::new(ExecutionState {
+            effect_rejection: None,
+            adapter_receipt: None,
+            effective_contexts: Vec::new(),
+            evidence_context: evidence_context.ok().flatten().unwrap_or(JsonValue::Null),
+            effect_class,
             effects_started: None,
             result_notified: false,
             deferred: Vec::new(),
@@ -1150,7 +1228,21 @@ impl ToolRuntime {
         let run_ctx = Arc::new(ToolRunContext {
             execution: Arc::clone(&execution),
             state,
+            evidence_provider: evidence.map(|provider| provider.as_ref().clone()),
         });
+        if let Some(error) = evidence_error {
+            let result = tool_error_result(
+                &error,
+                Some(&ToolErrorInfo {
+                    name: "ExecutionContextError".into(),
+                    code: "EXECUTION_CONTEXT_CHANGED".into(),
+                }),
+            );
+            return CreatedExecution::Final {
+                run_ctx,
+                result: Arc::new(self.mark_canonical(token, result)),
+            };
+        }
         if let Some(error) = permission_error {
             let result = tool_error_result(
                 &format!("Permission history could not be read; tool was not executed: {error}"),
@@ -1578,6 +1670,29 @@ impl ToolRuntime {
                 None => Arc::clone(&result),
             }
         };
+        // All top-level and nested calls pass this boundary, including refusals,
+        // invalid arguments, cancellation, panics, and successful outputs.
+        let mut rebuilt = clone_result(&final_result);
+        let mut state = run_ctx.state.lock();
+        state.result_notified = true;
+        let mut receipt = crate::receipt::build(
+            &run_ctx.execution,
+            &rebuilt,
+            state.body_invoked,
+            state.effects_started,
+            state.effect_class,
+            &state.evidence_context,
+            state.effect_rejection,
+            state.adapter_receipt.as_ref(),
+        );
+        receipt["effectiveExecutions"] = serde_json::json!(state.effective_contexts);
+        drop(state);
+        let meta = rebuilt.meta.get_or_insert_with(|| serde_json::json!({}));
+        if !meta.is_object() {
+            *meta = serde_json::json!({"presentation":meta.clone()});
+        }
+        meta["executionReceipt"] = receipt;
+        let final_result = Arc::new(self.mark_canonical(run_ctx.token, rebuilt));
         self.notify_result(&run_ctx, Arc::clone(&final_result));
         final_result
     }
@@ -1799,6 +1914,21 @@ impl ToolRuntime {
                 return tool_error_result("Tool definition changed while authorization was pending; its body was not executed",Some(&ToolErrorInfo {name:"ToolBindingChanged".into(),code:"TOOL_BINDING_CHANGED".into()}));
             }
             run_ctx.state.lock().body_invoked = true;
+            if let Some(provider) = self.ctx.get_typed::<Arc<crate::receipt::ExecutionEvidenceProvider>>("executionEvidence",false) {
+                let evidence = (provider.snapshot)(&run_ctx.execution);
+                let context = match evidence {
+                    Ok(context) => context,
+                    Err(error) => {
+                        run_ctx.state.lock().body_invoked = false;
+                        return tool_error_result(&error,Some(&ToolErrorInfo{name:"ExecutionContextError".into(),code:"EXECUTION_CONTEXT_CHANGED".into()}));
+                    }
+                };
+                let mut state=run_ctx.state.lock();
+                if !crate::receipt::context_matches(&state.evidence_context,&context) {
+                    state.body_invoked=false;
+                    return tool_error_result("Execution environment or permissions changed while this call was pending; no operation started. Refresh the context before retrying.",Some(&ToolErrorInfo{name:"ExecutionContextError".into(),code:"EXECUTION_CONTEXT_CHANGED".into()}));
+                }
+            }
             let body = (tool.execute)(&run_ctx.arguments, &run_ctx);
             match AssertUnwindSafe(body).catch_unwind().await {
                 Ok(Ok(value)) => {
@@ -1812,6 +1942,7 @@ impl ToolRuntime {
                 Ok(Err(error)) => {
                     let mut result = tool_error_result(&error.message, error.info.as_ref());
                     if let Some(receipt) = error.receipt {
+                        run_ctx.state.lock().adapter_receipt = Some(receipt.clone());
                         result.meta = Some(serde_json::json!({"executionReceipt":receipt}));
                     }
                     result

@@ -70,6 +70,7 @@ impl Drop for NestedDispatchLog {
         }
         if let Some(session) = &self.session {
             let mut value = self.start.clone();
+            value["meta"] = json!({"executionReceipt":crate::receipt::interrupted_nested(&self.start,session.id().as_str())});
             value["isError"] = json!(true);
             value["content"] = json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
             value["error"] = json!({"name":"ToolAbortedError","code":"ABORTED"});
@@ -209,6 +210,7 @@ impl Drop for CodeLifetime {
             return;
         }
         for (seq, mut value) in pending {
+            value["meta"] = json!({"executionReceipt":crate::receipt::interrupted_nested(&value,session.id().as_str())});
             value["isError"] = json!(true);
             value["content"] = json!([{"type":"text","text":"Nested tool execution interrupted; its result is unknown."}]);
             value["error"] = json!({"name":"ToolAbortedError","code":"ABORTED"});

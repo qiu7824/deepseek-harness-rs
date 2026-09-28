@@ -10,6 +10,7 @@ import '../../src/controller.dart';
 import 'learning_panel.dart';
 import 'plugin_operations_panel.dart';
 import 'time_context_panel.dart';
+import 'skill_revisions_page.dart';
 
 class SettingsResourcePage extends StatefulWidget {
   const SettingsResourcePage({
@@ -173,6 +174,30 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                     ? null
                     : openPluginManager,
                 child: const Text('安装与维护'),
+              ),
+            if (widget.page == 'skills')
+              DshButton(
+                outline: true,
+                onPressed: loading || busy || staleConnection
+                    ? null
+                    : () => showDialog<void>(
+                        context: context,
+                        builder: (dialogContext) => Dialog(
+                          child: SizedBox(
+                            width: 880,
+                            height: 680,
+                            child: Padding(
+                              padding: const EdgeInsets.all(20),
+                              child: SkillRevisionsPage(
+                                api: api,
+                                controller: widget.controller,
+                                onClose: () => Navigator.pop(dialogContext),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                child: const Text('版本与验证'),
               ),
             if (widget.page == 'skills')
               DshButton(

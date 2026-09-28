@@ -18,6 +18,21 @@ fn selected(values: &HashMap<String, String>, name: &str) -> Option<String> {
 }
 
 impl ProxyPolicy {
+    /// A cache identity without exposing proxy credentials or a reusable secret hash.
+    pub fn fingerprint(&self, private_salt: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for value in [
+            private_salt,
+            self.http.as_deref().unwrap_or(""),
+            self.https.as_deref().unwrap_or(""),
+            &self.bypass,
+        ] {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value.as_bytes());
+        }
+        format!("{:x}", hash.finalize())
+    }
     pub fn from_values(values: &HashMap<String, String>) -> Result<Self, String> {
         let fallback = selected(values, "ALL_PROXY");
         let parse = |name: &str| -> Result<Option<String>, String> {

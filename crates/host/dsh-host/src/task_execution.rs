@@ -20,6 +20,11 @@ pub(crate) struct TaskExecution {
     resources: Option<Arc<crate::workspace_resources::Resources>>,
     validation_work: validation_work::Work,
 }
+impl cordis::Service for TaskExecution {
+    fn service_name(&self) -> &'static str {
+        "taskExecution"
+    }
+}
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Default)]
@@ -43,6 +48,8 @@ impl LiveAdmissions {
     }
 }
 
+#[path = "task_completion.rs"]
+mod completion;
 #[path = "task_goals.rs"]
 mod goals;
 #[path = "task_input_snapshot.rs"]
@@ -51,8 +58,6 @@ mod input_snapshot;
 mod requirements;
 #[path = "task_validation_work.rs"]
 mod validation_work;
-#[path = "task_completion.rs"]
-mod completion;
 
 #[derive(Debug)]
 pub(crate) enum TaskActionError {
@@ -910,6 +915,7 @@ pub(crate) async fn install(
         validation_work: Default::default(),
     });
     goals::install(&service)?;
+    ctx.register_service(service.clone());
     completion::install(&service);
     let for_preflight = service.clone();
     ctx.on(
@@ -1007,8 +1013,7 @@ pub(crate) async fn install(
                             "session:{owner}:call:{}",
                             execution.call_id.as_str()
                         )];
-                        let adapter_not_dispatched = matches!(execution.name.as_str(), "pwsh" | "execute_native" | "execute_steps" | "execute_script")
-                            && result.meta.as_ref().and_then(|meta| meta.get("executionReceipt")).is_some_and(|receipt| receipt["commandStarted"] == false && receipt["effects"] == "none" && receipt["processState"] == "not_started");
+                        let adapter_not_dispatched = result.meta.as_ref().and_then(|meta| meta.get("executionReceipt")).is_some_and(|receipt| receipt["authority"] == "tool-runtime" && receipt["dispatch"] == "not_started" && receipt["effects"] == "none");
                         let observed = if result.is_error && (body_invoked == Some(false)||effects_started==Some(false)||adapter_not_dispatched) {
                             runtime.observe_not_dispatched(owner, &task.task_id, &id, &format!("result-{}", digest(id.as_bytes())), evidence)
                         } else { runtime.observe(
@@ -1132,7 +1137,11 @@ pub(crate) fn register_route(
                         let owner = text(&args, "sessionId")?;
                         // Reading durable contracts must not resurrect an idle
                         // Agent just to populate a recovery panel.
-                        if args["action"]=="list" {return Ok::<_,TaskActionError>(service.decorate_response(json!({"tasks":service.runtime.list(owner)?,"capabilities":capabilities()}),owner).await);}
+                        if args["action"]=="list" {
+                            let tasks=service.runtime.list(owner)?;
+                            let tasks=if args["summaryOnly"]==true {Value::Array(tasks.into_iter().map(|task|json!({"taskId":task.task_id,"revision":task.revision,"requirementsRevision":task.requirements_revision,"goalBinding":task.goal_binding,"state":task.state,"spec":{"goalId":task.spec.goal_id,"objective":task.spec.objective,"validationSubject":task.spec.validation_subject},"createdAt":task.created_at,"updatedAt":task.updated_at})).collect())} else {serde_json::to_value(tasks).map_err(|e|e.to_string())?};
+                            return Ok::<_,TaskActionError>(service.decorate_response(json!({"tasks":tasks,"capabilities":capabilities()}),owner).await);
+                        }
                         if args["action"]=="refresh_history" {return Ok(json!({"history":service.runtime.evidence_refresh_history(owner,text(&args,"taskId")?)?}));}
                         if args["action"]=="requirements_history" {return Ok(json!({"history":service.runtime.requirements_history(owner,text(&args,"taskId")?)?,"capabilities":capabilities()}));}
                         if args["action"]=="requirements_snapshot" {return Ok(json!({"snapshot":service.runtime.requirements_snapshot(owner,text(&args,"taskId")?,text(&args,"idempotencyKey")?)?,"capabilities":capabilities()}));}

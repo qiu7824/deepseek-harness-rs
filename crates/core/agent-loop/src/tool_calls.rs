@@ -615,6 +615,13 @@ fn append_tool_result(
     }
     if let Some(meta) = &result.meta {
         data["meta"] = meta.clone();
+    } else if result
+        .error
+        .as_ref()
+        .and_then(|error| error.info.as_ref())
+        .is_some_and(|info| info.code == TOOL_ABORTED_BEFORE_DISPATCH)
+    {
+        data["meta"] = serde_json::json!({"executionReceipt":dsh_tools::receipt::undispatched(block.id.as_str(),&block.name)});
     }
     session.append(
         "tool/result",

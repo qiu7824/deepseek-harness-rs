@@ -1,5 +1,5 @@
 {
-  "rev": "rust-v0.1.3-alpha.36",
+  "rev": "rust-v0.1.3-alpha.37",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-client-ui-file-actions",
@@ -140,7 +140,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-models",
       "url": "/plugins/ui-settings-models.js",
-      "rev": "1fdc63d86e9e0ddf",
+      "rev": "07d2c37905023989",
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
@@ -492,7 +492,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-settings-skill-revisions",
       "url": "/plugins/ui-settings-skill-revisions.js",
-      "rev": "9654dd584132d3c7",
+      "rev": "10e426efc4867fab",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-ui-settings-general"

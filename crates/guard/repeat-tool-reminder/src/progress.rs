@@ -20,6 +20,18 @@ fn hash(value: impl Hash) -> u64 {
 fn signature(name: &str, args: &Value) -> u64 {
     hash((name, super::json_stringify(&super::sort_json_value(args))))
 }
+fn execution_signature(execution: &ToolExecution, context: Option<&Value>) -> u64 {
+    hash((
+        signature(&execution.name, &execution.arguments),
+        execution
+            .schema
+            .as_ref()
+            .and_then(|schema| serde_json::to_string(schema).ok()),
+        context
+            .filter(|value| !value.is_null())
+            .map(environment_key),
+    ))
+}
 fn poller(name: &str, args: &Value) -> bool {
     matches!(
         name,
@@ -33,6 +45,39 @@ fn repair(name: &str) -> bool {
         name,
         "write" | "edit" | "write_file" | "patch" | "apply_patch"
     )
+}
+fn sandbox_path(name: &str) -> bool {
+    matches!(
+        name,
+        "pwsh" | "execute_native" | "execute_script" | "execute_steps"
+    )
+}
+fn environment_key(value: &Value) -> u64 {
+    let mut value = value.clone();
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("fingerprint");
+    }
+    hash(super::json_stringify(&super::sort_json_value(&value)))
+}
+fn shared_failure(result: &ToolExecutionResult) -> Option<u64> {
+    let receipt = result.meta.as_ref()?.get("executionReceipt")?;
+    if !result.is_error || receipt["authority"] != "tool-runtime" {
+        return None;
+    }
+    if !matches!(
+        receipt["errorCode"].as_str(),
+        Some(
+            "SANDBOX_SETUP_FAILED"
+                | "SANDBOX_SETUP_REQUIRED"
+                | "SANDBOX_SETUP_TIMEOUT"
+                | "SANDBOX_UNAVAILABLE"
+                | "SANDBOX_QUARANTINED"
+                | "SHELL_NOT_FOUND"
+        )
+    ) {
+        return None;
+    }
+    Some(environment_key(&receipt["executionContext"]))
 }
 fn result_signature(result: &ToolExecutionResult) -> Option<u64> {
     // Hash complete bytes; a prefix would mistake long, changing outputs for a loop.
@@ -54,7 +99,16 @@ fn result_signature(result: &ToolExecutionResult) -> Option<u64> {
         }
         super::json_stringify(&super::sort_json_value(&value)).hash(&mut h);
     } else if let Some(error) = &result.error {
-        error.message.hash(&mut h);
+        // Cache countdowns are not progress. These typed refusal classes keep
+        // the exact call and admission context, but exclude volatile wording.
+        match error.info.as_ref().map(|info| info.code.as_str()) {
+            Some(
+                code @ ("NATIVE_TOOL_UNSUPPORTED"
+                | "NATIVE_TOOL_TEMPORARILY_UNAVAILABLE"
+                | "AUTHENTICATION_REQUIRED"),
+            ) => code.hash(&mut h),
+            _ => error.message.hash(&mut h),
+        }
     } else {
         let mut any = false;
         for block in &result.content {
@@ -79,6 +133,8 @@ struct History {
     blocked: HashSet<u64>,
     last_repair: Option<(u64, u64)>,
     seen_seq: Option<u64>,
+    environment_failures: HashMap<u64, u8>,
+    last_probe: Option<String>,
 }
 impl History {
     fn observe(&mut self, sig: u64, result: u64, changed: bool) {
@@ -89,6 +145,8 @@ impl History {
         }
         if self.rows.len() == 64 {
             self.rows.pop_front();
+            self.blocked
+                .retain(|sig| self.rows.iter().any(|(id, _)| id == sig));
         }
         self.rows.push_back((sig, result));
         for period in 1..=4 {
@@ -155,8 +213,13 @@ pub async fn install(ctx: &Context) {
             let next = args.last().and_then(downcast_arc::<cordis::NextFn>);
             let execution = args.first().and_then(downcast_arc::<Arc<ToolExecution>>);
             if let Some(execution) = execution {
+                let provider=execution.agent.as_ref().and_then(|agent|agent.ctx().get_typed::<Arc<dsh_tools::receipt::ExecutionEvidenceProvider>>("executionEvidence",false));
+                let context=provider.and_then(|provider|(provider.snapshot)(&execution).ok());
+                if sandbox_path(&execution.name) && context.as_ref().is_some_and(|context|with_history(&state,&execution,|h|h.environment_failures.get(&environment_key(context)).copied().unwrap_or(0)>=5)==Some(true)) {
+                    return Some(arc(PreToolDecision::Deny { reason:"TOOL_NO_PROGRESS: 当前任务要求、运行器和权限条件下，进程执行路径已连续五次出现结构化环境故障，此调用未执行。请使用 environment_validate refresh=true 检查当前环境；新的成功启动证据、实际环境或权限变更、用户新指令后可以重新评估。改写命令或更换执行包装工具不能修复此故障。".into() }));
+                }
                 if !poller(&execution.name, &execution.arguments) && with_history(&state, &execution,
-                    |h| h.blocked.contains(&signature(&execution.name, &execution.arguments))) == Some(true) {
+                    |h| h.blocked.contains(&execution_signature(&execution,context.as_ref()))) == Some(true) {
                     return Some(arc(PreToolDecision::Deny { reason: "TOOL_NO_PROGRESS: 同一调用或调用循环已连续五轮返回相同结果，此调用未执行。请检查错误并修复输入或环境；正常后台查询仍可使用。不得改写包装命令绕过权限拒绝；无法修复时明确报告未完成。".into() }));
                 }
             }
@@ -165,7 +228,7 @@ pub async fn install(ctx: &Context) {
     }), Default::default()).await;
     let after = state.clone();
     ctx.on(
-        "tools/post-execute",
+        "tools/result",
         Arc::new(move |_, args| {
             let state = after.clone();
             Box::pin(async move {
@@ -175,11 +238,57 @@ pub async fn install(ctx: &Context) {
                     args.get(1)
                         .and_then(downcast_arc::<Arc<ToolExecutionResult>>),
                 ) {
+                    with_history(&state, &execution, |history| {
+                        if sandbox_path(&execution.name) {
+                            if let Some(key) = shared_failure(&result) {
+                                if history.environment_failures.len() < 64
+                                    || history.environment_failures.contains_key(&key)
+                                {
+                                    let count =
+                                        history.environment_failures.entry(key).or_default();
+                                    *count = count.saturating_add(1);
+                                }
+                            }
+                        }
+                        if !result.is_error
+                            && execution.name == "environment_validate"
+                            && execution.arguments["refresh"] == true
+                        {
+                            if let Some(value) = &result.value {
+                                if value["status"] == "ready"
+                                    && value["cacheHit"] == false
+                                    && value["level"] != "locate"
+                                    && value["executionWorld"] == "selected_environment"
+                                {
+                                    if let Some(id) = value["checkId"]
+                                        .as_str()
+                                        .filter(|id| history.last_probe.as_deref() != Some(*id))
+                                    {
+                                        if let Some(context) = result.meta.as_ref().and_then(|m| {
+                                            m.pointer("/executionReceipt/executionContext")
+                                        }) {
+                                            history
+                                                .environment_failures
+                                                .remove(&environment_key(context));
+                                            history.rows.clear();
+                                            history.blocked.clear();
+                                            history.last_probe = Some(id.to_owned());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
                     if !poller(&execution.name, &execution.arguments) {
                         if let Some(result_hash) = result_signature(&result) {
                             with_history(&state, &execution, |history| {
                                 history.observe(
-                                    signature(&execution.name, &execution.arguments),
+                                    execution_signature(
+                                        &execution,
+                                        result.meta.as_ref().and_then(|meta| {
+                                            meta.pointer("/executionReceipt/executionContext")
+                                        }),
+                                    ),
                                     result_hash,
                                     !result.is_error && repair(&execution.name),
                                 )

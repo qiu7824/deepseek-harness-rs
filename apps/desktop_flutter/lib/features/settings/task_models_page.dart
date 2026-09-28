@@ -86,6 +86,67 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
   }
 
   List<Json> get providers => objects(snapshot?['providers']);
+  Future<void> refreshCapabilities() async {
+    if (busy) return;
+    final current = generation;
+    setState(() => busy = true);
+    try {
+      final value = await widget.api.request(
+        '/task-models/describe',
+        body: {},
+        scope: scope,
+      );
+      if (mounted && current == generation) {
+        setState(() {
+          snapshot = value;
+          error = null;
+        });
+      }
+    } catch (e) {
+      if (mounted && current == generation) setState(() => error = '$e');
+    } finally {
+      if (mounted && current == generation) setState(() => busy = false);
+    }
+  }
+
+  static String stateLabel(dynamic value) => switch (value) {
+    'ready' => '已验证可用',
+    'temporary_failure' => '暂时失败',
+    'unsupported' => '不支持',
+    'authorization_required' => '需要授权',
+    'unconfigured' => '未配置',
+    'present' => '凭据已配置',
+    'not_required' => '无需凭据',
+    'missing' || 'invalid' || 'expired' => '需要登录或更新凭据',
+    _ => '尚未验证',
+  };
+  Widget capabilityDetails(String role) {
+    final p = providers
+        .where((item) => item['id'] == provider(role))
+        .firstOrNull;
+    final data = object(object(p?['nativeCapabilities'])[role]);
+    if (data.isEmpty) return const SizedBox.shrink();
+    final rows = objects(data['observations']);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '${data['registered'] == true ? '工具已注册' : '工具未注册'} · ${stateLabel(data['authorization'])} · ${stateLabel(data['state'])}',
+          key: ValueKey('native-lifecycle-$role'),
+        ),
+        const Text(
+          '记录仅适用于下列模型与操作；执行权限在每次调用时检查。',
+          style: TextStyle(fontSize: 12),
+        ),
+        for (final row in rows)
+          Text(
+            '${row['model']} / ${row['operation']}${row['driverModel'] == null ? '' : ' · 驱动 ${row['driverModel']}'} · ${stateLabel((row['expiresAt'] is num && (row['expiresAt'] as num) * 1000 <= DateTime.now().millisecondsSinceEpoch) ? 'unverified' : row['state'])}${row['expired'] == true ? '（记录已过期）' : ''}',
+            style: const TextStyle(fontSize: 12),
+          ),
+      ],
+    );
+  }
+
   String provider(String role) => fields['$role/provider']?.text.trim() ?? '';
   String capability(String role) {
     final id = provider(role);
@@ -234,6 +295,8 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
                       ),
                     ),
                   ),
+                if (['image', 'search'].contains(role.key))
+                  capabilityDetails(role.key),
               ],
             ),
           ),
@@ -243,6 +306,10 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
         DshButton(onPressed: load, child: const Text('重新加载')),
       if (notice != null)
         Text(notice!, style: const TextStyle(color: Colors.green)),
+      DshButton(
+        onPressed: busy || snapshot == null ? null : refreshCapabilities,
+        child: const Text('刷新能力记录'),
+      ),
       Align(
         alignment: Alignment.centerRight,
         child: DshButton(

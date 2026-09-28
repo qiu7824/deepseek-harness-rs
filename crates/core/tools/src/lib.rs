@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod index;
 pub mod json_schema;
 pub mod presentation;
+pub mod receipt;
 pub mod schema;
 mod security_policy;
 pub mod types;

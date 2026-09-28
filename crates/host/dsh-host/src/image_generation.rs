@@ -13,11 +13,17 @@ use std::{sync::Arc, time::Duration};
 const MAX_BODY: usize = 64 * 1024 * 1024;
 fn failure(message: impl Into<String>) -> ToolBodyError {
     let message = message.into();
-    let code = if message.starts_with("NATIVE_TOOL_UNSUPPORTED:") {
-        "NATIVE_TOOL_UNSUPPORTED"
-    } else {
-        "IMAGE_GENERATION_FAILED"
-    };
+    let code = [
+        "NATIVE_TOOL_UNSUPPORTED",
+        "NATIVE_TOOL_TEMPORARILY_UNAVAILABLE",
+        "AUTH_TARGET_MISMATCH",
+        "AUTHENTICATION_REQUIRED",
+        "AUTHENTICATION_REVOKED",
+        "EXECUTION_CONTEXT_CHANGED",
+    ]
+    .into_iter()
+    .find(|code| message.starts_with(&format!("{code}:")))
+    .unwrap_or("IMAGE_GENERATION_FAILED");
     ToolBodyError::coded(message, "ImageGenerationError", code)
 }
 fn image_ref(value: &Value, id: &str) -> Option<ImageAttachmentRef> {
@@ -164,22 +170,35 @@ impl ImageGeneration {
         execution: &ToolExecution,
         mark_effects: &(dyn Fn() -> Result<(), String> + Send + Sync),
     ) -> Result<Value, String> {
-        execution.agent.as_ref().ok_or("图像操作需要当前会话")?;
+        let agent = execution.agent.as_ref().ok_or("图像操作需要当前会话")?;
         let signal = execution.signal.lock().clone();
         if signal() {
             return Err("图片生成已取消".into());
         }
-        let wait = self.gate.acquire();
-        tokio::pin!(wait);
-        let _permit = loop {
-            tokio::select! {permit=&mut wait=>break permit.map_err(|_|"生图服务已关闭")?,_=tokio::time::sleep(Duration::from_millis(50))=>if signal(){return Err("图片生成已取消".into())}}
-        };
         let route = self.tasks.route("image", execution).await?;
         let provider = route["provider"].as_str().ok_or("未选择生图连接")?;
         let model = route["model"].as_str().ok_or("未选择生图模型")?;
-        let (profile, key) = self.auth.image_connection(provider).await?;
+        let (profile, key, native_lease) = self
+            .auth
+            .native_connection_for_agent(provider, agent)
+            .await?;
+        let revoked = native_lease.cancellation();
+        let caller = signal.clone();
+        let signal: dsh_tools::AbortPredicate = Arc::new(move || caller() || revoked());
+        let cancellation_message = || {
+            if native_lease.revoked() {
+                "AUTHENTICATION_REVOKED: 生图账号已退出，请由用户重新发起操作"
+            } else {
+                "图片生成已取消"
+            }
+        };
+        let wait = self.gate.acquire();
+        tokio::pin!(wait);
+        let _permit = loop {
+            tokio::select! {permit=&mut wait=>break permit.map_err(|_|"生图服务已关闭")?,_=tokio::time::sleep(Duration::from_millis(50))=>if signal(){return Err(if native_lease.revoked(){"AUTHENTICATION_REVOKED: 生图账号已退出，请由用户重新发起操作"}else{"图片生成已取消"}.into())}}
+        };
         if key.is_none() && profile["keyless"] != true {
-            return Err("此模型连接尚未配置可用凭据，请在已有连接中检查账号或API密钥".into());
+            return Err("AUTHENTICATION_REQUIRED: 此模型连接尚未配置可用凭据，请在已有连接中检查账号或API密钥".into());
         }
         let base = profile["baseURL"]
             .as_str()
@@ -265,11 +284,7 @@ impl ImageGeneration {
                 .list_models(provider)
                 .await
                 .map_err(|e| e.to_string())?;
-            let caller = execution
-                .agent
-                .as_ref()
-                .filter(|a| a.options().provider.as_deref() == Some(provider))
-                .and_then(|a| a.options().model.clone());
+            let caller = route["driverModel"].as_str().map(str::to_owned);
             let selected = caller
                 .or_else(|| {
                     models
@@ -342,14 +357,41 @@ impl ImageGeneration {
                 .headers(headers)
                 .multipart(form)
         };
+        let ticket = self.tasks.native_capabilities.ticket(
+            provider,
+            &profile,
+            key.as_deref(),
+            "image",
+            model,
+            driver.as_deref(),
+            if images.is_empty() {
+                "generate"
+            } else if masks.is_empty() {
+                "edit"
+            } else {
+                "masked_edit"
+            },
+        );
         let pending = async {
+            self.tasks.native_capabilities.preflight(&ticket)?;
+            self.auth
+                .check_native_connection(provider, &profile, key.as_deref(), &native_lease)
+                .await?;
+            if signal() {
+                return Err(cancellation_message().into());
+            }
             // Route/credentials/reference validation can fail without making an
             // image request. Only dispatch makes generation or billing possible.
             mark_effects()?;
-            let mut response = request
-                .send()
-                .await
-                .map_err(|_| "图像服务连接失败；未自动重试，避免重复生成和扣费".to_string())?;
+            let mut response = match request.send().await {
+                Ok(response) => response,
+                Err(_) => {
+                    self.tasks
+                        .observe_native(&ticket, "temporary_failure", Some("TRANSPORT_FAILED"))
+                        .await;
+                    return Err("图像服务连接失败；未自动重试，避免重复生成和扣费".to_string());
+                }
+            };
             let status = response.status();
             let mut bytes = Vec::new();
             let mut events = ImageStream::default();
@@ -373,6 +415,10 @@ impl ImageGeneration {
                 }
             }
             if !status.is_success() {
+                if let Some((state, code)) = crate::native_capabilities::http_state(status.as_u16())
+                {
+                    self.tasks.observe_native(&ticket, state, Some(code)).await;
+                }
                 return Err(safe_error(status.as_u16(), &bytes, key.as_deref()));
             }
             if codex {
@@ -401,7 +447,7 @@ impl ImageGeneration {
         };
         tokio::pin!(pending);
         let encoded = loop {
-            tokio::select! {value=&mut pending=>break value?,_=tokio::time::sleep(Duration::from_millis(50))=>if signal(){return Err("图片生成已取消".into())}}
+            tokio::select! {biased;_=tokio::time::sleep(Duration::from_millis(50))=>if signal(){return Err(cancellation_message().into())},value=&mut pending=>break value?}
         };
         let store = self
             .ctx
@@ -432,7 +478,7 @@ impl ImageGeneration {
             });
         }
         if signal() {
-            return Err("图片生成已取消".into());
+            return Err(cancellation_message().into());
         }
         let saved = store
             .save_images(&inputs)
@@ -442,6 +488,7 @@ impl ImageGeneration {
             .into_iter()
             .map(|attachment| json!({"type":"image","attachment":attachment}))
             .collect::<Vec<_>>();
+        self.tasks.observe_native(&ticket, "ready", None).await;
         Ok(
             json!({"images":refs,"sourceImages":images.iter().chain(masks.iter()).map(|image|json!({"type":"image","attachment":image.reference})).collect::<Vec<_>>(),"provider":provider,"model":model,"driverModel":driver,"prompt":prompt,"size":size,"quality":quality,"edited":!images.is_empty()}),
         )

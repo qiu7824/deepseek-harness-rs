@@ -39,5 +39,13 @@ const root=Client.createRoot(document.querySelector('main')),t=key=>key;const bu
  delete state.providers[1].nativeTools;state.routes.image={provider:'devin',model:'chat-model'};
  await remount();assert.equal(button('taskSave').disabled,false,'older Hosts with no capability evidence must not be guessed unsupported');
  assert.equal(document.querySelector('[data-task-role=image] [data-native-tool-status]').getAttribute('data-native-tool-status'),'unknown');
- await React.act(()=>root.unmount());dom.window.close();console.log('PASS task model assignments: compatibility guards, inherited routes, old Host fallback, independent main settings, preserved drafts and revision writes');
+ state.routes.image={provider:'existing',model:'image-model'};
+ state.providers[0].nativeCapabilities={image:{registered:true,authorization:'present',state:'unverified',observations:[{model:'image-model',driverModel:'driver',operation:'generate',state:'ready',expiresAt:Date.now()/1000+3600},{model:'old-model',operation:'edit',state:'ready',expiresAt:1,expired:true}]}};
+ await remount();
+ const lifecycle=document.querySelector('[data-task-role=image] [data-native-lifecycle]');
+ assert.equal(lifecycle.getAttribute('data-native-lifecycle'),'unverified','one model observation must not mark the entire connection ready');
+ assert.match(lifecycle.textContent,/image-model \/ generate.*driver.*nativeState.ready/);
+ assert.match(lifecycle.textContent,/old-model \/ edit.*nativeState.unverified.*nativeExpired/);
+ const count=writes.length;await React.act(()=>button('nativeRefresh').click());assert.equal(writes.length,count,'refreshing records never runs paid model probes or saves assignments');
+ await React.act(()=>root.unmount());dom.window.close();console.log('PASS task model assignments and scoped capability lifecycle: compatibility, expiry, credentials, model/driver/operation evidence, read-only refresh and revision writes');
 })().catch(error=>{console.error(error);process.exitCode=1;dom.window.close()});

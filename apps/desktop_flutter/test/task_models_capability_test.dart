@@ -6,8 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 class TaskApi extends DshClient {
-  TaskApi({this.unsupported = false}) : super('http://127.0.0.1:9');
+  TaskApi({this.unsupported = false, this.evidence = false})
+    : super('http://127.0.0.1:9');
   final bool unsupported;
+  final bool evidence;
   final saves = <Json>[];
   @override
   Future<Json> request(
@@ -34,6 +36,31 @@ class TaskApi extends DshClient {
             'image': unsupported ? 'unsupported' : 'unknown',
             'search': 'unknown',
           },
+          if (evidence)
+            'nativeCapabilities': {
+              'image': {
+                'registered': true,
+                'authorization': 'present',
+                'state': 'unverified',
+                'observations': [
+                  {
+                    'model': 'image-model',
+                    'driverModel': 'driver',
+                    'operation': 'generate',
+                    'state': 'ready',
+                    'expiresAt':
+                        DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600,
+                  },
+                  {
+                    'model': 'old-model',
+                    'operation': 'edit',
+                    'state': 'ready',
+                    'expiresAt': 1,
+                    'expired': true,
+                  },
+                ],
+              },
+            },
         },
       ],
     };
@@ -41,6 +68,32 @@ class TaskApi extends DshClient {
 }
 
 void main() {
+  testWidgets(
+    'observed capabilities retain model scope and expire without making a paid probe',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 1800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final api = TaskApi(evidence: true);
+      await tester.pumpWidget(
+        ShadApp(
+          home: Scaffold(body: TaskModelsPage(api: api)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('工具已注册 · 凭据已配置 · 尚未验证'), findsOneWidget);
+      expect(
+        find.textContaining('image-model / generate · 驱动 driver · 已验证可用'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('old-model / edit · 尚未验证'), findsOneWidget);
+      await tester.tap(find.text('刷新能力记录'));
+      await tester.pumpAndSettle();
+      expect(api.saves, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets('unsupported image routes disable save and show the reason', (
     tester,
   ) async {
@@ -77,9 +130,27 @@ void main() {
         300,
         scrollable: find.byType(Scrollable).first,
       );
+      await Scrollable.ensureVisible(
+        tester.element(
+          find.ancestor(
+            of: find.text('保存任务模型'),
+            matching: find.byType(DshButton),
+          ),
+        ),
+        alignment: 0.5,
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.text('保存任务模型'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('保存任务模型'));
+      await Scrollable.ensureVisible(
+        tester.element(
+          find.ancestor(
+            of: find.text('保存任务模型'),
+            matching: find.byType(DshButton),
+          ),
+        ),
+        alignment: 0.5,
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.text('保存任务模型'));
       await tester.pumpAndSettle();

@@ -12,12 +12,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 class TestPreferences extends DesktopPreferences {
   TestPreferences(String endpoint) : super(address: endpoint);
   @override
   Future<void> save() async {}
+}
+
+class FixtureFolderPicker extends FileSelectorPlatform {
+  FixtureFolderPicker(this.path);
+  final String path;
+  @override
+  Future<String?> getDirectoryPath({
+    String? initialDirectory,
+    String? confirmButtonText,
+  }) async => path;
 }
 
 void main() {
@@ -38,6 +49,9 @@ void main() {
       reason: 'DSH_TEST_HOST must point at an isolated test Host',
     );
     expect(cwd, isNotNull);
+    final originalPicker = FileSelectorPlatform.instance;
+    FileSelectorPlatform.instance = FixtureFolderPicker(cwd!);
+    addTearDown(() => FileSelectorPlatform.instance = originalPicker);
     expect(expectedHome, contains('flow-host-qa'));
     final c = DesktopController(TestPreferences(address!));
     final root = GlobalKey();
@@ -89,7 +103,9 @@ void main() {
       find.byWidgetPredicate((w) => w is DshIcon && w.label == '添加工作区').first,
     );
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('working-directory')), cwd!);
+    await until(
+      () => find.byKey(const Key('create-task')).evaluate().isNotEmpty,
+    );
     await tester.tap(find.byKey(const Key('create-task')));
     await until(
       () => c.currentWorkspace != null && c.selectedId == null && !c.loading,
@@ -182,9 +198,9 @@ void main() {
       await tester.pump();
     }
 
-    await tester.tap(find.byKey(const Key('new-task')));
-    await tester.pump();
     c.preset = 'standard';
+    await tester.tap(find.byKey(const Key('new-task')));
+    await until(() => c.selectedId != null && !c.loading);
     await sendText('desktop-question');
     await until(
       () => c.interactions.any((f) => f.type == 'question/requested'),
@@ -262,6 +278,56 @@ void main() {
     await until(() => c.interactions.isEmpty && !c.running && !c.sending);
     expect(c.error, isNull);
     expect(tester.takeException(), isNull);
+    await c.client!.request(
+      '/__dsh-task-execution',
+      body: {
+        'sessionId': c.selectedId,
+        'action': 'create',
+        'taskId': 'native-acceptance',
+        'idempotencyKey': newRequestId(),
+        'contract': {
+          'objective': '原生界面验收验证',
+          'acceptanceChecks': [
+            {
+              'id': 'visual',
+              'description': '验收状态和确认操作正确显示',
+              'checker': {'kind': 'manual', 'reason': '原生界面交互核对'},
+            },
+          ],
+        },
+      },
+      mutation: true,
+    );
+    await tester.tap(find.text('任务验收'));
+    await until(
+      () =>
+          find.text('任务验收与恢复').evaluate().isNotEmpty &&
+          find.text('重新验收').evaluate().isNotEmpty,
+    );
+    await tester.tap(find.text('重新验收'));
+    await until(() => find.text('核对并确认此项').evaluate().isNotEmpty);
+    await capture('task-acceptance');
+    await tester.ensureVisible(find.text('核对并确认此项'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('核对并确认此项'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认验收通过'));
+    await until(() => find.text('核对版本并完成').evaluate().isNotEmpty);
+    await tester.ensureVisible(find.text('核对版本并完成'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('核对版本并完成'));
+    await until(() => find.text('已验收完成').evaluate().isNotEmpty);
+    final verified = await c.client!.request(
+      '/__dsh-task-execution',
+      body: {
+        'sessionId': c.selectedId,
+        'action': 'get',
+        'taskId': 'native-acceptance',
+      },
+    );
+    expect(object(verified['task'])['state'], 'completed');
+    expect(verified['blockers'], isEmpty);
+    expect(tester.takeException(), isNull);
     final output = Platform.environment['DSH_QA_RESULT'];
     if (output != null) {
       await File(output).writeAsString(
@@ -269,6 +335,7 @@ void main() {
           'processId': pid,
           'hostVersion': c.host!.version,
           'workspaceCreatedByUI': true,
+          'folderPickerFixture': true,
           'sessionRegisteredInWorkspace': true,
           'sendAndStreamThroughUI': true,
           'stopThroughUI': true,
@@ -280,7 +347,8 @@ void main() {
           'localizedFileActivities': true,
           'questionHistoryCountAndInlineDetails': true,
           'approvalAllowedOnceAndWriteRejectedThroughUI': true,
-          'scope': 'Windows native Profile integration test with real installed Host and local deterministic model provider; not a Release memory soak',
+          'nativeTaskAcceptanceConfirmedThroughUI': true,
+          'scope': 'Windows native Profile integration with an isolated Host and local deterministic model provider',
         }),
       );
     }

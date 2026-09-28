@@ -7,6 +7,8 @@
 //! milestones.
 
 pub mod adapter_failure;
+/// A model-visible gap in a pruned tool result, never complete source bytes.
+pub const TOOL_RESULT_PRUNE_MARKER: &str = "\n\n[... tool result middle pruned ...]\n\n";
 pub mod api_key;
 pub mod assembler;
 pub mod attribution;

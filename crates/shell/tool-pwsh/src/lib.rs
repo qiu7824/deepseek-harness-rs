@@ -15,6 +15,12 @@ use futures::future::BoxFuture;
 mod native;
 mod output;
 
+fn executor_context(spec: &dsh_shell::ShellExecSpec) -> serde_json::Value {
+    serde_json::json!({"workingDirectory":spec.workdir,"shell":spec.shell_path,
+        "program":spec.native_argv.as_ref().and_then(|args|args.first()),"profileContextId":spec.execution_context_id,
+        "policy":spec.sandbox_policy.as_ref().map(|p|serde_json::json!({"mode":p.mode.as_str(),"workspace":p.workspace_root,"readOnlyRoots":p.read_only_roots}))})
+}
+
 fn shell_runtime_failure(message: String) -> ToolBodyError {
     for code in ["SANDBOX_BUSY", "SANDBOX_QUARANTINED"] {
         if message.starts_with(&format!("[{code}]")) {
@@ -538,7 +544,8 @@ impl ToolPwshService {
                     let signal = run.execution.signal.lock().clone();
                     let owner = run.execution.agent.clone();
                     let call_id = run.execution.call_id.to_string();
-                    let mark_effects=run.track_requested_effects();
+                    let mark_effects=run.track_cancellable_effects();
+                    let bind_context=run.bind_execution_context();
                     Box::pin(async move {
                         let command = args
                             .get("command")
@@ -656,7 +663,8 @@ impl ToolPwshService {
                                 sandbox.prepare(policy).await.map_err(shell_runtime_failure)?;
                             }
                             let spec = shell.resolve(request);
-                            mark_effects();
+                            bind_context(executor_context(&spec)).map_err(ToolBodyError::plain)?;
+                            mark_effects().map_err(|error| ToolBodyError::coded(error, "ExecutionContextError", "EXECUTION_CONTEXT_CHANGED"))?;
                             let process_shell = shell.clone();
                             let id = jobs
                                 .start(JobStart {
@@ -703,9 +711,11 @@ impl ToolPwshService {
                         let retry_context = serde_json::json!({"command":request.command,"workdir":request.workdir,"context":request.execution_context_id,"policy":request.sandbox_policy.as_ref().map(|p|format!("{:?}",p))});
                         let context_id = request.execution_context_id.clone();
                         if let (Some(sandbox),Some(policy))=(&sandbox,&request.sandbox_policy){sandbox.prepare(policy).await.map_err(shell_runtime_failure)?;}
-                        mark_effects();
+                        mark_effects().map_err(|error| ToolBodyError::coded(error, "ExecutionContextError", "EXECUTION_CONTEXT_CHANGED"))?;
+                        let spec=shell.resolve(request);
+                        bind_context(executor_context(&spec)).map_err(ToolBodyError::plain)?;
                         let result = shell
-                            .run(shell.resolve(request))
+                            .run(spec)
                             .await
                             .map_err(|error| {
                                 if let (Some(profiles),Some(context)) = (&profiles,&context_id) { profiles.report_failure(context,"shell"); }

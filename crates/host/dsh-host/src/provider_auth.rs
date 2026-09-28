@@ -8,6 +8,8 @@ mod flush_tests;
 mod model_tests;
 #[path = "provider_auth_models.rs"]
 mod models;
+#[path = "provider_auth_native.rs"]
+mod native;
 #[cfg(test)]
 #[path = "provider_auth_requests_tests.rs"]
 mod request_tests;
@@ -413,6 +415,7 @@ impl Pending {
     }
 }
 pub(crate) struct AccountAuth {
+    native_requests: Arc<native::NativeRequests>,
     agents: parking_lot::RwLock<std::sync::Weak<dsh_agent::AgentRegistry>>,
     request_identities:
         parking_lot::Mutex<HashMap<(String, String), dsh_llm::RequestAuthentication>>,
@@ -467,6 +470,7 @@ impl AccountAuth {
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
+            native_requests: Default::default(),
             agents: Default::default(),
             request_identities: Default::default(),
             account_usage: crate::codex_account::CodexAccountService::new(

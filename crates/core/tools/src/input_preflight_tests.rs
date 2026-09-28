@@ -167,6 +167,150 @@ async fn failure_preserves_execution_receipt_without_becoming_success() {
         result.meta.as_ref().unwrap()["executionReceipt"]["exitCode"],
         101
     );
+    assert_eq!(
+        result.meta.as_ref().unwrap()["executionReceipt"]["authority"],
+        "tool-runtime"
+    );
+}
+
+fn receipt_operation(body: ToolBody) -> ToolDefinition {
+    ToolDefinition {
+        name: "bounded-operation".into(),
+        description: "Execution receipt contract".into(),
+        parameters: serde_json::json!({"type":"object"}),
+        output: ToolOutputDefinition {
+            schema: serde_json::json!({}),
+            render: Arc::new(|_, _| Ok(vec![])),
+            presentation_meta: Some(Arc::new(|_, _| {
+                Ok(
+                    serde_json::json!({"executionReceipt":{"effects":"none","executionId":"forged"}}),
+                )
+            })),
+        },
+        timeout_ms: None,
+        is_concurrency_safe: None,
+        execute: body,
+        finalize_content: None,
+        present_call: None,
+        present_result: None,
+    }
+}
+
+#[tokio::test]
+async fn receipt_facts_cannot_be_forged_by_tool_presentation_metadata() {
+    let ctx = Context::root();
+    dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+    let tools = ToolRuntime::install(&ctx, Config::default()).unwrap();
+    tools
+        .register(
+            &ctx,
+            receipt_operation(Arc::new(|_, run| {
+                let marker = run.track_cancellable_effects();
+                Box::pin(async move {
+                    marker().map_err(ToolBodyError::plain)?;
+                    Ok(serde_json::json!(true))
+                })
+            })),
+        )
+        .unwrap();
+    let result = tools.execute(input(serde_json::json!({}))).await;
+    let receipt = &result.meta.as_ref().unwrap()["executionReceipt"];
+    assert_eq!(receipt["executionId"], "schema-check");
+    assert_eq!(receipt["effects"], "possible");
+    assert_eq!(receipt["dispatch"], "started");
+    assert_eq!(receipt["bodyInvoked"], true);
+}
+
+#[tokio::test]
+async fn changed_context_between_admission_and_dispatch_prevents_the_body() {
+    let ctx = Context::root();
+    dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+    let tools = ToolRuntime::install(&ctx, Config::default()).unwrap();
+    let epoch = Arc::new(AtomicUsize::new(0));
+    let captured = epoch.clone();
+    ctx.register_service(Arc::new(crate::receipt::ExecutionEvidenceProvider {
+        classify: Arc::new(|_| crate::receipt::EffectClass::Write),
+        snapshot: Arc::new(move |_| {
+            Ok(serde_json::json!({"epoch":captured.load(Ordering::SeqCst)}))
+        }),
+    }));
+    let changed = epoch.clone();
+    ctx.on(
+        "tools/pre-execute",
+        Arc::new(move |_, args| {
+            let changed = changed.clone();
+            Box::pin(async move {
+                changed.fetch_add(1, Ordering::SeqCst);
+                Some(
+                    downcast_arc::<cordis::NextFn>(args.last().unwrap())
+                        .unwrap()
+                        .call()
+                        .await,
+                )
+            })
+        }),
+        Default::default(),
+    )
+    .await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let ran = calls.clone();
+    tools
+        .register(
+            &ctx,
+            receipt_operation(Arc::new(move |_, _| {
+                ran.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(serde_json::json!(true)) })
+            })),
+        )
+        .unwrap();
+    let result = tools.execute(input(serde_json::json!({}))).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(result.is_error);
+    let receipt = &result.meta.as_ref().unwrap()["executionReceipt"];
+    assert_eq!(receipt["effects"], "none");
+    assert_eq!(receipt["failureStage"], "environment");
+    assert_eq!(receipt["executionContext"]["epoch"], 0);
+}
+
+#[tokio::test]
+async fn changed_context_inside_a_waiting_adapter_fails_before_effects() {
+    let ctx = Context::root();
+    dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+    let tools = ToolRuntime::install(&ctx, Config::default()).unwrap();
+    let epoch = Arc::new(AtomicUsize::new(0));
+    let snapshot = epoch.clone();
+    ctx.register_service(Arc::new(crate::receipt::ExecutionEvidenceProvider {
+        classify: Arc::new(|_| crate::receipt::EffectClass::Write),
+        snapshot: Arc::new(move |_| {
+            Ok(serde_json::json!({"epoch":snapshot.load(Ordering::SeqCst)}))
+        }),
+    }));
+    let changed = epoch.clone();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let observed = effects.clone();
+    tools
+        .register(
+            &ctx,
+            receipt_operation(Arc::new(move |_, run| {
+                let marker = run.track_cancellable_effects();
+                let changed = changed.clone();
+                let effects = observed.clone();
+                Box::pin(async move {
+                    changed.fetch_add(1, Ordering::SeqCst);
+                    marker().map_err(ToolBodyError::plain)?;
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    Ok(serde_json::json!(true))
+                })
+            })),
+        )
+        .unwrap();
+    let result = tools.execute(input(serde_json::json!({}))).await;
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    let receipt = &result.meta.as_ref().unwrap()["executionReceipt"];
+    assert_eq!(receipt["bodyInvoked"], true);
+    assert_eq!(receipt["effects"], "none");
+    assert_eq!(receipt["errorCode"], "EXECUTION_CONTEXT_CHANGED");
+    assert_eq!(receipt["failureStage"], "environment");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

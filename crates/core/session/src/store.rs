@@ -1117,6 +1117,7 @@ impl Session {
                     | "tools/discovery"
                     | "computer-use/activity"
                     | "agent/account-continuation"
+                    | "agent/native-auth-paused"
             )
             .then_some(true),
             surface_op: intent.as_ref().map(|intent| intent.surface_op.clone()),

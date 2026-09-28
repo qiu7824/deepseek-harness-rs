@@ -32,7 +32,7 @@ impl AccountAuth {
         })
     }
 
-    fn current_request_identity(
+    pub(super) fn current_request_identity(
         &self,
         id: &str,
         account_scope: &str,
@@ -121,12 +121,20 @@ impl AccountAuth {
             .read()
             .upgrade()
             .ok_or("暂时无法读取运行任务，退出影响未知，请重试")?;
-        let count = agents
+        let mut owners = agents
             .list()
             .iter()
-            .filter_map(|agent| agent.authentication_binding())
-            .filter(|binding| &binding.identity == identity.identity())
-            .count();
+            .filter(|agent| {
+                agent
+                    .authentication_binding()
+                    .is_some_and(|binding| &binding.identity == identity.identity())
+            })
+            .map(|agent| agent.id().as_str().to_owned())
+            .collect::<std::collections::HashSet<_>>();
+        let native_owners = self.native_requests.owners(identity.identity());
+        let native_count = native_owners.len();
+        owners.extend(native_owners);
+        let count = owners.len();
         let RequestAuthenticationIdentity::Account {
             account_scope,
             login_generation,
@@ -137,7 +145,7 @@ impl AccountAuth {
         };
         Ok(
             json!({"provider":id,"accountScope":account_scope,"loginGeneration":login_generation,"taskCount":count,
-            "reason":"account-signed-out"}),
+            "nativeRequestCount":native_count,"reason":"account-signed-out"}),
         )
     }
 
@@ -150,7 +158,7 @@ impl AccountAuth {
             .map_err(|_| "请刷新账号列表并重新确认退出（缺少 accountScope）".to_string())?;
         let generation = string(body, "loginGeneration")
             .map_err(|_| "请刷新账号列表并重新确认退出（缺少 loginGeneration）".to_string())?;
-        let (identity, next_account) = {
+        let (identity, next_account, native_pauses) = {
             let _guard = self.refresh.lock().await;
             let current = self.session(&id).await?;
             let previous_accounts = self.account_sessions(&id).await?;
@@ -187,6 +195,7 @@ impl AccountAuth {
             // Publish revocation before releasing the account lock. A late
             // first bind and a next step switching automatically to B both
             // see this same lease; cancellation itself runs outside the lock.
+            let native_pauses = self.native_requests.pause(identity.identity());
             identity.revoke();
             self.pending.lock().retain(|_, (owner, _)| owner.id != id);
             if remove_active {
@@ -195,10 +204,11 @@ impl AccountAuth {
             let next = remove_active
                 .then(|| accounts.into_iter().find(|session| !session.invalid))
                 .flatten();
-            (identity, next)
+            (identity, next, native_pauses)
         };
         let mut cancelled = 0;
         let mut paused = Vec::new();
+        let native_cancelled = native_pauses.len();
         let mut pause_failures = Vec::new();
         if let Some(agents) = self.agents.read().upgrade() {
             for agent in agents.list() {
@@ -216,6 +226,7 @@ impl AccountAuth {
                 }
             }
         }
+        pause_failures.extend(native::NativeRequests::persist(native_pauses).await);
         for agent in paused {
             if let Err(error) = agent.flush_authentication_control().await {
                 pause_failures.push(format!("{}: {error}", agent.id()));
@@ -248,7 +259,7 @@ impl AccountAuth {
         let activation_error = activation.err();
         Ok(
             json!({"status":"signedOut","provider":id,"removedAccountScope":scope,"loginGeneration":generation,
-            "reason":"account-signed-out","cancelledTaskCount":cancelled,"warning":activation_error}),
+            "reason":"account-signed-out","cancelledTaskCount":cancelled,"cancelledNativeSessionCount":native_cancelled,"warning":activation_error}),
         )
     }
 }

@@ -112,30 +112,43 @@ pub(crate) fn catalog_url(profile: &Value) -> Result<reqwest::Url, String> {
 }
 
 impl AccountAuth {
-    pub(crate) async fn image_connection(
+    /// Inspect existing credentials without refreshing tokens or contacting a provider.
+    pub(crate) async fn native_connection_snapshot(
         &self,
         route: &str,
-    ) -> Result<(Value, Option<String>), String> {
+    ) -> Result<(Value, Option<String>, &'static str), String> {
         let _guard = self.refresh.lock().await;
         let profile = self.model_profile(route)?;
-        crate::native_tool_compatibility::ensure_supported(
-            route,
-            crate::native_tool_compatibility::status(Some(&profile)),
-        )?;
-        let key = if let Some(auth) = profile.get("authProvider").and_then(Value::as_str) {
-            self.resolve_token_locked(auth, false, true).await?
-        } else if profile.get("keyless") == Some(&Value::Bool(true)) {
-            None
-        } else if let Some(reference) = profile.get("apiKeyEnv").and_then(Value::as_str) {
+        if profile["keyless"] == true {
+            return Ok((profile, None, "not_required"));
+        }
+        if let Some(auth) = profile["authProvider"].as_str() {
+            let session = self.session(auth).await?;
+            let Some(session) = session else {
+                return Ok((profile, None, "missing"));
+            };
+            if session.invalid {
+                return Ok((profile, None, "invalid"));
+            }
+            let state = if session.expires_at > 0 && session.expires_at <= now() {
+                "expired"
+            } else {
+                "present"
+            };
+            return Ok((profile, Some(session.access_token), state));
+        }
+        let key = if let Some(reference) = profile["apiKeyEnv"].as_str() {
             super::super::deepseek_settings::validate_api_key_reference(reference)?;
             self.credentials
                 .resolve(&dsh_credentials::credential_ref(reference))
                 .await
                 .map(|value| value.value)
+                .filter(|value| !value.trim().is_empty())
         } else {
             None
         };
-        Ok((profile, key))
+        let state = if key.is_some() { "present" } else { "missing" };
+        Ok((profile, key, state))
     }
     pub(crate) fn set_catalog_root(&self, root: std::path::PathBuf) {
         self.catalogs.set_root(root);
@@ -147,7 +160,7 @@ impl AccountAuth {
             ("llm-pi-ai".into(), vec!["providers".into(), route.into()])
         }
     }
-    fn model_profile(&self, route: &str) -> Result<Value, String> {
+    pub(super) fn model_profile(&self, route: &str) -> Result<Value, String> {
         self.profile_snapshot(route, false)
             .map(|(profile, _)| profile)
     }

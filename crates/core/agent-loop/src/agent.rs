@@ -1037,6 +1037,7 @@ impl ReactLoopAgent {
                 {
                     *phase_step = step;
                 }
+                continuation.observe_user_intent(&messages);
                 let step_end = self
                     .step(
                         &assembly,

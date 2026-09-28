@@ -9,6 +9,7 @@ mod authentication_control;
 pub mod constants;
 pub mod index;
 pub mod invariant;
+mod repetition;
 mod request_metrics;
 mod response_continuation;
 pub mod runtime_context;

@@ -15,6 +15,7 @@ pub(crate) struct ResponseContinuation {
     truncation_recoveries: u8,
     no_answer_recovery_used: bool,
     intent_recoveries: u8,
+    requested_repetition: bool,
 }
 
 fn incomplete(code: &str, message: &str) -> LlmFailure {
@@ -29,6 +30,13 @@ fn incomplete(code: &str, message: &str) -> LlmFailure {
 }
 
 impl ResponseContinuation {
+    pub(crate) fn observe_user_intent(&mut self, messages: &[dsh_llm::UserMessage]) {
+        for message in messages {
+            if matches!(message.source, dsh_llm::MessageSource::User { .. }) {
+                self.requested_repetition=message.content.iter().any(|block|matches!(block,ContentBlock::Text{text} if crate::repetition::explicitly_requested(text)));
+            }
+        }
+    }
     pub(crate) fn reset(&mut self) {
         self.stalled = 0;
         self.empty_recoveries = 0;
@@ -47,6 +55,21 @@ impl ResponseContinuation {
         let has_text = content
             .iter()
             .any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()));
+        if !self.requested_repetition
+            && matches!(finish, FinishReason::Stop | FinishReason::MaxTokens)
+            && content.iter().any(|block| match block {
+                ContentBlock::Text { text } => {
+                    (*finish == FinishReason::MaxTokens || text.len() >= 16_000)
+                        && crate::repetition::dominated(text)
+                }
+                _ => false,
+            })
+        {
+            return Err(incomplete(
+                "OUTPUT_REPETITION",
+                "模型输出陷入连续重复，已停止自动续写；收到的文字已保留，任务尚未完成",
+            ));
+        }
         let has_visible = has_text
             || content
                 .iter()

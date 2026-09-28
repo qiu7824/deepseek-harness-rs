@@ -8,7 +8,9 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 当前发布线：[`0.1.3-alpha.35`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.35)。
 
-开发版本：`0.1.3-alpha.36`；开发源码不代表已发布安装包。
+开发版本：`0.1.3-alpha.37`；开发源码不代表已发布安装包。
+
+执行回执、任务验收、能力状态、技能版本与消息恢复的实现及验证范围见[可靠性对照记录](docs/hermes-agent-reliability-review-20260928.zh.md)。
 
 开发修复包含旧格式会话列表兼容、Windows Flutter 图片粘贴、本地 Markdown 图片预览、MCP 管理，以及自动审阅人工回退、配置锁恢复和上下文错误处理；实施边界和未完成项见 [v0.1.7-rc.2 评估](docs/upstream-v0.1.7-rc.2-evaluation.zh.md)及[更新计划](docs/plans/更新计划.md)。
 
