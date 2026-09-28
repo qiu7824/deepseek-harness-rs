@@ -56,6 +56,7 @@ DisableWelcomePage=yes
 DisableReadyPage=yes
 DisableProgramGroupPage=yes
 WizardResizable=no
+WizardSizePercent=100
 DefaultGroupName={#MyAppName}
 OutputDir={#OutputDir}
 OutputBaseFilename=deepseek-harness-rs-v{#MyAppVersion}-windows-x86_64-flutter-setup
@@ -172,7 +173,27 @@ begin
   end;
 end;
 
+{ The desktop client starts its bundled Host detached, so it outlives the
+  window. Stop only the Host that runs from this installation before the
+  upgrade replaces it; a new client would otherwise attach to the previous
+  version. A separately installed Web core runs from another path. }
+procedure StopBundledHost;
+var
+  Host, Script: String;
+  ResultCode: Integer;
+begin
+  Host := ExpandConstant('{app}\host\deepseek-harness-rs.exe');
+  if not FileExists(Host) then Exit;
+  StringChangeEx(Host, '''', '''''', True);
+  Script := '$p = ''' + Host + '''; Get-Process -Name deepseek-harness-rs -ErrorAction SilentlyContinue | ' +
+    'Where-Object { $_.Path -ieq $p } | Stop-Process -Force -ErrorAction SilentlyContinue';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := CheckInstallDirectory;
+  if Result = '' then StopBundledHost;
 end;

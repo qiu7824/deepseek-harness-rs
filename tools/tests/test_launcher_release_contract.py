@@ -151,6 +151,14 @@ class LauncherReleaseContractTests(unittest.TestCase):
             for hook in ("DshIsLanding(CurPageID)", "DshApplyChoices;", "DshShowError(Failure);", "Result := CheckInstallDirectory;"):
                 self.assertIn(hook, script)
             self.assertIn("WizardResizable=no", script)
+            # Modern style otherwise enlarges the wizard to 120% after InitializeWizard,
+            # leaving the stock finished page visible around the 520x440 surface.
+            self.assertIn("WizardSizePercent=100", script)
+        self.assertIn("DshSurface.Anchors := [akLeft, akTop, akRight, akBottom];", ui)
+        # Upgrades stop only the Host that runs from this desktop installation.
+        self.assertIn("if Result = '' then StopBundledHost;", desktop)
+        self.assertIn("ExpandConstant('{app}\\host\\deepseek-harness-rs.exe')", desktop)
+        self.assertIn("Where-Object { $_.Path -ieq $p }", desktop)
         for required in ("chinesesimp.DshInstallNow=立即安装", "chinesesimp.DshChooseLocation=选择安装位置", "chinesesimp.DshLaunchNow=立即体验",
                          "function ShouldSkipPage", "BrowseForFolder(", "procedure CurInstallProgressChanged", "WizardSelectTasks('desktopicon')"):
             self.assertIn(required, ui)

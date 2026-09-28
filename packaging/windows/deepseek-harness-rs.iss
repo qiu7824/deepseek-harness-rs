@@ -51,6 +51,7 @@ DisableWelcomePage=yes
 DisableReadyPage=yes
 DisableProgramGroupPage=yes
 WizardResizable=no
+WizardSizePercent=100
 DefaultGroupName={#MyAppName}
 OutputDir={#OutputDir}
 OutputBaseFilename=deepseek-harness-rs-v{#MyAppVersion}-windows-x86_64-{#Variant}-setup

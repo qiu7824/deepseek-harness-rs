@@ -229,6 +229,9 @@ begin
   DshSurface.ParentBackground := False;
   DshSurface.Color := $FFFFFF;
   DshSurface.SetBounds(0, 0, WizardForm.ClientWidth, WizardForm.ClientHeight);
+  { The including scripts pin WizardSizePercent=100; the anchors still keep
+    the stock wizard hidden if Setup resizes the form after this point. }
+  DshSurface.Anchors := [akLeft, akTop, akRight, akBottom];
   DshSurface.BringToFront;
 
   DshLogo := DshImage('logo', 112, 112);
