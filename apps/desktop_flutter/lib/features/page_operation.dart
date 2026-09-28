@@ -15,3 +15,10 @@ class PageOperation {
     return value;
   }
 }
+
+/// Every Host that serves a page answers its catalog; a missing catalog means
+/// the client is attached to an older Host, not that a record is missing.
+Object unsupportedHostPage(DshException error, String operation, String page) =>
+    error.code == 'http-404' && operation == 'catalog'
+    ? DshException('unsupported', '当前连接的本机服务版本过旧，不支持$page。请结束旧的服务进程后重新打开桌面版。')
+    : error;

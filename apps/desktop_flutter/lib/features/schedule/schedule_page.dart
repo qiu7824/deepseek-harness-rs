@@ -21,13 +21,19 @@ class ScheduleApi {
     String operation, [
     Json body = const {},
     RequestScope? scope,
-  ]) => client.request(
-    '/__dsh-schedule/$operation',
-    body: body,
-    scope: scope,
-    mutation: !_reads.contains(operation),
-    maxBytes: 4 * 1024 * 1024,
-  );
+  ]) async {
+    try {
+      return await client.request(
+        '/__dsh-schedule/$operation',
+        body: body,
+        scope: scope,
+        mutation: !_reads.contains(operation),
+        maxBytes: 4 * 1024 * 1024,
+      );
+    } on DshException catch (error) {
+      throw unsupportedHostPage(error, operation, '定时任务');
+    }
+  }
 }
 
 const scheduleWeekdayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];

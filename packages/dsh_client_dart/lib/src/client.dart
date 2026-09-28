@@ -52,10 +52,17 @@ class DshClient {
     'eventChannels': EventChannel._liveChannels,
     'eventSockets': EventChannel._liveSockets,
   };
-  DshClient(String address, {this.timeout = const Duration(seconds: 30)})
-    : baseUri = localHostUri(address);
+  DshClient(
+    String address, {
+    this.timeout = const Duration(seconds: 30),
+    this.connectTimeout = const Duration(seconds: 5),
+  }) : baseUri = localHostUri(address);
   final Uri baseUri;
   final Duration timeout;
+
+  /// Windows reports a refused loopback connection only after about two
+  /// seconds; liveness probes pass a shorter bound instead.
+  final Duration connectTimeout;
   final Set<HttpClient> _requests = {};
   bool _closed = false;
   final List<EventChannel> _channels = [];
@@ -74,7 +81,7 @@ class DshClient {
     if (uri.origin != baseUri.origin || uri.userInfo.isNotEmpty) {
       throw ArgumentError('Host requests must remain on the connected origin');
     }
-    final http = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+    final http = HttpClient()..connectionTimeout = connectTimeout;
     final temporary = File(
       '${destination.absolute.path}.dsh-${newRequestId()}.part',
     );
@@ -158,7 +165,7 @@ class DshClient {
     if (_closed || scope?.cancelled == true) {
       throw DshException('cancelled', '读取已取消');
     }
-    final http = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+    final http = HttpClient()..connectionTimeout = connectTimeout;
     _requests.add(http);
     _globalActiveRequests++;
     final unregister = scope?.register(() => http.close(force: true));
@@ -329,10 +336,9 @@ class DshClient {
       },
     ),
   );
-  Future<List<SessionSummary>> sessions() async =>
-      objects((await call('session.list'))['items'])
-          .map(SessionSummary.fromJson)
-          .toList();
+  Future<List<SessionSummary>> sessions() async => objects(
+    (await call('session.list'))['items'],
+  ).map(SessionSummary.fromJson).toList();
   Future<String> createSession(String cwd) async =>
       (await call('session.create', {'cwd': cwd}, true))['sessionId'] as String;
   Future<HistoryPage> history(

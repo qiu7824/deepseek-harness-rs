@@ -14,6 +14,13 @@ String permissionName(String value) =>
     }[value] ??
     value;
 
+/// A Host left running by an earlier installation keeps the port, and the
+/// desktop client would silently use its older API surface.
+String hostVersionMismatch(String address, String running, String expected) =>
+    '$address 上运行的是 $running 版本的本机服务，与桌面版内置的 $expected 不一致，'
+    '定时任务、知识库等功能可能无法使用。请在任务管理器结束旧的 deepseek-harness-rs 进程'
+    '（或关闭旧版核心版服务）后重新打开桌面版。';
+
 class DesktopController extends ChangeNotifier {
   DesktopController(
     this.preferences, {
@@ -229,12 +236,24 @@ class DesktopController extends ChangeNotifier {
       preferences.executable = HostLauncher.discover();
     }
     await run(() async {
-      try {
+      if (included == null) {
         await connect(preferences.address);
-      } catch (_) {
-        if (included == null) rethrow;
+        return;
+      }
+      // A short probe: a refused loopback connect costs about two seconds on
+      // Windows, which the bundled Host would otherwise pay before starting.
+      final running = await HostLauncher.live(preferences.address);
+      if (running == null) {
         await HostLauncher.start(included, preferences.address);
-        await connect(preferences.address);
+      }
+      await connect(preferences.address);
+      final bundled = HostLauncher.packagedVersion(included);
+      if (running != null && bundled != null && running.version != bundled) {
+        error = hostVersionMismatch(
+          preferences.address,
+          running.version,
+          bundled,
+        );
       }
     });
   }
@@ -377,20 +396,19 @@ class DesktopController extends ChangeNotifier {
   }
 
   Future<void> startHost() async {
-    try {
-      final probe = DshClient(
-        preferences.address,
-        timeout: const Duration(seconds: 2),
-      );
-      try {
-        await probe.describe();
-        await connect(preferences.address);
-        return;
-      } finally {
-        await probe.close();
+    final running = await HostLauncher.live(preferences.address);
+    if (running != null) {
+      await connect(preferences.address);
+      final selected = HostLauncher.packagedVersion(preferences.executable);
+      if (selected != null && running.version != selected) {
+        error = hostVersionMismatch(
+          preferences.address,
+          running.version,
+          selected,
+        );
+        emit();
       }
-    } catch (_) {
-      /* No live Host: launch the selected installation. */
+      return;
     }
     connecting = true;
     emit();

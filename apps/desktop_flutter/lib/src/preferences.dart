@@ -154,19 +154,54 @@ class HostLauncher {
       mode: ProcessStartMode.detached,
       runInShell: false,
     );
-    final probe = DshClient(address, timeout: const Duration(seconds: 2));
+    // A first start prepares the plugin profile before listening, which can
+    // take several seconds on slow disks; poll quickly within one deadline.
+    final probe = _probe(address);
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
     try {
-      for (var i = 0; i < 25; i++) {
+      while (true) {
         try {
           await probe.describe();
           return process.pid;
         } catch (_) {
-          await Future<void>.delayed(const Duration(milliseconds: 500));
+          if (DateTime.now().isAfter(deadline)) break;
+          await Future<void>.delayed(const Duration(milliseconds: 150));
         }
       }
       throw StateError('服务进程 ${process.pid} 尚未就绪，请检查服务日志或端口占用。');
     } finally {
       await probe.close();
+    }
+  }
+
+  static DshClient _probe(String address) => DshClient(
+    address,
+    timeout: const Duration(seconds: 2),
+    connectTimeout: const Duration(milliseconds: 300),
+  );
+
+  /// The Host already answering at [address], or null when none does.
+  static Future<HostInfo?> live(String address) async {
+    final probe = _probe(address);
+    try {
+      return await probe.describe();
+    } catch (_) {
+      return null;
+    } finally {
+      await probe.close();
+    }
+  }
+
+  /// Version recorded in the package inventory next to [executable].
+  static String? packagedVersion(String executable) {
+    try {
+      final inventory = File(
+        p.join(File(executable).parent.path, 'PACKAGE.json'),
+      );
+      final version = jsonDecode(inventory.readAsStringSync())['version'];
+      return version is String && version.isNotEmpty ? version : null;
+    } catch (_) {
+      return null;
     }
   }
 }

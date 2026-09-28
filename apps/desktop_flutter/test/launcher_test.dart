@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsh_client/dsh_client.dart';
+import 'package:dsh_desktop/src/controller.dart';
 import 'package:dsh_desktop/src/preferences.dart';
 import 'package:dsh_desktop/src/desktop_paths.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -38,6 +39,44 @@ void main() {
       await root.delete(recursive: true);
     }
   });
+  test('packaged Host version comes from the inventory beside it', () async {
+    final root = await Directory.systemTemp.createTemp('dsh-host-version-');
+    try {
+      final executable = '${root.path}${Platform.pathSeparator}host.exe';
+      expect(HostLauncher.packagedVersion(executable), isNull);
+      final inventory = File(
+        '${root.path}${Platform.pathSeparator}PACKAGE.json',
+      );
+      await inventory.writeAsString('{broken');
+      expect(HostLauncher.packagedVersion(executable), isNull);
+      await inventory.writeAsString('{"version":"0.1.3-alpha.36"}');
+      expect(HostLauncher.packagedVersion(executable), '0.1.3-alpha.36');
+    } finally {
+      await root.delete(recursive: true);
+    }
+  });
+
+  test('an idle port is reported promptly instead of after a refused connect', () async {
+    final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = socket.port;
+    await socket.close();
+    final watch = Stopwatch()..start();
+    expect(await HostLauncher.live('http://127.0.0.1:$port'), isNull);
+    // Windows reports a refused loopback connect only after about two seconds.
+    expect(watch.elapsed, lessThan(const Duration(milliseconds: 1500)));
+  });
+
+  test('a version mismatch names both Host versions', () {
+    final message = hostVersionMismatch(
+      'http://127.0.0.1:58080',
+      '0.1.3-alpha.12',
+      '0.1.3-alpha.36',
+    );
+    expect(message, contains('0.1.3-alpha.12'));
+    expect(message, contains('0.1.3-alpha.36'));
+    expect(message, contains('http://127.0.0.1:58080'));
+  });
+
   final executable = Platform.environment['DSH_TEST_BINARY'];
   final home = Platform.environment['DSH_HOME'];
   test(

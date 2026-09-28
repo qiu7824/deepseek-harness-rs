@@ -31,13 +31,18 @@ class KnowledgeApi {
     RequestScope? scope,
   ]) async {
     if (_closed) throw DshException('cancelled', '知识库页面已关闭');
-    final value = await (operation == 'importPath' ? importer : client).request(
-      '/__dsh-knowledge/$operation',
-      body: body,
-      scope: scope,
-      mutation: !_reads.contains(operation),
-      maxBytes: 16 * 1024 * 1024,
-    );
+    final Json value;
+    try {
+      value = await (operation == 'importPath' ? importer : client).request(
+        '/__dsh-knowledge/$operation',
+        body: body,
+        scope: scope,
+        mutation: !_reads.contains(operation),
+        maxBytes: 16 * 1024 * 1024,
+      );
+    } on DshException catch (error) {
+      throw unsupportedHostPage(error, operation, '知识库');
+    }
     if (_closed) throw DshException('cancelled', '知识库页面已关闭');
     return value;
   }
