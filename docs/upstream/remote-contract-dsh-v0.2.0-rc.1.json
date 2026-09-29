@@ -1,0 +1,1504 @@
+{
+ "release": "dsh-v0.2.0-rc.1",
+ "endpoints": [
+  {
+   "endpoint": "account/ackBonusNotified",
+   "params": [
+    "accountId: AccountUserId",
+    "orderId: AccountBonusOrderId",
+    "client: AccountClientMetadata"
+   ],
+   "returns": "Promise<RemoteResult<boolean>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/cancelSignIn",
+   "params": [
+    "attemptId: SignInAttemptId"
+   ],
+   "returns": "Promise<RemoteResult<AccountView>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/getBalance",
+   "params": [
+    "client: AccountClientMetadata"
+   ],
+   "returns": "Promise<RemoteResult<AccountDetails['balance'] | null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/getProfile",
+   "params": [
+    "client: AccountClientMetadata"
+   ],
+   "returns": "Promise<RemoteResult<AccountDetails['profile'] | null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/getState",
+   "params": [],
+   "returns": "Promise<RemoteResult<AccountView>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/getUnnotifiedBonuses",
+   "params": [
+    "client: AccountClientMetadata"
+   ],
+   "returns": "Promise<RemoteResult<AccountBonusBatch | null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/hasRunningAccountTasks",
+   "params": [],
+   "returns": "Promise<RemoteResult<boolean>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/signOut",
+   "params": [
+    "client: AccountClientMetadata"
+   ],
+   "returns": "Promise<RemoteResult<AccountView>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/startSignIn",
+   "params": [
+    "client: AccountClientMetadata",
+    "callbackOrigin: string",
+    "loginSource: 'web' | 'desktop'"
+   ],
+   "returns": "Promise<RemoteResult<AccountView>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/watch",
+   "params": [],
+   "returns": "RemoteStreamHandle<AccountView, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "account/watchExpiry",
+   "params": [],
+   "returns": "RemoteStreamHandle<'session-expired', never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/account-controller"
+  },
+  {
+   "endpoint": "agentPresets/list",
+   "params": [],
+   "returns": "Promise<RemoteResult<AgentPresetRoster>>",
+   "stream": false,
+   "rustEquivalent": [
+    "agentPreset.list"
+   ],
+   "package": "packages/preset/agent-preset-registry"
+  },
+  {
+   "endpoint": "agentPresets/read",
+   "params": [
+    "agentPreset: string"
+   ],
+   "returns": "Promise<RemoteResult<AgentPresetDocument>>",
+   "stream": false,
+   "rustEquivalent": [
+    "agentPreset.read"
+   ],
+   "package": "packages/preset/agent-preset-registry"
+  },
+  {
+   "endpoint": "agentPresets/select",
+   "params": [
+    "agentId: SessionId",
+    "agentPreset: string"
+   ],
+   "returns": "Promise<RemoteResult<string>>",
+   "stream": false,
+   "rustEquivalent": [
+    "agentPreset.select"
+   ],
+   "package": "packages/preset/agent-preset-registry"
+  },
+  {
+   "endpoint": "commands/execute",
+   "params": [
+    "agentId: SessionId",
+    "line: string",
+    "submittedAttachments: readonly CommandSubmitAttachment[]"
+   ],
+   "returns": "Promise<RemoteResult<CommandExecution | undefined>>",
+   "stream": false,
+   "rustEquivalent": [
+    "commands.execute"
+   ],
+   "package": "packages/interaction/commands"
+  },
+  {
+   "endpoint": "commands/list",
+   "params": [
+    "agentId: SessionId"
+   ],
+   "returns": "Promise<RemoteResult<readonly CommandDescriptor[]>>",
+   "stream": false,
+   "rustEquivalent": [
+    "commands.list"
+   ],
+   "package": "packages/interaction/commands"
+  },
+  {
+   "endpoint": "credentials/describe",
+   "params": [
+    "refs: string[]"
+   ],
+   "returns": "Promise<RemoteResult<Record<string, CredentialInfo>>>",
+   "stream": false,
+   "rustEquivalent": [
+    "credentials.describe"
+   ],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "credentials/set",
+   "params": [
+    "ref: string",
+    "value: string"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [
+    "credentials.set"
+   ],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "credentials/unset",
+   "params": [
+    "ref: string"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [
+    "credentials.unset"
+   ],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "directoryPicker/createDirectory",
+   "params": [
+    "path: string",
+    "name: string"
+   ],
+   "returns": "Promise<RemoteResult<string>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "directoryPicker/list",
+   "params": [
+    "path: string | undefined"
+   ],
+   "returns": "Promise<RemoteResult<DirectoryListing>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "directoryPicker/pick",
+   "params": [],
+   "returns": "Promise<RemoteResult<string | null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/getClientCode",
+   "params": [
+    "agentId: SessionId",
+    "pluginId: CordisDynamicPluginId",
+    "pluginRunId: CordisDynamicPluginRunId"
+   ],
+   "returns": "Promise<RemoteResult<DynamicCordisClientSource>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/inventory",
+   "params": [],
+   "returns": "Promise<RemoteResult<DynamicCordisInventoryRow[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/invoke",
+   "params": [
+    "pluginId: CordisDynamicPluginId",
+    "pluginRunId: CordisDynamicPluginRunId",
+    "method: string",
+    "args: JsonValue"
+   ],
+   "returns": "Promise<RemoteResult<DynamicCordisInvokeResult>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/reportClientGuardFailure",
+   "params": [
+    "agentId: SessionId",
+    "pluginId: CordisDynamicPluginId",
+    "pluginRunId: CordisDynamicPluginRunId",
+    "failure: CordisErrorDetails"
+   ],
+   "returns": "Promise<RemoteResult<null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/reportRenderFailure",
+   "params": [
+    "agentId: SessionId",
+    "pluginId: CordisDynamicPluginId",
+    "pluginRunId: CordisDynamicPluginRunId",
+    "failure: DynamicCordisRenderFailure"
+   ],
+   "returns": "Promise<RemoteResult<null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/resolveInspectQuery",
+   "params": [
+    "agentId: SessionId",
+    "requestId: CordisInspectRequestId",
+    "resolution: CordisInspectQueryResolution"
+   ],
+   "returns": "Promise<RemoteResult<CordisInspectResolveAck>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/resolveRequestRun",
+   "params": [
+    "requestId: ApprovalRequestId",
+    "resolution: DynamicCordisRunResolution"
+   ],
+   "returns": "Promise<RemoteResult<DynamicCordisResolveAck>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/runHostHalf",
+   "params": [
+    "agentId: SessionId",
+    "pluginId: CordisDynamicPluginId",
+    "packageId: CordisDynamicPackageId",
+    "mode: CordisDynamicRunMode",
+    "requestId: ApprovalRequestId | null",
+    "approveFutureVersions: boolean"
+   ],
+   "returns": "Promise<RemoteResult<DynamicCordisHostHalfResult>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/settleUserRun",
+   "params": [
+    "agentId: SessionId",
+    "pluginId: CordisDynamicPluginId",
+    "resolution: DynamicCordisRunResolution"
+   ],
+   "returns": "Promise<RemoteResult<DynamicCordisRunResponse>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/stopFromPanel",
+   "params": [
+    "agentId: SessionId",
+    "pluginId: CordisDynamicPluginId"
+   ],
+   "returns": "Promise<RemoteResult<DynamicCordisStopResponse>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/syncInspectManifest",
+   "params": [
+    "providers: readonly CordisInspectProviderManifest[]"
+   ],
+   "returns": "Promise<RemoteResult<null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "dynamicCordisRunner/undefineFromPanel",
+   "params": [
+    "agentId: SessionId",
+    "pluginId: CordisDynamicPluginId"
+   ],
+   "returns": "Promise<RemoteResult<DynamicCordisUndefineReceipt>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/extensions/cordis-host-runner"
+  },
+  {
+   "endpoint": "fileReferences/list",
+   "params": [
+    "agentId: SessionId",
+    "query: string"
+   ],
+   "returns": "Promise<RemoteResult<FileReferenceCandidate[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "fileUploads/upload",
+   "params": [
+    "agentId: SessionId",
+    "request: EncodedFileUploadRequest"
+   ],
+   "returns": "Promise<RemoteResult<FileUploadValue>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/client/file-upload"
+  },
+  {
+   "endpoint": "goals/clear",
+   "params": [
+    "agentId: SessionId",
+    "ref: GoalRef"
+   ],
+   "returns": "Promise<RemoteResult<GoalRef>>",
+   "stream": false,
+   "rustEquivalent": [
+    "goal.clear"
+   ],
+   "package": "packages/goal/goal"
+  },
+  {
+   "endpoint": "goals/complete",
+   "params": [
+    "agentId: SessionId",
+    "ref: GoalRef"
+   ],
+   "returns": "Promise<RemoteResult<GoalView>>",
+   "stream": false,
+   "rustEquivalent": [
+    "goal.complete"
+   ],
+   "package": "packages/goal/goal"
+  },
+  {
+   "endpoint": "goals/create",
+   "params": [
+    "agentId: SessionId",
+    "request: CreateGoalRequest"
+   ],
+   "returns": "Promise<RemoteResult<CreateGoalResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "goal.create"
+   ],
+   "package": "packages/goal/goal"
+  },
+  {
+   "endpoint": "goals/edit",
+   "params": [
+    "agentId: SessionId",
+    "ref: GoalRef",
+    "request: EditGoalRequest"
+   ],
+   "returns": "Promise<RemoteResult<GoalView>>",
+   "stream": false,
+   "rustEquivalent": [
+    "goal.edit"
+   ],
+   "package": "packages/goal/goal"
+  },
+  {
+   "endpoint": "goals/get",
+   "params": [
+    "agentId: SessionId"
+   ],
+   "returns": "Promise<RemoteResult<GoalView | undefined>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/goal/goal"
+  },
+  {
+   "endpoint": "goals/pause",
+   "params": [
+    "agentId: SessionId",
+    "ref: GoalRef"
+   ],
+   "returns": "Promise<RemoteResult<GoalView>>",
+   "stream": false,
+   "rustEquivalent": [
+    "goal.pause"
+   ],
+   "package": "packages/goal/goal"
+  },
+  {
+   "endpoint": "goals/resume",
+   "params": [
+    "agentId: SessionId",
+    "ref: GoalRef"
+   ],
+   "returns": "Promise<RemoteResult<GoalView>>",
+   "stream": false,
+   "rustEquivalent": [
+    "goal.resume"
+   ],
+   "package": "packages/goal/goal"
+  },
+  {
+   "endpoint": "job/follow",
+   "params": [
+    "request: JobFollowRequest"
+   ],
+   "returns": "RemoteStreamHandle<JobFollowFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/job-controller"
+  },
+  {
+   "endpoint": "job/kill",
+   "params": [
+    "request: JobKillRequest"
+   ],
+   "returns": "Promise<RemoteResult<JobKillValue>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/job-controller"
+  },
+  {
+   "endpoint": "job/list",
+   "params": [
+    "request: JobListRequest"
+   ],
+   "returns": "RemoteStreamHandle<JobListFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/job-controller"
+  },
+  {
+   "endpoint": "llm/discoverModels",
+   "params": [
+    "settingsNs: string",
+    "request: LlmModelDiscoveryRequest"
+   ],
+   "returns": "Promise<RemoteResult<LlmDiscoveredModel[]>>",
+   "stream": false,
+   "rustEquivalent": [
+    "llm.discoverModels"
+   ],
+   "package": "packages/llm/llm"
+  },
+  {
+   "endpoint": "llm/listConfigurableProviders",
+   "params": [],
+   "returns": "Promise<RemoteResult<LlmConfigurableProvider[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/llm/llm"
+  },
+  {
+   "endpoint": "llm/listProviders",
+   "params": [],
+   "returns": "Promise<RemoteResult<LlmProviderInfo[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/llm/llm"
+  },
+  {
+   "endpoint": "messageFeedback/delete",
+   "params": [
+    "request: MessageFeedbackDeleteRequest"
+   ],
+   "returns": "Promise<RemoteResult<MessageFeedbackDeleteResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "messageFeedback.delete"
+   ],
+   "package": "packages/feedback/message-feedback"
+  },
+  {
+   "endpoint": "messageFeedback/list",
+   "params": [
+    "request: MessageFeedbackListRequest"
+   ],
+   "returns": "Promise<RemoteResult<MessageFeedbackListResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "messageFeedback.list"
+   ],
+   "package": "packages/feedback/message-feedback"
+  },
+  {
+   "endpoint": "messageFeedback/put",
+   "params": [
+    "request: MessageFeedbackPutRequest"
+   ],
+   "returns": "Promise<RemoteResult<MessageFeedbackPutResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "messageFeedback.put"
+   ],
+   "package": "packages/feedback/message-feedback"
+  },
+  {
+   "endpoint": "officeToPdf/generation",
+   "params": [],
+   "returns": "Promise<RemoteResult<OfficeToPdfGeneration>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/document/office-to-pdf"
+  },
+  {
+   "endpoint": "officeToPdf/render",
+   "params": [
+    "workspaceFileScopeId: SessionId",
+    "path: string",
+    "priority: OfficeToPdfPriority"
+   ],
+   "returns": "Promise<RemoteResult<RemoteDecoded<RenderedDocumentBytes>>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/document/office-to-pdf"
+  },
+  {
+   "endpoint": "permissionPresets/catalog",
+   "params": [],
+   "returns": "Promise<RemoteResult<PermissionCatalog>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/interaction/permission-presets"
+  },
+  {
+   "endpoint": "pluginInventory/list",
+   "params": [],
+   "returns": "Promise<RemoteResult<PluginInventorySnapshot>>",
+   "stream": false,
+   "rustEquivalent": [
+    "pluginInventory.list"
+   ],
+   "package": "packages/host/plugin-inventory"
+  },
+  {
+   "endpoint": "pluginManager/cancelInstall",
+   "params": [
+    "requestId: PluginInstallRequestId"
+   ],
+   "returns": "Promise<RemoteResult<PluginInstallCancellation>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/inspect",
+   "params": [
+    "spec: string",
+    "options?: InspectOptions"
+   ],
+   "returns": "Promise<RemoteResult<PluginSpecInspection>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/installBundle",
+   "params": [
+    "spec: string",
+    "options?: InstallBundleOptions"
+   ],
+   "returns": "Promise<RemoteResult<ChangeResult>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/listBundles",
+   "params": [],
+   "returns": "Promise<RemoteResult<BundleInfo[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/listPlugins",
+   "params": [],
+   "returns": "Promise<RemoteResult<PluginInfo[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/listVersionExemptions",
+   "params": [],
+   "returns": "Promise<RemoteResult<{ exemptions: Record<string, string[]>; warnings: string[]; }>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/registries",
+   "params": [],
+   "returns": "Promise<RemoteResult<PluginRegistries>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/removeBundle",
+   "params": [
+    "name: string"
+   ],
+   "returns": "Promise<RemoteResult<ChangeResult>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/setBundleEnabled",
+   "params": [
+    "name: string",
+    "enabled: boolean"
+   ],
+   "returns": "Promise<RemoteResult<ChangeResult>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/setPluginEnabled",
+   "params": [
+    "id: PluginEntryId",
+    "enabled: boolean"
+   ],
+   "returns": "Promise<RemoteResult<ChangeResult>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/setVersionExemption",
+   "params": [
+    "packageVersion: string",
+    "runtimeVersion: string",
+    "enabled: boolean",
+    "acceptRisk?: boolean"
+   ],
+   "returns": "Promise<RemoteResult<ChangeResult>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginManager/waitForInstall",
+   "params": [
+    "requestId: PluginInstallRequestId"
+   ],
+   "returns": "Promise<RemoteResult<ChangeResult | null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/boot/plugin-manager"
+  },
+  {
+   "endpoint": "pluginRegistryProbe/fastest",
+   "params": [],
+   "returns": "Promise<RemoteResult<string | null>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/client/ui-plugin-manager"
+  },
+  {
+   "endpoint": "productAnalytics/enabled",
+   "params": [],
+   "returns": "Promise<RemoteResult<boolean>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/client/product-analytics"
+  },
+  {
+   "endpoint": "productAnalytics/report",
+   "params": [
+    "event: ProductEvent"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/client/product-analytics"
+  },
+  {
+   "endpoint": "productAnalytics/watchPolicy",
+   "params": [],
+   "returns": "RemoteStreamHandle<boolean, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/client/product-analytics"
+  },
+  {
+   "endpoint": "schedule/catalog",
+   "params": [],
+   "returns": "Promise<RemoteResult<ScheduleCatalogEntry[]>>",
+   "stream": false,
+   "rustEquivalent": [
+    "schedule.catalog"
+   ],
+   "package": "packages/schedule/schedule"
+  },
+  {
+   "endpoint": "schedule/delete",
+   "params": [
+    "request: ScheduleDeleteRequest"
+   ],
+   "returns": "Promise<RemoteResult<ScheduleDeleteResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "schedule.delete"
+   ],
+   "package": "packages/schedule/schedule"
+  },
+  {
+   "endpoint": "schedule/history",
+   "params": [
+    "request: ScheduleDeliveryHistoryRequest"
+   ],
+   "returns": "Promise<RemoteResult<ScheduleDeliveryHistoryResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "schedule.history"
+   ],
+   "package": "packages/schedule/schedule"
+  },
+  {
+   "endpoint": "schedule/list",
+   "params": [
+    "request: ScheduleListRequest"
+   ],
+   "returns": "Promise<RemoteResult<ScheduleRecord[]>>",
+   "stream": false,
+   "rustEquivalent": [
+    "schedule.list"
+   ],
+   "package": "packages/schedule/schedule"
+  },
+  {
+   "endpoint": "schedule/update",
+   "params": [
+    "request: ScheduleUpdateRequest"
+   ],
+   "returns": "Promise<RemoteResult<ScheduleUpdateResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "schedule.update"
+   ],
+   "package": "packages/schedule/schedule"
+  },
+  {
+   "endpoint": "session/attachment",
+   "params": [
+    "request: SessionAttachmentRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionAttachmentValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.attachment"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/canOpenWorkspacePath",
+   "params": [],
+   "returns": "Promise<RemoteResult<boolean>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/cancel",
+   "params": [
+    "request: SessionCancelRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionCancelValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.cancel"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/control",
+   "params": [],
+   "returns": "RemoteStreamHandle<SessionControlFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/create",
+   "params": [
+    "request: SessionCreateRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionCreateValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.create"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/follow",
+   "params": [
+    "request: SessionFollowRequest"
+   ],
+   "returns": "RemoteStreamHandle<SessionFollowFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/fork",
+   "params": [
+    "request: SessionForkRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionForkValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.fork"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/initializeDefaultModel",
+   "params": [],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/list",
+   "params": [
+    "_request: SessionListRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionListValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.list"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/modelCatalog",
+   "params": [],
+   "returns": "Promise<RemoteResult<ModelCatalog>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/openWorkspacePath",
+   "params": [
+    "request: SessionOpenWorkspacePathRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionOpenWorkspacePathValue>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/page",
+   "params": [
+    "request: SessionPageRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionPage>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/projections",
+   "params": [
+    "request: SessionProjectionsRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionProjectionsValue>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/prompt",
+   "params": [
+    "request: SessionPromptRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionPromptValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.prompt"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/rename",
+   "params": [
+    "request: SessionRenameRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionRenameValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.rename"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/search",
+   "params": [
+    "request: SessionSearchRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionSearchValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.search"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/selectModel",
+   "params": [
+    "request: SessionSelectModelRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionSelectModelValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.selectModel"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/updateQueue",
+   "params": [
+    "request: SessionUpdateQueueRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionUpdateQueueValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "session.updateQueue"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "session/workspacePathApplications",
+   "params": [
+    "request: { readonly path: string; }"
+   ],
+   "returns": "Promise<RemoteResult<readonly SessionWorkspacePathApplication[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "sessionFeedback/record",
+   "params": [
+    "request: SessionFeedbackRecordRequest"
+   ],
+   "returns": "Promise<RemoteResult<SessionFeedbackRecordResult>>",
+   "stream": false,
+   "rustEquivalent": [
+    "sessionFeedback.record"
+   ],
+   "package": "packages/feedback/command-feedback"
+  },
+  {
+   "endpoint": "sessionReferenceResolver/candidates",
+   "params": [
+    "agentId: SessionId",
+    "query: string"
+   ],
+   "returns": "Promise<RemoteResult<SessionReferenceMentionCandidate[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/context/session-reference"
+  },
+  {
+   "endpoint": "settings/describe",
+   "params": [],
+   "returns": "Promise<RemoteResult<SettingsDescribeValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "settings.describe"
+   ],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "settings/mutate",
+   "params": [
+    "ns: string",
+    "ops: SettingsPathOpView[]",
+    "expectedRevision: number | undefined"
+   ],
+   "returns": "Promise<RemoteResult<SettingsNamespaceView>>",
+   "stream": false,
+   "rustEquivalent": [
+    "settings.mutate"
+   ],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "settings/openSettingsDocument",
+   "params": [],
+   "returns": "Promise<RemoteResult<SettingsDocumentOpenValue>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "settings/replace",
+   "params": [
+    "ns: string",
+    "section: Record<string, JsonValue>",
+    "expectedRevision: number | undefined"
+   ],
+   "returns": "Promise<RemoteResult<SettingsNamespaceView>>",
+   "stream": false,
+   "rustEquivalent": [
+    "settings.replace"
+   ],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "settings/update",
+   "params": [
+    "ns: string",
+    "patch: Record<string, JsonValue>",
+    "expectedRevision: number | undefined"
+   ],
+   "returns": "Promise<RemoteResult<SettingsNamespaceView>>",
+   "stream": false,
+   "rustEquivalent": [
+    "settings.update"
+   ],
+   "package": "packages/api/settings-controller"
+  },
+  {
+   "endpoint": "skills/list",
+   "params": [
+    "request: SkillListRequest"
+   ],
+   "returns": "Promise<RemoteResult<SkillListValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "capabilities.list",
+    "skill.list"
+   ],
+   "package": "packages/api/session-controller"
+  },
+  {
+   "endpoint": "speech/cancelPreparation",
+   "params": [
+    "providerId: SpeechProviderId"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/experimental/api-speech-to-text"
+  },
+  {
+   "endpoint": "speech/catalog",
+   "params": [],
+   "returns": "Promise<RemoteResult<SpeechCatalog>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/experimental/api-speech-to-text"
+  },
+  {
+   "endpoint": "speech/configure",
+   "params": [
+    "patch: SpeechSelectionPatch"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/experimental/api-speech-to-text"
+  },
+  {
+   "endpoint": "speech/follow",
+   "params": [],
+   "returns": "RemoteStreamHandle<SpeechCatalog, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/experimental/api-speech-to-text"
+  },
+  {
+   "endpoint": "speech/prepare",
+   "params": [
+    "providerId: SpeechProviderId",
+    "options?: SpeechPreparationOptions"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/experimental/api-speech-to-text"
+  },
+  {
+   "endpoint": "speech/transcribe",
+   "params": [
+    "request: TranscriptionRequest"
+   ],
+   "returns": "Promise<RemoteResult<Transcript>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/experimental/api-speech-to-text"
+  },
+  {
+   "endpoint": "subagents/interruptByParent",
+   "params": [
+    "childSessionId: SessionId",
+    "parentSessionId: SessionId",
+    "mode: 'continuable'"
+   ],
+   "returns": "Promise<RemoteResult<SubagentInterruptReceipt>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/subagent/subagent"
+  },
+  {
+   "endpoint": "subagents/prompt",
+   "params": [
+    "request: SubagentPromptRequest"
+   ],
+   "returns": "Promise<RemoteResult<SubagentPromptReceipt>>",
+   "stream": false,
+   "rustEquivalent": [
+    "subagent.prompt"
+   ],
+   "package": "packages/subagent/subagent"
+  },
+  {
+   "endpoint": "terminal/close",
+   "params": [
+    "agentId: SessionId",
+    "id: WebTerminalId"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/create",
+   "params": [
+    "agentId: SessionId",
+    "request: TerminalCreateRequest"
+   ],
+   "returns": "Promise<RemoteResult<WebTerminalInfo>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/environment",
+   "params": [
+    "agentId: SessionId"
+   ],
+   "returns": "Promise<RemoteResult<TerminalEnvironment>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/follow",
+   "params": [
+    "agentId: SessionId",
+    "id: WebTerminalId",
+    "attachmentId: TerminalAttachmentId"
+   ],
+   "returns": "RemoteStreamHandle<TerminalFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/list",
+   "params": [
+    "sessionId: SessionId"
+   ],
+   "returns": "Promise<RemoteResult<WebTerminalInfo[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/rename",
+   "params": [
+    "agentId: SessionId",
+    "id: WebTerminalId",
+    "title: string"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/resize",
+   "params": [
+    "agentId: SessionId",
+    "id: WebTerminalId",
+    "attachmentId: TerminalAttachmentId",
+    "cols: number",
+    "rows: number"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/retain",
+   "params": [
+    "sessionId: SessionId",
+    "id: WebTerminalId"
+   ],
+   "returns": "RemoteStreamHandle<TerminalRetentionFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/shells",
+   "params": [
+    "agentId: SessionId"
+   ],
+   "returns": "Promise<RemoteResult<TerminalShell[]>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "terminal/write",
+   "params": [
+    "agentId: SessionId",
+    "id: WebTerminalId",
+    "attachmentId: TerminalAttachmentId",
+    "data: string"
+   ],
+   "returns": "Promise<RemoteResult<void>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/terminal-controller"
+  },
+  {
+   "endpoint": "workspace/archiveSession",
+   "params": [
+    "request: WorkspaceArchiveSessionRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceArchiveValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "workspace.archiveSession"
+   ],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/create",
+   "params": [
+    "request: WorkspaceCreateRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceCreateValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "workspace.create"
+   ],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/delete",
+   "params": [
+    "request: WorkspaceDeleteRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceDeleteValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "workspace.delete"
+   ],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/follow",
+   "params": [],
+   "returns": "RemoteStreamHandle<WorkspaceFollowFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/initializeDefault",
+   "params": [],
+   "returns": "Promise<RemoteResult<WorkspaceValue | undefined>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/insertBefore",
+   "params": [
+    "request: WorkspaceInsertBeforeRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceOrderValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "workspace.insertBefore"
+   ],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/insertSessionBefore",
+   "params": [
+    "request: WorkspaceInsertSessionBeforeRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "workspace.insertSessionBefore"
+   ],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/pinSession",
+   "params": [
+    "request: WorkspacePinSessionRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspacePinValue>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/rename",
+   "params": [
+    "request: WorkspaceRenameRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "workspace.rename"
+   ],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/unarchiveSession",
+   "params": [
+    "request: WorkspaceUnarchiveSessionRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceArchiveValue>>",
+   "stream": false,
+   "rustEquivalent": [
+    "workspace.unarchiveSession"
+   ],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspace/unpinSession",
+   "params": [
+    "request: WorkspaceUnpinSessionRequest"
+   ],
+   "returns": "Promise<RemoteResult<WorkspacePinValue>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-controller"
+  },
+  {
+   "endpoint": "workspaceFiles/changes",
+   "params": [
+    "workspaceFileScopeId: SessionId",
+    "path: string"
+   ],
+   "returns": "RemoteStreamHandle<WorkspaceFileWatchFrame, never>",
+   "stream": true,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-files"
+  },
+  {
+   "endpoint": "workspaceFiles/list",
+   "params": [
+    "workspaceFileScopeId: SessionId",
+    "path: string"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceDirectoryListing>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-files"
+  },
+  {
+   "endpoint": "workspaceFiles/read",
+   "params": [
+    "workspaceFileScopeId: SessionId",
+    "path: string",
+    "range: WorkspaceFileRange"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceFileText>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-files"
+  },
+  {
+   "endpoint": "workspaceFiles/readBytes",
+   "params": [
+    "workspaceFileScopeId: SessionId",
+    "path: string",
+    "options: WorkspaceByteReadOptions"
+   ],
+   "returns": "Promise<RemoteResult<RemoteDecoded<WorkspaceFileBytes>>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-files"
+  },
+  {
+   "endpoint": "workspaceFiles/stat",
+   "params": [
+    "workspaceFileScopeId: SessionId",
+    "path: string"
+   ],
+   "returns": "Promise<RemoteResult<WorkspaceFileStat>>",
+   "stream": false,
+   "rustEquivalent": [],
+   "package": "packages/api/workspace-files"
+  }
+ ]
+}
