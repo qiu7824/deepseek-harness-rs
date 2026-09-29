@@ -492,6 +492,7 @@ class _SettingsShellState extends State<SettingsShell> {
         'storage-paths',
         'workspace-scratch-paths',
         'uu-remote',
+        'computer-use',
       ],
       'collaboration' => ['agent-teams', 'subagent'],
       'security' => ['security', 'permission'],
@@ -733,18 +734,41 @@ class _SettingsShellState extends State<SettingsShell> {
   }
 
   Widget forms(List<String> names) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       for (final ns in names)
-        if (namespaces[ns] != null)
+        if (namespaces[ns] != null) ...[
+          if (namespaceTitles[ns] case (:final title, :final hint)) ...[
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              hint,
+              style: TextStyle(fontSize: 12, color: DshColors(context).muted),
+            ),
+          ],
           NamespaceForm(
             key: ValueKey('$ns:${namespaces[ns]!['revision']}'),
             namespace: namespaces[ns]!,
             pending: edits[ns] ?? [],
             onChange: (path, value) => edit(ns, path, value),
           ),
+        ],
     ],
   );
 }
+
+/// Headings for namespaces that share a settings page with others.
+const namespaceTitles = <String, ({String title, String hint})>{
+  'computer-use': (
+    title: 'Computer Use',
+    hint:
+        '模型与工作台共用控制环境。本机桌面与 UU 自连都会共享这台电脑的键鼠；需要同时使用本机其他软件时，可改用另一台 UU 设备或隔离浏览器。',
+  ),
+};
 
 Widget _row(String title, String hint, Widget control) => Padding(
   padding: const EdgeInsets.symmetric(vertical: 14),
@@ -776,7 +800,18 @@ Widget _row(String title, String hint, Widget control) => Padding(
   ),
 );
 
+/// Keys may be qualified as `namespace.field` where a bare field name is
+/// ambiguous across namespaces.
 const fieldLabels = <String, String>{
+  'computer-use.enabled': '启用 Computer Use',
+  'computer-use.nativeProtocol': '原生 Computer 协议',
+  'computer-use.nativeTarget': '原生协议控制目标',
+  'computer-use.adapter': '执行适配器',
+  'computer-use.command': '外部控制命令',
+  'computer-use.browserExecutable': '浏览器可执行文件',
+  'computer-use.browserHeadless': '后台运行浏览器',
+  'computer-use.maxBrowserSessions': '最大浏览器会话数',
+  'computer-use.timeoutSeconds': '操作超时（秒）',
   'default': 'Agent 预设',
   'defaultPreset': '权限',
   'busyEnter': '繁忙时 Enter 键行为',
@@ -844,6 +879,12 @@ const fieldLabels = <String, String>{
   'tasks': '任务',
 };
 const optionLabels = <String, String>{
+  'computer-use.local': '本机桌面',
+  'computer-use.browser': '隔离浏览器',
+  'computer-use.native-browser': '内置浏览器',
+  'computer-use.native-desktop': '本机桌面（Rust 原生）',
+  'computer-use.uu-desktop': 'UU 远程桌面',
+  'computer-use.command': '外部命令',
   'queue': '排队发送',
   'steer': '转向当前任务',
   'on': '开启',
@@ -942,10 +983,11 @@ class _NamespaceFormState extends State<NamespaceForm> {
     Json schema,
     Json refs,
   ) {
-    final key = path.last,
-        label =
-            fieldLabels[key] ??
-            '${object(schema['meta'])['description'] ?? key}';
+    final ns = widget.namespace['ns'], key = path.last;
+    final label =
+        fieldLabels['$ns.$key'] ??
+        fieldLabels[key] ??
+        '${object(schema['meta'])['description'] ?? key}';
     var options = <Object?>[];
     if (schema['type'] == 'union') {
       options = (schema['list'] as List? ?? [])
@@ -971,7 +1013,9 @@ class _NamespaceFormState extends State<NamespaceForm> {
         DshSelect<Object>(
           value: options.contains(value) ? value : null,
           options: {
-            for (final item in options) ?item: optionLabels['$item'] ?? '$item',
+            for (final item in options)
+              ?item:
+                  optionLabels['$ns.$item'] ?? optionLabels['$item'] ?? '$item',
           },
           onChanged: (v) => widget.onChange(path, v),
         ),

@@ -159,6 +159,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     previewSession = c.selectedId;
     planPreviews.scope(c.client, c.selectedId);
     c.addListener(previewScopeChanged);
+    c.computerUseRequests.addListener(showComputerUse);
     FocusManager.instance.addEarlyKeyEventHandler(onShortcut);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && ModalRoute.of(context)?.isCurrent != false) {
@@ -193,6 +194,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   @override
   void dispose() {
     c.removeListener(previewScopeChanged);
+    c.computerUseRequests.removeListener(showComputerUse);
     planPreviews.dispose();
     FocusManager.instance.removeEarlyKeyEventHandler(onShortcut);
     shellFocus.dispose();
@@ -273,6 +275,14 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         if (mounted) scaffoldKey.currentState?.openEndDrawer();
       });
     }
+  }
+
+  /// The model started driving a Computer Use session. A drawer would cover
+  /// the conversation on narrow windows; there the binding waits until the
+  /// user opens the tab.
+  void showComputerUse() {
+    if (!mounted || c.computerUse == null) return;
+    if (dockOpen || availableWidth >= 1100) openDock('computer-use');
   }
 
   void selectDockTab(String tab) {
@@ -619,6 +629,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                       onFileRequestHandled: fileRequestHandled,
                       planPreviews: planPreviews,
                       onPlanSource: planSource,
+                      onOpenSettings: () => settings('environment'),
                       onClose: closeDock,
                     ),
                   ),
@@ -639,6 +650,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                     onFileRequestHandled: fileRequestHandled,
                     planPreviews: planPreviews,
                     onPlanSource: planSource,
+                    onOpenSettings: () => settings('environment'),
                     onClose: closeDock,
                   ),
                 )

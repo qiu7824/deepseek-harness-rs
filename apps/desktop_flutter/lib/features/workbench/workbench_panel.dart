@@ -14,6 +14,7 @@ import 'package:dsh_client/dsh_client.dart';
 import '../../design/primitives.dart';
 import '../../src/controller.dart';
 import '../../src/resource_diagnostics.dart';
+import 'computer_use_panel.dart';
 import 'subagent_panel.dart';
 import 'project_tasks.dart';
 import 'plan_preview.dart';
@@ -69,6 +70,7 @@ class WorkbenchPanel extends StatefulWidget {
     this.onFileRequestHandled,
     this.planPreviews,
     this.onPlanSource,
+    this.onOpenSettings,
   });
   final DesktopController controller;
   final VoidCallback onClose;
@@ -79,6 +81,9 @@ class WorkbenchPanel extends StatefulWidget {
   final ValueChanged<FileOpenRequest>? onFileRequestHandled;
   final PlanPreviewStore? planPreviews;
   final VoidCallback? onPlanSource;
+
+  /// Opens the settings page that enables Computer Use.
+  final VoidCallback? onOpenSettings;
   @override
   State<WorkbenchPanel> createState() => _WorkbenchPanelState();
 }
@@ -92,9 +97,11 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
     'project-tasks': '项目任务',
     'tasks': '后台任务',
     'team': '子任务',
+    'computer-use': 'Computer Use',
     'plans': '计划预览',
   };
   final tabs = <String>[];
+  final computerUse = GlobalKey<ComputerUsePanelState>();
   final tabAnchors = <String, GlobalKey>{};
   String? tab;
   FileOpenRequest? fileRequest;
@@ -140,6 +147,7 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
       tabAnchors.remove(value);
       if (value == 'files') fileRequest = null;
       if (value == 'plans') widget.planPreviews?.clear();
+      if (value == 'computer-use') computerUse.currentState?.endSession();
       if (tab == value) {
         tab = tabs.isEmpty ? null : tabs[(index - 1).clamp(0, tabs.length - 1)];
       }
@@ -189,6 +197,13 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
       'git' => GitPanel(key: key, api: api, session: session),
       'team' => SubagentPanel(key: key, api: api, parent: session),
       'tasks' => TaskPanel(key: key, controller: widget.controller),
+      'computer-use' => ComputerUsePanel(
+        key: computerUse,
+        api: api,
+        session: session,
+        binding: controller.computerUse,
+        onOpenSettings: widget.onOpenSettings,
+      ),
       _ => FilePanel(
         key: key,
         api: api,

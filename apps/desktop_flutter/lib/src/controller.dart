@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:dsh_client/dsh_client.dart';
@@ -20,6 +21,23 @@ String hostVersionMismatch(String address, String running, String expected) =>
     '$address 上运行的是 $running 版本的本机服务，与桌面版内置的 $expected 不一致，'
     '定时任务、知识库等功能可能无法使用。请在任务管理器结束旧的 deepseek-harness-rs 进程'
     '（或关闭旧版核心版服务）后重新打开桌面版。';
+
+/// A Computer Use control session the model drives in the selected
+/// conversation; the workbench attaches to it instead of starting another.
+class ComputerUseBinding {
+  const ComputerUseBinding({
+    required this.browserSessionId,
+    required this.target,
+  });
+  final String browserSessionId, target;
+  @override
+  bool operator ==(Object other) =>
+      other is ComputerUseBinding &&
+      other.browserSessionId == browserSessionId &&
+      other.target == target;
+  @override
+  int get hashCode => Object.hash(browserSessionId, target);
+}
 
 class DesktopController extends ChangeNotifier {
   DesktopController(
@@ -69,6 +87,19 @@ class DesktopController extends ChangeNotifier {
   bool pluginEnabled(String name) => !disabledPlugins.contains(name);
   final messageChanges = ValueNotifier<int>(0);
   final composerFocus = ValueNotifier<int>(0);
+
+  /// Latest Computer Use session the model drove in the selected
+  /// conversation; [computerUseRequests] asks the shell to show it.
+  ComputerUseBinding? computerUse;
+  final computerUseRequests = ValueNotifier<int>(0);
+  final _computerUseShown = <String>{};
+  int _computerUseSeq = -1;
+  void _forgetComputerUse() {
+    computerUse = null;
+    _computerUseShown.clear();
+    _computerUseSeq = -1;
+  }
+
   List<Json> subscriptionAccounts = [];
   RequestScope? _historyScope;
   RequestScope? _commandScope;
@@ -348,6 +379,7 @@ class DesktopController extends ChangeNotifier {
     jobs = [];
     clearProjections();
     window = ConversationWindow();
+    _forgetComputerUse();
     transcript = [];
     _buffer.clear();
     _bufferBytes = 0;
@@ -544,6 +576,7 @@ class DesktopController extends ChangeNotifier {
         workspaceId;
     loading = false;
     window = ConversationWindow();
+    _forgetComputerUse();
     transcript = [];
     preferences.sessionId = id;
     final generation = _selection, epoch = _epoch;
@@ -849,6 +882,10 @@ class DesktopController extends ChangeNotifier {
       if (row != null && event['type'] == 'turn/end') {
         _scheduleList();
       }
+      if (frame.sessionId == selectedId &&
+          event['type'] == 'computer-use/activity') {
+        _computerUseActivity(event, data);
+      }
     }
     if (frame.sessionId == selectedId && type == 'session/event') {
       final event = HistoryEvent.fromJson(
@@ -880,6 +917,31 @@ class DesktopController extends ChangeNotifier {
       return;
     }
     emit();
+  }
+
+  /// The Host records each successful `computer_use` call of a connected
+  /// session. Show the session once per control identity, and again when the
+  /// model starts it anew.
+  void _computerUseActivity(Json event, Json data) {
+    final seq = (event['seq'] as num?)?.toInt() ?? -1;
+    final session = data['browserSessionId'], target = data['target'];
+    if (seq <= _computerUseSeq ||
+        data['ownerSessionId'] != selectedId ||
+        session is! String ||
+        session.isEmpty ||
+        session.length > 256 ||
+        target is! String ||
+        !const {'local', 'remote', 'browser'}.contains(target)) {
+      return;
+    }
+    _computerUseSeq = seq;
+    final key = jsonEncode([target, session, data['controlId']]);
+    if (!_computerUseShown.add(key) && data['action'] != 'start') return;
+    if (_computerUseShown.length > 256) {
+      _computerUseShown.remove(_computerUseShown.first);
+    }
+    computerUse = ComputerUseBinding(browserSessionId: session, target: target);
+    computerUseRequests.value++;
   }
 
   Future<String?> create(String cwd) async {
@@ -1117,6 +1179,7 @@ class DesktopController extends ChangeNotifier {
     queued = [];
     jobs = [];
     window = ConversationWindow();
+    _forgetComputerUse();
     transcript = [];
     preferences.sessionId = null;
     emit();
@@ -1441,6 +1504,7 @@ class DesktopController extends ChangeNotifier {
     _projectionPaint?.cancel();
     projectionChanges.dispose();
     composerFocus.dispose();
+    computerUseRequests.dispose();
     _epoch++;
     _selection++;
     _paint?.cancel();
