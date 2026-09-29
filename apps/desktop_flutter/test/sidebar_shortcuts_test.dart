@@ -364,6 +364,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('session-old-task')), findsOneWidget);
       expect(object(c.preferences.layout['groupExpansion'])['older'], isTrue);
+      // Choosing a Workspace makes it the target of 新会话 without collapsing
+      // the one that was expanded only because it was the previous target.
+      expect(c.workspaceId, 'older');
+      expect(
+        find.byKey(const ValueKey('session-current-task')),
+        findsOneWidget,
+      );
       await tester.pumpWidget(const SizedBox());
       await tester.pumpWidget(DesktopApp(controller: c));
       await tester.pumpAndSettle();

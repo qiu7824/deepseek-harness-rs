@@ -10,6 +10,20 @@ String displayPath(String path) {
   return path;
 }
 
+/// Comparison key for a folder: the Host may report a session folder with the
+/// extended-length prefix, other separators or casing than its Workspace.
+String workspacePathKey(Object? path) {
+  var value = displayPath('${path ?? ''}');
+  final windows = RegExp(r'^[a-zA-Z]:[\\/]|^\\\\').hasMatch(value);
+  if (windows) value = value.replaceAll('/', r'\').toLowerCase();
+  final separator = windows ? r'\' : '/';
+  final root = windows ? RegExp(r'^[a-z]:\\$') : RegExp(r'^/$');
+  while (value.endsWith(separator) && !root.hasMatch(value)) {
+    value = value.substring(0, value.length - 1);
+  }
+  return value;
+}
+
 /// Normalize recognizable absolute paths in prose, preserving other escapes.
 String displayPathText(String text) => text
     .replaceAllMapped(

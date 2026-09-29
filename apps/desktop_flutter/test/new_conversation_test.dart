@@ -167,6 +167,172 @@ void main() {
     c.dispose();
   });
 
+  test(
+    'new conversation starts in the Workspace of the selected folder',
+    () async {
+      final api = FakeClient();
+      final c = DesktopController(
+        MemoryPreferences(),
+        clientFactory: (_) => api,
+      );
+      await c.connect('http://127.0.0.1');
+      await Future<void>.delayed(Duration.zero);
+      final workspaces = [
+        {
+          'workspaceId': 'first',
+          'path': r'E:\first',
+          'title': 'first',
+          'sessionIds': <String>[],
+        },
+        {
+          'workspaceId': 'road',
+          'path': r'E:\资料\交通\龙江路',
+          'title': '龙江路',
+          'sessionIds': <String>[],
+        },
+      ];
+      Json? created;
+      api.handleCall = (method, payload) async {
+        if (method == 'session.create') {
+          created = payload;
+          return {'sessionId': 'next'};
+        }
+        return {'items': workspaces, 'archivedSessionIds': []};
+      };
+      c.workspaces = workspaces;
+      c.workspaceId = 'first';
+      // The Host reports this session's folder with the extended-length prefix
+      // and without Workspace membership; the sidebar still groups it there.
+      c.sessions = [
+        SessionSummary.fromJson({
+          'sessionId': 'task',
+          'cwd': r'\\?\E:\资料\交通\龙江路',
+        }),
+      ];
+      await c.select('task');
+      expect(c.workspaceId, 'road');
+      await c.startConversation();
+      expect(created?['cwd'], r'E:\资料\交通\龙江路');
+      expect(created?['workspaceId'], 'road');
+      c.dispose();
+    },
+  );
+
+  test('refresh keeps the chosen Workspace, else resumes the latest', () async {
+    final api = FakeClient();
+    final c = DesktopController(MemoryPreferences(), clientFactory: (_) => api);
+    await c.connect('http://127.0.0.1');
+    await Future<void>.delayed(Duration.zero);
+    final items = [
+      {
+        'workspaceId': 'first',
+        'path': r'E:\first',
+        'sessionIds': ['old'],
+      },
+      {'workspaceId': 'latest', 'path': r'E:\latest', 'sessionIds': []},
+    ];
+    api.liveSessions = [
+      SessionSummary.fromJson({
+        'sessionId': 'old',
+        'cwd': r'E:\first',
+        'updatedAt': 1,
+      }),
+      SessionSummary.fromJson({
+        'sessionId': 'new',
+        'cwd': r'\\?\E:\latest',
+        'updatedAt': 2,
+      }),
+    ];
+    api.handleCall = (method, payload) async => {
+      'items': items,
+      'archivedSessionIds': [],
+    };
+    c.workspaceId = null;
+    await c.refreshSessions();
+    expect(c.workspaceId, 'latest');
+    c.targetWorkspace('first');
+    await c.refreshSessions();
+    expect(c.workspaceId, 'first');
+    c.dispose();
+  });
+
+  for (final retargetWhileRestoring in [false, true]) {
+    test(
+      retargetWhileRestoring
+          ? 'cold restoration preserves an explicit Workspace chosen while loading'
+          : 'cold restoration adopts the saved session folder without membership',
+      () async {
+        final api = FakeClient();
+        final preferences = MemoryPreferences()..sessionId = 'saved';
+        final listed = Completer<Json>();
+        final requested = Completer<void>();
+        final workspaces = [
+          {
+            'workspaceId': 'saved-folder',
+            'path': r'E:\资料\保存的任务',
+            'sessionIds': <String>[],
+          },
+          {
+            'workspaceId': 'latest-folder',
+            'path': r'E:\latest',
+            'sessionIds': <String>[],
+          },
+        ];
+        api.liveSessions = [
+          SessionSummary.fromJson({
+            'sessionId': 'saved',
+            'cwd': r'\\?\E:\资料\保存的任务',
+            'updatedAt': 1,
+          }),
+          SessionSummary.fromJson({
+            'sessionId': 'latest',
+            'cwd': r'E:\latest',
+            'updatedAt': 2,
+          }),
+        ];
+        Json? created;
+        api.handleCall = (method, payload) async {
+          if (method == 'workspace.list') {
+            if (!requested.isCompleted) requested.complete();
+            return listed.future;
+          }
+          if (method == 'session.create') {
+            created = payload;
+            api.liveSessions.add(
+              SessionSummary.fromJson({
+                'sessionId': 'created',
+                'cwd': payload['cwd'],
+                'blank': true,
+              }),
+            );
+            return {'sessionId': 'created'};
+          }
+          return {'items': []};
+        };
+        final c = DesktopController(preferences, clientFactory: (_) => api);
+        addTearDown(c.dispose);
+        await c.connect('http://127.0.0.1');
+        await requested.future.timeout(const Duration(seconds: 2));
+        expect(c.selectedId, 'saved');
+        if (retargetWhileRestoring) c.targetWorkspace('latest-folder');
+        listed.complete({'items': workspaces, 'archivedSessionIds': []});
+        await Future<void>.delayed(Duration.zero);
+        expect(c.selectedId, 'saved');
+        expect(c.selected?.cwd, r'\\?\E:\资料\保存的任务');
+        final workspace = retargetWhileRestoring
+            ? 'latest-folder'
+            : 'saved-folder';
+        expect(c.workspaceId, workspace);
+        await c.startConversation();
+        expect(created?['workspaceId'], workspace);
+        expect(
+          created?['cwd'],
+          retargetWhileRestoring ? r'E:\latest' : r'E:\资料\保存的任务',
+        );
+      },
+    );
+  }
+
   testWidgets(
     'selected blank session keeps the hero and hides active conversation chrome',
     (tester) async {

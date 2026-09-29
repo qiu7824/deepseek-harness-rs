@@ -28,7 +28,7 @@ pub(super) fn client_hint(cwd: Option<&str>, source: Option<&Path>, port: u16) -
         return format!("{base}\n{DOCUMENT_GUIDANCE}");
     }
     format!(
-        "{base} The existing Web GUI is http://127.0.0.1:{port}. Client-plugin HMR reloads changes only while pnpm run dev:web rebuilds bundles from this checkout; verify that watcher before promising automatic updates. Changes to the apps/web shell or plain packages require rebuilding their Web artifacts and verifying this existing URL after a refresh. Starting another server does not update this GUI. The apps/web Vite entry requires the Host-injected window.__DSH_BOOT__. Start another managed preview server only when the user's task calls for one, and verify its exact URL."
+        "{base} The existing Web GUI is http://127.0.0.1:{port}. This Rust checkout maintains runtime modules in web/src/runtime-plugins; npm run build:runtime-plugins --prefix web updates web/dist/plugins and its manifest. Verify the assets served at the existing GUI URL after refreshing: an installed Host may serve its packaged assets instead of this checkout. Rust Host changes require rebuilding and restarting the selected Host. A separate preview server does not update the existing GUI."
     )
 }
 
@@ -64,7 +64,10 @@ mod tests {
                     && text.contains("useful text result")
             );
         }
-        assert!(client_hint(Some(source.to_str().unwrap()), Some(&source), 58080).contains("HMR"));
+        let developer = client_hint(Some(source.to_str().unwrap()), Some(&source), 58080);
+        assert!(developer.contains("npm run build:runtime-plugins --prefix web"));
+        assert!(developer.contains("web/src/runtime-plugins"));
+        assert!(!developer.contains("pnpm") && !developer.contains("apps/web"));
         assert!(
             source_hint(Some(crate_dir.to_str().unwrap()), Some(&source))
                 .contains(source.to_str().unwrap())

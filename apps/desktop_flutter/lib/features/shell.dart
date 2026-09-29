@@ -166,6 +166,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     previewSession = c.selectedId;
     planPreviews.scope(c.client, c.selectedId);
     c.addListener(previewScopeChanged);
+    c.computerUseRequests.addListener(showComputerUse);
     FocusManager.instance.addEarlyKeyEventHandler(onShortcut);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && ModalRoute.of(context)?.isCurrent != false) {
@@ -192,7 +193,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(previewScopeChanged);
+      oldWidget.controller.computerUseRequests.removeListener(showComputerUse);
       c.addListener(previewScopeChanged);
+      c.computerUseRequests.addListener(showComputerUse);
       previewScopeChanged();
     }
   }
@@ -200,6 +203,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   @override
   void dispose() {
     c.removeListener(previewScopeChanged);
+    c.computerUseRequests.removeListener(showComputerUse);
     planPreviews.dispose();
     FocusManager.instance.removeEarlyKeyEventHandler(onShortcut);
     shellFocus.dispose();
@@ -282,6 +286,14 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         if (mounted) scaffoldKey.currentState?.openEndDrawer();
       });
     }
+  }
+
+  /// The model started driving a Computer Use session. A drawer would cover
+  /// the conversation on narrow windows; there the binding waits until the
+  /// user opens the tab.
+  void showComputerUse() {
+    if (!mounted || c.computerUse == null) return;
+    if (dockOpen || availableWidth >= 1100) openDock('computer-use');
   }
 
   void selectDockTab(String tab) {
@@ -627,6 +639,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                       onFileRequestHandled: fileRequestHandled,
                       planPreviews: planPreviews,
                       onPlanSource: planSource,
+                      onOpenSettings: () => settings('environment'),
                       onClose: closeDock,
                     ),
                   ),
@@ -647,6 +660,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                     onFileRequestHandled: fileRequestHandled,
                     planPreviews: planPreviews,
                     onPlanSource: planSource,
+                    onOpenSettings: () => settings('environment'),
                     onClose: closeDock,
                   ),
                 )
@@ -836,11 +850,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         c.archivedSessionIds.contains(session.id) ||
         (session.id == c.selectedId && query.isEmpty);
     var groupCount = 0;
+    final owners = {
+      for (final s in visibleSessions) s.id: c.workspaceOf(s)?['workspaceId'],
+    };
     for (final workspace in c.workspaces) {
       final id = workspace['workspaceId'] as String;
-      final ids = (workspace['sessionIds'] as List? ?? []).cast<String>();
       final entries = visibleSessions
-          .where((s) => ids.contains(s.id) || s.cwd == workspace['path'])
+          .where((s) => owners[s.id] == id)
           .where(hasVisibleContent)
           .where(
             (s) =>
@@ -860,12 +876,16 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
             title: '${workspace['title']}',
             path: '${workspace['path']}',
             expanded: groupExpanded(id),
+            // Highlight only where 新会话 will start.
             active: c.workspaceId == id,
             onPressed: () {
-              final expanded = c.workspaceId != id || !groupExpanded(id);
-              c.workspaceId = id;
-              setGroupExpanded(id, expanded);
-              c.emit();
+              final expanded = groupExpanded(id), previous = c.workspaceId;
+              // Default expansion follows the target; keep the old one as shown.
+              if (previous != null && previous != id) {
+                groupExpansion.putIfAbsent(previous, () => true);
+              }
+              c.targetWorkspace(id);
+              setGroupExpanded(id, previous == id ? !expanded : true);
             },
             onMenu: (position) => workspaceMenu(workspace, position),
           ),

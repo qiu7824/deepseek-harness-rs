@@ -1287,8 +1287,10 @@ class _ConversationState extends State<Conversation>
                   icon: LucideIcons.folder,
                   trailing: const DshGlyph(LucideIcons.chevronDown, size: 12),
                   onPressed: widget.onSelectWorkspace,
+                  // A selected session keeps its own folder even after the
+                  // sidebar retargets 新会话 to another Workspace.
                   child: Text(
-                    '${c.currentWorkspace?['title'] ?? (c.selected?.cwd.isNotEmpty == true ? c.selected!.cwd.split(RegExp(r'[/\\]')).last : '选择工作区')}',
+                    '${(c.selected == null ? c.currentWorkspace : c.workspaceOf(c.selected!))?['title'] ?? (c.selected?.cwd.isNotEmpty == true ? displayPath(c.selected!.cwd).split(RegExp(r'[/\\]')).last : '选择工作区')}',
                     style: const TextStyle(fontSize: 12),
                   ),
                 ),

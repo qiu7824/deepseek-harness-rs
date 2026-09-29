@@ -210,10 +210,11 @@ class DshField extends StatelessWidget {
     this.autofocus = false,
     this.prefix,
     this.focusNode,
+    this.onSubmitted,
   });
   final TextEditingController? controller;
   final String? hint;
-  final ValueChanged<String>? onChanged;
+  final ValueChanged<String>? onChanged, onSubmitted;
   final bool secret, autofocus, enabled;
   final int maxLines;
   final IconData? prefix;
@@ -224,6 +225,7 @@ class DshField extends StatelessWidget {
     enabled: enabled,
     focusNode: focusNode,
     onChanged: onChanged,
+    onSubmitted: onSubmitted,
     obscureText: secret,
     autofocus: autofocus,
     maxLines: maxLines,

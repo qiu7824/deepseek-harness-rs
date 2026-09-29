@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:dsh_client/dsh_client.dart';
@@ -20,6 +21,23 @@ String hostVersionMismatch(String address, String running, String expected) =>
     '$address 上运行的是 $running 版本的本机服务，与桌面版内置的 $expected 不一致，'
     '定时任务、知识库等功能可能无法使用。请在任务管理器结束旧的 deepseek-harness-rs 进程'
     '（或关闭旧版核心版服务）后重新打开桌面版。';
+
+/// A Computer Use control session the model drives in the selected
+/// conversation; the workbench attaches to it instead of starting another.
+class ComputerUseBinding {
+  const ComputerUseBinding({
+    required this.browserSessionId,
+    required this.target,
+  });
+  final String browserSessionId, target;
+  @override
+  bool operator ==(Object other) =>
+      other is ComputerUseBinding &&
+      other.browserSessionId == browserSessionId &&
+      other.target == target;
+  @override
+  int get hashCode => Object.hash(browserSessionId, target);
+}
 
 class DesktopController extends ChangeNotifier {
   DesktopController(
@@ -69,6 +87,19 @@ class DesktopController extends ChangeNotifier {
   bool pluginEnabled(String name) => !disabledPlugins.contains(name);
   final messageChanges = ValueNotifier<int>(0);
   final composerFocus = ValueNotifier<int>(0);
+
+  /// Latest Computer Use session the model drove in the selected
+  /// conversation; [computerUseRequests] asks the shell to show it.
+  ComputerUseBinding? computerUse;
+  final computerUseRequests = ValueNotifier<int>(0);
+  final _computerUseShown = <String>{};
+  int _computerUseSeq = -1;
+  void _forgetComputerUse() {
+    computerUse = null;
+    _computerUseShown.clear();
+    _computerUseSeq = -1;
+  }
+
   List<Json> subscriptionAccounts = [];
   RequestScope? _historyScope;
   RequestScope? _commandScope;
@@ -104,6 +135,47 @@ class DesktopController extends ChangeNotifier {
   };
   Json? get currentWorkspace =>
       workspaces.where((w) => w['workspaceId'] == workspaceId).firstOrNull;
+
+  /// The Workspace a session belongs to: its registered membership, else the
+  /// folder it runs in. The sidebar groups sessions by the same rule.
+  Json? workspaceOf(SessionSummary session) {
+    final registered = workspaces
+        .where((w) => (w['sessionIds'] as List? ?? []).contains(session.id))
+        .firstOrNull;
+    if (registered != null) return registered;
+    final folder = _pathKey(session.cwd);
+    return workspaces.where((w) => _pathKey(w['path']) == folder).firstOrNull;
+  }
+
+  final _pathKeys = <String, String>{};
+  String _pathKey(Object? path) {
+    final raw = '${path ?? ''}';
+    if (_pathKeys.length > 4096) _pathKeys.clear();
+    return _pathKeys[raw] ??= workspacePathKey(raw);
+  }
+
+  int _workspaceTargetRevision = 0;
+
+  /// New sessions start in this Workspace until another one is chosen.
+  void targetWorkspace(String id) {
+    // Even reselecting the provisional default is an explicit user choice.
+    _workspaceTargetRevision++;
+    if (workspaceId == id) return;
+    workspaceId = id;
+    emit();
+  }
+
+  String? get _recentWorkspaceId {
+    final recent =
+        sessions.where((s) => !archivedSessionIds.contains(s.id)).toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    for (final session in recent) {
+      final owner = workspaceOf(session)?['workspaceId'];
+      if (owner is String) return owner;
+    }
+    return null;
+  }
+
   String? selectedId;
   ModelCatalog? catalog;
   ConversationWindow window = ConversationWindow();
@@ -316,6 +388,7 @@ class DesktopController extends ChangeNotifier {
     jobs = [];
     clearProjections();
     window = ConversationWindow();
+    _forgetComputerUse();
     transcript = [];
     _buffer.clear();
     _bufferBytes = 0;
@@ -399,6 +472,7 @@ class DesktopController extends ChangeNotifier {
             loadHistory(after: historyTargetSeq, targetSeq: historyTargetSeq),
           ]).then((_) {});
     final selection = _selection, workspace = workspaceId;
+    final workspaceTargetRevision = _workspaceTargetRevision;
     bool current() => !_disposed && epoch == _epoch && selection == _selection;
     await Future.wait([
       history.catchError((Object e, StackTrace stack) {
@@ -414,13 +488,11 @@ class DesktopController extends ChangeNotifier {
           return;
         }
         preset = selected?.agentPreset ?? preset;
-        if (workspaceId == workspace || workspace == null) {
+        if (_workspaceTargetRevision == workspaceTargetRevision &&
+            (workspaceId == workspace || workspace == null)) {
+          final session = selected;
           workspaceId =
-              workspaces
-                      .where(
-                        (w) => (w['sessionIds'] as List? ?? []).contains(id),
-                      )
-                      .firstOrNull?['workspaceId']
+              (session == null ? null : workspaceOf(session))?['workspaceId']
                   as String? ??
               workspaceId;
         }
@@ -510,7 +582,11 @@ class DesktopController extends ChangeNotifier {
           )
           .toList();
       this.workspaces = objects(workspaces['items']);
-      workspaceId ??= this.workspaces.firstOrNull?['workspaceId'] as String?;
+      // Without a chosen Workspace, continue where the user last worked
+      // instead of whichever Workspace happens to be listed first.
+      workspaceId ??=
+          _recentWorkspaceId ??
+          this.workspaces.firstOrNull?['workspaceId'] as String?;
       emit();
     }();
     _listRequest = task;
@@ -537,14 +613,14 @@ class DesktopController extends ChangeNotifier {
     clearProjections();
     queued = [];
     jobs = [];
+    final session = selected;
     workspaceId =
-        workspaces
-                .where((w) => (w['sessionIds'] as List? ?? []).contains(id))
-                .firstOrNull?['workspaceId']
+        (session == null ? null : workspaceOf(session))?['workspaceId']
             as String? ??
         workspaceId;
     loading = false;
     window = ConversationWindow();
+    _forgetComputerUse();
     transcript = [];
     preferences.sessionId = id;
     final generation = _selection, epoch = _epoch;
@@ -880,6 +956,10 @@ class DesktopController extends ChangeNotifier {
       if (row != null && event['type'] == 'turn/end') {
         _scheduleList();
       }
+      if (frame.sessionId == selectedId &&
+          event['type'] == 'computer-use/activity') {
+        _computerUseActivity(event, data);
+      }
     }
     if (frame.sessionId == selectedId && type == 'session/event') {
       final event = HistoryEvent.fromJson(
@@ -911,6 +991,31 @@ class DesktopController extends ChangeNotifier {
       return;
     }
     emit();
+  }
+
+  /// The Host records each successful `computer_use` call of a connected
+  /// session. Show the session once per control identity, and again when the
+  /// model starts it anew.
+  void _computerUseActivity(Json event, Json data) {
+    final seq = (event['seq'] as num?)?.toInt() ?? -1;
+    final session = data['browserSessionId'], target = data['target'];
+    if (seq <= _computerUseSeq ||
+        data['ownerSessionId'] != selectedId ||
+        session is! String ||
+        session.isEmpty ||
+        session.length > 256 ||
+        target is! String ||
+        !const {'local', 'remote', 'browser'}.contains(target)) {
+      return;
+    }
+    _computerUseSeq = seq;
+    final key = jsonEncode([target, session, data['controlId']]);
+    if (!_computerUseShown.add(key) && data['action'] != 'start') return;
+    if (_computerUseShown.length > 256) {
+      _computerUseShown.remove(_computerUseShown.first);
+    }
+    computerUse = ComputerUseBinding(browserSessionId: session, target: target);
+    computerUseRequests.value++;
   }
 
   Future<String?> create(String cwd) async {
@@ -1145,6 +1250,7 @@ class DesktopController extends ChangeNotifier {
     queued = [];
     jobs = [];
     window = ConversationWindow();
+    _forgetComputerUse();
     transcript = [];
     preferences.sessionId = null;
     emit();
@@ -1469,6 +1575,7 @@ class DesktopController extends ChangeNotifier {
     _projectionPaint?.cancel();
     projectionChanges.dispose();
     composerFocus.dispose();
+    computerUseRequests.dispose();
     _epoch++;
     _selection++;
     _paint?.cancel();

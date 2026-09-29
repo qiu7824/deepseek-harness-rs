@@ -198,14 +198,19 @@ class DshClient {
             allowMalformed: true,
           );
           String message = '服务请求失败';
+          Json details = const {};
           try {
             final decoded = object(jsonDecode(errorBody));
             message = '${decoded['message'] ?? decoded['error'] ?? message}';
+            // Routes report machine codes such as COMPUTER_USE_MANUAL_CONTROL
+            // in the body; the status alone cannot distinguish them.
+            details = decoded;
           } catch (_) {}
           throw DshException(
             'http-${response.statusCode}',
             message,
             outcomeUnknown: mutation,
+            details: details,
           );
         }
         return bytes.takeBytes();

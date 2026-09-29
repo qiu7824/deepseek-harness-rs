@@ -256,7 +256,6 @@ class ConversationWindow {
           prefix.length + delta.length <= 4096) {
         final merged = HistoryEvent.fromJson({
           ...previous.raw,
-          'time': event.raw['time'],
           'data': {
             ...previous.data,
             '__historyStartSeq': previous.startSeq,
@@ -288,6 +287,66 @@ class ConversationWindow {
     _events[event.seq] = event;
     _sizes[event.seq] = size;
     _bytes += size;
+    if (event.type == 'assistant/message') _dropSupersededChunks(event);
+  }
+
+  /// A completed Assistant message cites the streamed chunks it replaces.
+  /// History reads already omit them; dropping them from the live window too
+  /// keeps one long turn's per-token chunks from evicting the conversation.
+  void _dropSupersededChunks(HistoryEvent message) {
+    final sources = message.raw['sourceEventSeqs'];
+    final turn = message.data['turn'], step = message.data['step'];
+    if (sources is! List ||
+        turn == null ||
+        step == null ||
+        (message.raw['surfaceOp'] != null &&
+            message.raw['surfaceOp'] != 'append')) {
+      return;
+    }
+    final ranges = <(int, int)>[];
+    for (final source in sources) {
+      final (start, end) = switch (source) {
+        int seq => (seq, seq),
+        [int first, int last] => (first, last),
+        _ => (-1, -1),
+      };
+      if (start >= 0 && end >= start && end < message.startSeq) {
+        ranges.add((start, end));
+      }
+    }
+    ranges.sort((a, b) => a.$1.compareTo(b.$1));
+    final covered = <(int, int)>[];
+    for (final range in ranges) {
+      if (covered.isNotEmpty && range.$1 <= covered.last.$2 + 1) {
+        final previous = covered.removeLast();
+        covered.add((
+          previous.$1,
+          range.$2 > previous.$2 ? range.$2 : previous.$2,
+        ));
+      } else {
+        covered.add(range);
+      }
+    }
+    final remove = <int>[];
+    var index = 0;
+    for (final event in _events.values) {
+      while (index < covered.length && covered[index].$2 < event.startSeq) {
+        index++;
+      }
+      if (index == covered.length) break;
+      if (event.type == 'assistant/chunk' &&
+          event.data['turn'] == turn &&
+          event.data['step'] == step &&
+          covered[index].$1 <= event.startSeq &&
+          covered[index].$2 >= event.endSeq) {
+        remove.add(event.seq);
+      }
+    }
+    // A partial citation must never discard the uncited tail of a retained run.
+    for (final seq in remove) {
+      _events.remove(seq);
+      _bytes -= _sizes.remove(seq)!;
+    }
   }
 
   void _bound() {
