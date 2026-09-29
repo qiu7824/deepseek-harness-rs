@@ -968,6 +968,7 @@ window.__ModuleLoader__.load({
             const h=react.createElement,id=react.useId(),disabled=busy||environment.status!=="ready";
             const field=(key,placeholder)=>h(react.Fragment,{key},h("label",{htmlFor:id+key},ENVIRONMENT_LABELS[key]),h("input",{id:id+key,"aria-label":ENVIRONMENT_LABELS[key],value:environment.draft[key],placeholder,disabled,onChange:event=>environment.change(key,event.target.value)}));
             return h(react.Fragment,null,
+                h("p",{className:"dshWorkspaceHint"},"DOCX/XLSX 数据读写已内置，无需 Shell、Python 或 WPS；WPS 用于独立的文档页面预览与导出。"),
                 environment.baseline&&h("p",{className:"dshWorkspaceHint"},String(environment.baseline.source||"").startsWith("project:")?"当前使用此工作区的执行环境配置。":"当前继承全局或系统配置；修改后保存为此工作区的执行环境。"),
                 environment.status==="loading"&&h("p",{role:"status"},"正在读取执行环境配置…"),
                 environment.error&&h("p",{role:"alert",className:"dshWorkspaceHint"},environment.error),

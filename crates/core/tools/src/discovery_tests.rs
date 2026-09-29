@@ -79,6 +79,106 @@ fn presented(tools: &Arc<ToolRuntime>, agent: &Arc<dyn dsh_agent::Agent>) -> Vec
 }
 
 #[tokio::test]
+async fn default_document_surface_is_small_and_explicit_extra_capabilities_remain_discoverable() {
+    let (ctx, tools, agent) = setup().await;
+    for name in [
+        "office_read",
+        "office_write",
+        "office_render",
+        "execute_native",
+        "execute_script",
+        "generate_image",
+        "web_search",
+        "mcp__remote__execute",
+        "uu_terminal",
+        "computer_use_js",
+        "code_callers",
+    ] {
+        tools
+            .register(
+                &ctx,
+                tool(
+                    name,
+                    &format!("{name} {}", "Detailed capability description. ".repeat(80)),
+                ),
+            )
+            .unwrap();
+    }
+    let prompt = ctx
+        .get_typed::<Arc<SystemPrompt>>("systemPrompt", false)
+        .unwrap();
+    prompt.section(
+        &ctx,
+        dsh_system_prompt::PromptSection {
+            name: "deferred:script-guidance".into(),
+            order: 1.0,
+            text: crate::scoped_tool_guidance(
+                &ctx,
+                &["execute_script"],
+                "Use the selected script environment.",
+            ),
+            complete: None,
+        },
+    );
+    let context = assemble_context_for(&agent);
+    let first = prompt.assemble(agent.ctx(), &context).await.unwrap();
+    assert!(first.tools.iter().any(|tool| tool.name == "office_read"));
+    assert!(first.tools.iter().any(|tool| tool.name == "office_write"));
+    for name in [
+        "execute_script",
+        "generate_image",
+        "web_search",
+        "mcp__remote__execute",
+        "uu_terminal",
+        "computer_use_js",
+        "code_callers",
+    ] {
+        assert!(!first.tools.iter().any(|tool| tool.name == name));
+    }
+    assert!(
+        first
+            .sections
+            .iter()
+            .find(|section| section.name == "deferred:script-guidance")
+            .unwrap()
+            .text
+            .is_empty()
+    );
+    let all = tools.schemas(Some(agent.scope_key()));
+    assert!(
+        serde_json::to_vec(&first.tools).unwrap().len()
+            < serde_json::to_vec(&all).unwrap().len() / 2
+    );
+    let loaded = call(
+        &tools,
+        &agent,
+        DESCRIBE,
+        json!({"names":["execute_script","generate_image","web_search","mcp__remote__execute"]}),
+    )
+    .await;
+    assert!(!loaded.is_error, "{:?}", loaded.error);
+    let second = prompt.assemble(agent.ctx(), &context).await.unwrap();
+    for name in [
+        "execute_script",
+        "generate_image",
+        "web_search",
+        "mcp__remote__execute",
+    ] {
+        assert!(second.tools.iter().any(|tool| tool.name == name), "{name}");
+    }
+    assert_eq!(
+        second
+            .sections
+            .iter()
+            .find(|section| section.name == "deferred:script-guidance")
+            .unwrap()
+            .text,
+        "Use the selected script environment."
+    );
+    ctx.fiber.dispose().await;
+}
+
+#[tokio::test]
 async fn unchanged_tool_views_keep_schema_and_runtime_context_order() {
     let (ctx, tools, agent) = setup().await;
     for index in (0..40).rev() {

@@ -95,6 +95,8 @@ chinesesimp.DirectoryNotWritable=无法写入所选目录，请选择有写入�
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+[InstallDelete]
+Type: files; Name: "{app}\host\web\dist\plugins\ui-task-execution.js"
 #include ArtDir + "\installer-ui.iss"
 
 [Icons]

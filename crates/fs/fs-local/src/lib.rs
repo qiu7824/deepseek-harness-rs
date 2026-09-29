@@ -1,9 +1,12 @@
 //! Host-filesystem implementation of `ctx.fs`. Rust port of
 //! `@deepseek-ai/dsh-fs-local`.
 
+mod binary;
 pub mod fsio;
 pub mod index;
 pub mod invariant;
+#[cfg(test)]
+mod text_publication_tests;
 pub mod win32;
 
 pub use fsio::{

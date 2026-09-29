@@ -192,6 +192,22 @@ pub trait FileSystem: Send + Sync + 'static {
         sandbox_policy: Option<&SandboxExecutionPolicy>,
     ) -> Result<FsWriteOutcome, FsError>;
 
+    /// Publish actual binary bytes with the same identity and cancellation
+    /// guards as text writes. Unsupported providers never fall back to Host I/O.
+    async fn write_bytes(
+        &self,
+        _target: &FsTarget,
+        _content: &[u8],
+        _expected: Option<&FsWriteIntent>,
+        _signal: Option<AbortPredicate>,
+        _sandbox_policy: Option<&SandboxExecutionPolicy>,
+    ) -> Result<crate::FsBinaryWriteOutcome, FsError> {
+        Err(FsError::new(
+            "Binary publication is unavailable in this filesystem",
+            crate::FsErrorCode::FsIoError,
+        ))
+    }
+
     /// Atomically edit literal text. When supplied, the version guard is
     /// checked before matching so stale content reports `FS_STALE_VERSION`;
     /// omission edits the current content without a freshness precondition.

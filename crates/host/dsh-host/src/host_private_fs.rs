@@ -120,7 +120,11 @@ impl HostPrivateFileSystem {
                     // Store verifies immutable resource identity and rejects
                     // linked resource directories before returning paths.
                     for row in store.list_brief().unwrap_or_default() {
-                        if row.owner != *owner || row.path.is_empty() || row.state == "reclaimed" {
+                        if row.owner != *owner
+                            || row.path.is_empty()
+                            || row.state == "reclaimed"
+                            || mutation && row.kind == "trash"
+                        {
                             continue;
                         }
                         if dsh_workspace_resources::checked_path(Path::new(&row.path)).is_err() {
@@ -183,6 +187,24 @@ impl HostPrivateFileSystem {
 
 #[async_trait::async_trait]
 impl FileSystem for HostPrivateFileSystem {
+    async fn write_bytes(
+        &self,
+        target: &FsTarget,
+        content: &[u8],
+        expected: Option<&FsWriteIntent>,
+        signal: Option<AbortPredicate>,
+        policy: Option<&dsh_sandbox::SandboxExecutionPolicy>,
+    ) -> Result<FsBinaryWriteOutcome, FsError> {
+        self.local
+            .write_bytes(
+                &self.checked(target, false, true).await?,
+                content,
+                expected,
+                signal,
+                policy,
+            )
+            .await
+    }
     fn for_tool(&self, owner: Option<&str>) -> Option<Arc<dyn FileSystem>> {
         Some(Arc::new(Self {
             local: self.local.clone(),

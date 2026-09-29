@@ -8,6 +8,7 @@ fn select(
     candidates
         .into_iter()
         .filter(|root| root.is_absolute())
+        .filter(|root| dsh_shell::powershell::automatic_candidate_allowed(&root.join("python.exe")))
         .filter_map(|root| std::fs::canonicalize(root).ok())
         .find_map(|root| {
             if profile
@@ -17,6 +18,9 @@ fn select(
                 return None;
             }
             let executable = root.join("python.exe");
+            if !dsh_shell::powershell::automatic_candidate_allowed(&executable) {
+                return None;
+            }
             let dll = std::fs::read_dir(&root)
                 .ok()?
                 .filter_map(Result::ok)
@@ -46,15 +50,18 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("dsh-python-discovery-{}", uuid::Uuid::new_v4()));
         let alias = root.join("alias");
+        let foreign = root.join(".codex/private-runtime");
         let install = root.join("python");
         std::fs::create_dir_all(&alias).unwrap();
         std::fs::write(alias.join("python.exe"), b"alias").unwrap();
-        std::fs::create_dir_all(install.join("Lib")).unwrap();
-        for name in ["python.exe", "python312.dll", "Lib/os.py"] {
-            std::fs::write(install.join(name), b"fixture").unwrap();
+        for directory in [&foreign, &install] {
+            std::fs::create_dir_all(directory.join("Lib")).unwrap();
+            for name in ["python.exe", "python312.dll", "Lib/os.py"] {
+                std::fs::write(directory.join(name), b"fixture").unwrap();
+            }
         }
         assert_eq!(
-            select([alias.clone(), install.clone()], None),
+            select([alias.clone(), foreign.clone(), install.clone()], None),
             Some(PathBuf::from(crate::display_workspace_path(
                 &std::fs::canonicalize(&install)
                     .unwrap()
@@ -62,6 +69,7 @@ mod tests {
                     .to_string_lossy()
             )))
         );
+        assert!(select([foreign], None).is_none());
         assert!(select([alias, install.clone()], Some(&install)).is_none());
         std::fs::remove_dir_all(root).unwrap();
     }

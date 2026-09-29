@@ -162,6 +162,10 @@ pub(super) fn filter() -> Result<dsh_host_webserver::ConnectionFilter, String> {
 }
 
 #[cfg(test)]
+#[path = "native_file_attachment_tests.rs"]
+mod file_attachment_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -30,6 +30,12 @@ pub(super) const IDS: [&str; 9] = [
 const POSITIVE_TTL: u64 = 24 * 60 * 60;
 const NEGATIVE_TTL: u64 = 60;
 const MAX_CACHE_BYTES: u64 = 128 * 1024;
+fn builtin_office_data() -> Value {
+    json!({"implementation":"builtin-rust","available":true,"formats":["docx","xlsx"],
+        "tools":["office_read","office_write"],"requiresShell":false,"requiresPython":false,
+        "requiresWps":false,"requiresSandboxProcess":false,"permissionScope":"standard-session-file-permissions",
+        "verificationScope":"file-structure","visualRendering":"separate office_render/WPS capability"})
+}
 const PYTHON_PROBE: &str = "import sys,json,importlib.util,sysconfig; print(json.dumps({'version':sys.version.split()[0],'path':sys.executable,'packageRoots':list(set([sysconfig.get_path('purelib'),sysconfig.get_path('platlib')])),'modules':{n:importlib.util.find_spec(n) is not None for n in ['PIL','pypdf','fitz','openpyxl','docx','pptx','reportlab']}}))";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,7 +203,7 @@ impl EnvironmentCapabilities {
                     (path, stamp)
                 })
                 .collect();
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&json!({"automaticDiscoveryPolicy":1,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
             "environment":environment,"pathDirectories":path_directories,"node":self.paths.node_command(),"runtimeDirectory":self.paths.paths["environmentDirectory"]})).unwrap()))
     }
 
@@ -266,6 +272,16 @@ impl EnvironmentCapabilities {
                 value["cacheHit"] = json!(true);
                 value["coalesced"] = json!(true);
             }
+        }
+        if id == "wps"
+            && let Ok(value) = &mut result
+        {
+            value["label"] = json!("WPS 页面预览与导出");
+            value["capabilityScope"] = json!(
+                "WPS visual conversion application only; program location does not verify export"
+            );
+            value["applicationStarted"] = json!(false);
+            value["independentDataTools"] = builtin_office_data();
         }
         result
     }
@@ -398,24 +414,22 @@ impl EnvironmentCapabilities {
             );
             return status;
         }
-        let command = match id {
+        let configured = match id {
+            "python" => std::env::var("DSH_PYTHON_COMMAND").ok(),
+            "wps" => std::env::var("DSH_WPS_COMMAND").ok(),
+            _ => None,
+        }
+        .filter(|value| !value.trim().is_empty());
+        let command = configured.clone().unwrap_or_else(|| match id {
             "pwsh" => dsh_shell::powershell::locate_powershell().unwrap_or_else(|| "pwsh".into()),
-            "python" => std::env::var("DSH_PYTHON_COMMAND")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| {
-                    self.paths
-                        .python_command()
-                        .map(|path| path.to_string_lossy().into_owned())
-                })
+            "python" => self
+                .paths
+                .python_command()
+                .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into()),
-            "wps" => std::env::var("DSH_WPS_COMMAND")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(find_wps)
-                .unwrap_or_else(|| "wps".into()),
+            "wps" => find_wps().unwrap_or_else(|| "wps".into()),
             _ => id.into(),
-        };
+        });
         let mut result = json!({"status":"missing","path":Value::Null,"version":Value::Null});
         let task = async {
             let path = self
@@ -441,6 +455,11 @@ impl EnvironmentCapabilities {
                         error,
                     )
                 })?;
+            if configured.is_none()
+                && !dsh_shell::powershell::automatic_candidate_allowed(Path::new(&path))
+            {
+                return Err(("missing", "Automatic discovery excludes other applications' private runtime caches; select an independent runtime or configure an explicit executable.".into()));
+            }
             result["path"] = json!(path);
             if id == "wps" {
                 result["status"] = json!("located");
@@ -564,18 +583,19 @@ impl EnvironmentCapabilities {
         let mut text = String::from(
             "Host environment capabilities: reuse the paths below while valid. Use environment_probe for missing details or refresh after an execution failure; do not repeat shell discovery for known capabilities. These are host diagnostics, not proof of sandbox/remote access. Actual operations must use normal tools and permissions.\n",
         );
-        text.push_str("For build tasks discover the needed toolchain (including cargo) once, then validate it in the selected execution context before starting a long/background build. Access denied means unknown accessibility, not missing installation. Do not rotate shell wrappers, guess installation directories, or change global settings after repeated failures; follow the diagnostic recovery and permission flow. Background started means running, not passed. For Office/PDF conversion and visual inspection use office_render: it runs the fixed WPS host bridge and Windows PDF renderer without Python, ffmpeg or LibreOffice. Do not guess WPS command-line switches or retry COM activation through sandboxed shells.\n");
+        text.push_str("For build tasks discover the needed toolchain (including cargo) once, then validate it in the selected execution context before starting a long/background build. Access denied means unknown accessibility, not missing installation. Do not rotate shell wrappers, guess installation directories, or change global settings after repeated failures; follow the diagnostic recovery and permission flow. Background started means running, not passed.\n");
+        text.push_str("DOCX/XLSX data reading and simple document creation are built into the Host: use office_read and office_write directly. They do not require a shell, Python, a sandbox process or WPS, and follow ordinary file permissions. A missing WPS application does not disable these data tools. The separate office_render tool uses the fixed WPS bridge for DOCX/XLSX/PPTX page conversion and Windows PDF rendering for visual inspection; locating WPS is not proof that export succeeds. Data counts or package structure do not establish agreement with a source document. Do not guess WPS switches or retry COM activation through sandboxed shells.\n");
         for (id, record) in records
             .iter()
             .filter(|(_, record)| record.valid(&environment, now()))
         {
-            let row = json!({"id":id,"status":record.result["status"],"path":record.result["path"],"version":record.result["version"],"modules":record.result["modules"]});
+            let row = json!({"id":id,"status":record.result["status"],"path":record.result["path"],"version":record.result["version"],"modules":record.result["modules"],"scope":if id=="wps"{"WPS page rendering application only; independent of built-in DOCX/XLSX data tools"}else{"external program"}});
             text.push_str(&row.to_string());
             text.push('\n');
         }
         if records.is_empty() {
             text.push_str(
-                "No verified capabilities cached. Query only capabilities needed for the task.\n",
+                "No external-program probes cached. Query only external programs needed for the operation; built-in Office data tools do not need a program probe.\n",
             );
         }
         text.chars().take(4096).collect()
@@ -688,7 +708,7 @@ pub(super) fn install(
     let probe = capabilities.clone();
     tools.register(ctx, ToolDefinition {
         name: "environment_probe".into(),
-        description: "Get cached host program paths, versions and supported capabilities. Request only required names: python, node, git, rg, pwsh, ffmpeg, wps, rustc, cargo. Reuse results; refresh only after failure or environment changes. Python module checks use isolated mode. WPS is located without launching Office. This does not establish sandbox or remote permissions; use environment_validate for the selected execution context.".into(),
+        description: "Get cached host program paths and versions plus the independent built-in DOCX/XLSX data capability. Request only needed external programs: python, node, git, rg, pwsh, ffmpeg, wps, rustc, cargo. Reuse results; refresh only after failure or environment changes. Python module checks use isolated mode. WPS only locates the application used for page conversion without launching it; office_read/office_write require no WPS, Python or shell. Program discovery does not establish sandbox/remote permissions; use environment_validate for selected process execution.".into(),
         parameters: json!({"type":"object","properties":{"names":{"type":"array","minItems":1,"maxItems":9,"items":{"type":"string","enum":IDS}},"refresh":{"type":"boolean"}},"required":["names"],"additionalProperties":false}),
         output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_, value| Ok(vec![ContentBlock::Text { text: value.to_string() }])), presentation_meta: None },
         timeout_ms: Some(60000), is_concurrency_safe: Some(Arc::new(|_| true)),
@@ -700,7 +720,7 @@ pub(super) fn install(
                 for id in args["names"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                     if seen.insert(id) { results.push(probe.inspect(id, args["refresh"].as_bool().unwrap_or(false), signal.clone()).await?); }
                 }
-                Ok(json!({"capabilities":results,"executionWorld":"host"}))
+                Ok(json!({"capabilities":results,"builtinOfficeData":builtin_office_data(),"executionWorld":"host"}))
             })
         }), finalize_content: None, present_call: None, present_result: None,
     })?;

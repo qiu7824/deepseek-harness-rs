@@ -10,6 +10,7 @@ cordis = { path = "../../vendor/cordis" }
 dsh-code-runtime = { path = "../code-runtime" }
 dsh-sandbox = { path = "../../sandbox/sandbox" }
 dsh-subprocess = { path = "../../subprocess/subprocess" }
+dsh-user-approval = { path = "../../interaction/user-approval" }
 futures = { workspace = true }
 parking_lot = { workspace = true }
 serde_json = { workspace = true }
@@ -17,6 +18,12 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+dsh-agent = { path = "../../core/agent" }
+dsh-session = { path = "../../core/session" }
+dsh-scope = { path = "../../core/scope" }
+dsh-system-prompt = { path = "../../core/system-prompt" }
+dsh-tools = { path = "../../core/tools" }
+dsh-timeout-policy = { path = "../../guard/timeout-policy" }
 tokio = { workspace = true, features = ["test-util"] }
 dsh-sandbox-local = { path = "../../sandbox/sandbox-local" }
 dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }

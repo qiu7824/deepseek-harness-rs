@@ -142,6 +142,7 @@ pub(super) struct ExecutionProfiles {
     profile_path: PathBuf,
     cache_path: PathBuf,
     state: Mutex<ProfileFile>,
+    defaults: super::execution_defaults::Defaults,
     checks: Mutex<BTreeMap<String, Check>>,
     gates: Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>,
     save_gate: tokio::sync::Mutex<()>,
@@ -231,7 +232,10 @@ fn locate(names: &[&str]) -> Option<String> {
             .filter(|p| p.is_absolute())
         {
             let path = dir.join(name);
-            if path.is_file() && !is_app_execution_alias(&path) {
+            if path.is_file()
+                && !is_app_execution_alias(&path)
+                && dsh_shell::powershell::automatic_candidate_allowed(&path)
+            {
                 return Some(path.to_string_lossy().into_owned());
             }
         }
@@ -320,6 +324,7 @@ impl ExecutionProfiles {
             .filter(|s| s.version == 1 && s.checks.len() <= MAX_CHECKS)
             .map(|s| s.checks)
             .unwrap_or_default();
+        let defaults = super::execution_defaults::Defaults::load(&paths.paths["dataDirectory"]);
         let service = Arc::new_cyclic(|own| Self {
             own: own.clone(),
             ctx: ctx.clone(),
@@ -329,6 +334,7 @@ impl ExecutionProfiles {
             profile_path,
             cache_path,
             state: Mutex::new(state),
+            defaults,
             checks: Mutex::new(checks),
             gates: Mutex::new(BTreeMap::new()),
             save_gate: tokio::sync::Mutex::new(()),
@@ -364,19 +370,23 @@ impl ExecutionProfiles {
         if let Some(path) = &prefs.shell_path {
             return Ok((kind, Some(ensure_file(path.clone(), "Shell")?)));
         }
-        let found = match kind {
-            ShellKind::Powershell => dsh_shell::powershell::locate_powershell(),
-            ShellKind::Bash => locate(if cfg!(windows) {
-                &["bash.exe"]
-            } else {
-                &["bash"]
-            }),
-            ShellKind::Zsh => locate(if cfg!(windows) {
-                &["zsh.exe"]
-            } else {
-                &["zsh"]
-            }),
-        };
+        let found = self
+            .defaults
+            .select(&format!("shell:{}", kind.as_str()), || match kind {
+                ShellKind::Powershell => dsh_shell::powershell::locate_powershell(),
+                ShellKind::Bash => locate(if cfg!(windows) {
+                    &["bash.exe"]
+                } else {
+                    &["bash"]
+                }),
+                ShellKind::Zsh => locate(if cfg!(windows) {
+                    &["zsh.exe"]
+                } else {
+                    &["zsh"]
+                }),
+            })?
+            .map(|path| ensure_file(path, "自动固定的 Shell"))
+            .transpose()?;
         Ok((kind, found))
     }
 
@@ -399,18 +409,23 @@ impl ExecutionProfiles {
         {
             return ensure_file(path, "Python").map(Some);
         }
-        Ok(self
-            .paths
-            .python_command()
-            .map(|p| p.to_string_lossy().into_owned())
-            .filter(|p| Path::new(p).is_file())
-            .or_else(|| {
-                locate(if cfg!(windows) {
-                    &["python.exe", "python3.exe"]
-                } else {
-                    &["python3", "python"]
-                })
-            }))
+        self.defaults
+            .select("python", || {
+                self.paths
+                    .python_command()
+                    .filter(|path| {
+                        path.is_file() && dsh_shell::powershell::automatic_candidate_allowed(path)
+                    })
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .or_else(|| {
+                        locate(if cfg!(windows) {
+                            &["python.exe", "python3.exe"]
+                        } else {
+                            &["python3", "python"]
+                        })
+                    })
+            })
+            .map(|path| path.filter(|path| Path::new(path).is_file()))
     }
 
     pub(super) fn snapshot(&self, session: Option<&str>, cwd: &str) -> Result<Value, String> {
@@ -548,24 +563,34 @@ impl ExecutionProfiles {
         match id {
             "shell" | "pwsh" => self.shell(&prefs).map(|(_, p)| p),
             "python" => self.python(&prefs, cwd),
-            "wps" => prefs
-                .wps_path
-                .map(|p| ensure_file(p, "WPS"))
-                .transpose()
-                .map(|p| p.or_else(crate::environment_capabilities::find_wps)),
-            name => prefs
-                .toolchain_paths
-                .get(name)
-                .map(|p| ensure_file(p.clone(), name))
-                .transpose()
-                .map(|p| {
-                    p.or_else(|| {
+            "wps" => match prefs.wps_path {
+                Some(path) => ensure_file(path, "WPS").map(Some),
+                None => self
+                    .defaults
+                    .select("wps", crate::environment_capabilities::find_wps)
+                    .map(|path| path.filter(|path| Path::new(path).is_file())),
+            },
+            name => {
+                if let Some(path) = prefs.toolchain_paths.get(name) {
+                    return ensure_file(path.clone(), name).map(Some);
+                }
+                self.defaults
+                    .select(&format!("tool:{name}"), || {
+                        let node = self.paths.node_command();
+                        if name == "node"
+                            && Path::new(&node).is_absolute()
+                            && Path::new(&node).is_file()
+                            && dsh_shell::powershell::automatic_candidate_allowed(Path::new(&node))
+                        {
+                            return Some(node);
+                        }
                         locate(&[&format!(
                             "{name}{}",
                             if cfg!(windows) { ".exe" } else { "" }
                         )])
                     })
-                }),
+                    .map(|path| path.filter(|path| Path::new(path).is_file()))
+            }
         }
     }
 
@@ -1030,6 +1055,11 @@ fn probe_args(
 }
 
 impl ExecutionProfileResolver for ExecutionProfiles {
+    fn recovery_identity(&self, session: Option<&str>, workspace: &str) -> Option<String> {
+        let workspace = absolute_directory(workspace).ok()?;
+        let (scope, profile) = self.profile(session, &workspace);
+        Some(hash(&json!({"scope":scope,"profile":profile})))
+    }
     fn validate(
         &self,
         request: dsh_shell::ExecutionValidationRequest,
@@ -1116,7 +1146,7 @@ impl ExecutionProfileResolver for ExecutionProfiles {
             }
         }
         let context_id = hash(
-            &json!({"host":self.host.environment(),"profile":profile,"cwd":cwd,"shell":shell_path.as_deref().map(file_stamp),"python":python_path.as_deref().map(file_stamp),"toolchains":toolchain_paths.iter().map(|(name,path)| (name,file_stamp(path))).collect::<BTreeMap<_,_>>()}),
+            &json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"profile":profile,"shell":shell_path.as_deref().map(file_stamp),"python":python_path.as_deref().map(file_stamp),"toolchains":toolchain_paths.iter().map(|(name,path)| (name,file_stamp(path))).collect::<BTreeMap<_,_>>()}),
         );
         Ok(ResolvedExecutionProfile {
             context_id,
@@ -1143,7 +1173,7 @@ impl ExecutionProfiles {
             output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text {text:value.to_string()}])), presentation_meta: None }, timeout_ms: Some(400000), is_concurrency_safe: Some(Arc::new(|_|true)),
             execute: Arc::new(move |args,exec| { let service=service.clone(); let args=args.clone(); let signal=exec.signal.lock().clone(); let agent=exec.agent.clone(); Box::pin(async move {
                 let session=agent.as_ref().map(|a|a.session().header().id.as_str());
-                let cwd=agent.as_ref().and_then(|a|a.session().header().cwd.as_deref()).map(str::to_string).unwrap_or_else(||std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());
+                let cwd=agent.as_ref().and_then(|a|a.session().header().cwd.clone()).ok_or_else(||ToolBodyError::coded("当前会话未选择工作区，无法验证执行环境。","EnvironmentError","ENVIRONMENT_NOT_READY"))?;
                 service.inspect(args["name"].as_str().unwrap_or_default(),args["level"].as_str().unwrap_or("launch"),args["module"].as_str(),session,&cwd,args["refresh"].as_bool().unwrap_or(false),signal).await.map_err(ToolBodyError::plain)
             }) }), finalize_content: None, present_call: None, present_result: None,
         })?;
@@ -1152,7 +1182,7 @@ impl ExecutionProfiles {
         prompt.context(ctx,dsh_system_prompt::PromptContext { name:"environment:execution-profile".into(),order:82.0,text:dsh_system_prompt::PromptText::Provider(Arc::new(move |assembly| {
             if !weak.upgrade().is_some_and(|t|t.get("environment_validate",assembly.scope.as_ref()).is_some()) {return String::new();}
             let session=assembly.field_str("sessionId");
-            let cwd=session.and_then(|id|service.ctx.get_typed::<Arc<dsh_session::SessionStore>>("sessions", false).and_then(|s|s.get(&dsh_session::session_id(id)))).and_then(|s|s.header().cwd.clone()).unwrap_or_else(||std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());
+            let Some(cwd)=session.and_then(|id|service.ctx.get_typed::<Arc<dsh_session::SessionStore>>("sessions", false).and_then(|s|s.get(&dsh_session::session_id(id)))).and_then(|s|s.header().cwd.clone()) else{return String::new();};
             match service.snapshot(session,&cwd) {Ok(snapshot)=>format!("Selected execution environment (location is not proof of runtime access; use environment_validate once when needed): {}",prompt_snapshot(snapshot)).chars().take(4096).collect(),Err(e)=>format!("Selected execution environment unavailable: {e}")}
         })) });
         Ok(())

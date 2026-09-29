@@ -14,17 +14,36 @@ use dsh_subprocess::{
     SubprocessCollect, SubprocessOutputMode, SubprocessRuntime, SubprocessSpawnSpec,
     SubprocessStdinMode, SubprocessStdio,
 };
+use dsh_user_approval::execution_clock::ExecutionClock as ApprovalClock;
 use futures::FutureExt;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
 
 const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/runner.cjs");
 const RUNNER_SOURCE: &str = include_str!("../assets/runner.cjs");
 #[cfg(test)]
+mod approval_tests;
+#[cfg(test)]
 mod startup_tests;
 const STARTUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
-type ExecutionClock = Arc<parking_lot::Mutex<Option<std::time::Instant>>>;
+type ExecutionClock = Arc<parking_lot::Mutex<Option<Arc<ApprovalClock>>>>;
+
+async fn execution_budget(clock: Arc<ApprovalClock>, budget: std::time::Duration) {
+    let mut pause = clock.subscribe_pause();
+    loop {
+        let remaining = budget.saturating_sub(clock.elapsed());
+        if remaining.is_zero() {
+            return;
+        }
+        let paused = *pause.borrow_and_update();
+        if paused {
+            let _ = pause.changed().await;
+        } else {
+            tokio::select! { _=tokio::time::sleep(remaining)=>{}, _=pause.changed()=>{} }
+        }
+    }
+}
 
 async fn wait_for_dispatch(clock: &ExecutionClock) {
     while clock.lock().is_none() {
@@ -321,7 +340,7 @@ impl CodeRuntime for NodeCodeRuntime {
             let clock = started.clone();
             let mut request = request;
             request.signal = Some(Arc::new(move || {
-                clock.lock().is_some_and(|start| {
+                clock.lock().as_ref().is_some_and(|start| {
                     start.elapsed() >= std::time::Duration::from_millis(budget)
                 }) || previous.as_ref().is_some_and(|abort| abort())
             }));
@@ -338,7 +357,7 @@ impl CodeRuntime for NodeCodeRuntime {
                 started.clone(),
             );
             tokio::pin!(run);
-            let cancelled = wait_for_cancellation(cancellation, lifecycle);
+            let cancelled = wait_for_cancellation(cancellation.clone(), lifecycle.clone());
             tokio::pin!(cancelled);
             let startup = tokio::select! {
                 result=&mut run=>Some(result),
@@ -349,11 +368,14 @@ impl CodeRuntime for NodeCodeRuntime {
             let result = match startup {
                 Some(result) => result,
                 None => {
-                    let elapsed = started.lock().expect("dispatch clock was set").elapsed();
-                    let remaining =
-                        std::time::Duration::from_millis(budget).saturating_sub(elapsed);
+                    let clock = started
+                        .lock()
+                        .as_ref()
+                        .expect("dispatch clock was set")
+                        .clone();
                     tokio::select! {
-                        result=tokio::time::timeout(remaining,&mut run)=>result.unwrap_or_else(|_|Ok(failure(CodeRunFailureKind::Timeout,"elapsed PTC deadline reached"))),
+                        result=&mut run=>result,
+                        _=execution_budget(clock,std::time::Duration::from_millis(budget))=>Ok(failure(CodeRunFailureKind::Timeout,"elapsed PTC deadline reached")),
                         _=&mut cancelled=>Ok(failure(CodeRunFailureKind::Abort,"aborted")),
                     }
                 }
@@ -373,8 +395,22 @@ impl CodeRuntime for NodeCodeRuntime {
                     .await;
                 }
             }
+            // A subprocess can report its termination before the cancellation
+            // poller wakes. Preserve the caller's Stop instead of relabeling
+            // that same termination as startup failure or elapsed timeout.
+            if cancellation.as_ref().is_some_and(|signal| signal()) || !lifecycle.accepting() {
+                return Ok(failure(
+                    CodeRunFailureKind::Abort,
+                    if started.lock().is_some() {
+                        "aborted"
+                    } else {
+                        "aborted before program dispatch"
+                    },
+                ));
+            }
             if started
                 .lock()
+                .as_ref()
                 .is_some_and(|start| start.elapsed() >= std::time::Duration::from_millis(budget))
                 && !matches!(&result,Ok(result) if result.error.as_ref().is_some_and(|error|error.kind==CodeRunFailureKind::Abort))
             {
@@ -554,7 +590,10 @@ async fn run_one(
     if let Some(dispatch) = &request.on_dispatch {
         dispatch()?;
     }
-    *started.lock() = Some(std::time::Instant::now());
+    let program_clock = ApprovalClock::start();
+    *started.lock() = Some(program_clock.clone());
+    let approval_context = program_clock.context();
+    let mut approval_pause = program_clock.subscribe_pause();
     write_frame(
         &mut stdin,
         &json!({
@@ -572,20 +611,43 @@ async fn run_one(
     .await?;
     let output = Arc::new(tokio::sync::Mutex::new(stdin));
     let mut binding_tasks: JoinSet<Result<(), String>> = JoinSet::new();
+    // Approval notifications can interrupt a read between pipe chunks. Keep
+    // partial NDJSON bytes with cancellation-safe read_until across selections.
+    let mut line = Vec::new();
+    let frame_limit = config
+        .max_output_bytes
+        .max(8 * 1024 * 1024)
+        .saturating_add(64 * 1024);
 
     loop {
-        let mut line = String::new();
-        let read = if binding_tasks.is_empty() {
-            reader
-                .read_line(&mut line)
-                .await
-                .map_err(|error| format!("code-runtime-node: stdout read failed: {error}"))?
-        } else {
-            tokio::select! {
-                read = reader.read_line(&mut line) => {
+        if line.len() as u64 > frame_limit {
+            return Ok(failure(
+                CodeRunFailureKind::OutputLimit,
+                "code runtime protocol frame exceeds its retained byte limit",
+            ));
+        }
+        let mut bounded_reader = (&mut reader).take(
+            frame_limit
+                .saturating_add(1)
+                .saturating_sub(line.len() as u64),
+        );
+        let bindings_pending = !binding_tasks.is_empty();
+        let read = tokio::select! {
+                changed=approval_pause.changed()=>{
+                    if changed.is_ok() {
+                        let paused=*approval_pause.borrow_and_update();
+                        let remaining=std::time::Duration::from_millis(config.max_wall_ms).saturating_sub(program_clock.elapsed()).as_millis() as u64;
+                        let mut output=output.lock().await;
+                        // The child may have completed while the final approval
+                        // resumed; its normal stdout completion remains authoritative.
+                        let _=write_frame(&mut **output,&json!({"type":"approval_state","paused":paused,"remaining_ms":remaining})).await;
+                    }
+                    continue;
+                }
+                read = bounded_reader.read_until(b'\n', &mut line) => {
                     read.map_err(|error| format!("code-runtime-node: stdout read failed: {error}"))?
                 }
-                outcome = binding_tasks.join_next() => {
+                outcome = binding_tasks.join_next(), if bindings_pending => {
                     match outcome {
                         Some(Ok(Ok(()))) => continue,
                         Some(Ok(Err(error))) => return Err(error),
@@ -593,8 +655,13 @@ async fn run_one(
                         None => continue,
                     }
                 }
-            }
         };
+        if line.len() as u64 > frame_limit {
+            return Ok(failure(
+                CodeRunFailureKind::OutputLimit,
+                "code runtime protocol frame exceeds its retained byte limit",
+            ));
+        }
         if read == 0 {
             child.terminate();
             let _ = child.wait_for_exit(None).await;
@@ -612,8 +679,9 @@ async fn run_one(
                 ),
             ));
         }
-        let frame: Value = serde_json::from_str(line.trim())
+        let frame: Value = serde_json::from_slice(&line)
             .map_err(|error| format!("code-runtime-node: invalid NDJSON: {error}"))?;
+        line.clear();
         match frame.get("type").and_then(Value::as_str) {
             Some("binding_call") => {
                 let id = frame
@@ -637,11 +705,12 @@ async fn run_one(
                 let function = function.clone();
                 let args = frame.get("args").cloned().unwrap_or(Value::Null);
                 let output = output.clone();
+                let approval_context = approval_context.clone();
                 binding_tasks.spawn(async move {
                     // Expected errors reject only this JavaScript call. Unexpected
                     // panics remain isolated at the same binding boundary.
-                    let result = std::panic::AssertUnwindSafe(async move { function(args).await })
-                        .catch_unwind().await;
+                    let result = approval_context.scope(std::panic::AssertUnwindSafe(async move { function(args).await })
+                        .catch_unwind()).await;
                     let frame = match result {
                         Ok(Ok(value)) => json!({ "type": "binding_result", "id": id, "ok": true, "value": value }),
                         Ok(Err(message)) => json!({ "type": "binding_result", "id": id, "ok": false, "name": "Error", "message": message }),

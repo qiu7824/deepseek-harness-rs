@@ -1,6 +1,37 @@
 //! Shared host discovery. A located executable does not imply sandbox access.
 use std::path::{Path, PathBuf};
 
+/// Automatic discovery must not borrow another agent application's private
+/// runtime or plugin cache. Explicit profile paths are handled separately.
+pub fn automatic_candidate_allowed(path: &Path) -> bool {
+    fn allowed(path: &Path) -> bool {
+        let value = path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        ![
+            "/.codex/",
+            "/codex-runtimes/",
+            "/.cache/codex",
+            "/codex/resources/",
+            "/openai/codex/",
+            "/.claude/",
+            "/.cursor/",
+            "/.windsurf/",
+            "/.codeium/",
+            "/.hermes/",
+        ]
+        .iter()
+        .any(|part| value.contains(part))
+            && !value.contains("/microsoft/windowsapps/")
+    }
+    path.is_absolute()
+        && allowed(path)
+        && std::fs::canonicalize(path)
+            .map(|resolved| allowed(&resolved))
+            .unwrap_or(true)
+}
+
 fn candidates(
     program_files: Option<&Path>,
     paths: &[PathBuf],
@@ -50,7 +81,9 @@ pub fn locate_powershell() -> Option<String> {
                 .replace('\\', "/")
                 .to_ascii_lowercase();
             // Execution aliases cannot be validated like ordinary installed binaries.
-            !normalized.contains("/microsoft/windowsapps/") && path.is_file()
+            !normalized.contains("/microsoft/windowsapps/")
+                && automatic_candidate_allowed(path)
+                && path.is_file()
         })
         .map(|path| path.to_string_lossy().into_owned())
 }
@@ -149,5 +182,21 @@ mod tests {
                 root.join("System32/WindowsPowerShell/v1.0/powershell.exe")
             ]
         );
+    }
+    #[test]
+    fn private_agent_caches_are_not_automatic_shell_candidates() {
+        let root = std::env::temp_dir();
+        for tail in [
+            "user/.codex/vendor/pwsh.exe",
+            "user/.cache/codex-runtimes/runtime/pwsh.exe",
+            "user/.cursor/extensions/tools/pwsh.exe",
+            "user/.claude/cache/pwsh.exe",
+        ] {
+            assert!(!automatic_candidate_allowed(&root.join(tail)), "{tail}");
+        }
+        assert!(automatic_candidate_allowed(
+            &root.join("independent-install/PowerShell/7/pwsh.exe")
+        ));
+        assert!(!automatic_candidate_allowed(Path::new("relative/pwsh.exe")));
     }
 }

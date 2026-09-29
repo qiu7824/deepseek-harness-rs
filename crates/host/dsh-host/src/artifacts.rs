@@ -11,7 +11,7 @@ use dsh_workspace_resources::{checked_path, digest, persist_json};
 use http::{Response, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::{
     collections::BTreeMap,
     fs,
@@ -361,6 +361,17 @@ impl Artifacts {
         );
         Ok(())
     }
+    pub(crate) fn file_identity(root: &Path, relative: &str) -> Result<Value, String> {
+        let relative = super::web_preview::safe_relative(relative).ok_or("文件路径无效")?;
+        let path = root.join(relative);
+        checked_path(&path)?;
+        let stamp = stamp(&path)?;
+        if stamp.size > 128 * 1024 * 1024 {
+            return Err("文件操作上限为 128 MiB".into());
+        }
+        Ok(json!({"etag":etag(&stamp),"bytes":stamp.size,"sha256":file_digest(&path)?}))
+    }
+
     fn file_action(
         &self,
         owner: &str,
@@ -368,7 +379,22 @@ impl Artifacts {
         args: &Value,
         resources: &Resources,
     ) -> Result<Value, String> {
+        self.file_action_tracked(owner, root, args, resources, &|| false, &|| Ok(()))
+    }
+
+    pub(crate) fn file_action_tracked(
+        &self,
+        owner: &str,
+        root: &Path,
+        args: &Value,
+        resources: &Resources,
+        signal: &dyn Fn() -> bool,
+        mark_effects: &dyn Fn() -> Result<(), String>,
+    ) -> Result<Value, String> {
         let _transaction = self.indexes.lock();
+        if signal() {
+            return Err("文件操作已取消".into());
+        }
         let action = args
             .get("action")
             .and_then(Value::as_str)
@@ -420,7 +446,7 @@ impl Artifacts {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 checked_path(parent)?;
             }
-            copy_new(&source, &target)?;
+            restore_new(&source, &target, expected, signal, mark_effects)?;
             store.set_origin(
                 id,
                 json!({"restored":true,"root":root,"path":origin["path"],"sha256":expected}),
@@ -444,6 +470,11 @@ impl Artifacts {
         if etag(&stamp(&target)?) != expected {
             return Err("文件已被其他操作修改，请刷新后重试".into());
         }
+        if let Some(expected_hash) = args.get("sha256").and_then(Value::as_str) {
+            if file_digest(&target)? != expected_hash {
+                return Err("批准后文件内容已变化，原文件保留".into());
+            }
+        }
         match action {
             "rename" => {
                 let new_relative = args
@@ -459,7 +490,20 @@ impl Artifacts {
                 if destination.parent().is_none_or(|parent| !parent.is_dir()) {
                     return Err("目标目录不存在".into());
                 }
-                fs::rename(&target, &destination).map_err(|e| e.to_string())?;
+                if signal() {
+                    return Err("文件操作已取消".into());
+                }
+                mark_effects()?;
+                checked_path(&destination)?;
+                require_current(
+                    &target,
+                    expected,
+                    args.get("sha256").and_then(Value::as_str),
+                )?;
+                if signal() {
+                    return Err("文件操作已取消".into());
+                }
+                rename_without_replacement(&target, &destination)?;
                 Ok(json!({"renamed":true}))
             }
             "trash" => {
@@ -473,25 +517,51 @@ impl Artifacts {
                 let id = lease.id().to_string();
                 store.retain(&id, true, true)?;
                 let backup = lease.path().join("payload");
-                copy_new(&target, &backup)?;
+                copy_new_cancellable(&target, &backup, signal)?;
                 let hash = file_digest(&backup)?;
                 if etag(&stamp(&target)?) != expected || file_digest(&target)? != hash {
                     return Err("复制期间文件已变化，原文件保留".into());
                 }
                 store.set_origin(&id,json!({"root":root,"path":relative.to_string_lossy().replace('\\',"/"),"sha256":hash}))?;
+                if signal() {
+                    return Err("文件操作已取消，原文件保留".into());
+                }
+                mark_effects()?;
+                checked_path(&backup)?;
+                if file_digest(&backup)? != hash {
+                    return Err("恢复材料已变化，原文件保留".into());
+                }
+                require_current(&target, expected, Some(&hash))?;
+                if signal() {
+                    return Err("文件操作已取消，原文件保留".into());
+                }
                 fs::remove_file(&target).map_err(|e| e.to_string())?;
                 lease.finish(true)?;
                 store.retain(&id, false, false)?;
-                Ok(json!({"id":id,"removed":true}))
+                Ok(json!({"id":id,"removed":true,"recoverable":true}))
             }
             _ => Err("未知产物操作".into()),
         }
     }
 }
 
+fn require_current(path: &Path, expected: &str, expected_hash: Option<&str>) -> Result<(), String> {
+    checked_path(path)?;
+    if etag(&stamp(path)?) != expected
+        || expected_hash
+            .is_some_and(|expected| !file_digest(path).is_ok_and(|actual| actual == expected))
+    {
+        return Err("文件已变化，未执行操作；原文件保留".into());
+    }
+    Ok(())
+}
+
 fn file_digest(path: &Path) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    reader_digest(&mut file)
+}
+fn reader_digest(file: &mut impl Read) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {
@@ -503,7 +573,101 @@ fn file_digest(path: &Path) -> Result<String, String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
-fn copy_new(source: &Path, target: &Path) -> Result<(), String> {
+
+struct RestoreStaging {
+    path: PathBuf,
+    file: Option<fs::File>,
+    active: bool,
+}
+impl Drop for RestoreStaging {
+    fn drop(&mut self) {
+        // Release the Windows exclusive handle before removing an unfinished copy.
+        self.file.take();
+        if self.active && checked_path(&self.path).is_ok() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Publish only a complete verified copy. An interrupted process can leave a
+/// unique staging file, but cannot leave a partial file at the recovery path.
+fn restore_new(
+    source: &Path,
+    target: &Path,
+    expected_hash: &str,
+    signal: &dyn Fn() -> bool,
+    mark_effects: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    checked_path(source)?;
+    checked_path(target)?;
+    if signal() {
+        return Err("文件恢复已取消".into());
+    }
+    if target.exists() {
+        return Err("目标已存在，不能覆盖恢复".into());
+    }
+    let parent = target.parent().ok_or("恢复目标缺少目录")?;
+    let path = parent.join(format!(".dsh-restore-{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    let file = options.open(&path).map_err(|e| e.to_string())?;
+    let mut staging = RestoreStaging {
+        path,
+        file: Some(file),
+        active: true,
+    };
+    let mut input = fs::File::open(source).map_err(|e| e.to_string())?;
+    let output = staging.file.as_mut().unwrap();
+    let mut buffer = [0u8; 65536];
+    loop {
+        if signal() {
+            return Err("文件恢复已取消".into());
+        }
+        let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..count])
+            .map_err(|e| e.to_string())?;
+    }
+    output.sync_all().map_err(|e| e.to_string())?;
+    output.rewind().map_err(|e| e.to_string())?;
+    if reader_digest(output)? != expected_hash {
+        return Err("恢复材料校验失败".into());
+    }
+    staging.file.take();
+    if signal() {
+        return Err("文件恢复已取消".into());
+    }
+    mark_effects()?;
+    checked_path(&staging.path)?;
+    if file_digest(&staging.path)? != expected_hash {
+        return Err("恢复暂存内容已变化".into());
+    }
+    checked_path(target)?;
+    if signal() {
+        return Err("文件恢复已取消".into());
+    }
+    rename_without_replacement(&staging.path, target)?;
+    staging.active = false;
+    Ok(())
+}
+fn copy_new_cancellable(
+    source: &Path,
+    target: &Path,
+    signal: &dyn Fn() -> bool,
+) -> Result<(), String> {
     checked_path(source)?;
     checked_path(target)?;
     let mut input = fs::File::open(source).map_err(|e| e.to_string())?;
@@ -512,7 +676,24 @@ fn copy_new(source: &Path, target: &Path) -> Result<(), String> {
         .create_new(true)
         .open(target)
         .map_err(|e| e.to_string())?;
-    if let Err(error) = std::io::copy(&mut input, &mut output)
+    let copied = (|| {
+        let mut buffer = [0u8; 65536];
+        loop {
+            if signal() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "file operation cancelled",
+                ));
+            }
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            output.write_all(&buffer[..count])?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = copied
         .and_then(|_| output.flush())
         .and_then(|_| output.sync_all())
     {
@@ -521,6 +702,28 @@ fn copy_new(source: &Path, target: &Path) -> Result<(), String> {
         return Err(error.to_string());
     }
     Ok(())
+}
+
+fn rename_without_replacement(source: &Path, target: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn MoveFileExW(source: *const u16, target: *const u16, flags: u32) -> i32;
+        }
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 8) } == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::hard_link(source, target).map_err(|error| error.to_string())?;
+        fs::remove_file(source).map_err(|error| format!("新名称已创建，原名称未移除：{error}"))
+    }
 }
 
 fn response(status: StatusCode, value: Value) -> WebResponse {
@@ -685,3 +888,6 @@ pub(crate) fn register(
 #[cfg(test)]
 #[path = "cleanup_recovery_tests.rs"]
 mod cleanup_recovery_tests;
+#[cfg(test)]
+#[path = "artifacts_restore_tests.rs"]
+mod restore_tests;

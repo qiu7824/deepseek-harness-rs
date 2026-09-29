@@ -23,7 +23,7 @@ use crate::fsio::{
     FsIoInternals, LocalTarget, PathKind, PathLinkKind, apply_literal_edit, list_directory,
     normalize_line_endings, probe, probe_no_follow, read_for_edit, read_text_for_diff,
     read_whole_bytes, read_whole_text, resolve_local_target, restore_line_endings,
-    stream_whole_bytes, stream_whole_text, write_file_atomic,
+    stream_whole_bytes, stream_whole_text, write_bytes_atomic,
 };
 
 /// Configuration for the local filesystem backend (TS `Config`).
@@ -101,7 +101,7 @@ impl LocalFileSystem {
     }
 
     /// Run `op` with exclusive access to `target_key` (FIFO per key).
-    async fn with_lock<T, F>(&self, target_key: &str, op: F) -> Result<T, FsError>
+    pub(crate) async fn with_lock<T, F>(&self, target_key: &str, op: F) -> Result<T, FsError>
     where
         F: std::future::Future<Output = Result<T, FsError>>,
     {
@@ -118,7 +118,7 @@ impl LocalFileSystem {
 
     /// The post-write version probe; falls back to a sentinel when a
     /// concurrent unlink removed the target between rename and stat.
-    fn version_after_write(
+    pub(crate) fn version_after_write(
         &self,
         after: Option<dsh_fs::FsVersion>,
         target: &FsTarget,
@@ -129,6 +129,17 @@ impl LocalFileSystem {
 
 #[async_trait::async_trait]
 impl FileSystem for LocalFileSystem {
+    async fn write_bytes(
+        &self,
+        target: &FsTarget,
+        content: &[u8],
+        expected: Option<&FsWriteIntent>,
+        signal: Option<AbortPredicate>,
+        policy: Option<&SandboxExecutionPolicy>,
+    ) -> Result<dsh_fs::FsBinaryWriteOutcome, FsError> {
+        self.write_binary(target, content, expected, signal, policy)
+            .await
+    }
     async fn resolve(
         &self,
         path: &str,
@@ -413,13 +424,14 @@ impl FileSystem for LocalFileSystem {
                 }),
                 _ => None,
             };
-            write_file_atomic(
+            write_bytes_atomic(
                 target.target_key.as_str(),
-                content,
+                content.as_bytes(),
                 existing.as_ref().map(|info| info.mode),
                 signal.as_ref(),
                 &self.internals,
                 create_guard.as_ref(),
+                existing.as_ref().map(|info| &info.version),
             )
             .await?;
             let after = probe(target.target_key.as_str()).await?;
@@ -493,13 +505,14 @@ impl FileSystem for LocalFileSystem {
                 &target.display_path,
             )?;
             let content = restore_line_endings(&edited, line_endings);
-            write_file_atomic(
+            write_bytes_atomic(
                 target.target_key.as_str(),
-                &content,
+                content.as_bytes(),
                 Some(existing.mode),
                 signal.as_ref(),
                 &self.internals,
                 None,
+                Some(&existing.version),
             )
             .await?;
             let after = probe(target.target_key.as_str()).await?;

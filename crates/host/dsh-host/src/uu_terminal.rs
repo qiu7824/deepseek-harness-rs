@@ -34,6 +34,29 @@ const MAX_OUTPUT: usize = 256 * 1024;
 const MAX_READ: usize = 32 * 1024;
 const MAX_INPUT: usize = 8 * 1024;
 
+fn approval_outcome(outcome: ApprovalOutcome) -> Result<(), ToolBodyError> {
+    let (code, message) = match outcome {
+        ApprovalOutcome::AllowedOnce | ApprovalOutcome::AllowedAlways => return Ok(()),
+        ApprovalOutcome::TimedOut => (
+            "USER_APPROVAL_TIMED_OUT",
+            "UU 远端操作审批超时，远端指令未发出；本轮不再重复打开同类审批，等待新的用户输入或下一轮。",
+        ),
+        ApprovalOutcome::Cancelled => (
+            "USER_APPROVAL_CANCELLED",
+            "UU 远端操作审批已取消，远端指令未发出。",
+        ),
+        ApprovalOutcome::Rejected => (
+            "USER_APPROVAL_DENIED",
+            "UU 远端操作审批被拒绝，远端指令未发出。",
+        ),
+        ApprovalOutcome::Unavailable => (
+            "USER_APPROVAL_UNAVAILABLE",
+            "UU 远端审批界面不可用，远端指令未发出。",
+        ),
+    };
+    Err(ToolBodyError::coded(message, "UserApprovalError", code))
+}
+
 fn numeric_argument(
     args: &Value,
     key: &str,
@@ -1231,7 +1254,7 @@ pub(crate) fn install(ctx: &Context, bridge: Arc<Bridge>) -> Result<Arc<RemoteTe
     let execution_service = service.clone();
     tools.register(ctx,ToolDefinition{
         name:"uu_terminal".into(),
-        description:"Open/read/write/close/list owner-isolated interactive terminals on the currently bound UU REMOTE Windows device. Commands execute remotely, not in the local workspace. Open/write/close use approval; read/list only inspect owned local records. Input belongs to the live forced-new CLI connection; remoteSessionId may be null and must not be guessed. Read after commands. Close sends the documented exit only at a freshly read original shell prompt with no unsubmitted input, then verifies client exit and the remote inventory baseline; otherwise it detaches and reports unconfirmed cleanup. Code 2001 means ownership was lost: stop, never reattach automatically. Never supply OS unlock credentials.".into(),
+        description:"Open/read/write/close/list owner-isolated interactive terminals on the currently bound UU REMOTE Windows device. Commands and file operations apply only to files on that remote device. This tool cannot process local workspace files and must never be used to bypass a local sandbox denial. Open/write/close use approval; read/list only inspect owned local records. Input belongs to the live forced-new CLI connection; remoteSessionId may be null and must not be guessed. Read after commands. Close sends the documented exit only at a freshly read original shell prompt with no unsubmitted input, then verifies client exit and the remote inventory baseline; otherwise it detaches and reports unconfirmed cleanup. Code 2001 means ownership was lost: stop, never reattach automatically. Never supply OS unlock credentials.".into(),
         parameters:json!({"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["open","read","write","close","list"]},"deviceId":{"type":"string"},"terminalId":{"type":"string"},"shell":{"type":"string","enum":["powershell","cmd","zsh","bash"]},"text":{"type":"string"},"submit":{"type":"boolean"},"cursor":{"type":"integer"},"limitBytes":{"type":"integer"},"waitMs":{"type":"integer"}},"required":["action"]}),
         output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![ContentBlock::Text{text:serde_json::to_string(value).map_err(|error|error.to_string())?}])),presentation_meta:None},
         timeout_ms:Some(120_000),is_concurrency_safe:Some(Arc::new(|args|matches!(args["action"].as_str(),Some("read"|"list")))),
@@ -1240,13 +1263,15 @@ pub(crate) fn install(ctx: &Context, bridge: Arc<Bridge>) -> Result<Arc<RemoteTe
             Box::pin(async move{
                 let agent=agent.ok_or_else(||ToolBodyError::plain("uu_terminal requires an initiating agent"))?;
                 let owner=agent.id().to_string();let approval_agent=agent.clone();let approval_signal=signal.clone();
+                let approval_error=Arc::new(Mutex::new(None));let approval_error_for_request=approval_error.clone();
                 let approve:Approval=Arc::new(move|action,target,text|{
                     let approval=approval.clone();let agent=approval_agent.clone();let signal=approval_signal.clone();let call_id=call_id.clone();let action=action.to_string();let target=target.clone();let text=text.map(str::to_string);
+                    let approval_error=approval_error_for_request.clone();
                     Box::pin(async move{
                         let reason=format!("UU 远端终端 {action}：{} ({}){}",target.device_name,target.device_id,text.map(|text|format!("\n输入：{text}")).unwrap_or_default());
-                        match approval.request(&ApprovalRequest{agent,tool_name:"uu_terminal".into(),call_id:Some(call_id),reason:Some(reason),grant_key:None,rememberable:false,signal:Some(signal)}).await?{
-                            ApprovalOutcome::AllowedOnce|ApprovalOutcome::AllowedAlways=>Ok(()),
-                            _=>Err("UU 远端终端操作未获批准或已取消".into()),
+                        match approval_outcome(approval.request(&ApprovalRequest{agent,tool_name:"uu_terminal".into(),call_id:Some(call_id),reason:Some(reason),grant_key:None,rememberable:false,signal:Some(signal)}).await?){
+                            Ok(())=>Ok(()),
+                            Err(error)=>{let message=error.message.clone();*approval_error.lock()=Some(error);Err(message)},
                         }
                     })
                 });
@@ -1272,7 +1297,7 @@ pub(crate) fn install(ctx: &Context, bridge: Arc<Bridge>) -> Result<Arc<RemoteTe
                     }
                     _=>Err("unknown uu_terminal action".into()),
                 };
-                result.map_err(|error|ToolBodyError::coded(error,"UuTerminalError","UU_TERMINAL"))
+                result.map_err(|error|approval_error.lock().take().unwrap_or_else(||ToolBodyError::coded(error,"UuTerminalError","UU_TERMINAL")))
             })
         }),finalize_content:None,present_call:None,present_result:None,
     })?;

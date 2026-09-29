@@ -18,15 +18,25 @@ pub(super) fn configured_command(directory: &Path) -> String {
     let name = if cfg!(windows) { "node.exe" } else { "node" };
     [directory.join(name), directory.join("bin").join(name)]
         .into_iter()
-        .find(|p| p.is_file())
+        .find(|path| path.is_file() && dsh_shell::powershell::automatic_candidate_allowed(path))
         .or_else(|| {
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .filter(|path| path.is_absolute())
                 .map(|path| path.join(name))
-                .find(|path| path.is_file())
+                .find(|path| {
+                    path.is_file() && dsh_shell::powershell::automatic_candidate_allowed(path)
+                })
         })
         .or_else(installed_node)
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "node".into())
+        .unwrap_or_else(|| {
+            let missing = directory.join(name);
+            if dsh_shell::powershell::automatic_candidate_allowed(&missing) {
+                missing.to_string_lossy().into_owned()
+            } else {
+                String::new()
+            }
+        })
 }
 
 #[cfg(not(windows))]
@@ -59,7 +69,7 @@ fn installed_node() -> Option<std::path::PathBuf> {
             let length = data.iter().position(|ch| *ch == 0).unwrap_or(data.len());
             let path = std::path::PathBuf::from(String::from_utf16_lossy(&data[..length]))
                 .join("node.exe");
-            if path.is_absolute() && path.is_file() {
+            if path.is_file() && dsh_shell::powershell::automatic_candidate_allowed(&path) {
                 return Some(path);
             }
         }

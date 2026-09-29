@@ -53,7 +53,14 @@ pub fn validate_docx_for_automation(bytes: &[u8]) -> Result<()> {
     validate_office_for_automation(bytes, "docx")
 }
 pub fn validate_office_for_automation(bytes: &[u8], format: &str) -> Result<()> {
-    validate_office_reader(Cursor::new(bytes), format)
+    validate_office_reader(Cursor::new(bytes), format, true)
+}
+
+/// Data extraction never follows relationships or launches an Office program.
+/// Normal external hyperlinks remain data; XML/ZIP budgets and active-content
+/// restrictions are identical to the automation boundary.
+pub(crate) fn validate_office_for_read(bytes: &[u8], format: &str) -> Result<()> {
+    validate_office_reader(Cursor::new(bytes), format, false)
 }
 
 /// Inspect the immutable input copy without loading the ZIP into memory.
@@ -61,10 +68,15 @@ pub fn validate_office_file_for_automation(path: &std::path::Path, format: &str)
     validate_office_reader(
         std::fs::File::open(path).map_err(|e| e.to_string())?,
         format,
+        true,
     )
 }
 
-fn validate_office_reader<R: Read + Seek>(mut input: R, format: &str) -> Result<()> {
+fn validate_office_reader<R: Read + Seek>(
+    mut input: R,
+    format: &str,
+    automation: bool,
+) -> Result<()> {
     let main = match format {
         "docx" => "word/document.xml",
         "xlsx" => "xl/workbook.xml",
@@ -105,7 +117,7 @@ fn validate_office_reader<R: Read + Seek>(mut input: R, format: &str) -> Result<
             expected,
         };
         if name.ends_with(".xml") || name.ends_with(".rels") {
-            let root = xml::validate(&mut bounded, name.ends_with(".rels"))?;
+            let root = xml::validate(&mut bounded, automation && name.ends_with(".rels"))?;
             if name == main {
                 has_document = matches!(root.as_str(), "document" | "workbook" | "presentation");
             }

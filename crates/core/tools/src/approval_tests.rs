@@ -6,6 +6,7 @@ use dsh_agent::{
 use dsh_scope::ScopeKey;
 use dsh_session::{Session, SessionStore, UserMessage, session_id};
 use dsh_user_approval::{ApprovalOutcome, ApprovalService};
+use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 struct TestAgent {
     id: dsh_session::SessionId,
@@ -176,11 +177,77 @@ async fn approval_deadline_returns_expired_request_instructions_without_executin
         "USER_APPROVAL_TIMED_OUT"
     );
     assert!(failure.message.contains("request has ended"));
-    assert!(failure.message.contains("new tool call"));
+    assert!(failure.message.contains("new explicit user input"));
+    assert!(
+        failure
+            .message
+            .contains("Changing the command or directory does not reset")
+    );
     assert!(!failure.message.contains("需要用户确认"));
     assert!(
         matches!(&result.content[0], ContentBlock::Text { text } if text.contains("controls are no longer active"))
     );
+}
+
+#[tokio::test]
+async fn office_overwrite_requires_one_human_decision_and_records_it_for_the_body() {
+    let ctx = Context::root();
+    dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+    ApprovalService::install(&ctx, Default::default());
+    let tools = ToolRuntime::install(&ctx, Config::default()).unwrap();
+    crate::install_security_policy(&ctx, Arc::new(parking_lot::RwLock::new(Default::default())));
+    let ordinary = Arc::new(AtomicUsize::new(0));
+    let ordinary_seen = ordinary.clone();
+    ctx.on(
+        "approval/request",
+        Arc::new(move |_, _| {
+            ordinary_seen.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Some(arc(ApprovalOutcome::AllowedAlways)) })
+        }),
+        Default::default(),
+    )
+    .await;
+    let human = Arc::new(AtomicUsize::new(0));
+    let human_seen = human.clone();
+    ctx.on(
+        "approval/human-request",
+        Arc::new(move |_, _| {
+            human_seen.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Some(arc(ApprovalOutcome::AllowedOnce)) })
+        }),
+        Default::default(),
+    )
+    .await;
+    tools
+        .register(
+            &ctx,
+            ToolDefinition {
+                name: "office_write".into(),
+                description: "Write approved Office fixture".into(),
+                parameters: json!({"type":"object"}),
+                output: ToolOutputDefinition {
+                    schema: json!({"type":"boolean"}),
+                    render: Arc::new(|_, _| Ok(vec![])),
+                    presentation_meta: None,
+                },
+                timeout_ms: None,
+                is_concurrency_safe: None,
+                finalize_content: None,
+                present_call: None,
+                present_result: None,
+                execute: Arc::new(|_, run| {
+                    let approved = run.human_approval_granted();
+                    Box::pin(async move { Ok(json!(approved)) })
+                }),
+            },
+        )
+        .unwrap();
+    let owner = agent(&ctx, "office-overwrite").await;
+    let result=tools.execute(ToolExecutionInput{call_id:dsh_llm::call_id("office-overwrite"),root_call_id:None,name:"office_write".into(),arguments:json!({"file_path":std::env::temp_dir().join("office-fixture.docx"),"overwrite":true}),agent:Some(owner),parent:None,signal:Arc::new(||false)}).await;
+    assert!(!result.is_error, "{:?}", result.error);
+    assert_eq!(result.value, Some(json!(true)));
+    assert_eq!(human.load(Ordering::SeqCst), 1);
+    assert_eq!(ordinary.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

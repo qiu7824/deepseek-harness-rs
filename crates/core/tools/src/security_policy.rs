@@ -337,7 +337,7 @@ fn classify_tool_security_in_mode(
                 owner,
             )
         }
-        "read" | "read_file" | "read_image" => {
+        "read" | "read_file" | "read_image" | "office_read" => {
             let Some(path) = target_path(arguments, workspace) else {
                 return SecurityDecision::Ask {
                     reason: "无法确认读取路径安全性，需要用户确认".to_string(),
@@ -365,7 +365,7 @@ fn classify_tool_security_in_mode(
                 SecurityDecision::Allow
             }
         }
-        "write" | "write_file" | "edit" | "edit_file" | "str_replace_editor" => {
+        "write" | "write_file" | "edit" | "edit_file" | "str_replace_editor" | "office_write" => {
             let Some(path) = target_path(arguments, workspace) else {
                 return SecurityDecision::Ask {
                     reason: "无法确认写入路径安全性，需要用户确认".to_string(),
@@ -504,7 +504,7 @@ pub(crate) fn install(ctx: &Context, config: SecurityPolicyState) {
                 agent.options().subagent_depth.unwrap_or(0) > 0
                     || agent.session().header().origin.as_deref() == Some("subagent")
             });
-            match classify_tool_security_in_mode(
+            let decision = classify_tool_security_in_mode(
                 &execution.name,
                 &execution.arguments,
                 workspace,
@@ -512,7 +512,18 @@ pub(crate) fn install(ctx: &Context, config: SecurityPolicyState) {
                 mode,
                 &config,
                 execution.agent.as_ref().map(|agent| agent.id().as_str()),
-            ) {
+            );
+            if execution.name == "office_write"
+                && execution.arguments["overwrite"] == true
+                && !matches!(&decision, SecurityDecision::Deny { .. })
+            {
+                return Some(arc(PreToolDecision::AskHuman {
+                    reason: Some(
+                        "覆盖现有 Office 文件需要本次明确批准；原文件版本会在写入前再次核对".into(),
+                    ),
+                }));
+            }
+            match decision {
                 SecurityDecision::Allow => match next {
                     Some(next) => Some(next.call().await),
                     None => Some(arc(PreToolDecision::Allow)),
@@ -882,7 +893,7 @@ mod tests {
 
     #[test]
     fn subagent_sensitive_access_is_hard_denied_without_approval_round_trip() {
-        for tool in ["read", "read_image"] {
+        for tool in ["read", "read_image", "office_read"] {
             let decision = classify_tool_security_for_actor(
                 tool,
                 &json!({"file_path": ".ssh/id_ed25519"}),

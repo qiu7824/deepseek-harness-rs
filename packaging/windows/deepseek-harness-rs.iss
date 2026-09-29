@@ -89,6 +89,8 @@ chinesesimp.NativeUpgradeFailed=原生沙箱升级校验失败，原配置已保
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:AdditionalTasks}"; Flags: unchecked
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+[InstallDelete]
+Type: files; Name: "{app}\web\dist\plugins\ui-task-execution.js"
 #include ArtDir + "\installer-ui.iss"
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\dsh-launcher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\deepseek-black.ico"; IconIndex: 0

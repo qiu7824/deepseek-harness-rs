@@ -31,6 +31,16 @@ pub trait ExecutionProfileResolver: Send + Sync + 'static {
         workdir: &str,
     ) -> Result<ResolvedExecutionProfile, String>;
 
+    /// Identity of explicit user choices, excluding inferred cwd/PATH and
+    /// probe bookkeeping. Used to decide whether a blocked startup was edited.
+    fn recovery_identity(
+        &self,
+        _session_id: Option<&str>,
+        _session_workspace: &str,
+    ) -> Option<String> {
+        None
+    }
+
     fn validate(
         &self,
         _request: ExecutionValidationRequest,

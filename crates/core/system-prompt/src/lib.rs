@@ -442,14 +442,14 @@ pub fn render_context_snapshot(assembly: &PromptAssembly) -> Result<String, Stri
 pub fn join_context_sections(sections: &[ContextSnapshotSection]) -> String {
     let body = sections
         .iter()
-        .map(|section| section.text.as_str())
-        .collect::<Vec<&str>>()
+        .map(|section| format!("### {}\n{}", section.name, section.text))
+        .collect::<Vec<String>>()
         .join("\n\n");
     if body.is_empty() {
         return String::new();
     }
     format!(
-        "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n{body}"
+        "Current runtime context. This complete snapshot supersedes all earlier runtime-context snapshots and changes.\n\n{body}"
     )
 }
 

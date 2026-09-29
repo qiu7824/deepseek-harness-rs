@@ -49,7 +49,14 @@ fn repair(name: &str) -> bool {
 fn sandbox_path(name: &str) -> bool {
     matches!(
         name,
-        "pwsh" | "execute_native" | "execute_script" | "execute_steps"
+        "pwsh"
+            | "bash"
+            | "execute_native"
+            | "execute_script"
+            | "execute_steps"
+            | "run_code"
+            | "terminal_open"
+            | "terminal_send"
     )
 }
 fn environment_key(value: &Value) -> u64 {
@@ -58,6 +65,33 @@ fn environment_key(value: &Value) -> u64 {
         fields.remove("fingerprint");
     }
     hash(super::json_stringify(&super::sort_json_value(&value)))
+}
+fn recovery_key(value: &Value) -> u64 {
+    if let Some(identity) = value.get("startupRecoveryIdentity") {
+        return environment_key(identity);
+    }
+    let mut stable = value.clone();
+    if let Some(fields) = stable.as_object_mut() {
+        for field in [
+            "fingerprint",
+            "workingDirectory",
+            "workdir",
+            "cwd",
+            "requestedPermissions",
+        ] {
+            fields.remove(field);
+        }
+        if let Some(profile) = fields.get_mut("profile").and_then(Value::as_object_mut) {
+            profile.remove("contextId");
+        }
+        if let Some(policy) = fields
+            .get_mut("selectedPolicy")
+            .and_then(Value::as_object_mut)
+        {
+            policy.remove("readOnlyRoots");
+        }
+    }
+    environment_key(&stable)
 }
 fn shared_failure(result: &ToolExecutionResult) -> Option<u64> {
     let receipt = result.meta.as_ref()?.get("executionReceipt")?;
@@ -77,7 +111,7 @@ fn shared_failure(result: &ToolExecutionResult) -> Option<u64> {
     ) {
         return None;
     }
-    Some(environment_key(&receipt["executionContext"]))
+    Some(recovery_key(&receipt["executionContext"]))
 }
 fn result_signature(result: &ToolExecutionResult) -> Option<u64> {
     // Hash complete bytes; a prefix would mistake long, changing outputs for a loop.
@@ -93,6 +127,8 @@ fn result_signature(result: &ToolExecutionResult) -> Option<u64> {
                 "timestamp",
                 "requestId",
                 "callId",
+                "checkId",
+                "cacheHit",
             ] {
                 object.remove(field);
             }
@@ -197,7 +233,11 @@ fn with_history<T>(
         .is_ok()
     {
         if policy_changed {
-            *history = History::default();
+            // A permission/path change is not proof that process startup was
+            // repaired. Only call-level repetition is scoped to that change.
+            history.rows.clear();
+            history.blocked.clear();
+            history.last_repair = None;
         }
         history.seen_seq = Some(until);
     }
@@ -215,8 +255,8 @@ pub async fn install(ctx: &Context) {
             if let Some(execution) = execution {
                 let provider=execution.agent.as_ref().and_then(|agent|agent.ctx().get_typed::<Arc<dsh_tools::receipt::ExecutionEvidenceProvider>>("executionEvidence",false));
                 let context=provider.and_then(|provider|(provider.snapshot)(&execution).ok());
-                if sandbox_path(&execution.name) && context.as_ref().is_some_and(|context|with_history(&state,&execution,|h|h.environment_failures.get(&environment_key(context)).copied().unwrap_or(0)>=5)==Some(true)) {
-                    return Some(arc(PreToolDecision::Deny { reason:"TOOL_NO_PROGRESS: 当前任务要求、运行器和权限条件下，进程执行路径已连续五次出现结构化环境故障，此调用未执行。请使用 environment_validate refresh=true 检查当前环境；新的成功启动证据、实际环境或权限变更、用户新指令后可以重新评估。改写命令或更换执行包装工具不能修复此故障。".into() }));
+                if sandbox_path(&execution.name) && context.as_ref().is_some_and(|context|with_history(&state,&execution,|h|h.environment_failures.get(&recovery_key(context)).copied().unwrap_or(0)>=5)==Some(true)) {
+                    return Some(arc(PreToolDecision::Deny { reason:"TOOL_NO_PROGRESS: 当前运行配置已连续五次出现结构化启动故障，此调用未执行。请用 environment_validate refresh=true 获取新的成功启动证据，或在用户明确修改运行配置/发出新指令后重新评估。切换workdir、改写命令或更换执行包装工具不代表环境已修复；本地执行受阻时应直接说明并提供可用的文本结果，不得改走远端终端或浏览器绕过。".into() }));
                 }
                 if !poller(&execution.name, &execution.arguments) && with_history(&state, &execution,
                     |h| h.blocked.contains(&execution_signature(&execution,context.as_ref()))) == Some(true) {
@@ -269,7 +309,7 @@ pub async fn install(ctx: &Context) {
                                         }) {
                                             history
                                                 .environment_failures
-                                                .remove(&environment_key(context));
+                                                .remove(&recovery_key(context));
                                             history.rows.clear();
                                             history.blocked.clear();
                                             history.last_probe = Some(id.to_owned());
@@ -339,7 +379,17 @@ pub async fn install(ctx: &Context) {
                     .first()
                     .and_then(downcast_arc::<dsh_agent::AgentTurnStoppingPayload>)
                 {
-                    state.lock().remove(payload.agent.id().as_str());
+                    let mut state = state.lock();
+                    if state
+                        .get(payload.agent.id().as_str())
+                        .is_some_and(|history| history.environment_failures.is_empty())
+                    {
+                        state.remove(payload.agent.id().as_str());
+                    } else if let Some(history) = state.get_mut(payload.agent.id().as_str()) {
+                        history.rows.clear();
+                        history.blocked.clear();
+                        history.last_repair = None;
+                    }
                 }
                 None
             })

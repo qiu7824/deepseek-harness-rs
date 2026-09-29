@@ -32,9 +32,11 @@ mod deepseek_settings;
 mod devin_auth;
 mod discovery_settings;
 mod environment_capabilities;
+mod execution_defaults;
 mod execution_evidence;
 mod execution_profiles;
 mod feedback_delivery;
+mod file_operations;
 mod free_catalog;
 mod free_probe;
 mod host_private_fs;
@@ -48,6 +50,7 @@ mod model_discovery;
 mod native_capabilities;
 mod native_tool_compatibility;
 mod native_tool_discovery;
+mod office_documents;
 mod office_input_validation;
 mod office_preview;
 mod office_render;
@@ -83,6 +86,7 @@ mod web_search_settings;
 mod windows_peer_identity;
 mod windows_sandbox_http;
 mod workspace_copy;
+mod workspace_prompt;
 mod workspace_resources;
 mod workspace_ssh;
 
@@ -3681,18 +3685,33 @@ fn compose_host_in_fiber(
                 .nth(3)
                 .map(std::path::Path::to_path_buf)
         });
-    let _harness_source = source_root.and_then(|root|std::fs::canonicalize(root).ok()).filter(|root|root.join("crates/host/dsh-host/Cargo.toml").is_file()).map(|root|system_prompt.section(
-        ctx,
-        PromptSection {
-            name: "harness:source".to_string(),
-            order: -99.0,
-            text: PromptText::Static(format!(
-                "The DeepSeek Harness implementation checkout is at {}. The checkout location and current working directory are separate values and may differ; never infer the working directory from this path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself.",
-                root.display(),
-            )),
-            complete: None,
-        },
-    ));
+    let source_root = source_root
+        .and_then(|root| std::fs::canonicalize(root).ok())
+        .filter(|root| root.join("crates/host/dsh-host/Cargo.toml").is_file());
+    let _harness_source = source_root.clone().map(|root| {
+        system_prompt.section(
+            ctx,
+            PromptSection {
+                name: "harness:source".to_string(),
+                order: -99.0,
+                text: PromptText::Provider(Arc::new({
+                    let sessions = sessions.clone();
+                    move |assembly| {
+                        let session = assembly
+                            .field_str("sessionId")
+                            .and_then(|id| sessions.get(&dsh_session::session_id(id)));
+                        workspace_prompt::source_hint(
+                            session
+                                .as_ref()
+                                .and_then(|session| session.header().cwd.as_deref()),
+                            Some(&root),
+                        )
+                    }
+                })),
+                complete: None,
+            },
+        )
+    });
     let _zh_visible_output = system_prompt.section(
         ctx,
         PromptSection {
@@ -3846,6 +3865,7 @@ fn compose_host_in_fiber(
     video_reader::install(ctx, settings.clone())?;
     resources.install_tools(ctx, &tools, &system_prompt)?;
     office_render::install(ctx, resources.clone())?;
+    office_documents::install(ctx)?;
     #[cfg(windows)]
     windows_sandbox_http::install_tool(ctx, data_root.clone())?;
     dsh_session_reference::SessionReferenceResolver::install(
@@ -3883,6 +3903,7 @@ fn compose_host_in_fiber(
     );
     dsh_remote_execution::install_routes(ctx, remote_execution.clone())?;
     remote_execution_http::install_tools(ctx, &tools, remote_execution.clone())?;
+    file_operations::install(ctx, artifacts.clone(), resources.clone())?;
     let _skills = dsh_skill::SkillRegistry::install(ctx, Default::default())
         .map_err(|error| format!("skills: {error}"))?;
     let _skill_badge = dsh_skill_badge::apply(ctx);
@@ -4818,11 +4839,18 @@ fn compose_host_in_fiber(
             order: -98.0,
             text: PromptText::Provider(Arc::new({
                 let port = web_server.port();
-                move |_| {
-                    let web_url = format!("http://127.0.0.1:{port}");
-                    let update_contract = "The client-plugin HMR receiver is active, but client-plugin changes reload without a refresh only while `pnpm run dev:web` is also running from this same checkout to rebuild their bundles; verify that watcher before promising automatic updates. Every other change — the apps/web shell and plain packages — requires rebuilding the affected Web artifacts and verifying this existing URL after a page refresh. ";
-                    format!(
-                        "You are interacting with the user through the DeepSeek Harness Web GUI at {web_url}. When the user refers to \"this page\", \"this GUI\", or \"this app\" without naming another target, they mean this GUI. The browser provides no implicit DOM, route, or screenshot context. {update_contract}Starting another server does not update this GUI. The apps/web Vite entry builds the shell but is not a standalone application because only dsh web injects window.__DSH_BOOT__. Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL."
+                let sessions = sessions.clone();
+                let source_root = source_root.clone();
+                move |assembly| {
+                    let session = assembly
+                        .field_str("sessionId")
+                        .and_then(|id| sessions.get(&dsh_session::session_id(id)));
+                    workspace_prompt::client_hint(
+                        session
+                            .as_ref()
+                            .and_then(|session| session.header().cwd.as_deref()),
+                        source_root.as_deref(),
+                        port,
                     )
                 }
             })),

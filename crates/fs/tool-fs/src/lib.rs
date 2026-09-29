@@ -15,6 +15,8 @@ use futures::{FutureExt, StreamExt};
 #[cfg(test)]
 mod read_numeric_tests;
 mod read_window;
+#[cfg(test)]
+mod write_format_tests;
 use std::sync::Arc;
 
 pub const NAME: &str = "tool-fs";
@@ -23,6 +25,42 @@ const READ_LIMIT: u64 = 2000;
 const READ_MAX_LINE_LENGTH: usize = 2000;
 const READ_MAX_BYTES: usize = 50 * 1024;
 const STREAM_MIN_SIZE: u64 = 10 * 1024 * 1024;
+
+fn require_text_output_path(path: &str) -> Result<(), ToolBodyError> {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        extension.as_str(),
+        "doc"
+            | "docx"
+            | "docm"
+            | "dotx"
+            | "xls"
+            | "xlsx"
+            | "xlsm"
+            | "xlsb"
+            | "ppt"
+            | "pptx"
+            | "pptm"
+            | "pdf"
+            | "zip"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+    ) {
+        return Err(ToolBodyError::coded(
+            "write only creates UTF-8 text. Use office_write for real DOCX/XLSX, or a format-aware tool for other binary formats. Renaming HTML/text does not convert its format.",
+            "ToolInputError",
+            "BINARY_FORMAT_REQUIRED",
+        ));
+    }
+    Ok(())
+}
 
 // JSON Schema treats 1 and 1.0 as the same integer. serde_json preserves their
 // representation, so as_u64 alone rejects valid model arguments. Float forms
@@ -496,7 +534,7 @@ impl Service {
         let s = self.clone();
         ToolDefinition {
             name: "write".into(),
-            description: "Create or fully replace a UTF-8 text file.".into(),
+            description: "Create or fully replace a UTF-8 text file. Use office_write for actual DOCX/XLSX; do not save HTML or text with a binary Office, PDF, archive or image extension.".into(),
             parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"},"content":{"type":"string"}},"required":["file_path","content"]}),
             output: output_object(
                 |_, v| {
@@ -518,6 +556,7 @@ impl Service {
             timeout_ms: None,
             is_concurrency_safe: None,
             execute: Arc::new(move |args, run| {
+                let effects = run.track_cancellable_effects();
                 let s = s.clone();
                 let a = args.clone();
                 let e = run.execution.clone();
@@ -529,8 +568,11 @@ impl Service {
                     let c = a["content"]
                         .as_str()
                         .ok_or_else(|| ToolBodyError::plain("content is required"))?;
+                    require_text_output_path(p)?;
                     let t = target(&s.fs, p, &e).await?;
+                    require_text_output_path(&s.fs.process_path(&t))?;
                     let intent = write_intent(&s.ctx, &t, &e).await;
+                    effects().map_err(ToolBodyError::plain)?;
                     let o =
                         s.fs.write_text(&t, c, intent.as_ref(), Some(signal(&e)), None)
                             .await

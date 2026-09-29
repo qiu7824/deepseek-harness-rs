@@ -60,8 +60,8 @@ pub struct CodeBindingNamespace {
 /// `CodeRunRequest`). Defaulting is the implementation's validated config.
 #[derive(Clone)]
 pub struct CodeRunRequest {
-    /// Elapsed program budget including binding waits. Authenticated OS-sandbox
-    /// initialization has a separate bounded startup budget.
+    /// Elapsed program budget including ordinary binding waits, excluding
+    /// explicit approval waits. OS-sandbox initialization has a separate bound.
     pub timeout_ms: Option<u64>,
     /// Trusted, non-serialized admission guard immediately before model code
     /// is sent to its execution substrate. A rejection must prevent dispatch.

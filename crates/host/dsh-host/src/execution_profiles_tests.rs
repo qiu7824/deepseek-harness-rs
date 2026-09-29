@@ -759,3 +759,51 @@ fn prompt_context_does_not_change_for_repeated_probe_bookkeeping() {
     refreshed["backendId"] = json!("windows-unelevated");
     assert_ne!(prompt_snapshot(original), prompt_snapshot(refreshed));
 }
+
+#[tokio::test]
+async fn fixed_default_shell_and_profile_identity_survive_restart_and_unrelated_workdirs() {
+    let f = Fixture::new(SandboxMode::WorkspaceWrite);
+    let cwd = f.cwd();
+    let other = f.root.join("another-document-workspace");
+    std::fs::create_dir(&other).unwrap();
+    let first = f.service.resolve(None, &cwd).unwrap();
+    let changed_cwd = f.service.resolve(None, other.to_str().unwrap()).unwrap();
+    assert_eq!(
+        first.context_id, changed_cwd.context_id,
+        "an unrelated cwd without project Python does not change the selected runtime"
+    );
+    assert_eq!(first.shell_path, changed_cwd.shell_path);
+    let restarted_ctx = Context::root();
+    let restored = ExecutionProfiles::install(
+        &restarted_ctx,
+        f.runtime.clone(),
+        f.paths.clone(),
+        f.service.host.clone(),
+    );
+    let second = restored.resolve(None, &cwd).unwrap();
+    assert_eq!(first.context_id, second.context_id);
+    assert_eq!(first.shell_path, second.shell_path);
+    assert!(
+        f.paths.paths["dataDirectory"]
+            .join("execution-resolved-defaults-v1.json")
+            .is_file()
+    );
+    restarted_ctx.fiber.dispose().await;
+}
+
+#[tokio::test]
+async fn explicit_user_shell_paths_are_respected_even_when_not_automatic_candidates() {
+    let f = Fixture::new(SandboxMode::WorkspaceWrite);
+    let selected = f.root.join(".codex/private-runtime/pwsh.exe");
+    std::fs::create_dir_all(selected.parent().unwrap()).unwrap();
+    std::fs::write(&selected, "explicit fixture").unwrap();
+    assert!(!dsh_shell::powershell::automatic_candidate_allowed(
+        &selected
+    ));
+    let prefs = Preferences {
+        shell_path: Some(selected.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let (_, actual) = f.service.shell(&prefs).unwrap();
+    assert_eq!(actual.as_deref(), selected.to_str());
+}

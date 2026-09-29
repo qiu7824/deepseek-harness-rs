@@ -64,6 +64,8 @@ pub struct RuntimePaths {
     admission: parking_lot::Mutex<Admission>,
     requests_changed: tokio::sync::Notify,
     selected_node_command: String,
+    #[cfg(windows)]
+    selected_python_command: Option<PathBuf>,
     node_cache: tokio::sync::Mutex<Option<(std::time::Instant, Value)>>,
 }
 
@@ -319,8 +321,28 @@ impl RuntimePaths {
                 migration_error.get_or_insert(error);
             }
         }
+        let defaults = super::execution_defaults::Defaults::load(&paths["dataDirectory"]);
         Ok(Arc::new(Self {
-            selected_node_command: node::configured_command(&paths["environmentDirectory"]),
+            selected_node_command: {
+                let configured = node::configured_command(&paths["environmentDirectory"]);
+                if std::env::var("DSH_NODE_COMMAND")
+                    .ok()
+                    .is_some_and(|value| !value.trim().is_empty())
+                {
+                    configured
+                } else {
+                    defaults
+                        .select("tool:node", || Some(configured.clone()))?
+                        .unwrap_or(configured)
+                }
+            },
+            #[cfg(windows)]
+            selected_python_command: defaults
+                .select("python", || {
+                    python::command(&paths["environmentDirectory"])
+                        .map(|path| path.to_string_lossy().into_owned())
+                })?
+                .map(PathBuf::from),
             node_cache: tokio::sync::Mutex::new(None),
             paths,
             lock: parking_lot::Mutex::new(Some(lock)),
@@ -390,7 +412,9 @@ impl RuntimePaths {
     pub fn python_command(&self) -> Option<PathBuf> {
         #[cfg(windows)]
         {
-            python::command(&self.paths["environmentDirectory"])
+            self.selected_python_command
+                .clone()
+                .filter(|path| path.is_file())
         }
         #[cfg(not(windows))]
         {

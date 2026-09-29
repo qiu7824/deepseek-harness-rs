@@ -37,6 +37,7 @@ const saves=()=>requests.filter(row=>row.args.action==='save');
  describeGate=null;await act(()=>release());
  const original=copy(preferences);await choose('E:/work/configured');await act(()=>button('高级设置').click());
  assert.equal(document.querySelector('[aria-label="Python 环境"]').value,'project');
+ assert.match(document.body.textContent,/DOCX\/XLSX 数据读写已内置，无需 Shell、Python 或 WPS/);
  await change('Cargo 可执行文件','E:/NewRust/cargo.exe');await act(()=>button('添加').click());
  assert.equal(saves().length,1);assert.equal(preferences.shellKind,original.shellKind);assert.equal(preferences.wpsPath,original.wpsPath);assert.equal(preferences.useProjectPython,true);assert.equal(preferences.toolchainPaths.node,original.toolchainPaths.node);assert.equal(preferences.toolchainPaths.git,original.toolchainPaths.git);assert.equal(preferences.toolchainPaths.ffmpeg,original.toolchainPaths.ffmpeg);assert.equal(preferences.toolchainPaths.cargo,'E:/NewRust/cargo.exe');
  failDescribe=true;await choose('E:/work/read-error');await act(()=>button('高级设置').click());assert.match(document.querySelector('[role=alert]').textContent,/读取失败/);assert.equal(document.querySelector('[aria-label="Cargo 可执行文件"]').disabled,true);

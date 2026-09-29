@@ -175,6 +175,14 @@ let settled = false;
 let computeTimer;
 let wallTimer;
 
+function updateWallBudget(paused, remaining) {
+  clearTimeout(wallTimer);
+  if (!paused) wallTimer = setTimeout(() => finish({
+    type: 'complete', has_value: false, logs: [],
+    error: { kind: 'timeout', message: 'wall-clock ceiling reached' },
+  }), remaining);
+}
+
 function send(message, done) {
   process.stdout.write(JSON.stringify(message) + '\n', done);
 }
@@ -215,6 +223,15 @@ input.on('line', (line) => {
   let message;
   try { message = JSON.parse(line); }
   catch (error) { finish({ type: 'protocol_failure', message: String(error) }); return; }
+  // Only the trusted Host stdin controls approval waits. Worker messages are
+  // handled separately and cannot pause the budget; CPU limits stay active.
+  if (message.type === 'approval_state') {
+    if (!worker || typeof message.paused !== 'boolean' || !Number.isSafeInteger(message.remaining_ms) || message.remaining_ms < 0 || message.remaining_ms > limits.max_wall_ms) {
+      finish({ type: 'protocol_failure', message: 'invalid approval budget state' }); return;
+    }
+    if (!settled) updateWallBudget(message.paused, message.remaining_ms);
+    return;
+  }
   if (message.type === 'binding_result') {
     worker?.postMessage(message);
     return;
@@ -236,10 +253,7 @@ input.on('line', (line) => {
       maxOldGenerationSizeMb: message.limits.max_old_generation_size_mb,
     },
   });
-  wallTimer = setTimeout(() => finish({
-    type: 'complete', has_value: false, logs: [],
-    error: { kind: 'timeout', message: 'wall-clock ceiling reached' },
-  }), message.limits.max_wall_ms);
+  updateWallBudget(false, message.limits.max_wall_ms);
   worker.on('online', () => {
     computeTimer = setInterval(() => {
       const utilization = worker.performance.eventLoopUtilization();

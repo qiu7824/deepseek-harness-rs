@@ -11,6 +11,7 @@ pub(crate) fn read_only(name: &str, arguments: &Value) -> bool {
             | "read_image"
             | "read_video"
             | "office_render"
+            | "office_read"
             | "list_directory"
             | "glob"
             | "grep"

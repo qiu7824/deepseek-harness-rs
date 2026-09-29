@@ -186,11 +186,13 @@ fn managed_node_precedes_system_discovery() {
     let directory =
         std::env::temp_dir().join(format!("dsh-node-selection-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(directory.join("bin")).unwrap();
-    let fallback = configured_command(&directory);
-    assert!(
-        fallback == "node" || Path::new(&fallback).is_absolute() && Path::new(&fallback).is_file()
-    );
     let name = if cfg!(windows) { "node.exe" } else { "node" };
+    let fallback = configured_command(&directory);
+    assert!(Path::new(&fallback).is_absolute());
+    assert!(dsh_shell::powershell::automatic_candidate_allowed(
+        Path::new(&fallback)
+    ));
+    assert!(Path::new(&fallback).is_file() || PathBuf::from(&fallback) == directory.join(name));
     let binary = directory.join("bin").join(name);
     std::fs::write(&binary, "fixture").unwrap();
     assert_eq!(PathBuf::from(configured_command(&directory)), binary);

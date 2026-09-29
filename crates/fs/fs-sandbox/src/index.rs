@@ -132,6 +132,19 @@ impl SandboxedFileSystem {
 
 #[async_trait::async_trait]
 impl FileSystem for SandboxedFileSystem {
+    async fn write_bytes(
+        &self,
+        target: &FsTarget,
+        content: &[u8],
+        expected: Option<&FsWriteIntent>,
+        signal: Option<AbortPredicate>,
+        policy: Option<&SandboxExecutionPolicy>,
+    ) -> Result<dsh_fs::FsBinaryWriteOutcome, FsError> {
+        let checked = self.checked_target(target, policy).await?;
+        self.local
+            .write_bytes(&checked, content, expected, signal, policy)
+            .await
+    }
     fn sandbox_mode(&self) -> Option<SandboxMode> {
         Some(self.default_mode)
     }

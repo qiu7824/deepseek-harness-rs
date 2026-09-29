@@ -121,6 +121,24 @@ impl RemoteFileSystem {
 }
 #[async_trait::async_trait]
 impl FileSystem for RemoteFileSystem {
+    async fn write_bytes(
+        &self,
+        target: &FsTarget,
+        content: &[u8],
+        expected: Option<&FsWriteIntent>,
+        signal: Option<AbortPredicate>,
+        policy: Option<&SandboxExecutionPolicy>,
+    ) -> Result<dsh_fs::FsBinaryWriteOutcome, FsError> {
+        if self.remote_target(target).is_some() {
+            return Err(FsError::new(
+                "Remote binary publication is not supported; no local file was written",
+                FsErrorCode::FsIoError,
+            ));
+        }
+        self.local
+            .write_bytes(target, content, expected, signal, policy)
+            .await
+    }
     fn for_tool(&self, owner: Option<&str>) -> Option<Arc<dyn FileSystem>> {
         self.local.for_tool(owner).map(|local| {
             Arc::new(Self {

@@ -101,6 +101,68 @@ struct Fixture {
     paths: Arc<RuntimePaths>,
     runtime: Arc<Runtime>,
 }
+
+#[tokio::test]
+async fn automatic_host_probe_does_not_launch_another_apps_private_runtime() {
+    let mut fixture = Fixture::new(false, false);
+    let foreign = fixture.root.join(".codex/vendor/git.exe");
+    std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+    std::fs::write(&foreign, "synthetic executable").unwrap();
+    Arc::get_mut(&mut fixture.runtime).unwrap().path = foreign.to_string_lossy().into_owned();
+    let cache = EnvironmentCapabilities::new(fixture.runtime.clone(), fixture.paths.clone());
+    let result = cache
+        .inspect("git", true, Arc::new(|| false))
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "missing");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("private runtime")
+    );
+    assert!(result["path"].is_null());
+    assert!(
+        !fixture.runtime.killed.load(Ordering::SeqCst),
+        "disallowed candidates must not be started"
+    );
+}
+
+#[tokio::test]
+async fn office_data_capability_is_independent_of_wps_location_or_missing_application() {
+    for missing in [true, false] {
+        let fixture = Fixture::new(missing, false);
+        let cache = EnvironmentCapabilities::new(fixture.runtime.clone(), fixture.paths.clone());
+        let first = cache
+            .inspect("wps", false, Arc::new(|| false))
+            .await
+            .unwrap();
+        assert_eq!(first["status"], if missing { "missing" } else { "located" });
+        assert_eq!(first["applicationStarted"], false);
+        assert_eq!(first["independentDataTools"]["available"], true);
+        for field in [
+            "requiresShell",
+            "requiresPython",
+            "requiresWps",
+            "requiresSandboxProcess",
+        ] {
+            assert_eq!(first["independentDataTools"][field], false);
+        }
+        let cached = cache
+            .inspect("wps", false, Arc::new(|| false))
+            .await
+            .unwrap();
+        assert_eq!(cached["cacheHit"], true);
+        assert_eq!(cached["independentDataTools"], builtin_office_data());
+        assert!(
+            !fixture.runtime.killed.load(Ordering::SeqCst),
+            "WPS discovery must not launch an application"
+        );
+        let summary = cache.summary();
+        assert!(summary.contains("office_read and office_write directly"));
+        assert!(summary.contains("A missing WPS application does not disable these data tools"));
+    }
+}
 impl Fixture {
     fn new(missing: bool, hang: bool) -> Self {
         let root = std::env::temp_dir().join(format!("dsh-capability-{}", uuid::Uuid::new_v4()));

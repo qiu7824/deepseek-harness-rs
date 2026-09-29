@@ -19,8 +19,9 @@ use std::time::Duration;
 
 use cordis::{ArcValue, Context, Disposer, Listener, Plugin, PluginError, arc, downcast_arc};
 use dsh_llm::ContentBlock;
-use dsh_timeout::{AbortTaskOnDrop, DeadlineSignal, deadline, timeout_of};
+use dsh_timeout::{AbortTaskOnDrop, DeadlineSignal};
 use dsh_tools::{ToolErrorInfo, ToolExecution, ToolExecutionResult, ToolFailure, ToolRuntime};
+use dsh_user_approval::execution_clock::ExecutionClock;
 
 /// The code owned by this plugin, used BOTH as the internal deadline
 /// classification code AND as the structured error `code` on the replacement
@@ -104,23 +105,29 @@ pub fn apply(ctx: &Context) -> Disposer {
 
             // Fuse the caller's abort predicate with this plugin's own
             // timer (the TS `deadline(exec.signal, timeoutMs, TOOL_TIMEOUT)`).
-            let upstream = DeadlineSignal::never();
-            let mut deadline = deadline(Some(&upstream), timeout_ms, TOOL_TIMEOUT);
-            let fused = Arc::new(std::mem::replace(
-                &mut deadline.signal,
-                DeadlineSignal::never(),
-            ));
+            let fused = Arc::new(DeadlineSignal::never());
+            let clock = ExecutionClock::start();
+            let expired = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let upstream_predicate = exec.signal.lock().clone();
             let poller = {
                 let fused = Arc::clone(&fused);
                 let upstream_for_poller = upstream_predicate.clone();
+                let clock = clock.clone();
+                let expired = expired.clone();
                 tokio::spawn(async move {
                     loop {
                         if upstream_for_poller() {
                             fused.cancel(None);
                             return;
                         }
-                        tokio::time::sleep(Duration::from_millis(15)).await;
+                        if clock.elapsed() >= Duration::from_millis(timeout_ms) {
+                            expired.store(true, std::sync::atomic::Ordering::Release);
+                            fused.cancel(None);
+                            return;
+                        }
+                        let remaining =
+                            Duration::from_millis(timeout_ms).saturating_sub(clock.elapsed());
+                        tokio::time::sleep(Duration::from_millis(15).min(remaining)).await;
                     }
                 })
             };
@@ -137,12 +144,11 @@ pub fn apply(ctx: &Context) -> Disposer {
                 upstream: upstream_predicate,
                 _poller: AbortTaskOnDrop::new(poller),
             };
-            let result = next.call().await;
+            let result = clock.scope(next.call()).await;
             drop(signal_guard);
-            // If OUR timer fired (scoped by code — a nested outer deadline
-            // reads as None here), replace whatever the tool returned with
-            // the structured TOOL_TIMEOUT the model sees.
-            if timeout_of(fused.reason().as_ref(), Some(TOOL_TIMEOUT)).is_some() {
+            // Only this execution budget produces TOOL_TIMEOUT. An enclosing
+            // deadline or caller cancellation remains an upstream cancellation.
+            if expired.load(std::sync::atomic::Ordering::Acquire) {
                 return Some(arc(Arc::new(tool_timeout_result(timeout_ms))));
             }
             Some(result)

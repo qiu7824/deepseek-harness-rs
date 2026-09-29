@@ -1,4 +1,29 @@
 use super::*;
+
+#[test]
+fn approval_results_keep_timeout_cancel_and_denial_distinct() {
+    for (outcome, expected, word) in [
+        (ApprovalOutcome::TimedOut, "USER_APPROVAL_TIMED_OUT", "超时"),
+        (
+            ApprovalOutcome::Cancelled,
+            "USER_APPROVAL_CANCELLED",
+            "取消",
+        ),
+        (ApprovalOutcome::Rejected, "USER_APPROVAL_DENIED", "拒绝"),
+        (
+            ApprovalOutcome::Unavailable,
+            "USER_APPROVAL_UNAVAILABLE",
+            "不可用",
+        ),
+    ] {
+        let error = approval_outcome(outcome).unwrap_err();
+        assert_eq!(error.info.unwrap().code, expected);
+        assert!(error.message.contains(word));
+        assert!(error.message.contains("远端指令未发出"));
+    }
+    assert!(approval_outcome(ApprovalOutcome::AllowedOnce).is_ok());
+    assert!(approval_outcome(ApprovalOutcome::AllowedAlways).is_ok());
+}
 use dsh_subprocess::{SubprocessOutcome, SubprocessTerminalForeground, SubprocessTerminalSignal};
 use futures::{channel::mpsc, stream::BoxStream};
 use std::sync::atomic::AtomicU64;

@@ -17,8 +17,10 @@
 //!   `None` (the TS fold returns the raw string; the invariant companion
 //!   flags unknown policies anyway).
 
+pub mod execution_clock;
 pub mod grants;
 pub mod invariant;
+mod retry_scope;
 
 use std::sync::Arc;
 
@@ -246,6 +248,7 @@ mod policy_tests {
             ApprovalOutcome::TimedOut
         );
         disposer().await;
+        owner.session().append("user/message", serde_json::json!({"id":"explicit-retry","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"Retry with a fresh approval."}]}), Some(dsh_session::SurfaceIntent{surface_op:dsh_session::SurfaceOp::Append,source_event_seqs:None})).unwrap();
         let human: Arc<cordis::Listener> = Arc::new(|_, args| {
             let request = cordis::downcast::<ApprovalRequest>(&args[0]).unwrap();
             assert!(!request.rememberable);
@@ -293,6 +296,81 @@ mod policy_tests {
             serde_json::to_string(&ApprovalOutcome::TimedOut).unwrap(),
             "\"timed-out\""
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_retry_scope_uses_turn_and_explicit_user_input_not_command_identity() {
+        let ctx = Context::root();
+        let service = ApprovalService::install(
+            &ctx,
+            Config {
+                timeout_ms: Some(20),
+                ..Default::default()
+            },
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        ctx.on(
+            "approval/request",
+            Arc::new(move |_, _| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(futures::future::pending())
+            }),
+            Default::default(),
+        )
+        .await;
+        let owner = agent(&ctx, "approval-retry-scope").await;
+        let mut request = ApprovalRequest {
+            agent: owner.clone(),
+            tool_name: "pwsh".into(),
+            call_id: Some("first".into()),
+            reason: Some("command A in directory A".into()),
+            grant_key: None,
+            rememberable: false,
+            signal: None,
+        };
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::TimedOut
+        );
+        request.tool_name = "execute_native".into();
+        request.call_id = Some("changed".into());
+        request.reason = Some("command B in directory B".into());
+        let before = tokio::time::Instant::now();
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::TimedOut
+        );
+        assert_eq!(before.elapsed(), std::time::Duration::ZERO);
+        owner.session().append("user/message", serde_json::json!({"id":"plugin-hint","role":"user","source":{"kind":"plugin","plugin":"retry-hint"},"content":[{"type":"text","text":"Suggested retry"}]}), Some(dsh_session::SurfaceIntent{surface_op:dsh_session::SurfaceOp::Append,source_event_seqs:None})).unwrap();
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::TimedOut
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        owner.session().append("user/message", serde_json::json!({"id":"user-retry","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"Please try again."}]}), Some(dsh_session::SurfaceIntent{surface_op:dsh_session::SurfaceOp::Append,source_event_seqs:None})).unwrap();
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::TimedOut
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        owner
+            .session()
+            .append(
+                "turn/end",
+                serde_json::json!({"turn":1,"reason":{"kind":"completed"}}),
+                None,
+            )
+            .unwrap();
+        owner
+            .session()
+            .append("turn/start", serde_json::json!({"turn":2}), None)
+            .unwrap();
+        assert_eq!(
+            service.request(&request).await.unwrap(),
+            ApprovalOutcome::TimedOut
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
@@ -948,6 +1026,15 @@ impl ApprovalService {
         {
             return Ok(ApprovalOutcome::AllowedAlways);
         }
+        // Cancellation and explicit policy changes still take precedence. A
+        // changed command/path is not fresh user intent to reopen a timed-out UI.
+        if self.try_effective_policy(session)? != ApprovalPolicy::Never
+            && !req.signal.as_ref().is_some_and(|signal| signal())
+            && retry_scope::timed_out(session, &req.tool_name)?
+        {
+            return Ok(ApprovalOutcome::TimedOut);
+        }
+        let _execution_pause = execution_clock::pause();
         let id = approval_request_id(uuid::Uuid::new_v4().to_string());
         let mut asked = serde_json::json!({
             "id": id.as_str(),

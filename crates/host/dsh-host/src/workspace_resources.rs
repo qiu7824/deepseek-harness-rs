@@ -685,6 +685,7 @@ impl Resources {
                 .filter(|row| {
                     row.owner == owner
                         && row.state != "reclaimed"
+                        && row.kind != "trash"
                         && !row.path.is_empty()
                         && dsh_workspace_resources::checked_path(Path::new(&row.path)).is_ok()
                 })
@@ -891,6 +892,9 @@ impl Resources {
                 let store = self.assert_owner(owner, id)?;
                 match action {
                     "write" => {
+                        if store.get(id)?.kind == "trash" {
+                            return Err("回收副本只读，请通过恢复操作还原原文件".into());
+                        }
                         mark_effects()?;
                         let path = store.write_text(id, string("path")?, string("content")?)?;
                         let saved = std::fs::read(&path).map_err(|error| error.to_string())?;

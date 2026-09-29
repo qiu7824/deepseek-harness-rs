@@ -1,201 +1,322 @@
-//! Durable projection state for dynamic runtime context. Rust port of
-//! `packages/core/agent-loop/src/runtime-context.ts`.
-//!
-//! # Deviations
-//!
-//! - The retained cell uses a nested `Option` (`None` = no snapshot ever
-//!   existed; `Some(None)` = none retained), matching the TS
-//!   `{seq,text} | null | undefined` ternary.
-
-use std::sync::Arc;
-
+//! Durable, dependency-aware projection of named runtime facts.
 use cordis::{Context, EventOptions, downcast_arc};
-use dsh_llm::{
-    ContentBlock, ContextForm, ContextSnapshotSection, MessageSource, create_user_message,
-};
-use dsh_session::{Session, SessionEvent, is_replacement_surface_event};
+use dsh_llm::ContextSnapshotSection;
+use dsh_session::{Session, SessionEvent};
 use parking_lot::Mutex;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-const SOURCE: &str = "@deepseek-ai/dsh-system-prompt";
-const CLEARED: &str =
-    "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
+#[path = "runtime_context_state.rs"]
+mod state;
+use state::{ProjectionState, owned_message};
 
-fn is_owned(message: &dsh_llm::UserMessage) -> bool {
-    message.source.plugin_name() == Some(SOURCE)
-}
-
-fn text_of(message: &dsh_llm::UserMessage) -> Option<String> {
-    if message.content.len() != 1 {
-        return None;
-    }
-    match &message.content[0] {
-        ContentBlock::Text { text } => Some(text.clone()),
-        _ => None,
-    }
-}
-
-/// One retained snapshot's identity and text.
-#[derive(Debug, Clone)]
-struct Retained {
-    seq: u64,
-    text: Option<String>,
-}
-
-/// Tracks the last retained runtime-context snapshot without owning its
-/// commit.
+/// Maintains only the facts supported by the current model-visible surface.
 pub struct RuntimeContextProjection {
-    /// `None` means no snapshot ever existed; `Some(None)` means none is
-    /// retained.
-    retained: Arc<Mutex<Option<Option<Retained>>>>,
+    retained: Arc<Mutex<ProjectionState>>,
 }
-
 impl RuntimeContextProjection {
-    /// Restore projection state once, then follow authoritative session
-    /// events.
     pub fn new(ctx: &Context, session: &Session) -> Self {
         let projection = Self::restore(session).expect("runtime context restoration");
         projection.attach(ctx, session);
         projection
     }
-
     pub(crate) fn restore(session: &Session) -> Result<Self, String> {
-        let surface_nodes: std::collections::HashSet<u64> =
-            session.surface()?.nodes.into_iter().collect();
-        let mut retained: Option<Option<Retained>> = None;
+        let surface = session.surface()?.nodes;
+        let visible: HashSet<_> = surface.iter().copied().collect();
+        let mut messages = HashMap::new();
+        let mut retained = ProjectionState::default();
         session.visit_events(0, None, |event| {
-            if event.type_ != "user/message" {
-                return Ok(true);
-            }
-            let source = serde_json::from_value::<MessageSource>(event.data["source"].clone());
-            if !source.is_ok_and(|source| source.plugin_name() == Some(SOURCE)) {
-                return Ok(true);
-            }
-            let Ok(message) = serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone())
-            else {
-                return Ok(true);
-            };
-            if retained.is_none() {
-                retained = Some(None);
-            }
-            if surface_nodes.contains(&event.seq.get()) {
-                retained = Some(Some(Retained {
-                    seq: event.seq.get(),
-                    text: text_of(&message),
-                }));
+            if let Some(message) = owned_message(event) {
+                retained.seen = true;
+                if visible.contains(&event.seq.get()) {
+                    messages.insert(event.seq.get(), message);
+                }
             }
             Ok(true)
         })?;
+        // Replacements retain their surface position, not durable sequence
+        // order. Missing baseline/delta links force a complete next snapshot.
+        for seq in surface {
+            if let Some(message) = messages.remove(&seq) {
+                retained.observe(seq, message);
+            }
+        }
         Ok(Self {
             retained: Arc::new(Mutex::new(retained)),
         })
     }
-
     pub(crate) fn attach(&self, ctx: &Context, session: &Session) {
-        let session_identity = session.identity();
-        let retained_cell = Arc::clone(&self.retained);
-        let listener: Arc<cordis::Listener> = Arc::new(move |_listener_ctx, args| {
-            let subject = downcast_arc::<Session>(&args[0]).map(|arc| arc.as_ref().clone());
-            let event = downcast_arc::<SessionEvent>(&args[1]).map(|arc| arc.as_ref().clone());
-            let retained = Arc::clone(&retained_cell);
+        let identity = session.identity();
+        let retained = self.retained.clone();
+        let listener: Arc<cordis::Listener> = Arc::new(move |_, args| {
+            let subject = downcast_arc::<Session>(&args[0]);
+            let event = downcast_arc::<SessionEvent>(&args[1]);
+            let retained = retained.clone();
             Box::pin(async move {
                 let (Some(subject), Some(event)) = (subject, event) else {
                     return None;
                 };
-                if subject.identity() != session_identity {
+                if subject.identity() != identity {
                     return None;
                 }
-                if event.type_ == "user/message" {
-                    if let Ok(message) =
-                        serde_json::from_value::<dsh_llm::UserMessage>(event.data.clone())
-                    {
-                        if is_owned(&message) {
-                            *retained.lock() = Some(Some(Retained {
-                                seq: event.seq.get(),
-                                text: text_of(&message),
-                            }));
-                        }
-                    }
-                } else if is_replacement_surface_event(&event)
-                    && event.source_event_seqs.as_ref().is_some_and(|seqs| {
-                        retained
-                            .lock()
-                            .as_ref()
-                            .and_then(|retained| retained.as_ref())
-                            .is_some_and(|retained| seqs.contains(&retained.seq))
-                    })
-                {
-                    *retained.lock() = Some(None);
+                let mut state = retained.lock();
+                state.replace(&event);
+                if let Some(message) = owned_message(&event) {
+                    state.observe(event.seq.get(), message);
                 }
                 None
             })
         });
-        // The listener registers through the caller context (the TS `ctx.on`
-        // is synchronous); drive the async registration on a dedicated thread.
-        let ctx_for_listener = ctx.clone();
+        let context = ctx.clone();
         std::thread::spawn(move || {
-            futures::executor::block_on(ctx_for_listener.on(
+            futures::executor::block_on(context.on(
                 "session/event",
                 listener,
                 EventOptions::default().global(true),
-            ));
+            ))
         })
         .join()
         .expect("session/event listener registration");
     }
-
-    /// Create an uncommitted snapshot only when the retained value differs.
+    /// Full facts establish a baseline; subsequent messages carry only changed
+    /// sections and explicit removals. Projection itself never commits state.
     pub fn project(
         &self,
         current: &str,
         sections: &[ContextSnapshotSection],
     ) -> Option<dsh_llm::UserMessage> {
-        let retained = self.retained.lock();
-        if retained.as_ref().is_none() && current.is_empty() {
-            return None;
-        }
-        let snapshot = if current.is_empty() {
-            CLEARED.to_string()
-        } else {
-            current.to_string()
-        };
-        if retained
-            .as_ref()
-            .and_then(|retained| retained.as_ref())
-            .and_then(|retained| retained.text.as_deref())
-            == Some(snapshot.as_str())
-        {
-            return None;
-        }
-        let source = if sections.is_empty() {
-            MessageSource::Plugin {
-                plugin: SOURCE.to_string(),
-                form: None,
-                sections: None,
-                summary: None,
-                compaction_id: None,
-                source_command_id: None,
-            }
-        } else {
-            MessageSource::Plugin {
-                plugin: SOURCE.to_string(),
-                form: Some(ContextForm::Snapshot),
-                sections: Some(sections.to_vec()),
-                summary: None,
-                compaction_id: None,
-                source_command_id: None,
-            }
-        };
-        Some(create_user_message(
-            vec![ContentBlock::Text { text: snapshot }],
-            source,
-        ))
+        self.retained.lock().project(current, sections)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dsh_llm::{ContentBlock, MessageSource, create_user_message};
     use dsh_session::{SurfaceIntent, SurfaceOp};
+    fn sections(task: &str) -> Vec<ContextSnapshotSection> {
+        vec![
+            ContextSnapshotSection {
+                name: "environment".into(),
+                text: "stable runtime ".repeat(8000),
+            },
+            ContextSnapshotSection {
+                name: "task".into(),
+                text: task.into(),
+            },
+        ]
+    }
+    fn commit(
+        session: &Session,
+        projection: &RuntimeContextProjection,
+        sections: &[ContextSnapshotSection],
+    ) -> dsh_llm::UserMessage {
+        let message = projection
+            .project(
+                &dsh_system_prompt::join_context_sections(sections),
+                sections,
+            )
+            .unwrap();
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(&message).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
+        message
+    }
+
+    #[tokio::test]
+    async fn deltas_replay_cold_and_a_user_message_replacement_invalidates_their_baseline() {
+        let ctx = Context::root();
+        let store = dsh_session::SessionStore::install(&ctx);
+        let session = store.create(&ctx, None, None).await.unwrap();
+        let projection = RuntimeContextProjection::new(&ctx, &session);
+        let initial = sections("pending");
+        let full = commit(&session, &projection, &initial);
+        let next = sections("verified");
+        let delta = commit(&session, &projection, &next);
+        assert!(serde_json::to_value(&delta.source).unwrap()["contextDeltaVersion"] == 1);
+        let rendered = delta.content[0].as_text().unwrap();
+        assert!(rendered.contains("verified"));
+        assert!(!rendered.contains("stable runtime"));
+        assert!(rendered.len() < 500);
+        assert!(full.content[0].as_text().unwrap().len() > 100000);
+        assert!(
+            projection
+                .project(&dsh_system_prompt::join_context_sections(&next), &next)
+                .is_none()
+        );
+        let restored = RuntimeContextProjection::restore(&archive(&session)).unwrap();
+        assert!(
+            restored
+                .project(&dsh_system_prompt::join_context_sections(&next), &next)
+                .is_none()
+        );
+        let baseline = session
+            .events()
+            .iter()
+            .find(|event| event.data["id"].as_str() == Some(full.id.as_str()))
+            .unwrap()
+            .seq
+            .get();
+        let checkpoint = create_user_message(
+            vec![ContentBlock::Text {
+                text: "compacted earlier history".into(),
+            }],
+            MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
+        );
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(checkpoint).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Replace {
+                        start: baseline,
+                        end: baseline,
+                    },
+                    source_event_seqs: Some(vec![baseline]),
+                }),
+            )
+            .unwrap();
+        for state in [
+            projection,
+            RuntimeContextProjection::restore(&archive(&session)).unwrap(),
+        ] {
+            let fresh = state
+                .project(&dsh_system_prompt::join_context_sections(&next), &next)
+                .expect("missing baseline requires complete facts");
+            assert!(
+                fresh.content[0]
+                    .as_text()
+                    .unwrap()
+                    .contains("stable runtime")
+            );
+            assert!(fresh.content[0].as_text().unwrap().contains("verified"));
+            assert!(serde_json::to_value(fresh.source).unwrap()["contextDeltaVersion"].is_null());
+        }
+        ctx.fiber.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn imported_delta_metadata_cannot_stand_in_for_missing_visible_facts() {
+        let ctx = Context::root();
+        let store = dsh_session::SessionStore::install(&ctx);
+        let session = store.create(&ctx, None, None).await.unwrap();
+        let projection = RuntimeContextProjection::new(&ctx, &session);
+        commit(&session, &projection, &sections("first"));
+        let next = sections("second");
+        let current = dsh_system_prompt::join_context_sections(&next);
+        let mut delta = projection.project(&current, &next).unwrap();
+        delta.content = vec![ContentBlock::Text {
+            text: "incomplete imported body".into(),
+        }];
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(delta).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Append,
+                    source_event_seqs: None,
+                }),
+            )
+            .unwrap();
+        for state in [
+            projection,
+            RuntimeContextProjection::restore(&archive(&session)).unwrap(),
+        ] {
+            let rebuilt = state
+                .project(&current, &next)
+                .expect("visible facts need a full baseline");
+            assert_eq!(rebuilt.content[0].as_text(), Some(current.as_str()));
+        }
+        ctx.fiber.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn section_removal_and_missing_middle_delta_are_never_silently_retained() {
+        let ctx = Context::root();
+        let store = dsh_session::SessionStore::install(&ctx);
+        let session = store.create(&ctx, None, None).await.unwrap();
+        let projection = RuntimeContextProjection::new(&ctx, &session);
+        commit(&session, &projection, &sections("first"));
+        let second = sections("second");
+        let middle = commit(&session, &projection, &second);
+        let final_sections = vec![ContextSnapshotSection {
+            name: "task".into(),
+            text: "third".into(),
+        }];
+        let removal = commit(&session, &projection, &final_sections);
+        assert_eq!(
+            serde_json::to_value(&removal.source).unwrap()["removedSections"],
+            serde_json::json!(["environment"])
+        );
+        assert!(
+            RuntimeContextProjection::restore(&archive(&session))
+                .unwrap()
+                .project(
+                    &dsh_system_prompt::join_context_sections(&final_sections),
+                    &final_sections
+                )
+                .is_none()
+        );
+        let seq = session
+            .events()
+            .iter()
+            .find(|event| event.data["id"] == middle.id.as_str())
+            .unwrap()
+            .seq
+            .get();
+        let replaced = create_user_message(
+            vec![ContentBlock::Text {
+                text: "checkpoint".into(),
+            }],
+            MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
+        );
+        session
+            .append(
+                "user/message",
+                serde_json::to_value(replaced).unwrap(),
+                Some(SurfaceIntent {
+                    surface_op: SurfaceOp::Replace {
+                        start: seq,
+                        end: seq,
+                    },
+                    source_event_seqs: Some(vec![seq]),
+                }),
+            )
+            .unwrap();
+        assert!(
+            projection
+                .project(
+                    &dsh_system_prompt::join_context_sections(&final_sections),
+                    &final_sections
+                )
+                .is_some()
+        );
+        assert!(
+            RuntimeContextProjection::restore(&archive(&session))
+                .unwrap()
+                .project(
+                    &dsh_system_prompt::join_context_sections(&final_sections),
+                    &final_sections
+                )
+                .is_some()
+        );
+        ctx.fiber.dispose().await;
+    }
 
     fn snapshot(session: &Session, text: &str) -> u64 {
         let projection = RuntimeContextProjection::restore(session).unwrap();

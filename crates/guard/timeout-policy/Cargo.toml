@@ -11,12 +11,15 @@ dsh-invariants = { path = "../../util/invariants" }
 dsh-llm = { path = "../../core/llm" }
 dsh-timeout = { path = "../../util/timeout" }
 dsh-tools = { path = "../../core/tools" }
+dsh-user-approval = { path = "../../interaction/user-approval" }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+dsh-agent = { path = "../../core/agent" }
+dsh-scope = { path = "../../core/scope" }
 dsh-session = { path = "../../core/session" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

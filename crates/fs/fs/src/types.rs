@@ -178,6 +178,14 @@ pub struct FsWriteOutcome {
     pub after: String,
 }
 
+/// A bounded binary publication has no invented text-diff representation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FsBinaryWriteOutcome {
+    pub operation: FsWriteOperation,
+    pub version: FsVersion,
+    pub bytes: u64,
+}
+
 /// A literal-replacement edit request (TS `FsEditRequest`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FsEditRequest {

@@ -36,8 +36,8 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            eager_limit: 32,
-            listing_chars: 4096,
+            eager_limit: 0,
+            listing_chars: 1536,
             max_loaded: 96,
             max_schema_bytes: 128 * 1024,
             deferred_prefixes: vec!["mcp__".into()],
@@ -48,36 +48,10 @@ impl Default for DiscoveryConfig {
                 "edit",
                 "glob",
                 "grep",
-                "bash",
-                "pwsh",
                 "skill",
                 "ask_user_question",
-                "todo",
-                "todo_write",
                 "present",
                 "present_files",
-                "web_search",
-                "web_fetch",
-                "spawn_agent",
-                "spawn_subagent",
-                "send_message",
-                "wait_agent",
-                "memory",
-                "memory_search",
-                "memory_get",
-                "memory_write",
-                "get_goal",
-                "create_goal",
-                "update_goal",
-                // Scheduling is requested in plain chat ("remind me every
-                // morning"); keep creation, listing and removal one call away.
-                "schedule_create",
-                "schedule_list",
-                "schedule_delete",
-                "scheduled_task_create",
-                "scheduled_task_list",
-                "scheduled_task_update",
-                "scheduled_task_delete",
                 // The runtime context names enabled knowledge bases and asks the
                 // model to search them first.
                 "knowledge_search",
@@ -85,11 +59,12 @@ impl Default for DiscoveryConfig {
                 "tool_describe",
                 "environment_probe",
                 "environment_validate",
-                "environment_initialize",
+                "workspace_scratch",
+                "file_manage",
+                "office_read",
+                "office_write",
                 "office_render",
                 "execute_native",
-                "execute_steps",
-                "execute_script",
                 "run_code",
             ]
             .into_iter()
@@ -254,8 +229,6 @@ impl ToolDiscovery {
             "environment_probe",
             "environment_validate",
             "execute_native",
-            "execute_steps",
-            "execute_script",
             "run_code",
         ]
         .contains(&tool.name.as_str())

@@ -130,7 +130,7 @@ fn approval_failure(outcome: dsh_user_approval::ApprovalOutcome) -> Option<ToolB
         ),
         ApprovalOutcome::TimedOut => (
             "USER_APPROVAL_TIMED_OUT",
-            "Approval timed out before a decision. This request has ended and the tool did not run. Its approval controls are no longer active; do not ask the user to approve the expired request. If the user confirms they want to retry, issue a new tool call to create a fresh approval request.",
+            "Approval timed out before a decision. This request has ended and the tool did not run. Its approval controls are no longer active. Same-category approvals will not reopen during this turn until new explicit user input arrives. Changing the command or directory does not reset this limit; wait for the user to retry.",
         ),
         ApprovalOutcome::Unavailable => (
             "USER_APPROVAL_UNAVAILABLE",
@@ -249,8 +249,15 @@ pub fn scoped_tool_guidance(
     let text = text.into();
     dsh_system_prompt::PromptText::Provider(Arc::new(move |context| {
         if tools.upgrade().is_some_and(|tools| {
-            let view = tools.view(context.scope.as_ref());
-            names.iter().all(|name| view.visible.contains_key(name))
+            if tools.mode_for(context.scope.as_ref()) == ToolPresentationMode::Native {
+                let disclosed = tools.wire_schemas(context).schemas;
+                names
+                    .iter()
+                    .all(|name| disclosed.iter().any(|schema| &schema.name == name))
+            } else {
+                let view = tools.view(context.scope.as_ref());
+                names.iter().all(|name| view.visible.contains_key(name))
+            }
         }) {
             text.clone()
         } else {
@@ -462,6 +469,10 @@ pub struct ToolRunContext {
 }
 
 impl ToolRunContext {
+    /// An immutable fact set only by this call's successful pre-dispatch human approval.
+    pub fn human_approval_granted(&self) -> bool {
+        self.state.lock().human_approval
+    }
     /// Trusted adapters record their effective executor and approved scope.
     /// Values must contain no credentials or process environment variables.
     pub fn bind_execution_context(
@@ -576,6 +587,7 @@ impl std::ops::Deref for ToolRunContext {
 }
 
 struct ExecutionState {
+    human_approval: bool,
     effect_rejection: Option<&'static str>,
     adapter_receipt: Option<JsonValue>,
     effective_contexts: Vec<JsonValue>,
@@ -1211,6 +1223,7 @@ impl ToolRuntime {
             .map(|provider| (provider.classify)(&execution))
             .unwrap_or_default();
         let state = Arc::new(Mutex::new(ExecutionState {
+            human_approval: false,
             effect_rejection: None,
             adapter_receipt: None,
             effective_contexts: Vec::new(),
@@ -1880,7 +1893,10 @@ impl ToolRuntime {
         ))?;
         match approval_failure(outcome) {
             Some(error) => Err(error),
-            None => Ok(()),
+            None => {
+                run_ctx.state.lock().human_approval |= human_only;
+                Ok(())
+            }
         }
     }
 

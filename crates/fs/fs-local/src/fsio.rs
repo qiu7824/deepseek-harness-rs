@@ -20,10 +20,8 @@
 //! - `versionOf` uses `dev:ino:size:mtimeNs:ctimeNs` on Unix and a
 //!   size/modified/created approximation on Windows (the Rust std layer
 //!   exposes no file index); the TS formats are matched on POSIX.
-//! - The Windows DACL copy/secure replacement boundaries are simplified
-//!   no-ops until the sandbox-windows-acl milestone (recorded in
-//!   `docs/porting/cordis-rust-notes.md`); the seam injection points remain
-//!   so tests pin the same failure choreography.
+//! - Windows replacement uses ReplaceFileW; failed replacement preserves the
+//!   original and successful replacement preserves its security descriptor.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -955,6 +953,25 @@ async fn default_remove_staging_dir(path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+struct StagingCleanup {
+    path: std::path::PathBuf,
+    active: bool,
+}
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        // Also runs if a timeout drops the write future while it is awaiting I/O.
+        // Never follow a link substituted for this exclusively created directory.
+        if std::fs::symlink_metadata(&self.path)
+            .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+        {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 /// Atomically replace a file through a private, synced staging file in the
 /// same directory. POSIX protects the staging directory and file with `0700`
 /// and `0600`. A new Windows file inherits the destination directory's DACL
@@ -966,6 +983,28 @@ pub async fn write_file_atomic(
     signal: Option<&FsAbort>,
     internals: &FsIoInternals,
     create_if_absent: Option<&LocalTarget>,
+) -> Result<(), FsError> {
+    write_bytes_atomic(
+        absolute_path,
+        content.as_bytes(),
+        mode,
+        signal,
+        internals,
+        create_if_absent,
+        None,
+    )
+    .await
+}
+
+/// Atomic byte publication, including a final stale-version check after staging.
+pub async fn write_bytes_atomic(
+    absolute_path: &str,
+    content: &[u8],
+    mode: Option<u32>,
+    signal: Option<&FsAbort>,
+    internals: &FsIoInternals,
+    create_if_absent: Option<&LocalTarget>,
+    expected_version: Option<&dsh_fs::FsVersion>,
 ) -> Result<(), FsError> {
     throw_if_aborted(signal, "write")?;
     let directory = Path::new(absolute_path)
@@ -1010,6 +1049,10 @@ pub async fn write_file_atomic(
             }
         }
     };
+    let _cleanup = StagingCleanup {
+        path: staging_dir.clone(),
+        active: internals.remove_staging_dir.is_none(),
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1040,13 +1083,12 @@ pub async fn write_file_atomic(
                 .await;
         }
         if platform == "windows" && mode.is_some() {
-            // Simplified Windows boundary: the DACL copy is a no-op until the
-            // sandbox-windows-acl milestone.
+            // ReplaceFileW merges the destination descriptor at publication.
             let _ = copy_file_dacl_win32(Path::new(absolute_path), &temp_path).await;
         }
         {
             use tokio::io::AsyncWriteExt;
-            file.write_all(content.as_bytes()).await.map_err(|error| {
+            file.write_all(content).await.map_err(|error| {
                 FsError::new(format!("write failed: {error}"), FsErrorCode::FsIoError)
             })?;
             file.sync_all().await.map_err(|error| {
@@ -1073,6 +1115,19 @@ pub async fn write_file_atomic(
         drop(file);
 
         throw_if_aborted(signal, "write")?;
+        if let Some(version) = expected_version {
+            if probe(absolute_path)
+                .await?
+                .as_ref()
+                .map(|info| &info.version)
+                != Some(version)
+            {
+                return Err(FsError::new(
+                    "File changed before publication",
+                    FsErrorCode::FsStaleVersion,
+                ));
+            }
+        }
         if let Some(create_target) = create_if_absent {
             let linked = match &internals.link_file {
                 Some(hook) => (hook)(&temp_path, Path::new(absolute_path)).await,
@@ -1125,8 +1180,7 @@ pub async fn write_file_atomic(
                 ));
             }
         } else if platform == "windows" && mode.is_some() {
-            // Simplified Windows replacement: remove-then-rename (the ACL
-            // preservation lands with the windows-acl milestone).
+            // Publish through ReplaceFileW without deleting the original first.
             if let Err(error) = replace_file_win32(Path::new(absolute_path), &temp_path).await {
                 return Err(FsError::new(
                     format!("write failed: {error}"),

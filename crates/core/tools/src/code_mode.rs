@@ -336,7 +336,7 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                     "type": "string",
                     "description": "Clear, concise description of what this program does in active voice, 5-10 words (shown in the UI)."
                 },
-                "timeoutMs": {"type":"integer","minimum":1,"maximum":600000,"description":"Elapsed program budget in milliseconds, including nested tools and approval waits. Authenticated sandbox startup has a separate bounded deadline. Default 120000; maximum 600000. Zero does not disable the deadline."}
+                "timeoutMs": {"type":"integer","minimum":1,"maximum":600000,"description":"Elapsed program budget in milliseconds, including nested tool execution but excluding approval waits. Approval and authenticated sandbox startup retain their own deadlines. Default 120000; maximum 600000. Zero does not disable the deadline."}
             },
             "required": ["code", "description"]
         }),
