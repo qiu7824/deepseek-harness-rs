@@ -354,6 +354,8 @@ pub use winutil::string_from_sid_bytes;
 #[cfg(target_os = "windows")]
 pub use winutil::to_wide;
 #[cfg(target_os = "windows")]
+pub use winutil::to_wide_file_path;
+#[cfg(target_os = "windows")]
 pub use workspace_acl::is_command_cwd_root;
 #[cfg(target_os = "windows")]
 pub use wrapper::CODEX_WINDOWS_SANDBOX_ARG1;

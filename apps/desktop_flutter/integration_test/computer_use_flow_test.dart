@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:dsh_desktop/src/app.dart';
 import 'package:dsh_desktop/src/controller.dart';
 import 'package:dsh_desktop/src/preferences.dart';
+import 'package:dsh_desktop/features/workbench/computer_use_panel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -78,11 +79,14 @@ void main() {
     }
 
     bool shown(Finder finder) => finder.evaluate().isNotEmpty;
-    String status() => find
-        .byKey(const ValueKey('computer-use-status'))
-        .evaluate()
-        .map((e) => (e.widget as Text).data ?? '')
-        .join();
+    Finder inPanel(Finder finder) =>
+        find.descendant(of: find.byType(ComputerUsePanel), matching: finder);
+    final frame = inPanel(find.byKey(const ValueKey('computer-use-frame')));
+    String status() =>
+        inPanel(find.byKey(const ValueKey('computer-use-status')))
+            .evaluate()
+            .map((e) => (e.widget as Text).data ?? '')
+            .join();
 
     await c.connect(address);
     await until('connection', () => c.connected && !c.loading);
@@ -109,20 +113,21 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('workbench-open-computer-use')));
     await until(
       'model page',
-      () => shown(find.textContaining('Computer Use fixture')),
+      () =>
+          shown(inPanel(find.textContaining('Computer Use fixture'))) &&
+          status() == '智能体可操作' &&
+          shown(find.descendant(of: frame, matching: find.byType(Image))),
     );
     expect(status(), '智能体可操作');
     await capture('model-page');
 
     // The fixture page is one full-viewport button.
-    await tester.tapAt(
-      tester.getCenter(find.byKey(const ValueKey('computer-use-frame'))),
-    );
+    await tester.tapAt(tester.getCenter(frame));
     var refreshes = 0;
     await until('click', () {
-      if (shown(find.textContaining('clicked'))) return true;
+      if (shown(inPanel(find.textContaining('clicked')))) return true;
       // The page may settle after the click response; observe it again.
-      if (++refreshes % 20 == 0) tester.tap(find.text('刷新画面'));
+      if (++refreshes % 20 == 0) tester.tap(inPanel(find.text('刷新画面')));
       return false;
     });
     await capture('clicked');

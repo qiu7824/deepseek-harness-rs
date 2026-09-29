@@ -501,6 +501,7 @@ fn write_secrets(
 // marker contents without changing the file's ACL.
 pub(super) fn prepare_setup_marker(codex_home: &Path, real_user: &str) -> Result<()> {
     let marker_path = sandbox_dir(codex_home).join("setup_marker.json");
+    let marker_path_wide = codex_windows_sandbox::to_wide_file_path(&marker_path)?;
     match std::fs::remove_file(&marker_path) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -550,7 +551,6 @@ pub(super) fn prepare_setup_marker(codex_home: &Path, real_user: &str) -> Result
         lpSecurityDescriptor: security_descriptor,
         bInheritHandle: 0,
     };
-    let marker_path_wide = to_wide(marker_path.as_os_str());
     let marker_handle = unsafe {
         CreateFileW(
             marker_path_wide.as_ptr(),

@@ -88,6 +88,7 @@ pub fn validate_owner(root: &Path, setup: bool) -> Result<bool> {
 }
 
 pub fn protect_owner(root: &Path) -> Result<()> {
+    let path = codex_windows_sandbox::to_wide_file_path(root)?;
     use windows_sys::Win32::{
         Foundation::LocalFree,
         Security::{
@@ -122,11 +123,6 @@ pub fn protect_owner(root: &Path) -> Result<()> {
     let mut acl = std::ptr::null_mut();
     let ok =
         unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl, &mut defaulted) };
-    let path: Vec<_> = root
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
     let status = if ok != 0 && present != 0 {
         unsafe {
             SetNamedSecurityInfoW(

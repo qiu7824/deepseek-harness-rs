@@ -26,6 +26,7 @@ use codex_windows_sandbox::sandbox_secrets_dir;
 use codex_windows_sandbox::string_from_sid_bytes;
 use codex_windows_sandbox::sync_persistent_deny_read_acls;
 use codex_windows_sandbox::to_wide;
+use codex_windows_sandbox::to_wide_file_path;
 use codex_windows_sandbox::workspace_write_cap_sid_for_root;
 use codex_windows_sandbox::workspace_write_root_overlaps_path;
 use codex_windows_sandbox::write_setup_error_report;
@@ -341,7 +342,7 @@ fn lock_sandbox_dir(
                 "SetEntriesInAclW sandbox dir failed: {set}",
             ));
         }
-        let path_w = to_wide(dir.as_os_str());
+        let path_w = to_wide_file_path(dir)?;
         let res = SetNamedSecurityInfoW(
             path_w.as_ptr() as *mut u16,
             SE_FILE_OBJECT,

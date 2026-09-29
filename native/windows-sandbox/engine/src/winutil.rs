@@ -22,6 +22,33 @@ pub fn to_wide<S: AsRef<OsStr>>(s: S) -> Vec<u16> {
     v
 }
 
+/// Encode a filesystem path independently of the executable's longPathAware
+/// manifest. This is lexical only: never follow a reparse point while preparing
+/// a no-follow ACL operation. Keep account names, SIDs and pipes on `to_wide`.
+pub fn to_wide_file_path(path: &std::path::Path) -> Result<Vec<u16>> {
+    let absolute = std::path::absolute(path)?;
+    let mut path: Vec<u16> = absolute
+        .as_os_str()
+        .encode_wide()
+        .map(|ch| if ch == b'/' as u16 { b'\\' as u16 } else { ch })
+        .collect();
+    anyhow::ensure!(!path.contains(&0), "filesystem path contains a NUL");
+    let extended: Vec<u16> = r"\\?\".encode_utf16().collect();
+    let device: Vec<u16> = r"\\.\".encode_utf16().collect();
+    if !path.starts_with(&extended) && !path.starts_with(&device) {
+        let mut prefixed = extended;
+        if path.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+            prefixed.extend("UNC\\".encode_utf16());
+            prefixed.extend_from_slice(&path[2..]);
+        } else {
+            prefixed.append(&mut path);
+        }
+        path = prefixed;
+    }
+    path.push(0);
+    Ok(path)
+}
+
 /// Quote a single Windows command-line argument following the rules used by
 /// CommandLineToArgvW/CRT so that spaces, quotes, and backslashes are preserved.
 /// Reference behavior matches Rust std::process::Command on Windows.
@@ -208,7 +235,39 @@ fn sid_bytes_from_string(sid_str: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::argv_to_command_line;
+    use super::to_wide_file_path;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn filesystem_paths_use_extended_names_without_resolving_links() {
+        for (input, expected) in [
+            (
+                r"C:\资料\执行 目录\file.txt",
+                r"\\?\C:\资料\执行 目录\file.txt",
+            ),
+            (
+                "C:/资料/执行 目录/file.txt",
+                r"\\?\C:\资料\执行 目录\file.txt",
+            ),
+            (
+                r"\\server\share\资料\file.txt",
+                r"\\?\UNC\server\share\资料\file.txt",
+            ),
+            (r"\\?\C:\资料\file.txt", r"\\?\C:\资料\file.txt"),
+            (r"\\?\UNC\server\share\资料", r"\\?\UNC\server\share\资料"),
+        ] {
+            let encoded = to_wide_file_path(std::path::Path::new(input)).unwrap();
+            assert_eq!(encoded.last(), Some(&0));
+            assert_eq!(
+                String::from_utf16(&encoded[..encoded.len() - 1]).unwrap(),
+                expected
+            );
+        }
+        // No canonicalization is needed: nonexistent and aliased paths keep
+        // their lexical identity for the caller's OPEN_REPARSE_POINT checks.
+        let missing = std::env::temp_dir().join("missing-native-long-path-fixture/child");
+        assert!(to_wide_file_path(&missing).is_ok());
+    }
 
     #[test]
     fn argv_to_command_line_quotes_each_argument_independently() {

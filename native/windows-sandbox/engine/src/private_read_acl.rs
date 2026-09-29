@@ -67,6 +67,9 @@ fn minimal_roots(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
 fn key(path: &Path) -> String {
     let value = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    if let Some(share) = value.strip_prefix("\\\\?\\unc\\") {
+        return format!("\\\\{}", share.trim_end_matches('\\'));
+    }
     value
         .strip_prefix("\\\\?\\")
         .unwrap_or(&value)
@@ -298,7 +301,7 @@ unsafe fn root_stamp(
 ) -> Result<RootStamp> {
     let handle = Handle(unsafe {
         CreateFileW(
-            crate::winutil::to_wide(path).as_ptr(),
+            crate::winutil::to_wide_file_path(path)?.as_ptr(),
             READ_CONTROL,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
@@ -309,9 +312,9 @@ unsafe fn root_stamp(
     });
     ensure!(
         handle.0 != INVALID_HANDLE_VALUE,
-        "open private migration root {}: {}",
-        path.display(),
-        unsafe { GetLastError() }
+        "open private migration root failed (Win32 {}) for {}",
+        unsafe { GetLastError() },
+        path.display()
     );
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     ensure!(
@@ -410,7 +413,7 @@ unsafe fn reconcile_object(
     write: bool,
     boundary: bool,
 ) -> Result<bool> {
-    let wide = crate::winutil::to_wide(path);
+    let wide = crate::winutil::to_wide_file_path(path)?;
     let handle = Handle(unsafe {
         CreateFileW(
             wide.as_ptr(),
@@ -424,9 +427,9 @@ unsafe fn reconcile_object(
     });
     ensure!(
         handle.0 != INVALID_HANDLE_VALUE,
-        "open private ACL {}: {}",
-        path.display(),
-        unsafe { GetLastError() }
+        "open private ACL failed (Win32 {}) for {}",
+        unsafe { GetLastError() },
+        path.display()
     );
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     ensure!(
@@ -642,6 +645,79 @@ unsafe fn reconcile_object(
 mod tests {
     use super::*;
     use crate::token::LocalSid;
+
+    #[test]
+    fn boundary_keys_match_extended_drive_and_unc_spellings() {
+        assert_eq!(
+            key(Path::new(r"D:\资料\Private")),
+            key(Path::new(r"\\?\d:\资料\private"))
+        );
+        assert_eq!(
+            key(Path::new(r"\\Server\Share\Private\")),
+            key(Path::new(r"\\?\UNC\server\share\private"))
+        );
+        assert!(within(
+            Path::new(r"\\?\UNC\server\share\private\child"),
+            Path::new(r"\\server\share\private")
+        ));
+    }
+
+    #[test]
+    fn long_private_descendants_support_migration_exact_grants_and_revocation() -> Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("state");
+        let private = temp.path().join("private");
+        let directory = private
+            .join(format!("session-{}", "中".repeat(110)))
+            .join(format!("agent-{}", "a".repeat(110)));
+        std::fs::create_dir_all(&directory)?;
+        let own = directory.join("exact.txt");
+        let other = directory.join("other.txt");
+        std::fs::write(&own, "owned")?;
+        std::fs::write(&other, "foreign")?;
+        assert!(own.as_os_str().encode_wide().count() > 260);
+        let account = LocalSid::from_string("S-1-5-21-654-987-321-1001")?;
+        let group = LocalSid::from_string("S-1-5-21-654-987-321-1002")?;
+        unsafe {
+            crate::acl::ensure_allow_write_aces(&directory, &[group.as_ptr()])?;
+            root_stamp(&directory, &[account.as_ptr()], group.as_ptr())?;
+            sync_private_read_acls(
+                &home,
+                std::slice::from_ref(&private),
+                std::slice::from_ref(&own),
+                &[],
+                &[account.as_ptr()],
+                group.as_ptr(),
+            )?;
+        }
+        assert!(
+            direct_permissions(&own, account.as_ptr())
+                .iter()
+                .any(|(kind, mask)| *kind == 0 && mask & FILE_READ_DATA != 0)
+        );
+        assert!(
+            direct_permissions(&other, account.as_ptr())
+                .iter()
+                .any(|(kind, mask)| *kind == 1 && mask & FILE_READ_DATA != 0)
+        );
+        assert!(
+            direct_permissions(&directory, group.as_ptr())
+                .iter()
+                .all(|(kind, _)| *kind != 0)
+        );
+        unsafe {
+            sync_private_read_acls(&home, &[], &[], &[], &[account.as_ptr()], group.as_ptr())?;
+        }
+        assert!(
+            direct_permissions(&own, account.as_ptr())
+                .iter()
+                .any(|(kind, mask)| *kind == 1 && mask & FILE_READ_DATA != 0)
+        );
+        assert_eq!(std::fs::read_to_string(&own)?, "owned");
+        assert_eq!(std::fs::read_to_string(&other)?, "foreign");
+        Ok(())
+    }
 
     #[test]
     fn private_root_validation_allows_product_directories_but_not_system_roots() {

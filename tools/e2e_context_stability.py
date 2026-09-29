@@ -32,7 +32,7 @@ def turn(port,sid,marker,count):
  else:raise AssertionError('turn timeout')
  (run/(marker+'.json')).write_text(json.dumps(events,ensure_ascii=False,indent=2),encoding='utf-8')
  assert not any(e['type']=='tool/result' and e['data'].get('error') for e in events),[e for e in events if e['type']=='tool/result' and e['data'].get('error')]
- snapshots=[e for e in events if e['type']=='user/message' and e['data'].get('source',{}).get('plugin')=='@deepseek-ai/dsh-system-prompt'];print(marker,'runtime snapshots',len(snapshots),flush=True);return snapshots
+ snapshots=[e for e in events if e['type']=='user/message' and (e['data'].get('source',{}).get('kind')=='runtime-context' or e['data'].get('source',{}).get('plugin')=='@deepseek-ai/dsh-system-prompt')];print(marker,'runtime snapshots',len(snapshots),flush=True);return snapshots
 try:
  with running_fixture_host(binary,run,env,None,'first') as port:
   sid=call(port,'session.create',{'cwd':str(workspace),'agentPreset':'standard'})['sessionId'];call(port,'session.rename',{'sessionId':sid,'title':'Context stability acceptance'});first=turn(port,sid,'FIRST',1);assert len(first)==1,[(e['seq'],e['data']['source']) for e in first]

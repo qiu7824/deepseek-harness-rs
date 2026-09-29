@@ -1,4 +1,5 @@
 use crate::winutil::to_wide;
+use crate::winutil::to_wide_file_path;
 use anyhow::Result;
 use anyhow::anyhow;
 use std::ffi::c_void;
@@ -61,7 +62,7 @@ const DENY_ACCESS: i32 = 3;
 /// # Safety
 /// Caller must free the returned security descriptor with `LocalFree` and pass an existing path.
 pub unsafe fn fetch_dacl_handle(path: &Path) -> Result<(*mut ACL, *mut c_void)> {
-    let wpath = to_wide(path);
+    let wpath = to_wide_file_path(path)?;
     let h = CreateFileW(
         wpath.as_ptr(),
         READ_CONTROL,
@@ -72,7 +73,11 @@ pub unsafe fn fetch_dacl_handle(path: &Path) -> Result<(*mut ACL, *mut c_void)> 
         0,
     );
     if h == INVALID_HANDLE_VALUE {
-        return Err(anyhow!("CreateFileW failed for {}", path.display()));
+        let error = std::io::Error::last_os_error();
+        return Err(anyhow!(
+            "CreateFileW failed ({error}) for {}",
+            path.display()
+        ));
     }
     let mut p_sd: *mut c_void = std::ptr::null_mut();
     let mut p_dacl: *mut ACL = std::ptr::null_mut();
@@ -418,7 +423,7 @@ unsafe fn ensure_allow_mask_aces_with_inheritance_impl(
         );
         if code2 == ERROR_SUCCESS {
             let code3 = SetNamedSecurityInfoW(
-                to_wide(path).as_ptr() as *mut u16,
+                to_wide_file_path(path)?.as_ptr() as *mut u16,
                 1,
                 DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
@@ -514,7 +519,7 @@ pub unsafe fn add_allow_ace(path: &Path, psid: *mut c_void) -> Result<bool> {
     let mut p_sd: *mut c_void = std::ptr::null_mut();
     let mut p_dacl: *mut ACL = std::ptr::null_mut();
     let code = GetNamedSecurityInfoW(
-        to_wide(path).as_ptr(),
+        to_wide_file_path(path)?.as_ptr(),
         1,
         DACL_SECURITY_INFORMATION,
         std::ptr::null_mut(),
@@ -551,7 +556,7 @@ pub unsafe fn add_allow_ace(path: &Path, psid: *mut c_void) -> Result<bool> {
     let code2 = SetEntriesInAclW(1, &explicit, p_dacl, &mut p_new_dacl);
     if code2 == ERROR_SUCCESS {
         let code3 = SetNamedSecurityInfoW(
-            to_wide(path).as_ptr() as *mut u16,
+            to_wide_file_path(path)?.as_ptr() as *mut u16,
             1,
             DACL_SECURITY_INFORMATION,
             std::ptr::null_mut(),
@@ -615,7 +620,7 @@ unsafe fn add_deny_ace(path: &Path, psid: *mut c_void, kind: DenyAceKind) -> Res
     let mut p_sd: *mut c_void = std::ptr::null_mut();
     let mut p_dacl: *mut ACL = std::ptr::null_mut();
     let code = GetNamedSecurityInfoW(
-        to_wide(path).as_ptr(),
+        to_wide_file_path(path)?.as_ptr(),
         1,
         DACL_SECURITY_INFORMATION,
         std::ptr::null_mut(),
@@ -645,7 +650,7 @@ unsafe fn add_deny_ace(path: &Path, psid: *mut c_void, kind: DenyAceKind) -> Res
         let code2 = SetEntriesInAclW(1, &explicit, p_dacl, &mut p_new_dacl);
         if code2 == ERROR_SUCCESS {
             let code3 = SetNamedSecurityInfoW(
-                to_wide(path).as_ptr() as *mut u16,
+                to_wide_file_path(path)?.as_ptr() as *mut u16,
                 1,
                 DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
@@ -681,10 +686,13 @@ pub unsafe fn add_deny_read_ace(path: &Path, psid: *mut c_void) -> Result<bool> 
 }
 
 pub unsafe fn revoke_ace(path: &Path, psid: *mut c_void) {
+    let Ok(wide) = to_wide_file_path(path) else {
+        return;
+    };
     let mut p_sd: *mut c_void = std::ptr::null_mut();
     let mut p_dacl: *mut ACL = std::ptr::null_mut();
     let code = GetNamedSecurityInfoW(
-        to_wide(path).as_ptr(),
+        wide.as_ptr(),
         1,
         DACL_SECURITY_INFORMATION,
         std::ptr::null_mut(),
@@ -715,7 +723,7 @@ pub unsafe fn revoke_ace(path: &Path, psid: *mut c_void) {
     let code2 = SetEntriesInAclW(1, &explicit, p_dacl, &mut p_new_dacl);
     if code2 == ERROR_SUCCESS {
         let _ = SetNamedSecurityInfoW(
-            to_wide(path).as_ptr() as *mut u16,
+            wide.as_ptr() as *mut u16,
             1,
             DACL_SECURITY_INFORMATION,
             std::ptr::null_mut(),
