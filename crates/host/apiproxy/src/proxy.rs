@@ -2880,7 +2880,7 @@ impl ApiProxyService {
                     }
                     GoalVerb::Resume => goals.resume(&agent, &goal_ref),
                     GoalVerb::Complete => {
-                        unreachable!("completion uses the shared asynchronous acceptance boundary")
+                        unreachable!("completion is handled by the asynchronous goal operation")
                     }
                 }
             }),
@@ -8964,7 +8964,6 @@ impl ApiProxyCarrier for ApiProxyService {
             | "capabilities.skillRevisionToggle"
             | "capabilities.skillRevisionRead"
             | "capabilities.skillRevisionCreate"
-            | "capabilities.skillRevisionValidate"
             | "capabilities.skillRevisionActivate"
             | "capabilities.skillRevisionRestore"
             | "capabilities.skillRevisionWithdraw"

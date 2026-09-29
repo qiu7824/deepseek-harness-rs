@@ -13,12 +13,16 @@ use codex_windows_sandbox::{
 };
 use std::{sync::Arc, time::Duration};
 
-pub fn run(request: Request) -> Result<i32> {
+pub fn run(mut request: Request) -> Result<i32> {
     use crate::pool;
     if request.implementation == Implementation::Unelevated {
+        ensure!(request.action==Action::Status||request.private_roots.is_empty(),"PRIVATE_READ_BOUNDARY_REQUIRES_ELEVATED: the current-user token backend cannot isolate product private roots; select and initialize the dedicated-account backend");
         return run_unelevated(request);
     }
     let owned = pool::validate_owner(&request.home, request.action == Action::Setup)?;
+    if request.action != Action::Status {
+        request.private_roots.extend(pool::runtime_roots(&request.home,&request.workspace)?);
+    }
     let indices = if request.read_only {
         0..pool::READ_SLOTS
     } else {

@@ -68,7 +68,7 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
     'child-a': { id: 'child-a', parentId: 'parent', origin: 'subagent', displayTitle: 'Child' },
   } }, 'child-a'))).map(row => row.id), ['root', 'parent', 'child-a'], 'nested conversations retain the direct parent breadcrumb');
 
-  let task = { id: 't', revision: 1, subject: 'Original', description: 'Description', acceptance: 'Pass', ownerId: null, blockedBy: [], writeScopes: [], status: 'pending', result: '' };
+  let task = { id: 't', revision: 1, subject: 'Original', description: 'Description',  ownerId: null, blockedBy: [], writeScopes: [], status: 'pending', result: '' };
   const saves = []; let accepted = false;
   const taskView = () => React.createElement(TeamTaskCard, { task, tasks: [task], members: [], label: value => value || 'Nobody', busy: false, enabled: true, t: key => key, onSave: async value => { saves.push(value); return accepted; } });
   await render(taskView()); await act(() => button('team.edit').click());
@@ -82,6 +82,9 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
   await input(field('team.subject'), 'Reviewed work'); await submit(document.querySelector('form'));
   assert.equal(saves[0].expectedRevision, 2); assert.equal(field('team.subject').value, 'Reviewed work', 'failed writes preserve draft and editor');
   accepted = true; await submit(document.querySelector('form')); assert.equal(document.querySelector('form'), null);
+  task = { ...task, status: 'in_progress', result: '' }; await render(taskView());
+  assert.equal(button('team.complete').disabled, false, 'ordinary completion requires no acceptance form or evidence');
+  await act(() => button('team.complete').click()); assert.equal(saves.at(-1).status, 'completed'); assert.equal('acceptance' in saves.at(-1), false);
 
   const rpcCalls = [], pendingPrompts = [], histories = new Map();
   const rpc = (method, payload, signal) => {

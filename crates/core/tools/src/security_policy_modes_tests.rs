@@ -23,7 +23,8 @@ fn deletion_aliases_are_words_not_substrings_of_model_options() {
                     Some("D:/workspace"),
                     false,
                     SandboxMode::WorkspaceWrite,
-                    &deny
+                    &deny,
+                    None
                 ),
                 SecurityDecision::Deny { .. }
             ),
@@ -42,7 +43,8 @@ fn deletion_aliases_are_words_not_substrings_of_model_options() {
                 Some("D:/workspace"),
                 false,
                 SandboxMode::WorkspaceWrite,
-                &deny
+                &deny,
+                None
             ),
             SecurityDecision::Allow,
             "{command}"
@@ -71,7 +73,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
                 Some("D:/workspace"),
                 false,
                 SandboxMode::DangerFullAccess,
-                &defaults
+                &defaults,
+                None
             ),
             SecurityDecision::Allow
         );
@@ -82,7 +85,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
                 Some("D:/workspace"),
                 false,
                 SandboxMode::WorkspaceWrite,
-                &defaults
+                &defaults,
+                None
             ),
             SecurityDecision::Ask { .. }
         ));
@@ -102,7 +106,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
                 Some("D:/workspace"),
                 false,
                 SandboxMode::DangerFullAccess,
-                &config
+                &config,
+                None
             ),
             SecurityDecision::Ask { .. }
         ));
@@ -119,7 +124,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
             Some("D:/workspace"),
             false,
             SandboxMode::DangerFullAccess,
-            &deny
+            &deny,
+            None
         ),
         SecurityDecision::Deny { .. }
     ));
@@ -130,7 +136,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
             Some("D:/workspace"),
             false,
             SandboxMode::DangerFullAccess,
-            &deny
+            &deny,
+            None
         ),
         SecurityDecision::Deny { .. }
     ));
@@ -146,7 +153,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
                 Some("D:/workspace"),
                 false,
                 mode,
-                &conditional
+                &conditional,
+                None
             ),
             SecurityDecision::Deny { .. }
         ));
@@ -159,7 +167,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
                 Some("D:/workspace"),
                 true,
                 SandboxMode::DangerFullAccess,
-                &defaults
+                &defaults,
+                None
             ),
             SecurityDecision::Deny { .. }
         ));
@@ -170,7 +179,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
                 Some("D:/workspace"),
                 false,
                 SandboxMode::DangerFullAccess,
-                &defaults
+                &defaults,
+                None
             ),
             SecurityDecision::Ask { .. }
         ));
@@ -182,7 +192,8 @@ fn full_access_follows_session_but_preserves_explicit_and_sensitive_rules() {
             Some("D:/workspace"),
             false,
             SandboxMode::DangerFullAccess,
-            &defaults
+            &defaults,
+            None
         ),
         SecurityDecision::Deny { .. }
     ));

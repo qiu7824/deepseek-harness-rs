@@ -30,7 +30,6 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "capabilities.skillRevisionRemove",
     "capabilities.skillRevisionRestore",
     "capabilities.skillRevisionToggle",
-    "capabilities.skillRevisionValidate",
     "capabilities.skillRevisionWithdraw",
     "capabilities.skillSave",
     "capabilities.skillToggle",
@@ -138,7 +137,6 @@ mod tests {
             "memory.learningPreview",
             "capabilities.skillRevisionList",
             "capabilities.skillRevisionCreate",
-            "capabilities.skillRevisionValidate",
             "capabilities.skillRevisionActivate",
             "capabilities.skillRevisionRestore",
         ] {

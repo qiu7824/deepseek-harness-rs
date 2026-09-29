@@ -1,5 +1,5 @@
 //! Bounded OOXML inspection for the explicit WPS automation boundary.
-use crate::Result;
+type Result<T> = std::result::Result<T, String>;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 #[path = "office_zip.rs"]

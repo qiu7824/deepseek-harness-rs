@@ -2,9 +2,7 @@
 use super::{provider_auth::AccountAuth, task_models::TaskModels};
 use base64::Engine;
 use cordis::Context;
-use dsh_attachment::{
-    AttachmentStore, ImageAttachmentRef, ImageMediaType, SaveImageAttachment, StoredImageAttachment,
-};
+use dsh_attachment::{AttachmentStore, ImageMediaType, SaveImageAttachment, StoredImageAttachment};
 use dsh_fs::{FileSystem, ResolveOptions};
 use dsh_tools::{ToolBodyError, ToolDefinition, ToolExecution, ToolOutputDefinition, ToolRuntime};
 use serde_json::{Value, json};
@@ -25,9 +23,6 @@ fn failure(message: impl Into<String>) -> ToolBodyError {
     .find(|code| message.starts_with(&format!("{code}:")))
     .unwrap_or("IMAGE_GENERATION_FAILED");
     ToolBodyError::coded(message, "ImageGenerationError", code)
-}
-fn image_ref(value: &Value, id: &str) -> Option<ImageAttachmentRef> {
-    dsh_attachment::find_image_reference(value, id)
 }
 fn sniff(bytes: &[u8]) -> Result<ImageMediaType, String> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -65,10 +60,13 @@ pub(crate) async fn read_references(
         let path = value.as_str().ok_or("参考图必须是附件标识或工作区路径")?;
         let mut reference = None;
         agent.session().visit_events(0, None, |event| {
-            reference = image_ref(&event.data, path);
+            reference = dsh_attachment::find_image_reference(&event.type_, &event.data, path);
             Ok(reference.is_none())
         })?;
-        if path.starts_with("sha256:") && reference.is_none() {
+        if (path.starts_with("sha256:")
+            || (path.len() == 64 && path.bytes().all(|byte| byte.is_ascii_hexdigit())))
+            && reference.is_none()
+        {
             return Err("参考图不属于当前会话".into());
         }
         let image = if let Some(reference) = reference {
@@ -80,6 +78,9 @@ pub(crate) async fn read_references(
             let fs = ctx
                 .get_typed::<Arc<dyn FileSystem>>("fs", false)
                 .ok_or("文件系统不可用")?;
+            let fs = fs
+                .for_tool(Some(agent.id().as_str()))
+                .unwrap_or_else(|| fs.as_ref().clone());
             let cwd = agent
                 .session()
                 .header()

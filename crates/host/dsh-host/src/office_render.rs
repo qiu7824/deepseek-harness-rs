@@ -112,7 +112,23 @@ async fn render(
     let path = if attachment_lease.is_some() {
         PathBuf::from(raw)
     } else {
-        source_path(workspace, raw).await?
+        let fs = ctx
+            .get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs", false)
+            .ok_or("Document rendering requires the session filesystem")?
+            .as_ref()
+            .clone();
+        let fs = fs.for_tool(Some(agent.id().as_str())).unwrap_or(fs);
+        let target = fs
+            .resolve(
+                raw,
+                Some(&dsh_fs::ResolveOptions {
+                    cwd: Some(workspace.into()),
+                    signal: Some(signal.clone()),
+                }),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        source_path(workspace, &fs.process_path(&target)).await?
     };
     let ext = path
         .extension()

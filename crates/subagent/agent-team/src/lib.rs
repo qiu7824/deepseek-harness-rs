@@ -39,15 +39,22 @@ pub struct Task {
     pub revision: u64,
     pub subject: String,
     pub description: String,
+    #[serde(deserialize_with = "task_status")]
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<String>,
     pub blocked_by: Vec<String>,
     pub write_scopes: Vec<String>,
     #[serde(default)]
-    pub acceptance: String,
-    #[serde(default)]
     pub result: String,
+}
+fn task_status<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let status = String::deserialize(deserializer)?;
+    Ok(if status == "review" {
+        "in_progress".into()
+    } else {
+        status
+    })
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -253,7 +260,6 @@ fn validate_task(state: &Board, task: &Task) -> Result<(), String> {
         || task.subject.trim().is_empty()
         || task.subject.len() > 512
         || task.description.len() > 16_384
-        || task.acceptance.len() > 16_384
         || task.result.len() > 32_768
         || task.write_scopes.len() > 32
         || task
@@ -266,14 +272,7 @@ fn validate_task(state: &Board, task: &Task) -> Result<(), String> {
     }
     if !matches!(
         task.status.as_str(),
-        "pending"
-            | "queued"
-            | "in_progress"
-            | "review"
-            | "blocked"
-            | "completed"
-            | "cancelled"
-            | "deleted"
+        "pending" | "queued" | "in_progress" | "blocked" | "completed" | "cancelled" | "deleted"
     ) {
         return Err("invalid task status".into());
     }
@@ -292,10 +291,7 @@ fn validate_task(state: &Board, task: &Task) -> Result<(), String> {
             .ok_or("task dependency does not exist")?;
         pending.extend(dependency.blocked_by.clone());
     }
-    if matches!(
-        task.status.as_str(),
-        "queued" | "in_progress" | "review" | "completed"
-    ) && !ready(state, task)
+    if matches!(task.status.as_str(), "queued" | "in_progress" | "completed") && !ready(state, task)
     {
         return Err("task dependencies are not completed".into());
     }
@@ -577,7 +573,7 @@ impl AgentTeams {
             return "Use the current agent for this conversation. Only create teammates when the user explicitly requests them; an explicitly disabled collaboration configuration rejects new members.".into();
         }
         format!(
-            "The user enabled collaboration in this main conversation. You remain responsible for the goal and final acceptance. Use agent_team to maintain one task board, delegate bounded work only when useful, and open fresh member contexts with relevant files and acceptance criteria. Use roleId from this saved profile when present: {}. Do not create a fixed planner/supervisor hierarchy. Reuse member conversations via message, preserve task revisions, await required results using agent_team action wait rather than repeatedly polling models, and inspect evidence before marking work completed. Tools and permission approvals remain enforced by the runtime. Member model and tool settings are enforced at creation. Config revision: {}.",
+            "The user enabled collaboration in this main conversation. You remain responsible for the goal and delivered results. Use agent_team to maintain one task board, delegate bounded work only when useful, and open fresh member contexts with relevant files and requirements. Use roleId from this saved profile when present: {}. Do not create a fixed planner/supervisor hierarchy. Reuse member conversations via message, preserve task revisions, and await required results using agent_team action wait rather than repeatedly polling models. Tools and permission approvals remain enforced by the runtime. Member model and tool settings are enforced at creation. Config revision: {}.",
             serde_json::to_string(&config.profile).unwrap_or_default(),
             config.revision
         )
@@ -1419,11 +1415,10 @@ impl AgentTeams {
                     target_id: target,
                     content: vec![ContentBlock::Text {
                         text: format!(
-                            "Task {}: {}\n{}\nAcceptance: {}\nCoordinate writes within: {} (these are coordination scopes, not permission grants).\nWhen finished, record concrete results with agent_team task, expectedRevision {}, status review. Do not claim final acceptance yourself.",
+                            "Task {}: {}\n{}\nCoordinate writes within: {} (these are coordination scopes, not permission grants).\nWhen finished, update agent_team task, expectedRevision {}, status completed. Include a result summary when useful.",
                             task.id,
                             task.subject,
                             task.description,
-                            task.acceptance,
                             task.write_scopes.join(", "),
                             task.revision
                         ),
@@ -1473,7 +1468,7 @@ impl AgentTeams {
                 {
                     return Err("teammates can only claim tasks for themselves".into());
                 }
-                let mut task = Task {
+                let task = Task {
                     id: id.into(),
                     revision: expected + 1,
                     subject: args["subject"]
@@ -1496,11 +1491,6 @@ impl AgentTeams {
                         .unwrap_or_else(|| old.map(|t| t.blocked_by.clone()).unwrap_or_default()),
                     write_scopes: strings(&args, "writeScopes")?
                         .unwrap_or_else(|| old.map(|t| t.write_scopes.clone()).unwrap_or_default()),
-                    acceptance: args["acceptance"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .or_else(|| old.map(|t| t.acceptance.clone()))
-                        .unwrap_or_default(),
                     result: args["result"]
                         .as_str()
                         .map(str::to_owned)
@@ -1510,7 +1500,7 @@ impl AgentTeams {
                 if actor != "lead"
                     && matches!(
                         task.status.as_str(),
-                        "queued" | "in_progress" | "review" | "blocked" | "completed" | "cancelled"
+                        "queued" | "in_progress" | "blocked" | "completed" | "cancelled"
                     )
                     && task.owner_id.as_deref() != Some(caller.id().as_str())
                 {
@@ -1519,27 +1509,17 @@ impl AgentTeams {
                 if actor != "lead" && task.status == "deleted" {
                     return Err("only the lead may delete tasks".into());
                 }
-                if actor != "lead" && task.status == "completed" {
-                    task.status = "review".into();
-                }
                 if old.is_some_and(|old| {
                     matches!(old.status.as_str(), "queued" | "in_progress")
                         && (old.owner_id != task.owner_id
                             || old.subject != task.subject
                             || old.description != task.description
-                            || old.acceptance != task.acceptance
                             || old.blocked_by != task.blocked_by
                             || old.write_scopes != task.write_scopes)
                 }) {
                     return Err(
                         "stop the assigned member before changing active task requirements".into(),
                     );
-                }
-                if task.status == "completed"
-                    && !task.acceptance.trim().is_empty()
-                    && task.result.trim().is_empty()
-                {
-                    return Err("record acceptance evidence before completing this task".into());
                 }
                 validate_task(&board, &task)?;
                 self.append(&lead, "team/task", json!({"task":task}))
@@ -1664,9 +1644,43 @@ mod tests {
             owner_id: None,
             blocked_by: vec![],
             write_scopes: vec![],
-            acceptance: String::new(),
             result: String::new(),
         }
+    }
+    #[test]
+    fn task_completion_needs_no_review_state_or_result_evidence() {
+        let schema = parameters();
+        let completion =
+            json!({"action":"task","taskId":"work","expectedRevision":1,"status":"completed"});
+        assert!(
+            dsh_tools::validate_json_schema_value(&schema, &completion, "arguments").is_empty()
+        );
+        assert!(schema["properties"].get("acceptance").is_none());
+        let mut old = serde_json::to_value(task("work")).unwrap();
+        old["status"] = json!("review");
+        old["acceptance"] = json!("Retired criteria");
+        let board = fold(
+            "team",
+            &[event(0, "team/task", "team", json!({"task":old}))],
+        )
+        .unwrap();
+        let mut restored = board.tasks["work"].clone();
+        assert_eq!(restored.status, "in_progress");
+        assert!(
+            serde_json::to_value(&restored)
+                .unwrap()
+                .get("acceptance")
+                .is_none()
+        );
+        restored.status = "completed".into();
+        assert!(restored.result.is_empty());
+        assert!(validate_task(&board, &restored).is_ok());
+        let mut retired_request = completion;
+        retired_request["status"] = json!("review");
+        assert!(
+            !dsh_tools::validate_json_schema_value(&schema, &retired_request, "arguments")
+                .is_empty()
+        );
     }
     #[test]
     fn replay_ignores_inherited_foreign_teams_and_rejects_stale_revisions() {
@@ -1839,7 +1853,7 @@ mod tests {
 
 fn parameters() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
-            "action":{"type":"string","enum":["status","create","message","task","dispatch","interrupt","wait","recover"]},"timeoutMs":{"type":"integer","minimum":100,"maximum":50000,"description":"Wait budget in milliseconds, 100–50000; defaults to 30000. Call wait again if members are still running."},"roleId":{"type":"string"},"requestId":{"type":"string"},"acceptance":{"type":"string"},"result":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"prompt":{"type":"string"},"context":{"type":"string","enum":["fresh","fork"]},"target":{"type":"string"},"message":{"type":"string"},"messageId":{"type":"string","description":"Stable id for retrying the same peer message; reuse it after a queued receipt."},"taskId":{"type":"string"},"expectedRevision":{"type":"integer"},"subject":{"type":"string"},"owner":{"oneOf":[{"type":"string"},{"type":"null"}],"description":"Teammate name or lead; null releases ownership (set status to pending)."},"status":{"type":"string","enum":["pending","queued","in_progress","review","blocked","completed","cancelled","deleted"]},"blockedBy":{"type":"array","items":{"type":"string"}},"writeScopes":{"type":"array","items":{"type":"string"}}}})
+            "action":{"type":"string","enum":["status","create","message","task","dispatch","interrupt","wait","recover"]},"timeoutMs":{"type":"integer","minimum":100,"maximum":50000,"description":"Wait budget in milliseconds, 100–50000; defaults to 30000. Call wait again if members are still running."},"roleId":{"type":"string"},"requestId":{"type":"string"},"result":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"prompt":{"type":"string"},"context":{"type":"string","enum":["fresh","fork"]},"target":{"type":"string"},"message":{"type":"string"},"messageId":{"type":"string","description":"Stable id for retrying the same peer message; reuse it after a queued receipt."},"taskId":{"type":"string"},"expectedRevision":{"type":"integer"},"subject":{"type":"string"},"owner":{"oneOf":[{"type":"string"},{"type":"null"}],"description":"Teammate name or lead; null releases ownership (set status to pending)."},"status":{"type":"string","enum":["pending","queued","in_progress","blocked","completed","cancelled","deleted"]},"blockedBy":{"type":"array","items":{"type":"string"}},"writeScopes":{"type":"array","items":{"type":"string"}}}})
 }
 
 pub fn install(ctx: &Context, max_members: usize) -> Result<Arc<AgentTeams>, String> {

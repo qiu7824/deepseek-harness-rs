@@ -482,6 +482,7 @@ async fn drive(
     match code_runtime
         .run(CodeRunRequest {
             timeout_ms: None,
+            on_dispatch: None,
             program,
             bindings: vec![CodeBindingNamespace {
                 global: "workflowHost".to_string(),

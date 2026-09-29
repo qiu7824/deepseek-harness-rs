@@ -24,6 +24,7 @@ pub struct Request {
     pub network: bool,
     pub reads: Vec<PathBuf>,
     pub temps: Vec<PathBuf>,
+    pub private_roots: Vec<PathBuf>,
     pub ready_event: Option<String>,
     pub timeout_ms: Option<u64>,
     pub tty: bool,
@@ -43,6 +44,7 @@ impl Request {
             network: true,
             reads: Vec::new(),
             temps: Vec::new(),
+            private_roots: Vec::new(),
             ready_event: None,
             timeout_ms: None,
             tty: false,
@@ -57,7 +59,7 @@ impl Request {
             }
             if !matches!(
                 flag.as_str(),
-                "--runtime-root" | "--read-root" | "--temp-root"
+                "--runtime-root" | "--read-root" | "--temp-root" | "--private-root"
             ) {
                 ensure!(seen.insert(flag.clone()), "duplicate flag {flag}");
             }
@@ -105,6 +107,7 @@ impl Request {
                             request.reads.push(PathBuf::from(value))
                         }
                         "--temp-root" => request.temps.push(PathBuf::from(value)),
+                        "--private-root" => request.private_roots.push(PathBuf::from(value)),
                         "--session-id" => request.session = Some(value),
                         "--ready-event" => {
                             ensure!(
@@ -149,14 +152,22 @@ impl Request {
             }
         }
         ensure!(
-            request.reads.len() + request.temps.len() <= 32,
+            request.reads.len() + request.temps.len() + request.private_roots.len() <= 4096,
             "too many execution roots"
         );
-        for path in request.reads.iter().chain(&request.temps) {
+        for path in &request.reads {
+            ensure!(path.is_absolute() && (path.is_dir() || path.is_file()), "read root must be an existing absolute file or directory");
+        }
+        for path in &request.temps {
             ensure!(
                 path.is_absolute() && path.is_dir(),
                 "execution root must be an existing absolute directory"
             );
+        }
+        for path in &request.private_roots {
+            ensure!(path.is_absolute() && path.parent().is_some() && !path.components().any(|part|matches!(part,std::path::Component::ParentDir)), "private root must be an absolute product directory");
+            if path.exists() { ensure!(path.is_dir(),"private root must be a directory"); }
+            ensure!(crate::toolchain::real_profile().map(|profile|codex_windows_sandbox::canonicalize_path(path)!=codex_windows_sandbox::canonicalize_path(&profile)).unwrap_or(false),"the whole user profile cannot be a private root");
         }
         if request.action == Action::Run {
             ensure!(!request.command.is_empty(), "missing command");
@@ -178,5 +189,16 @@ mod tests {
         ] {
             assert!(Request::parse(flags.into_iter().map(str::to_owned)).is_err());
         }
+    }
+    #[test]
+    fn exact_read_files_and_many_roots_do_not_expand_to_the_parent() {
+        let root=std::env::temp_dir().join(format!("dsh-native-args-{}",std::process::id()));std::fs::create_dir_all(&root).unwrap();
+        let file=root.join("attachment.txt");std::fs::write(&file,"fixture").unwrap();
+        let base=vec!["--native-home".to_string(),root.join("native").display().to_string(),"--workspace".to_string(),root.display().to_string()];
+        let mut args=base.clone();for _ in 0..40 {args.extend(["--read-root".into(),file.display().to_string()]);}
+        args.extend(["--private-root".into(),root.join("offline-private").display().to_string(),"--".into(),"whoami.exe".into()]);
+        let parsed=Request::parse(args.into_iter()).unwrap();assert_eq!(parsed.reads.len(),40);assert!(parsed.reads.iter().all(|path|path==&file));
+        let mut invalid=base;invalid.extend(["--temp-root".into(),file.display().to_string(),"--".into(),"whoami.exe".into()]);assert!(Request::parse(invalid.into_iter()).is_err());
+        std::fs::remove_file(file).unwrap();std::fs::remove_dir(root).unwrap();
     }
 }

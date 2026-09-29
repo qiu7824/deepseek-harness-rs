@@ -185,6 +185,102 @@ mod archive_dispatch_tests {
         assert_eq!(completions, [json!("first"), json!("second")]);
     }
 }
+
+#[cfg(test)]
+mod startup_receipt_tests {
+    use super::*;
+    use dsh_code_runtime::{
+        CodeRunFailure, CodeRunFailureKind, CodeRunRequest, CodeRunResult, CodeRuntime,
+    };
+    struct Provider {
+        precise: bool,
+        dispatch: bool,
+    }
+    impl CodeRuntime for Provider {
+        fn language(&self) -> String {
+            "typescript".into()
+        }
+        fn isolation(&self) -> String {
+            "fixture".into()
+        }
+        fn supports_dispatch_guard(&self) -> bool {
+            self.precise
+        }
+        fn run(
+            &self,
+            request: CodeRunRequest,
+        ) -> futures::future::BoxFuture<'static, Result<CodeRunResult, String>> {
+            let (precise, dispatch) = (self.precise, self.dispatch);
+            Box::pin(async move {
+                assert_eq!(
+                    request.on_dispatch.is_some(),
+                    precise,
+                    "providers without the guard contract are admitted conservatively by their caller"
+                );
+                if dispatch {
+                    request.on_dispatch.as_ref().unwrap()()?;
+                }
+                Ok(CodeRunResult {
+                    error: Some(CodeRunFailure {
+                        kind: if dispatch {
+                            CodeRunFailureKind::Abort
+                        } else {
+                            CodeRunFailureKind::Startup
+                        },
+                        message: "fixture boundary".into(),
+                    }),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+    #[tokio::test]
+    async fn startup_failure_is_effect_free_but_running_cancel_and_legacy_providers_are_not() {
+        for (precise, dispatch, effects, stage) in [
+            (true, false, "none", "environment"),
+            (true, true, "possible", "cancellation"),
+            (false, false, "possible", "environment"),
+        ] {
+            let ctx = cordis::Context::root();
+            dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
+            ctx.register_service(Arc::new(Provider { precise, dispatch }) as Arc<dyn CodeRuntime>);
+            let tools = crate::ToolRuntime::install(
+                &ctx,
+                crate::Config {
+                    mode: Some(crate::ToolPresentationMode::Both),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let result = tools
+                .execute(crate::ToolExecutionInput {
+                    call_id: call_id("startup-receipt"),
+                    root_call_id: None,
+                    name: "run_code".into(),
+                    arguments: json!({"code":"return 1","description":"fixture"}),
+                    agent: None,
+                    parent: None,
+                    signal: Arc::new(|| false),
+                })
+                .await;
+            assert!(result.is_error);
+            let receipt = &result.meta.as_ref().unwrap()["executionReceipt"];
+            assert_eq!(receipt["effects"], effects);
+            assert_eq!(
+                receipt["dispatch"],
+                if effects == "none" {
+                    "not_started"
+                } else {
+                    "started"
+                }
+            );
+            assert_eq!(receipt["failureStage"], stage);
+            for dispose in ctx.fiber.disposables.clear() {
+                dispose().await;
+            }
+        }
+    }
+}
 impl Drop for CodeLifetime {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::SeqCst);
@@ -240,7 +336,7 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                     "type": "string",
                     "description": "Clear, concise description of what this program does in active voice, 5-10 words (shown in the UI)."
                 },
-                "timeoutMs": {"type":"integer","minimum":1,"maximum":600000,"description":"Elapsed budget in milliseconds, including nested tools and approval waits. Default 120000; maximum 600000. Zero does not disable the deadline."}
+                "timeoutMs": {"type":"integer","minimum":1,"maximum":600000,"description":"Elapsed program budget in milliseconds, including nested tools and approval waits. Authenticated sandbox startup has a separate bounded deadline. Default 120000; maximum 600000. Zero does not disable the deadline."}
             },
             "required": ["code", "description"]
         }),
@@ -281,6 +377,7 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
         timeout_ms: None,
         is_concurrency_safe: None,
         execute: Arc::new(move |args, exec| {
+            let dispatch = exec.track_cancellable_effects();
             let runtime = runtime.clone();
             let code = args["code"].as_str().unwrap_or_default().to_string();
             let timeout_ms = match args.get("timeoutMs") {
@@ -359,9 +456,16 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                     })
                     .collect::<Vec<_>>();
                 functions.sort_by(|left, right| left.0.cmp(&right.0));
+                let on_dispatch = if code_runtime.supports_dispatch_guard() {
+                    Some(dispatch)
+                } else {
+                    dispatch().map_err(ToolBodyError::plain)?;
+                    None
+                };
                 let outcome = code_runtime
                     .run(dsh_code_runtime::CodeRunRequest {
                         timeout_ms: Some(timeout_ms),
+                        on_dispatch,
                         program: code,
                         bindings: vec![CodeBindingNamespace {
                             global: "tools".to_string(),
@@ -388,7 +492,11 @@ pub(crate) fn create_run_code_tool(runtime: Weak<ToolRuntime>) -> Arc<ToolDefini
                             }
                         ),
                         "CodeRunFailedError",
-                        "CODE_RUN_FAILED",
+                        match error.kind {
+                            dsh_code_runtime::CodeRunFailureKind::Startup => "SANDBOX_SETUP_FAILED",
+                            dsh_code_runtime::CodeRunFailureKind::Abort => "TOOL_ABORTED",
+                            _ => "CODE_RUN_FAILED",
+                        },
                     ));
                 }
                 let mut value = serde_json::Map::new();

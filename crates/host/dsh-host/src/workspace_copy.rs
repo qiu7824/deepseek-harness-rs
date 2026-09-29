@@ -13,10 +13,15 @@ fn git(
     signal: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<String, String> {
     let mut argv = vec![
+        "--no-pager".into(),
         "-C".into(),
         display(root),
         "-c".into(),
         "core.hooksPath=/dev/null".into(),
+        "-c".into(),
+        "core.fsmonitor=false".into(),
+        "-c".into(),
+        "submodule.recurse=false".into(),
     ];
     argv.extend_from_slice(args);
     futures::executor::block_on(dsh_native_command::run_native_command_bounded(
@@ -120,10 +125,19 @@ pub fn prepare(
                 "core.symlinks=false".into(),
                 "worktree".into(),
                 "add".into(),
+                "--no-checkout".into(),
                 "--detach".into(),
                 display(&worktree),
                 "HEAD".into(),
             ],
+            signal.clone(),
+        )?;
+        // Populate only the index. Checkout/diff would run repository-defined
+        // smudge/process/clean filters or textconv with the Host's privileges.
+        // Source bytes are copied below by the bounded, link-rejecting reader.
+        git(
+            &worktree,
+            &["read-tree".into(), "HEAD".into()],
             signal.clone(),
         )?;
         let admin = git(
@@ -146,28 +160,22 @@ pub fn prepare(
             signal.clone(),
         )?;
         store.set_origin(&id,json!({"kind":"git-worktree","gitAdmin":admin.trim(),"gitCommon":common.trim(),"gitHead":head.trim(),"worktree":"worktree"}))?;
-        for args in [
-            vec![
-                "diff".into(),
-                "--name-only".into(),
-                "--no-renames".into(),
-                "-z".into(),
-                "HEAD".into(),
-            ],
-            vec![
-                "ls-files".into(),
-                "--others".into(),
-                "--exclude-standard".into(),
-                "-z".into(),
-            ],
-        ] {
-            inputs.extend(
-                git(&root, &args, signal.clone())?
-                    .split('\0')
-                    .filter(|path| !path.is_empty())
-                    .map(str::to_string),
-            );
-        }
+        inputs.extend(
+            git(
+                &root,
+                &[
+                    "ls-files".into(),
+                    "--cached".into(),
+                    "--others".into(),
+                    "--exclude-standard".into(),
+                    "-z".into(),
+                ],
+                signal.clone(),
+            )?
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string),
+        );
     } else {
         std::fs::create_dir_all(&worktree).map_err(|e| e.to_string())?;
         if files.is_none() {
@@ -238,10 +246,16 @@ pub fn prepare(
         return Err("执行副本输入超过 20000 个文件".into());
     }
     let mut copied = 0;
+    let mut copied_bytes = 0u64;
     for relative in inputs {
         let source = safe(&root, &relative)?;
         let target = safe(&worktree, &relative)?;
         if source.is_file() {
+            copied_bytes = copied_bytes
+                .saturating_add(std::fs::metadata(&source).map_err(|e| e.to_string())?.len());
+            if copied_bytes > 2 * 1024 * 1024 * 1024 {
+                return Err("执行输入超过 2 GiB，请缩小工作区或输入范围".into());
+            }
             copy(&source, &target, &signal)?;
             copied += 1;
         } else if !source.exists() && target.is_file() {
@@ -276,7 +290,7 @@ pub fn promote(
     promote_validated(store, id, relative, project, target, expected, None, signal)
 }
 
-/// A trusted preflight may bind acceptance to the exact copied bytes. Checking
+/// A caller may bind a source digest to the exact copied bytes. Checking
 /// the private snapshot closes the source-mutation race before publishing it.
 pub fn promote_validated(
     store: &Store,
@@ -342,7 +356,7 @@ pub fn promote_validated_tracked(
         copy(&source, &temp, &signal)?;
         let checksum = hash(&temp)?;
         if expected_source_sha256.is_some_and(|expected| expected != checksum) {
-            return Err("候选产物在验收后发生变化，请重新验收；目标未修改".into());
+            return Err("候选产物内容与预期摘要不一致；目标未修改".into());
         }
         if !matches(&destination)? {
             return Err("交付期间目标被修改，候选产物保留".into());
@@ -375,6 +389,81 @@ mod tests {
         let path = std::env::temp_dir().join(format!("dsh-copy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn git_copy_uses_existing_bytes_without_checkout_filters() {
+        tokio::task::spawn_blocking(|| {
+            let root = fixture();
+            let project = root.join("project");
+            std::fs::create_dir_all(&project).unwrap();
+            let signal: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+            for args in [
+                vec!["init", "-q"],
+                vec!["config", "user.name", "Test"],
+                vec!["config", "user.email", "test@invalid"],
+            ] {
+                git(
+                    &project,
+                    &args.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+                    signal.clone(),
+                )
+                .unwrap();
+            }
+            std::fs::write(project.join("source.txt"), "original bytes").unwrap();
+            std::fs::write(
+                project.join(".gitattributes"),
+                "source.txt filter=copy-fixture\n",
+            )
+            .unwrap();
+            git(&project, &["add".into(), ".".into()], signal.clone()).unwrap();
+            git(
+                &project,
+                &["commit".into(), "-qm".into(), "input".into()],
+                signal.clone(),
+            )
+            .unwrap();
+            for key in ["filter.copy-fixture.process", "core.fsmonitor"] {
+                git(
+                    &project,
+                    &[
+                        "config".into(),
+                        key.into(),
+                        "dsh-test-filter-must-not-run".into(),
+                    ],
+                    signal.clone(),
+                )
+                .unwrap();
+            }
+            git(
+                &project,
+                &[
+                    "config".into(),
+                    "filter.copy-fixture.required".into(),
+                    "true".into(),
+                ],
+                signal.clone(),
+            )
+            .unwrap();
+            std::fs::write(project.join("source.txt"), "current working bytes").unwrap();
+            let store = Store::open(root.join("managed")).unwrap();
+            let copy = prepare(&store, "owner", &project.to_string_lossy(), None, signal).unwrap();
+            let path = PathBuf::from(copy["workdir"].as_str().unwrap());
+            assert!(copy["gitWorktree"].as_bool().unwrap());
+            assert_eq!(
+                std::fs::read(path.join("source.txt")).unwrap(),
+                b"current working bytes"
+            );
+            assert!(path.join(".git").is_file());
+            drop(store);
+            assert!(
+                root.canonicalize()
+                    .unwrap()
+                    .starts_with(std::env::temp_dir().canonicalize().unwrap())
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        })
+        .await
+        .unwrap();
     }
     #[test]
     fn rejected_promotion_has_no_effect_boundary_and_success_marks_before_publication() {
@@ -479,7 +568,7 @@ mod tests {
             Arc::new(|| false),
         )
         .unwrap_err();
-        assert!(error.contains("验收后发生变化"));
+        assert!(error.contains("预期摘要不一致"));
         assert!(!project.join("result.txt").exists());
         assert_eq!(std::fs::read(&path).unwrap(), b"changed bytes");
         assert!(!std::fs::read_dir(&project).unwrap().any(|entry| {

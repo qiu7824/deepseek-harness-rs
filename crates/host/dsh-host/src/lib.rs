@@ -37,6 +37,7 @@ mod execution_profiles;
 mod feedback_delivery;
 mod free_catalog;
 mod free_probe;
+mod host_private_fs;
 mod hosted_search;
 mod image_generation;
 mod knowledge_base;
@@ -47,6 +48,7 @@ mod model_discovery;
 mod native_capabilities;
 mod native_tool_compatibility;
 mod native_tool_discovery;
+mod office_input_validation;
 mod office_preview;
 mod office_render;
 mod open_in_app;
@@ -58,12 +60,12 @@ mod provider_auth_catalog;
 mod provider_compatibility;
 mod pruned_arguments;
 mod remote_execution_http;
+#[cfg(test)]
+mod retired_task_contract_tests;
 pub mod runtime_paths;
 mod schedule_tasks;
 mod sidebar_settings;
-mod skill_validation;
 mod task_effects;
-mod task_execution;
 mod task_models;
 mod tool_present;
 mod turn_changes;
@@ -2201,7 +2203,6 @@ pub struct HostSpine {
     free_catalog_route: RouteDisposer,
     runtime_route: RouteDisposer,
     environment_route: RouteDisposer,
-    task_execution_route: RouteDisposer,
     windows_sandbox_route: RouteDisposer,
     discovery_settings_route: RouteDisposer,
     plugin_manager_route: RouteDisposer,
@@ -2282,7 +2283,6 @@ impl HostSpine {
                 (self.free_catalog_route)();
                 (self.runtime_route)();
                 (self.environment_route)();
-                (self.task_execution_route)();
                 (self.windows_sandbox_route)();
                 (self.plugin_manager_route)();
                 (self.remote_execution_route)();
@@ -3862,14 +3862,20 @@ fn compose_host_in_fiber(
         .map_err(|error| format!("repeat-tool-reminder: {error}"))?;
     futures::executor::block_on(install_repeat_reminder());
     futures::executor::block_on(dsh_repeat_tool_reminder::progress::install(ctx));
-    let _fs = dsh_fs_local::LocalFileSystem::install(
-        ctx,
-        dsh_fs_local::Config {
-            cwd: None,
-            diff_basis_max_bytes: None,
-        },
-    )
+    let local_fs = dsh_fs_local::LocalFileSystem::build(dsh_fs_local::Config {
+        cwd: None,
+        diff_basis_max_bytes: None,
+    })
     .map_err(|error| format!("fs-local: {error}"))?;
+    host_private_fs::HostPrivateFileSystem::install(
+        ctx,
+        local_fs,
+        &dsh_home,
+        &data_root,
+        std::path::Path::new(credentials.filename()),
+        resources.clone(),
+    );
+    resources.register_private_boundary(ctx, &dsh_home, &data_root);
     let remote_execution = dsh_remote_execution::RemoteRuntime::install(
         ctx,
         data_root.join("remote-execution"),
@@ -3877,15 +3883,10 @@ fn compose_host_in_fiber(
     );
     dsh_remote_execution::install_routes(ctx, remote_execution.clone())?;
     remote_execution_http::install_tools(ctx, &tools, remote_execution.clone())?;
-    let routed_fs = ctx
-        .get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs", false)
-        .ok_or("routed filesystem unavailable")?
-        .as_ref()
-        .clone();
     let _skills = dsh_skill::SkillRegistry::install(ctx, Default::default())
         .map_err(|error| format!("skills: {error}"))?;
     let _skill_badge = dsh_skill_badge::apply(ctx);
-    let capability_manager =
+    let _capability_manager =
         futures::executor::block_on(dsh_host_apiproxy::capabilities::CapabilityManager::install(
             ctx,
             data_root.clone(),
@@ -3895,20 +3896,6 @@ fn compose_host_in_fiber(
                 .into_owned(),
         ))
         .map_err(|error| format!("capabilities: {error}"))?;
-    let task_execution = futures::executor::block_on(task_execution::install(
-        ctx,
-        &tools,
-        &system_prompt,
-        routed_fs,
-        Some(resources.clone()),
-        &data_root,
-    ))?;
-    skill_validation::install(
-        ctx,
-        capability_manager,
-        task_execution.clone(),
-        execution_profiles.clone(),
-    );
     let turn_changes =
         futures::executor::block_on(turn_changes::TurnChanges::install(ctx, &data_root))?;
     {
@@ -5105,12 +5092,6 @@ fn compose_host_in_fiber(
     );
     let remote_execution_route = remote_execution_http::register(&web_server, remote_execution);
     let environment_route = execution_profiles.register(&web_server, allow_remote_host);
-    let task_execution_route = task_execution::register_route(
-        &web_server,
-        task_execution,
-        api_proxy.clone(),
-        allow_remote_host,
-    );
     let windows_sandbox_route =
         windows_sandbox_http::register(&web_server, data_root.clone(), allow_remote_host);
     let task_models_route = task_models.register_http(&web_server);
@@ -5236,7 +5217,6 @@ fn compose_host_in_fiber(
         free_catalog_route,
         runtime_route,
         environment_route,
-        task_execution_route,
         windows_sandbox_route,
         discovery_settings_route,
         plugin_manager_route,

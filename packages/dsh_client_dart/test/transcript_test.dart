@@ -17,42 +17,39 @@ HistoryPage page(
 });
 
 void main() {
-  test(
-    'feedback targets only stored assistant identity, never display or replacement IDs',
-    () {
-      HistoryEvent answer(Json message, [Object? surface]) =>
-          HistoryEvent.fromJson({
-            'seq': 4,
-            'type': 'assistant/message',
-            'surfaceOp': surface,
-            'data': {'messageId': 'not-authoritative', 'message': message},
-          });
-      final content = [
-        {'type': 'text', 'text': 'answer'},
-      ];
-      expect(
-        projectTranscript([
-          answer({'content': content}),
-        ]).single.messageId,
-        isNull,
-      );
-      expect(
-        projectTranscript([
-          answer({'id': 'real', 'content': content}, 'append'),
-        ]).single.messageId,
-        'real',
-      );
-      expect(
-        projectTranscript([
-          answer(
-            {'id': 'replacement', 'content': content},
-            {'op': 'replace', 'start': 0, 'end': 3},
-          ),
-        ]).single.messageId,
-        isNull,
-      );
-    },
-  );
+  test('feedback targets only stored assistant identity, never display or replacement IDs', () {
+    HistoryEvent answer(Json message, [Object? surface]) =>
+        HistoryEvent.fromJson({
+          'seq': 4,
+          'type': 'assistant/message',
+          'surfaceOp': surface,
+          'data': {'messageId': 'not-authoritative', 'message': message},
+        });
+    final content = [
+      {'type': 'text', 'text': 'answer'},
+    ];
+    expect(
+      projectTranscript([
+        answer({'content': content}),
+      ]).single.messageId,
+      isNull,
+    );
+    expect(
+      projectTranscript([
+        answer({'id': 'real', 'content': content}, 'append'),
+      ]).single.messageId,
+      'real',
+    );
+    expect(
+      projectTranscript([
+        answer(
+          {'id': 'replacement', 'content': content},
+          {'op': 'replace', 'start': 0, 'end': 3},
+        ),
+      ]).single.messageId,
+      isNull,
+    );
+  });
   test('Host context injections are not displayed as human messages', () {
     final items = projectTranscript([
       event(0, 'user/message', {
@@ -83,6 +80,41 @@ void main() {
     );
     expect(items.last.text, '任务已停止。');
   });
+  test(
+    'automatic context updates have clear labels and preserve every body',
+    () {
+      final sources = [
+        {'kind': 'runtime-context'},
+        {'kind': 'plugin', 'plugin': '@deepseek-ai/dsh-system-prompt'},
+        {'kind': 'repeat-tool-reminder'},
+        {'kind': 'plugin', 'plugin': 'repeat-tool-reminder'},
+        {'kind': 'plugin', 'plugin': 'third-party'},
+      ];
+      final items = projectTranscript([
+        for (var i = 0; i < sources.length; i++)
+          event(i, 'user/message', {
+            'source': sources[i],
+            'content': [
+              {'type': 'text', 'text': 'durable context $i'},
+            ],
+          }),
+      ]);
+      expect(items.map((e) => e.title), [
+        '运行信息更新',
+        '运行信息更新',
+        '重复调用提醒',
+        '重复调用提醒',
+        '补充上下文',
+      ]);
+      expect(items.take(2).map((e) => e.summary), everyElement('自动同步，无需操作'));
+      expect(items.last.summary, 'third-party');
+      expect(
+        items.map((e) => e.text),
+        List.generate(5, (i) => 'durable context $i'),
+      );
+      expect(items.map((e) => e.kind), everyElement('context'));
+    },
+  );
   test('final assistant replaces streamed chunks without duplicate text', () {
     final events = [
       event(0, 'user/message', {

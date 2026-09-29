@@ -337,6 +337,9 @@ mod cancellation_tests;
 #[cfg(test)]
 #[path = "model_selection_tests.rs"]
 mod model_selection_tests;
+#[cfg(test)]
+#[path = "seed_boundary_tests.rs"]
+mod seed_boundary_tests;
 
 pub struct BasicCompactionEngine {
     llm: Arc<LlmRuntime>,
@@ -569,7 +572,9 @@ impl BasicCompactionEngine {
             .visit_events(0, None, |event| {
                 match event.type_.as_str() {
                     "compaction/start" => active = true,
-                    "compaction/end" => active = false,
+                    // Restore/fork boundaries expire an inherited unfinished
+                    // operation, as both compaction and V4 invariants require.
+                    "compaction/end" | "session/end-seed" => active = false,
                     _ => {}
                 }
                 Ok(true)

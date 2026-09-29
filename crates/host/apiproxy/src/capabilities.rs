@@ -137,7 +137,6 @@ impl CapabilityManager {
         )
         .await?;
         let lifecycle = crate::skill_lifecycle::SkillLifecycle::open(&root).await?;
-        crate::skill_lifecycle::install_candidate_tool(ctx, lifecycle.clone())?;
         let lifecycle_for_provider = lifecycle.clone();
         let lifecycle_provider = skills.register_provider(
             ctx,
@@ -378,24 +377,6 @@ impl CapabilityManager {
             .get("expectedRevision")
             .and_then(Value::as_u64)
             .ok_or("expectedRevision is required")?;
-        // Verification is an explicit control action; passive listing stays cold.
-        let _validation_owner = if matches!(
-            method,
-            "capabilities.skillRevisionValidate"
-                | "capabilities.skillRevisionActivate"
-                | "capabilities.skillRevisionRestore"
-        ) {
-            let record = self.lifecycle.get(required(&payload, "id")?).await?;
-            match self
-                .ctx
-                .get_typed::<Arc<crate::ApiProxyService>>("apiProxy", false)
-            {
-                Some(api) => Some(api.resolve_control_agent(&record.owner_session_id).await?),
-                None => None,
-            }
-        } else {
-            None
-        };
         match method {
             "capabilities.skillRevisionToggle" => {
                 let enabled = payload["enabled"].as_bool().ok_or("enabled is required")?;
@@ -414,7 +395,7 @@ impl CapabilityManager {
                     .await?;
                 if catalog
                     .iter()
-                    .any(|s| s.name == name && s.provider != "validated-skill-revisions")
+                    .any(|s| s.name == name && s.provider != crate::skill_lifecycle::PROVIDER)
                 {
                     return Err("同名技能已由其他来源提供，请使用独立名称".into());
                 }
@@ -422,7 +403,7 @@ impl CapabilityManager {
                     payload
                         .get("sourceEvidence")
                         .cloned()
-                        .ok_or("sourceEvidence is required")?,
+                        .unwrap_or_else(|| json!([])),
                 )
                 .map_err(|e| e.to_string())?;
                 let candidate = self
@@ -433,25 +414,11 @@ impl CapabilityManager {
                         required(&payload, "description")?,
                         required(&payload, "content")?,
                         project,
-                        required(&payload, "ownerSessionId")?,
+                        payload["ownerSessionId"].as_str().unwrap_or_default(),
                         source,
                     )
                     .await?;
                 Ok(json!({"candidate":candidate,"state":self.lifecycle.list().await}))
-            }
-            "capabilities.skillRevisionValidate" => {
-                let samples = serde_json::from_value(
-                    payload
-                        .get("samples")
-                        .cloned()
-                        .ok_or("samples are required")?,
-                )
-                .map_err(|e| e.to_string())?;
-                let evidence = self
-                    .lifecycle
-                    .validate(expected, required(&payload, "id")?, samples)
-                    .await?;
-                Ok(json!({"evidence":evidence,"state":self.lifecycle.list().await}))
             }
             "capabilities.skillRevisionActivate" | "capabilities.skillRevisionRestore" => {
                 let revision = self.lifecycle.get(required(&payload, "id")?).await?;
@@ -462,10 +429,9 @@ impl CapabilityManager {
                         ..Default::default()
                     })
                     .await?;
-                if catalog
-                    .iter()
-                    .any(|s| s.name == revision.name && s.provider != "validated-skill-revisions")
-                {
+                if catalog.iter().any(|s| {
+                    s.name == revision.name && s.provider != crate::skill_lifecycle::PROVIDER
+                }) {
                     return Err("同名技能已由其他来源提供，不能覆盖现有项目指令".into());
                 }
                 if method == "capabilities.skillRevisionRestore" {
@@ -741,6 +707,87 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+    #[tokio::test]
+    async fn skill_lifecycle_manual_controls_work_without_a_session_or_task_service() {
+        let root = root();
+        let ctx = context();
+        let skills = SkillRegistry::install(&ctx, Default::default()).unwrap();
+        let manager = CapabilityManager::install(&ctx, root.clone(), root.to_string_lossy().into())
+            .await
+            .unwrap();
+        let created = manager
+            .invoke(
+                "capabilities.skillRevisionCreate",
+                json!({
+                    "expectedRevision":0,"name":"manual-rpc","description":"Project procedure",
+                    "content":"Inspect the project configuration.","project":root,
+                }),
+            )
+            .await
+            .unwrap();
+        let id = created["candidate"]["id"].as_str().unwrap();
+        assert_eq!(created["state"]["candidates"][0]["active"], false);
+        assert_eq!(
+            created["state"]["candidates"][0]["activationMode"],
+            "manual"
+        );
+        let view = || SkillViewOptions {
+            cwd: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        assert!(skills.get("manual-rpc", view()).await.unwrap().is_none());
+        manager
+            .invoke(
+                "capabilities.skillRevisionActivate",
+                json!({"expectedRevision":1,"id":id}),
+            )
+            .await
+            .unwrap();
+        assert!(skills.get("manual-rpc", view()).await.unwrap().is_some());
+        assert!(
+            manager
+                .invoke(
+                    "capabilities.skillRevisionValidate",
+                    json!({"expectedRevision":2,"id":id})
+                )
+                .await
+                .unwrap_err()
+                .contains("unsupported")
+        );
+        manager
+            .invoke(
+                "capabilities.skillRevisionWithdraw",
+                json!({"expectedRevision":2,"id":id}),
+            )
+            .await
+            .unwrap();
+        assert!(skills.get("manual-rpc", view()).await.unwrap().is_none());
+        manager
+            .invoke(
+                "capabilities.skillRevisionRestore",
+                json!({"expectedRevision":3,"id":id}),
+            )
+            .await
+            .unwrap();
+        manager
+            .invoke(
+                "capabilities.skillRevisionToggle",
+                json!({"expectedRevision":4,"enabled":false}),
+            )
+            .await
+            .unwrap();
+        assert!(skills.get("manual-rpc", view()).await.unwrap().is_none());
+        let tools = ctx
+            .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
+            .unwrap();
+        assert!(
+            !tools
+                .schemas(None)
+                .iter()
+                .any(|tool| tool.name == "skill_candidate")
+        );
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
     async fn skill_switch_persists_and_blocks_loading_until_reenabled() {

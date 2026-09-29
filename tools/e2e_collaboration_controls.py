@@ -49,9 +49,9 @@ class Model(BaseHTTPRequestHandler):
                     action, tool_name = {'file_path': 'must-not-exist.txt', 'content': 'DENIED'}, 'write'
                 elif 'job-one' not in Model.dispatched:
                     Model.dispatched.add('job-one')
-                    revision = int(re.findall(r'expectedRevision (\d+), status review', serialized)[-1])
+                    revision = int(re.findall(r'expectedRevision (\d+), status completed', serialized)[-1])
                     action = {'action': 'task', 'taskId': 'job-one', 'expectedRevision': revision,
-                              'status': 'completed', 'result': 'Fixture evidence: verification passed.'}
+                              'status': 'completed'}
         if actor == 'job-worker':
             with Model.lock:
                 if 'background-job' not in Model.dispatched:
@@ -188,18 +188,17 @@ def main():
                     assert snapshot['roles'][0]['model'] == 'worker-model'
                     evidence['checks'].append('running-profile-snapshot-survives-default-edits')
                     request(lead, {'action': 'task', 'taskId': 'job-one', 'expectedRevision': 0, 'subject': 'Verify module',
-                                   'owner': child, 'acceptance': 'Provide verification evidence'})
+                                   'owner': child})
                     request(lead, {'action': 'dispatch', 'taskId': 'job-one', 'expectedRevision': 1})
-                    until(lambda: request(lead)['board']['tasks']['job-one']['status'] == 'review')
+                    until(lambda: request(lead)['board']['tasks']['job-one']['status'] == 'completed')
                     task = request(lead)['board']['tasks']['job-one']
-                    assert task['revision'] == 3 and task['result']
+                    assert task['revision'] == 3 and task['result'] == ''
                     assert not (workspace / 'must-not-exist.txt').exists()
                     assert any('fixture-read-sentinel' in json.dumps(row['request']) for row in Model.records if row['actor']=='worker')
                     evidence['checks'].append('scoped-file-tools-inherit-and-forbidden-writes-never-execute')
                     request(lead, {'action': 'task', 'taskId': 'job-one', 'expectedRevision': 1, 'status': 'completed'}, expected=400)
-                    request(lead, {'action': 'task', 'taskId': 'job-one', 'expectedRevision': 3, 'status': 'completed'})
-                    assert request(lead)['board']['tasks']['job-one']['revision'] == 4
-                    evidence['checks'].append('dispatch-and-worker-review-require-lead-acceptance')
+                    assert request(lead)['board']['tasks']['job-one']['revision'] == 3
+                    evidence['checks'].append('worker-completes-directly-without-review-or-result-gate')
                     other = call('session.create', {'workspaceId': wid, 'sessionId': 'agent-session-' + str(uuid.uuid4())})['sessionId']
                     request(other, {'action': 'message', 'target': child, 'message': 'wrong-team', 'messageId': 'wrong'}, expected=400)
                     request(lead, create, expected=403, origin='https://untrusted.invalid')

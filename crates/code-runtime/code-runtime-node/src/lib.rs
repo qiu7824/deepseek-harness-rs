@@ -6,7 +6,10 @@ use dsh_code_runtime::{
     CodeBindingFunction, CodeRunFailure, CodeRunFailureKind, CodeRunRequest, CodeRunResult,
     CodeRuntime,
 };
-use dsh_sandbox::{ConfinedSandboxMode, SandboxEnforcement, SandboxPolicy, SandboxProvider};
+use dsh_sandbox::{
+    ConfinedSandboxMode, SandboxEnforcement, SandboxExecutionPolicy, SandboxMode, SandboxPolicy,
+    SandboxProvider,
+};
 use dsh_subprocess::{
     SubprocessCollect, SubprocessOutputMode, SubprocessRuntime, SubprocessSpawnSpec,
     SubprocessStdinMode, SubprocessStdio,
@@ -18,6 +21,27 @@ use tokio::task::JoinSet;
 
 const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/runner.cjs");
 const RUNNER_SOURCE: &str = include_str!("../assets/runner.cjs");
+#[cfg(test)]
+mod startup_tests;
+const STARTUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+type ExecutionClock = Arc<parking_lot::Mutex<Option<std::time::Instant>>>;
+
+async fn wait_for_dispatch(clock: &ExecutionClock) {
+    while clock.lock().is_none() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+async fn wait_for_cancellation(
+    signal: Option<dsh_code_runtime::CodeAbort>,
+    lifecycle: Arc<Lifecycle>,
+) {
+    loop {
+        if !lifecycle.accepting() || signal.as_ref().is_some_and(|signal| signal()) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
 
 #[cfg(test)]
 mod rejection_tests {
@@ -33,6 +57,7 @@ mod rejection_tests {
             let result = runtime
                 .run(CodeRunRequest {
                     timeout_ms: Some(1000),
+                    on_dispatch: None,
                     program: program.into(),
                     signal: None,
                     bindings: vec![CodeBindingNamespace {
@@ -71,6 +96,7 @@ mod rejection_tests {
         });
         let result = runtime.run(CodeRunRequest {
             timeout_ms: None,
+            on_dispatch: None,
             program: "let rejection; try { await agents.run({}); } catch (e) { rejection = e.message; } const next = await agents.run({prompt: 'valid'}); return {rejection, next};".into(),
             bindings: vec![CodeBindingNamespace { global: "agents".into(), functions: vec![("run".into(), function)], error_class: None }],
             signal: None,
@@ -263,6 +289,10 @@ impl CodeRuntime for NodeCodeRuntime {
         "process-worker-thread".to_string()
     }
 
+    fn supports_dispatch_guard(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         request: CodeRunRequest,
@@ -285,12 +315,15 @@ impl CodeRuntime for NodeCodeRuntime {
             }
             config.max_wall_ms = budget;
             config.compute_ms = budget;
-            let started = std::time::Instant::now();
+            let started: ExecutionClock = Arc::new(parking_lot::Mutex::new(None));
             let previous = request.signal.clone();
+            let cancellation = previous.clone();
+            let clock = started.clone();
             let mut request = request;
             request.signal = Some(Arc::new(move || {
-                started.elapsed() >= std::time::Duration::from_millis(budget)
-                    || previous.as_ref().is_some_and(|abort| abort())
+                clock.lock().is_some_and(|start| {
+                    start.elapsed() >= std::time::Duration::from_millis(budget)
+                }) || previous.as_ref().is_some_and(|abort| abort())
             }));
             let child_owner = Arc::new(parking_lot::Mutex::new(
                 None::<Arc<dyn dsh_subprocess::SubprocessHandle>>,
@@ -299,23 +332,63 @@ impl CodeRuntime for NodeCodeRuntime {
                 subprocess,
                 sandbox,
                 config,
-                lifecycle,
+                lifecycle.clone(),
                 request,
                 child_owner.clone(),
+                started.clone(),
             );
-            let result = tokio::time::timeout(std::time::Duration::from_millis(budget), run).await;
-            if result.is_err() || started.elapsed() >= std::time::Duration::from_millis(budget) {
+            tokio::pin!(run);
+            let cancelled = wait_for_cancellation(cancellation, lifecycle);
+            tokio::pin!(cancelled);
+            let startup = tokio::select! {
+                result=&mut run=>Some(result),
+                _=wait_for_dispatch(&started)=>None,
+                _=tokio::time::sleep(STARTUP_BUDGET)=>if started.lock().is_some(){None}else{Some(Ok(failure(CodeRunFailureKind::Startup,"[SANDBOX_SETUP_TIMEOUT] code runtime startup exceeded 120 seconds; model program not dispatched")))},
+                _=&mut cancelled=>Some(Ok(failure(CodeRunFailureKind::Abort,if started.lock().is_some(){"aborted"}else{"aborted before program dispatch"}))),
+            };
+            let result = match startup {
+                Some(result) => result,
+                None => {
+                    let elapsed = started.lock().expect("dispatch clock was set").elapsed();
+                    let remaining =
+                        std::time::Duration::from_millis(budget).saturating_sub(elapsed);
+                    tokio::select! {
+                        result=tokio::time::timeout(remaining,&mut run)=>result.unwrap_or_else(|_|Ok(failure(CodeRunFailureKind::Timeout,"elapsed PTC deadline reached"))),
+                        _=&mut cancelled=>Ok(failure(CodeRunFailureKind::Abort,"aborted")),
+                    }
+                }
+            };
+            if started.lock().is_none()
+                || result
+                    .as_ref()
+                    .map_or(true, |result| result.error.is_some())
+            {
                 let child = child_owner.lock().clone();
                 if let Some(child) = child {
                     child.terminate();
-                    let _ = child.wait_for_exit(None).await;
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        child.wait_for_exit(None),
+                    )
+                    .await;
                 }
+            }
+            if started
+                .lock()
+                .is_some_and(|start| start.elapsed() >= std::time::Duration::from_millis(budget))
+                && !matches!(&result,Ok(result) if result.error.as_ref().is_some_and(|error|error.kind==CodeRunFailureKind::Abort))
+            {
                 return Ok(failure(
                     CodeRunFailureKind::Timeout,
                     "elapsed PTC deadline reached",
                 ));
             }
-            result.expect("timeout checked")
+            match result {
+                Err(error) if started.lock().is_none() => {
+                    Ok(failure(CodeRunFailureKind::Startup, &error))
+                }
+                result => result,
+            }
         })
     }
 }
@@ -327,6 +400,7 @@ async fn run_one(
     lifecycle: Arc<Lifecycle>,
     request: CodeRunRequest,
     child_owner: Arc<parking_lot::Mutex<Option<Arc<dyn dsh_subprocess::SubprocessHandle>>>>,
+    started: ExecutionClock,
 ) -> Result<CodeRunResult, String> {
     if request.signal.as_ref().is_some_and(|signal| signal()) {
         return Ok(failure(CodeRunFailureKind::Abort, "aborted"));
@@ -360,12 +434,27 @@ async fn run_one(
         "--eval".to_string(),
         RUNNER_SOURCE.to_string(),
     ];
+    let mut startup = None;
     if config.require_os_sandbox {
         let provider = sandbox.ok_or_else(|| {
             "code-runtime-node: SANDBOX_UNAVAILABLE: OS sandbox service is required".to_string()
         })?;
+        provider
+            .prepare(&SandboxExecutionPolicy {
+                mode: SandboxMode::ReadOnly,
+                workspace_root: runner_root.clone(),
+                read_only_roots: Vec::new(),
+                session_id: None,
+            })
+            .await?;
+        if request.signal.as_ref().is_some_and(|signal| signal()) {
+            return Ok(failure(
+                CodeRunFailureKind::Abort,
+                "aborted before program dispatch",
+            ));
+        }
         let confined = provider
-            .confine(
+            .confine_with_startup(
                 &argv,
                 &SandboxPolicy {
                     read_only_roots: Vec::new(),
@@ -378,6 +467,7 @@ async fn run_one(
         if confined.enforcement != SandboxEnforcement::Full {
             return Err("code-runtime-node: SANDBOX_UNAVAILABLE: partial enforcement".to_string());
         }
+        startup = confined.startup;
         argv = confined.argv;
     }
     let (child, id) = {
@@ -415,6 +505,20 @@ async fn run_one(
     };
     let mut child_guard = ChildGuard::new(child.clone(), lifecycle.clone(), id);
     *child_owner.lock() = Some(child.clone());
+    if let Some(startup) = startup {
+        loop {
+            if startup.is_ready()? {
+                break;
+            }
+            tokio::select! {
+                result=child.done()=>{
+                    if startup.is_ready()?{break;}
+                    return Err(format!("[SANDBOX_SETUP_FAILED] runner exited before readiness ({result:?}); phase={}; {}",startup.phase(),stderr_tail(&child)));
+                }
+                _=tokio::time::sleep(std::time::Duration::from_millis(10))=>{},
+            }
+        }
+    }
     let mut stdin = child
         .stdin()
         .ok_or_else(|| "code-runtime-node: child stdin was not piped".to_string())?;
@@ -441,6 +545,16 @@ async fn run_one(
             })
         })
         .collect::<Vec<_>>();
+    if request.signal.as_ref().is_some_and(|signal| signal()) {
+        return Ok(failure(
+            CodeRunFailureKind::Abort,
+            "aborted before program dispatch",
+        ));
+    }
+    if let Some(dispatch) = &request.on_dispatch {
+        dispatch()?;
+    }
+    *started.lock() = Some(std::time::Instant::now());
     write_frame(
         &mut stdin,
         &json!({

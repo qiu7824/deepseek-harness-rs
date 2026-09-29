@@ -726,9 +726,8 @@ window.__ModuleLoader__.load({
             "team.addTask": "创建任务",
             "team.subject": "任务名称",
             "team.description": "任务内容",
-            "team.acceptance": "验收条件",
             "team.owner": "执行成员",
-            "team.result": "结果与验收证据",
+            "team.result": "结果备注（可选）",
             "team.save": "保存",
             "team.cancel": "取消",
             "team.taskChanged": "任务已在其他位置更新，编辑草稿已保留。载入最新内容后再保存。",
@@ -738,7 +737,7 @@ window.__ModuleLoader__.load({
             "tool.catalogUnavailable": "子任务目录不可用，请刷新后重试。",
             "team.edit": "编辑",
             "team.dispatch": "派发",
-            "team.accept": "验收完成",
+            "team.complete": "标记完成",
             "team.delete": "删除",
             "team.showButton": "显示右上角协作按钮",
             "team.defaultMode": "新会话默认方式",
@@ -764,7 +763,6 @@ window.__ModuleLoader__.load({
             "team.modelUnavailable": "目录中不可用",
             "team.writeScopes": "协作文件范围（逗号分隔）",
             "team.status.queued": "已派发",
-            "team.status.review": "待验收",
             "team.status.blocked": "受阻",
             "team.status.cancelled": "已取消",
 
@@ -880,9 +878,8 @@ window.__ModuleLoader__.load({
             "team.addTask": "Create task",
             "team.subject": "Task title",
             "team.description": "Description",
-            "team.acceptance": "Acceptance criteria",
             "team.owner": "Assignee",
-            "team.result": "Result and evidence",
+            "team.result": "Result notes (optional)",
             "team.save": "Save",
             "team.cancel": "Cancel",
             "team.taskChanged": "This task changed elsewhere. Your draft is preserved. Load the latest content before saving.",
@@ -892,7 +889,7 @@ window.__ModuleLoader__.load({
             "tool.catalogUnavailable": "The child task directory is unavailable. Refresh to retry.",
             "team.edit": "Edit",
             "team.dispatch": "Dispatch",
-            "team.accept": "Accept result",
+            "team.complete": "Mark complete",
             "team.delete": "Delete",
             "team.showButton": "Show top-right collaboration button",
             "team.defaultMode": "Default mode",
@@ -918,7 +915,6 @@ window.__ModuleLoader__.load({
             "team.modelUnavailable": "Unavailable in catalog",
             "team.writeScopes": "Coordinated file scopes (comma-separated)",
             "team.status.queued": "Dispatched",
-            "team.status.review": "Awaiting review",
             "team.status.blocked": "Blocked",
             "team.status.cancelled": "Cancelled",
 
@@ -1136,7 +1132,7 @@ window.__ModuleLoader__.load({
                 h('button',{type:'submit',className:'dshTeamButton',disabled:busy||!text.trim()},t('team.send')));
         }
         function TeamTaskForm({task,members,tasks,busy,t,onSave,onCancel}){
-            const h=react.createElement,toDraft=value=>({subject:value?.subject??'',description:value?.description??'',acceptance:value?.acceptance??'',owner:value?.ownerId??'',blockedBy:value?.blockedBy??[],writeScopes:(value?.writeScopes??[]).join(', '),result:value?.result??'',status:value?.status??'pending'});
+            const h=react.createElement,toDraft=value=>({subject:value?.subject??'',description:value?.description??'',owner:value?.ownerId??'',blockedBy:value?.blockedBy??[],writeScopes:(value?.writeScopes??[]).join(', '),result:value?.result??'',status:value?.status??'pending'});
             const [draft,setDraft]=react.useState(()=>toDraft(task)),[id,setId]=react.useState(()=>task?.id??teamIdentity('task')),[baseRevision,setBaseRevision]=react.useState(()=>task?.revision??0);
             const conflicted=!!task&&task.revision!==baseRevision,submitting=react.useRef(false);
             const field=(name,value)=>setDraft(previous=>({...previous,[name]:value}));
@@ -1144,11 +1140,11 @@ window.__ModuleLoader__.load({
                 conflicted&&h('p',{role:'alert',className:'dshTeamError'},t('team.taskChanged')),
                 conflicted&&h('button',{type:'button',className:'dshTeamButton',disabled:busy,onClick:()=>{setDraft(toDraft(task));setBaseRevision(task.revision);}},t('team.loadLatest')),
                 h('fieldset',{disabled:busy},h('legend',null,t(task?'team.editTask':'team.addTask')),
-                    ['subject','description','acceptance'].map(name=>h(TeamField,{key:name,label:t('team.'+name)},h(name==='subject'?'input':'textarea',{required:name==='subject',rows:2,value:draft[name],maxLength:name==='subject'?256:8000,onChange:e=>field(name,e.target.value)}))),
+                    ['subject','description'].map(name=>h(TeamField,{key:name,label:t('team.'+name)},h(name==='subject'?'input':'textarea',{required:name==='subject',rows:2,value:draft[name],maxLength:name==='subject'?256:8000,onChange:e=>field(name,e.target.value)}))),
                     h(TeamField,{label:t('team.owner')},h('select',{value:draft.owner,onChange:e=>field('owner',e.target.value)},h('option',{value:''},t('team.unassigned')),members.filter(m=>m.phase==='active').map(m=>h('option',{key:m.id,value:m.id},m.description||m.name)))),
                     tasks.length>0&&h(TeamField,{label:t('team.dependencies')},h('select',{multiple:true,value:draft.blockedBy,onChange:e=>field('blockedBy',Array.from(e.target.selectedOptions,o=>o.value))},tasks.filter(item=>item.id!==task?.id).map(item=>h('option',{key:item.id,value:item.id},item.subject)))),
                     h(TeamField,{label:t('team.writeScopes')},h('input',{value:draft.writeScopes,onChange:e=>field('writeScopes',e.target.value)})),
-                    task&&h(TeamField,{label:t('team.taskStatus')},h('select',{value:draft.status,onChange:e=>field('status',e.target.value)},['pending','review','blocked','completed','cancelled'].map(status=>h('option',{key:status,value:status},t('team.status.'+status))))),
+                    task&&h(TeamField,{label:t('team.taskStatus')},h('select',{value:draft.status,onChange:e=>field('status',e.target.value)},['pending','in_progress','blocked','completed','cancelled'].map(status=>h('option',{key:status,value:status},t('team.status.'+status))))),
                     task&&h(TeamField,{label:t('team.result')},h('textarea',{rows:3,value:draft.result,maxLength:16000,onChange:e=>field('result',e.target.value)})),
                     h('div',{className:'dshTeamToolbar'},h('button',{type:'submit',className:'dshTeamButton',disabled:conflicted||!draft.subject.trim()},t('team.save')),onCancel&&h('button',{type:'button',className:'dshTeamButton',onClick:onCancel},t('team.cancel')))));
         }
@@ -1156,13 +1152,13 @@ window.__ModuleLoader__.load({
             const h=react.createElement,[editing,setEditing]=react.useState(false),active=['queued','in_progress'].includes(task.status);
             if(editing)return h(TeamTaskForm,{key:task.id,task,tasks,members,busy,t,onSave,onCancel:()=>setEditing(false)});
             return h('article',{className:'dshTeamCard'},h('strong',null,task.subject),h('p',null,task.description),h('p',{className:'dshTeamHint'},`${label(task.ownerId)} · ${t('team.status.'+task.status)}`),
-                task.acceptance&&h('p',null,t('team.acceptance')+': '+task.acceptance),task.result&&h('p',null,t('team.result')+': '+task.result),
+                task.result&&h('p',null,t('team.result')+': '+task.result),
                 task.blockedBy.length>0&&h('p',{className:'dshTeamHint'},t('team.dependencies')+': '+task.blockedBy.map(id=>tasks.find(item=>item.id===id)?.subject??id).join(', ')),
                 task.writeScopes.length>0&&h('p',{className:'dshTeamHint'},t('team.writeScopes')+': '+task.writeScopes.join(', ')),
                 h('div',{className:'dshTeamToolbar'},
                     h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||active,onClick:()=>setEditing(true)},t('team.edit')),
                     h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||!task.ownerId||!['pending','blocked','cancelled'].includes(task.status)||task.blockedBy.some(id=>tasks.find(item=>item.id===id)?.status!=='completed'),onClick:()=>onSave({action:'dispatch',taskId:task.id,expectedRevision:task.revision})},t('team.dispatch')),
-                    task.status==='review'&&h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||!!task.acceptance&&!task.result,onClick:()=>onSave({action:'task',taskId:task.id,expectedRevision:task.revision,status:'completed'})},t('team.accept')),
+                    task.status==='in_progress'&&h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled,onClick:()=>onSave({action:'task',taskId:task.id,expectedRevision:task.revision,status:'completed'})},t('team.complete')),
                     h('button',{type:'button',className:'dshTeamButton',disabled:busy||!enabled||active,onClick:()=>onSave({action:'task',taskId:task.id,expectedRevision:task.revision,status:'deleted'})},t('team.delete'))));
         }
         function TeamSettings({scope,saveSettings,loadModels,renderDefaults,t}) {

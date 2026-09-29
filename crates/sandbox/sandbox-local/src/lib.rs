@@ -438,7 +438,9 @@ fn bwrap_profile_args(policy: &SandboxPolicy) -> Vec<String> {
             policy.workspace_root.clone(),
             policy.workspace_root.clone(),
         ]);
-        for root in dsh_sandbox::roots::managed_temp_roots() {
+        for root in
+            dsh_sandbox::roots::managed_temp_roots(policy.session_id.as_ref().map(|id| id.as_str()))
+        {
             args.extend(["--bind".into(), root.clone(), root]);
         }
     }

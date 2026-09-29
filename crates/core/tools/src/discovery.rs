@@ -90,7 +90,6 @@ impl Default for DiscoveryConfig {
                 "execute_native",
                 "execute_steps",
                 "execute_script",
-                "task_execution",
                 "run_code",
             ]
             .into_iter()
@@ -257,7 +256,6 @@ impl ToolDiscovery {
             "execute_native",
             "execute_steps",
             "execute_script",
-            "task_execution",
             "run_code",
         ]
         .contains(&tool.name.as_str())

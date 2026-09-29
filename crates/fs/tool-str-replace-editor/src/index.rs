@@ -860,7 +860,11 @@ impl ToolStrReplaceEditorService {
                     let execution = exec.execution.clone();
                     Box::pin(async move {
                         let ctx = service.ctx.clone();
-                        let fs = service.fs.clone();
+                        let owner = execution.agent.as_ref().map(|a| a.id().as_str().to_owned());
+                        let fs = service
+                            .fs
+                            .for_tool(owner.as_deref())
+                            .unwrap_or_else(|| service.fs.clone());
                         let command = args.get("command").and_then(|v| v.as_str());
                         let path = args.get("path").and_then(|v| v.as_str());
                         let Some(command) = command else {

@@ -59,6 +59,8 @@ mod deny_read_acl;
 #[cfg(target_os = "windows")]
 mod deny_read_state;
 #[cfg(target_os = "windows")]
+mod private_read_acl;
+#[cfg(target_os = "windows")]
 mod desktop;
 #[cfg(target_os = "windows")]
 mod dpapi;
@@ -174,6 +176,8 @@ pub use deny_read_acl::plan_deny_read_acl_paths;
 pub use deny_read_resolver::resolve_windows_deny_read_paths;
 #[cfg(target_os = "windows")]
 pub use deny_read_state::sync_persistent_deny_read_acls;
+#[cfg(target_os = "windows")]
+pub use private_read_acl::sync_private_read_acls;
 #[cfg(target_os = "windows")]
 pub use desktop::LaunchDesktop;
 #[cfg(target_os = "windows")]

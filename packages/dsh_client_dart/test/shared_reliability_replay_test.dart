@@ -31,19 +31,12 @@ void main() {
       items.where((item) => item.kind == 'assistant').map((item) => item.text),
       [expected['assistant'], expected['cancelledPartial']],
     );
-    expect(
-      items.any(
-        (item) =>
-            item.text.startsWith('任务尚未验收。') &&
-            item.status == expected['acceptance'],
-      ),
-      isTrue,
-    );
+    expect(items.any((item) => item.text.startsWith('任务尚未验收。')), isFalse);
     expect(items.last.text, '任务已停止。');
     expect(window.lastSeq, events.last.seq);
   }
 
-  test('shared corpus preserves Unicode, long streams, duplicate delivery, acceptance and cancellation', () {
+  test('shared corpus preserves Unicode, long streams, duplicate delivery, retired metadata and cancellation', () {
     final window = ConversationWindow();
     for (final event in events) {
       window.append(event);

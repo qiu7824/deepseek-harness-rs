@@ -87,7 +87,8 @@ void main() {
         }),
       ], live: false);
       expect(items.map((item) => item.kind), ['compaction', 'context']);
-      expect(items.last.summary, 'runtime-context');
+      expect(items.last.title, '运行信息更新');
+      expect(items.last.summary, '自动同步，无需操作');
     },
   );
 }

@@ -121,6 +121,26 @@ impl RemoteFileSystem {
 }
 #[async_trait::async_trait]
 impl FileSystem for RemoteFileSystem {
+    fn for_tool(&self, owner: Option<&str>) -> Option<Arc<dyn FileSystem>> {
+        self.local.for_tool(owner).map(|local| {
+            Arc::new(Self {
+                local,
+                remote: self.remote.clone(),
+            }) as Arc<dyn FileSystem>
+        })
+    }
+    async fn authorize_search(&self, target: &FsTarget) -> Result<(), FsError> {
+        if self.remote_target(target).is_none() {
+            self.local.authorize_search(target).await?;
+        }
+        Ok(())
+    }
+    async fn authorize_write(&self, target: &FsTarget) -> Result<(), FsError> {
+        if self.remote_target(target).is_none() {
+            self.local.authorize_write(target).await?;
+        }
+        Ok(())
+    }
     fn sandbox_mode(&self) -> Option<SandboxMode> {
         Some(SandboxMode::WorkspaceWrite)
     }

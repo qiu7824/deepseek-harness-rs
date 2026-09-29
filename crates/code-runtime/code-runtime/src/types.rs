@@ -60,8 +60,14 @@ pub struct CodeBindingNamespace {
 /// `CodeRunRequest`). Defaulting is the implementation's validated config.
 #[derive(Clone)]
 pub struct CodeRunRequest {
-    /// Elapsed budget including provider preparation and binding waits.
+    /// Elapsed program budget including binding waits. Authenticated OS-sandbox
+    /// initialization has a separate bounded startup budget.
     pub timeout_ms: Option<u64>,
+    /// Trusted, non-serialized admission guard immediately before model code
+    /// is sent to its execution substrate. A rejection must prevent dispatch.
+    /// Only providers advertising `supports_dispatch_guard` may receive it;
+    /// callers conservatively mark dispatch before invoking other providers.
+    pub on_dispatch: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
     /// The program source, in the runtime's language. It runs as the body of
     /// an async function: top-level `await` and `return` are available, and
     /// the completion value becomes [`CodeRunResult::value`].
@@ -79,6 +85,8 @@ pub struct CodeRunRequest {
 /// abort is not a timeout, and a substrate death is neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeRunFailureKind {
+    /// The execution substrate could not start; no model program was sent.
+    Startup,
     /// The program threw or failed to parse/transform.
     Exception,
     /// An implementation-owned budget expired; the message says which.
@@ -97,6 +105,7 @@ pub enum CodeRunFailureKind {
 impl CodeRunFailureKind {
     pub fn as_str(&self) -> &'static str {
         match self {
+            CodeRunFailureKind::Startup => "startup",
             CodeRunFailureKind::Exception => "exception",
             CodeRunFailureKind::Timeout => "timeout",
             CodeRunFailureKind::Abort => "abort",

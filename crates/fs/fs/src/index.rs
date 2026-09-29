@@ -54,6 +54,24 @@ pub struct FsEditGuard {
 /// provider contract.
 #[async_trait::async_trait]
 pub trait FileSystem: Send + Sync + 'static {
+    /// Bind model-facing file operations to a trusted session identity. Internal
+    /// service callers retain the original provider; arguments cannot grant access.
+    fn for_tool(&self, _owner: Option<&str>) -> Option<std::sync::Arc<dyn FileSystem>> {
+        None
+    }
+
+    /// Authorize a recursive external search before its subprocess starts.
+    /// Providers may reject ancestors containing protected private directories.
+    async fn authorize_search(&self, _target: &FsTarget) -> Result<(), FsError> {
+        Ok(())
+    }
+
+    /// Validate a model-controlled mutation delegated to an external adapter.
+    /// Read admission alone never grants permission to replace that input.
+    async fn authorize_write(&self, _target: &FsTarget) -> Result<(), FsError> {
+        Ok(())
+    }
+
     /// The sandbox mode this backend enforces on mutations BY DEFAULT, or
     /// `None` when it does not confine at all — the capability fact the tool
     /// layer reads to advertise the escalation fields honestly. The base

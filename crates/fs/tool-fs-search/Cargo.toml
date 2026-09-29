@@ -7,6 +7,7 @@ license = "MIT"
 [dependencies]
 cordis = { path = "../../vendor/cordis" }
 dsh-tools = { path = "../../core/tools" }
+dsh-fs = { path = "../fs" }
 dsh-system-prompt = { path = "../../core/system-prompt" }
 dsh-subprocess = { path = "../../subprocess/subprocess" }
 dsh-agent = { path = "../../core/agent" }

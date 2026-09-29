@@ -37,6 +37,7 @@ pub fn interrupted_turn_closers(events: &[SessionEvent]) -> Vec<SessionEvent> {
 pub struct InterruptedTurnRepair {
     open_turn: Option<u64>,
     open_step: Option<u64>,
+    open_compaction: Option<serde_json::Value>,
     pending_calls: IndexMap<String, PendingCall>,
     last: Option<(u64, i64)>,
 }
@@ -45,6 +46,12 @@ impl InterruptedTurnRepair {
     pub fn observe(&mut self, event: &SessionEvent) {
         self.last = Some((event.seq.get(), event.time));
         match event.type_.as_str() {
+            "compaction/start" => {
+                self.open_compaction = Some(event.data.clone());
+            }
+            "compaction/end" | "session/end-seed" => {
+                self.open_compaction = None;
+            }
             "turn/start" => {
                 self.open_turn = event.data.get("turn").and_then(|value| value.as_u64());
                 self.open_step = None;
@@ -104,15 +111,33 @@ impl InterruptedTurnRepair {
     }
 
     pub fn finish(self) -> Vec<SessionEvent> {
-        let Some(turn) = self.open_turn else {
-            return Vec::new();
-        };
         let Some((last_seq, time)) = self.last else {
             return Vec::new();
         };
 
         let mut seq = last_seq + 1;
         let mut closers: Vec<SessionEvent> = Vec::new();
+
+        // A summary can be interrupted outside a turn (manual compaction) or
+        // before/inside an agent step. Close its exact owner before any turn
+        // boundary; otherwise the repaired tail cannot pass V4 validation.
+        if let Some(mut data) = self.open_compaction {
+            data["error"] =
+                serde_json::json!("Compaction interrupted before the checkpoint completed");
+            closers.push(SessionEvent {
+                type_: "compaction/end".into(),
+                seq: crate::SessionSeq::new(seq).expect("repair seq fits the Session wire"),
+                time,
+                data,
+                ignorable: None,
+                surface_op: None,
+                source_event_seqs: None,
+            });
+            seq += 1;
+        }
+        let Some(turn) = self.open_turn else {
+            return closers;
+        };
 
         for (call_id, pending) in self.pending_calls {
             let started = pending.call_seq.is_some();
@@ -166,6 +191,10 @@ impl InterruptedTurnRepair {
         closers
     }
 }
+
+#[cfg(test)]
+#[path = "repair_tests.rs"]
+mod tests;
 
 /// Build the deterministic interrupted tool-result message.
 fn interrupted_tool_result_message(call_id: &str, seq: u64, started: bool) -> Message {

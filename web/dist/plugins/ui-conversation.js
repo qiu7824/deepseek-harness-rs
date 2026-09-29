@@ -5329,6 +5329,10 @@ window.__ModuleLoader__.load({
 		*/
 		function ContextInjectionRow({ content, source, provenance, form, t }) {
 			const [open, setOpen] = (0, react.useState)(false);
+			const producer = source?.kind === "plugin" ? source.plugin : source?.kind;
+			const runtimeUpdate = provenance.role !== "system" && (producer === "runtime-context" || producer === "@deepseek-ai/dsh-system-prompt");
+			const repeatReminder = producer === "repeat-tool-reminder";
+			const label = runtimeUpdate ? t("message.context.automatic") : provenance.label;
 			const { rendered, summary, body } = contextBody(form, {
 				content,
 				source,
@@ -5338,8 +5342,8 @@ window.__ModuleLoader__.load({
 				className: ContextInjectionRow_module_css_default.root,
 				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBrowseOutline16, { size: 14 }),
 				chevronClassName: ContextInjectionRow_module_css_default.chevron,
-				title: t(provenance.role === "system" ? "context.system" : provenance.role === "recall" ? "message.contextRecall" : "message.contextInjection"),
-				collapsedContent: provenance.label === null ? void 0 : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				title: t(provenance.role === "system" ? "context.system" : provenance.role === "recall" ? "message.contextRecall" : runtimeUpdate ? "message.context.runtimeUpdate" : repeatReminder ? "message.context.repeatReminder" : "message.contextInjection"),
+				collapsedContent: label === null ? void 0 : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
 					(0, react_jsx_runtime.jsx)("span", {
 						className: ContextInjectionRow_module_css_default.sep,
 						"aria-hidden": true
@@ -5347,7 +5351,7 @@ window.__ModuleLoader__.load({
 					(0, react_jsx_runtime.jsx)("span", {
 						className: ContextInjectionRow_module_css_default.source,
 						"data-context-source": true,
-						children: provenance.label
+						children: label
 					}),
 					summary !== null && (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)("span", {
 						className: ContextInjectionRow_module_css_default.sep,
@@ -5849,15 +5853,6 @@ window.__ModuleLoader__.load({
 		/** Max-tokens turn-end notice keyed Chat renderer. */
 		const TurnMaxTokensNodeView = (0, react.memo)(function TurnMaxTokensNodeView({ t }) {
 			return (0, react_jsx_runtime.jsx)(TurnMaxTokensItem, { t });
-		});
-		const TurnAcceptanceNodeView = (0, react.memo)(function TurnAcceptanceNodeView({ node, t }) {
-			const value = node.data.acceptance;
-			return react.createElement("section", { className: MessageItem_module_css_default.contextRow, role: "status", "data-task-acceptance": value.status, "aria-label": t("message.acceptance") },
-				react.createElement("strong", null, t("message.acceptance")),
-				react.createElement("p", null, value.summary),
-				Array.isArray(value.blockers) && value.blockers.length > 0 && react.createElement("details", null,
-					react.createElement("summary", null, t("message.acceptanceDetails")),
-					react.createElement("ul", null, value.blockers.map((text, index) => react.createElement("li", { key: index }, String(text))))));
 		});
 		/** Explicit unknown-surface keyed Chat renderer. */
 		const UnknownNodeView = (0, react.memo)(function UnknownNodeView({ node, t }) {
@@ -6857,7 +6852,10 @@ window.__ModuleLoader__.load({
 			"chat.loadOlder": "加载更早",
 			"chat.toBottom": "回到底部",
 			"message.extraBlock": "附加内容块",
-			"message.contextInjection": "上下文注入",
+			"message.contextInjection": "补充上下文",
+			"message.context.runtimeUpdate": "运行信息更新",
+			"message.context.repeatReminder": "重复调用提醒",
+			"message.context.automatic": "自动同步，无需操作",
 			"message.contextRecall": "跨会话召回",
 			"message.context.instructions.loaded": "已载入",
 			"message.context.instructions.added": "已新增",
@@ -6877,8 +6875,6 @@ window.__ModuleLoader__.load({
 			"message.compaction.expand": "点击查看压缩摘要",
 			"message.compaction.unavailable": "压缩摘要不可用",
 			"message.unknownSurface": "未知 surface 事件：{type}",
-			"message.acceptance": "任务验收",
-			"message.acceptanceDetails": "查看验收详情",
 			"message.unknownBlock": "未知内容块",
 			"message.stopped": "已停止",
 			"message.branch": "在新对话中分支",
@@ -7196,7 +7192,10 @@ window.__ModuleLoader__.load({
 			"chat.loadOlder": "Load earlier",
 			"chat.toBottom": "Back to bottom",
 			"message.extraBlock": "Extra content block",
-			"message.contextInjection": "Context injection",
+			"message.contextInjection": "Additional context",
+			"message.context.runtimeUpdate": "Runtime information updated",
+			"message.context.repeatReminder": "Repeated call reminder",
+			"message.context.automatic": "Synced automatically; no action needed",
 			"message.contextRecall": "Session recall",
 			"message.context.instructions.loaded": "loaded",
 			"message.context.instructions.added": "added",
@@ -7216,8 +7215,6 @@ window.__ModuleLoader__.load({
 			"message.compaction.expand": "View compaction summary",
 			"message.compaction.unavailable": "Compaction summary unavailable",
 			"message.unknownSurface": "Unknown surface event: {type}",
-			"message.acceptance": "Task acceptance",
-			"message.acceptanceDetails": "Acceptance details",
 			"message.unknownBlock": "Unknown content block",
 			"message.stopped": "Stopped",
 			"message.branch": "Branch into a new conversation",
@@ -8977,7 +8974,6 @@ window.__ModuleLoader__.load({
 				case "compaction":
 				case "turn-error":
 				case "turn-max-tokens":
-				case "turn-acceptance":
 				case "unknown": return {
 					anchorSeq: node.anchorSeq,
 					nodes: [node.data],
@@ -9913,6 +9909,7 @@ window.__ModuleLoader__.load({
 			buildViewNode: (context) => {
 				const state = context.state ?? fallbackState$1(context);
 				if (state === void 0) return null;
+				if (state.root.name === "task_execution" || state.root.call?.name === "task_execution") return null;
 				const projected = projectBlock(state.root, state, interruption(context));
 				return chatNode(context, "tool-call", context.start?.event.seq ?? ("kind" in state.root ? state.root.seq : context.matches[0]?.event.seq ?? 0), { root: projected });
 			}
@@ -10081,17 +10078,7 @@ window.__ModuleLoader__.load({
 		*/
 		function registerTurnMaxTokensConversationNode(ctx) {
 			ctx.conversationEvents.register(turnMaxTokensDefinition);
-			ctx.conversationEvents.register(turnAcceptanceDefinition);
 		}
-		const turnAcceptanceDefinition = {
-			kind: "turn-acceptance", target: "chat",
-			match: event => event.type === "turn/end" && event.data.reason?.kind === "completed" &&
-				["verified", "incomplete", "blocked", "cancelled", "unverified"].includes(event.data.acceptance?.status) && typeof event.data.acceptance.summary === "string"
-				? { id: String(event.data.turn), role: "start" } : null,
-			start: (_context, match) => ({ turn: match.event.data.turn, seq: match.event.seq, time: match.event.time, acceptance: match.event.data.acceptance }),
-			update: context => context.state,
-			buildViewNode: context => context.state ? chatNode(context, "turn-acceptance", noticeAnchor(context, context.state.seq), { ...context.state, kind: "turn-acceptance" }) : null
-		};
 		//#endregion
 		//#region lib/types/client/conversation-nodes/turn-tail.js
 		function hasTextAssistant(event) {
@@ -10897,7 +10884,6 @@ window.__ModuleLoader__.load({
 				key: "turn-max-tokens",
 				locale: NS
 			}, TurnMaxTokensNodeView));
-			ctx.slots.inject("conversation.chat.node", () => ctx.slots.register({ name: "conversation.chat.node", key: "turn-acceptance", locale: NS }, TurnAcceptanceNodeView));
 			ctx.slots.inject("conversation.chat.node", () => ctx.slots.register({
 				name: "conversation.chat.node",
 				key: "turn-tail",

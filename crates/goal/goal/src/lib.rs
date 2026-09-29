@@ -32,8 +32,4 @@ pub use types::{
     GoalIdTag, GoalPhase, GoalProjection, GoalRef, GoalSnapshot, GoalView, goal_id,
 };
 
-pub use requirements::{
-    GOAL_COMPLETION_GUARD_SERVICE, GOAL_USER_CONTROL_SERVICE, GoalCompletionCommitGuard,
-    GoalCompletionError, GoalCompletionGuard, GoalCompletionPermit, GoalRequirementsIdentity,
-    GoalUserControl, apply_goal_requirements_projection,
-};
+pub use requirements::{GoalRequirementsIdentity, apply_goal_requirements_projection};

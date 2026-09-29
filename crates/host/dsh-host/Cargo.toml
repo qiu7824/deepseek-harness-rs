@@ -11,7 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 dsh-agent-team = { path = "../../subagent/agent-team" }
-dsh-task-runtime = { path = "../../workflow/task-runtime" }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "=0.41.0"
+roxmltree = "0.21"
+memchr = "=2.8.3"
 dsh-http-proxy = { path = "../../util/http-proxy" }
 dsh-workspace-resources = { path = "../../workspace/workspace-resources" }
 dsh-spill = { path = "../../spill/spill" }

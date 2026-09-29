@@ -1,5 +1,5 @@
 //! ZIP metadata and actual expansion budgets applied before Office processing.
-use crate::Result;
+use super::Result;
 use std::{
     io::{self, Read, Seek, SeekFrom},
     sync::{

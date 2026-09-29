@@ -1,7 +1,4 @@
-//! Host-owned goal requirements identity and completion validation boundary.
-
-use dsh_agent::Agent;
-use std::sync::Arc;
+//! Stable goal objective identity and historical projection.
 
 /// The exact objective generation. Lifecycle and usage changes do not change it.
 /// The revision comes from validated goal events, never from model input.
@@ -10,47 +7,6 @@ pub struct GoalRequirementsIdentity {
     pub goal_id: String,
     pub objective_revision: u64,
 }
-
-pub const GOAL_COMPLETION_GUARD_SERVICE: &str = "goalCompletionGuard";
-pub const GOAL_USER_CONTROL_SERVICE: &str = "goalUserRequirementsControl";
-
-/// Host execution boundary for direct user changes. The callback runs once,
-/// synchronously, while the parent, descendants and background work are idle.
-pub trait GoalUserControl: Send + Sync {
-    fn with_idle(
-        &self,
-        agent: &Arc<dyn Agent>,
-        operation: &mut dyn FnMut() -> Result<(), crate::GoalError>,
-    ) -> Result<(), crate::GoalError>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GoalCompletionError {
-    Cancelled,
-    Blocked(String),
-}
-
-impl From<String> for GoalCompletionError {
-    fn from(message: String) -> Self {
-        Self::Blocked(message)
-    }
-}
-
-impl From<&str> for GoalCompletionError {
-    fn from(message: &str) -> Self {
-        Self::Blocked(message.to_owned())
-    }
-}
-
-impl std::fmt::Display for GoalCompletionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Cancelled => f.write_str("goal completion was cancelled"),
-            Self::Blocked(message) => f.write_str(message),
-        }
-    }
-}
-impl std::error::Error for GoalCompletionError {}
 
 /// Bounded JSON projection for live and cold session-projection caches. The
 /// caller retains its previous Arc when None is returned. No event bodies or
@@ -102,29 +58,4 @@ pub fn apply_goal_requirements_projection(
         }
     }
     None
-}
-
-/// A Host proof whose cancellation/work reservation stays alive through commit.
-pub trait GoalCompletionCommitGuard {}
-
-pub trait GoalCompletionPermit: Send + Sync {
-    /// Final bounded state/revision check. This runs under the Goal mutation
-    /// claim, but without any Goal cache mutex held. Do not await or re-enter
-    /// goal mutation here.
-    fn check<'a>(
-        &'a self,
-        agent: &Arc<dyn Agent>,
-        identity: &GoalRequirementsIdentity,
-    ) -> Result<Box<dyn GoalCompletionCommitGuard + 'a>, GoalCompletionError>;
-}
-
-#[async_trait::async_trait]
-pub trait GoalCompletionGuard: Send + Sync {
-    /// Verify current acceptance through the configured filesystem/approval
-    /// provider. No Goal claim or cache mutex is held while this awaits.
-    async fn prepare(
-        &self,
-        agent: &Arc<dyn Agent>,
-        identity: &GoalRequirementsIdentity,
-    ) -> Result<Box<dyn GoalCompletionPermit>, GoalCompletionError>;
 }

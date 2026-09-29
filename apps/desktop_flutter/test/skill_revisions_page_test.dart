@@ -8,21 +8,21 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 class SkillApi extends DshClient {
   SkillApi() : super('http://127.0.0.1:9');
   int revision = 4;
-  bool validated = false, active = false, withdrawn = false;
+  bool active = false, withdrawn = false, enabled = true;
   final writes = <Json>[];
   Json candidate() => {
     'id': 'v1',
-    'name': '可验证流程',
-    'description': '检验流程',
+    'name': 'manual-workflow',
+    'description': '项目流程',
     'project': 'D:/fixture',
     'contentHash': 'hash',
-    'validation': validated ? {} : null,
+    'activationMode': 'manual',
     'active': active,
     'withdrawn': withdrawn,
   };
   Json snapshot() => {
     'revision': revision,
-    'enabled': true,
+    'enabled': enabled,
     'candidates': [candidate()],
   };
   @override
@@ -33,23 +33,17 @@ class SkillApi extends DshClient {
     RequestScope? scope,
   }) async {
     if (method.endsWith('List')) return snapshot();
-    if (method.endsWith('Read')) {
-      return {
-        ...candidate(),
-        'ownerSessionId': 'owner',
-        'content': '技能正文',
-        'samples': <Json>[],
-      };
-    }
+    if (method.endsWith('Read')) return {...candidate(), 'content': '技能正文'};
     expect(mutation, isTrue);
     expect(payload['expectedRevision'], revision);
+    expect(payload.containsKey('samples'), isFalse);
+    expect(method.endsWith('Validate'), isFalse);
     writes.add({'method': method, ...payload});
     revision++;
-    if (method.endsWith('Validate')) {
-      validated = true;
+    if (method.endsWith('Create')) {
       return {
+        'candidate': {...candidate(), 'id': 'v2'},
         'state': snapshot(),
-        'evidence': {'allMatched': true},
       };
     }
     if (method.endsWith('Activate') || method.endsWith('Restore')) {
@@ -60,6 +54,7 @@ class SkillApi extends DshClient {
       active = false;
       withdrawn = true;
     }
+    if (method.endsWith('Toggle')) enabled = payload['enabled'] == true;
     return snapshot();
   }
 
@@ -70,39 +65,14 @@ class SkillApi extends DshClient {
     RequestScope? scope,
     bool mutation = false,
     int maxBytes = 16 * 1024 * 1024,
-  }) async {
-    expect(path, '/__dsh-task-execution');
-    expect(body!['summaryOnly'], isTrue);
-    return {
-      'tasks': [
-        for (final row in [
-          ('positive', 'success', 'hash'),
-          ('negative', 'failure', 'hash'),
-          ('foreign', 'success', 'other'),
-        ])
-          {
-            'taskId': row.$1,
-            'revision': 31,
-            'state': 'completed',
-            'spec': {
-              'objective': row.$1,
-              'validationSubject': {
-                'kind': 'skill',
-                'identity': row.$3,
-                'expectedOutcome': row.$2,
-              },
-            },
-          },
-      ],
-    };
-  }
+  }) async => throw StateError('Unexpected control endpoint: $path');
 }
 
 void main() {
   testWidgets(
-    'native skill workflow requires both verified sample directions and keeps revisioned controls',
+    'manual skill revisions preserve content and require explicit activation',
     (tester) async {
-      tester.view.physicalSize = const Size(1200, 1800);
+      tester.view.physicalSize = const Size(1400, 2600);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -116,33 +86,40 @@ void main() {
       DshButton button(String name) => tester.widget(
         find.ancestor(of: find.text(name), matching: find.byType(DshButton)),
       );
-      expect(button('验证并启用').onPressed, isNull);
-      await tester.tap(find.text('查看与验证'));
+      expect(button('启用版本').onPressed, isNotNull);
+      await tester.tap(find.text('查看版本'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('foreign'), findsNothing);
-      expect(button('核验所选样本').onPressed, isNull);
-      await tester.tap(find.text('正向：positive'));
-      await tester.pump();
-      expect(button('核验所选样本').onPressed, isNull);
-      await tester.tap(find.text('反向：negative'));
-      await tester.pump();
-      await tester.tap(find.text('核验所选样本'));
+      expect(find.textContaining('验收'), findsNothing);
+      await tester.ensureVisible(find.text('编辑为新版本'));
+      await tester.tap(find.text('编辑为新版本'));
       await tester.pumpAndSettle();
+      final fields = find.byType(TextField);
+      expect(fields, findsNWidgets(4));
       expect(
-        objects(api.writes.single['samples'])
-            .map((row) => row['expectedSuccess']),
-        [true, false],
+        tester.widget<TextField>(fields.at(2)).controller!.text,
+        'D:/fixture',
       );
-      await tester.tap(find.text('验证并启用'));
+      await tester.enterText(fields.at(3), '技能正文：保留换行\n新增内容。');
+      await tester.ensureVisible(find.text('保存新版本'));
+      await tester.tap(find.text('保存新版本'));
+      await tester.pumpAndSettle();
+      expect(api.writes.single['content'], '技能正文：保留换行\n新增内容。');
+      expect(api.active, isFalse);
+      await tester.ensureVisible(find.text('启用版本'));
+      await tester.tap(find.text('启用版本'));
       await tester.pumpAndSettle();
       expect(api.active, isTrue);
       await tester.tap(find.text('撤回版本'));
       await tester.pumpAndSettle();
       expect(api.withdrawn, isTrue);
-      await tester.tap(find.text('复核并恢复此版本'));
+      await tester.tap(find.text('恢复版本'));
       await tester.pumpAndSettle();
       expect(api.active, isTrue);
       expect(api.writes.map((row) => row['expectedRevision']), [4, 5, 6, 7]);
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+      expect(api.enabled, isFalse);
+      expect(button('创建技能版本').onPressed, isNull);
       expect(tester.takeException(), isNull);
     },
   );

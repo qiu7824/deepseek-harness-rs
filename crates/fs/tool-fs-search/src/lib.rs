@@ -259,8 +259,60 @@ async fn run_command(
 struct Service {
     runtime: Arc<dyn SubprocessRuntime>,
     cfg: Config,
+    fs: Option<Arc<dyn dsh_fs::FileSystem>>,
 }
 impl Service {
+    async fn search_fs(
+        &self,
+        execution: &dsh_tools::ToolExecution,
+        path: Option<&str>,
+        workdir: &str,
+    ) -> Result<Option<(Arc<dyn dsh_fs::FileSystem>, String)>, ToolBodyError> {
+        let Some(fs) = &self.fs else {
+            return Ok(None);
+        };
+        let owner = execution.agent.as_ref().map(|a| a.id().as_str().to_owned());
+        let fs = fs.for_tool(owner.as_deref()).unwrap_or_else(|| fs.clone());
+        let signal = execution.signal.lock().clone();
+        let root = fs
+            .resolve(
+                path.unwrap_or("."),
+                Some(&dsh_fs::ResolveOptions {
+                    cwd: Some(workdir.into()),
+                    signal: Some(signal),
+                }),
+            )
+            .await
+            .map_err(|e| err(e.to_string(), e.code.as_str()))?;
+        fs.authorize_search(&root)
+            .await
+            .map_err(|e| err(e.to_string(), e.code.as_str()))?;
+        let path = fs.process_path(&root);
+        Ok(Some((fs, path)))
+    }
+    async fn visible(
+        fs: &Option<(Arc<dyn dsh_fs::FileSystem>, String)>,
+        path: &str,
+        workdir: &str,
+    ) -> Result<bool, ToolBodyError> {
+        let Some((fs, _)) = fs else {
+            return Ok(true);
+        };
+        match fs
+            .resolve(
+                path,
+                Some(&dsh_fs::ResolveOptions {
+                    cwd: Some(workdir.into()),
+                    signal: None,
+                }),
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.code == dsh_fs::FsErrorCode::FsSandboxDenied => Ok(false),
+            Err(error) => Err(err(error.to_string(), error.code.as_str())),
+        }
+    }
     fn install(ctx: &Context, cfg: Config) -> Result<Arc<Self>, String> {
         let tools = ctx
             .get_typed::<Arc<dsh_tools::ToolRuntime>>("tools", false)
@@ -274,7 +326,10 @@ impl Service {
             .get_typed::<Arc<dyn SubprocessRuntime>>("subprocess", false)
             .map(|v| v.as_ref().clone())
             .ok_or("dsh-tool-fs-search requires subprocess")?;
-        let s = Arc::new(Self { runtime, cfg });
+        let fs = ctx
+            .get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs", false)
+            .map(|v| v.as_ref().clone());
+        let s = Arc::new(Self { runtime, cfg, fs });
         prompt.section(
             ctx,
             PromptSection {
@@ -384,12 +439,20 @@ impl Service {
                         argv.push(format!("--glob=!**/{name}"));
                         argv.push(format!("--glob=!**/{name}/**"));
                     }
-                    if let Some(path) = path {
+                    let workdir = cwd(&e);
+                    let fs = s.search_fs(&e, path, &workdir).await?;
+                    if let Some((_, root)) = &fs {
+                        argv.extend(["--".into(), root.clone()]);
+                    } else if let Some(path) = path {
                         argv.extend(["--".into(), path.into()]);
                     }
-                    let workdir = cwd(&e);
-                    let search_root = std::path::Path::new(&workdir).join(path.unwrap_or("."));
-                    let paths = match run(
+                    let search_root = fs
+                        .as_ref()
+                        .map(|(_, root)| PathBuf::from(root))
+                        .unwrap_or_else(|| {
+                            std::path::Path::new(&workdir).join(path.unwrap_or("."))
+                        });
+                    let paths: Vec<String> = match run(
                         &s.runtime,
                         "glob",
                         argv,
@@ -426,7 +489,13 @@ impl Service {
                         }
                         Err(error) => return Err(error),
                     };
-                    Ok(serde_json::json!({"root":path.unwrap_or("."),"paths":paths}))
+                    let mut visible = Vec::new();
+                    for path in paths {
+                        if Self::visible(&fs, &path, &workdir).await? {
+                            visible.push(path);
+                        }
+                    }
+                    Ok(serde_json::json!({"root":path.unwrap_or("."),"paths":visible}))
                 })
             }),
             finalize_content: None,
@@ -533,10 +602,13 @@ impl Service {
                     if let Some(i) = include {
                         argv.push(format!("--glob={i}"));
                     }
-                    if let Some(p) = path {
+                    let workdir = cwd(&e);
+                    let fs = s.search_fs(&e, path, &workdir).await?;
+                    if let Some((_, root)) = &fs {
+                        argv.extend(["--".into(), root.clone()]);
+                    } else if let Some(p) = path {
                         argv.extend(["--".into(), p.into()]);
                     }
-                    let workdir = cwd(&e);
                     let run_result = run(
                         &s.runtime,
                         "grep",
@@ -561,6 +633,9 @@ impl Service {
                                 }
                                 let d = &v["data"];
                                 let path=d["path"]["text"].as_str().ok_or_else(||err("grep received malformed ripgrep --json output (a match record has no path text)","SEARCH_FAILED"))?;
+                                if !Self::visible(&fs, path, &workdir).await? {
+                                    continue;
+                                }
                                 let number=d["line_number"].as_u64().ok_or_else(||err("grep received malformed ripgrep --json output (a match record has no line number)","SEARCH_FAILED"))?;
                                 let text = d["lines"]["text"]
                                     .as_str()

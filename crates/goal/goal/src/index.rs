@@ -30,10 +30,7 @@ use crate::domain::{
 use crate::fold::{
     GoalFoldState, apply_goal_event, decode_goal_change, empty_goal_fold_state, goal_change_ref,
 };
-use crate::requirements::{
-    GOAL_COMPLETION_GUARD_SERVICE, GOAL_USER_CONTROL_SERVICE, GoalCompletionError,
-    GoalCompletionGuard, GoalRequirementsIdentity, GoalUserControl,
-};
+use crate::requirements::GoalRequirementsIdentity;
 use crate::runtime::GOAL_CHANGE_VERSION;
 use crate::types::{
     CreateGoalRequest, CreateGoalResult, EditGoalRequest, GoalActivation, GoalBlockReason,
@@ -435,29 +432,6 @@ impl GoalService {
         agent: &Arc<dyn Agent>,
         operation: impl FnOnce() -> Result<T, GoalError>,
     ) -> Result<T, GoalError> {
-        if let Some(control) = agent
-            .ctx()
-            .get_typed::<Arc<dyn GoalUserControl>>(GOAL_USER_CONTROL_SERVICE, false)
-        {
-            let mut operation = Some(operation);
-            let mut result = None;
-            control.with_idle(agent, &mut || {
-                let action = operation.take().ok_or_else(|| {
-                    GoalError::new(
-                        "goal control callback was invoked more than once",
-                        GoalErrorCode::CommitFailed,
-                    )
-                })?;
-                result = Some(action()?);
-                Ok(())
-            })?;
-            return result.ok_or_else(|| {
-                GoalError::new(
-                    "goal control did not commit the requested operation",
-                    GoalErrorCode::CommitFailed,
-                )
-            });
-        }
         let _control = agent.try_idle_control().map_err(|_| {
             GoalError::new(
                 "stop current work and resolve pending input before changing goal requirements",
@@ -657,99 +631,41 @@ impl GoalService {
         )
     }
 
-    /// Verify acceptance without holding Goal locks, then atomically complete
-    /// this exact requirements and cancellation generation.
+    /// Complete the current objective with revision and cancellation checks.
     pub async fn complete(
         &self,
         agent: &Arc<dyn Agent>,
         ref_: &GoalRef,
     ) -> Result<GoalView, GoalError> {
-        let cancellation_generation = agent.cancellation_generation();
-        self.assert_live(agent)?;
-        let state = self.state_for(agent);
-        let identity = {
-            let mut cache = state.cache.lock().clone();
-            self.sync(&state.session, &mut cache)?;
-            if !cache.replay_valid {
-                return Err(GoalError::new(
-                    "goal replay is invalid; completion is unavailable",
-                    GoalErrorCode::CompletionBlocked,
-                ));
-            }
-            let current = self.expect_current(&cache, ref_)?;
-            if !matches!(
-                current.phase,
-                GoalPhase::Active | GoalPhase::Paused | GoalPhase::Blocked
-            ) {
-                return Err(self.transition_error(
-                    current,
-                    GoalOperation::Complete,
-                    &["active", "paused", "blocked"],
-                ));
-            }
-            requirements_identity(&cache).ok_or_else(|| {
-                GoalError::new(
-                    "goal requirements identity is unavailable",
-                    GoalErrorCode::CompletionBlocked,
-                )
-            })?
-        };
-        let guard = agent
-            .ctx()
-            .get_typed::<Arc<dyn GoalCompletionGuard>>(GOAL_COMPLETION_GUARD_SERVICE, false)
-            .map(|slot| slot.as_ref().clone());
-        let prepared = match guard {
-            Some(guard) => guard.prepare(agent, &identity).await.map(Some),
-            None => Ok(None),
-        };
-        if cancellation_generation != agent.cancellation_generation() {
-            return Err(GoalError::new(
-                "goal completion was cancelled during verification",
-                GoalErrorCode::Cancelled,
-            ));
-        }
-        let completion_error = |error| match error {
-            GoalCompletionError::Cancelled => {
-                GoalError::new("goal completion was cancelled", GoalErrorCode::Cancelled)
-            }
-            GoalCompletionError::Blocked(message) => {
-                GoalError::new(message, GoalErrorCode::CompletionBlocked)
-            }
-        };
-        let permit = prepared.map_err(completion_error)?;
-        // The short Agent guard serializes the final Goal commit with Stop.
-        // Legacy Agents without this capability retain direct Goal CAS semantics.
-        let _generation_guard = cancellation_generation
-            .map(|expected| {
-                agent.try_generation_control(expected).map_err(|_| {
+        let _generation_guard = agent
+            .cancellation_generation()
+            .map(|generation| {
+                agent.try_generation_control(generation).map_err(|_| {
                     GoalError::new(
-                        "agent changed or is busy before goal completion",
+                        "agent changed before goal completion",
                         GoalErrorCode::AgentBusy,
                     )
                 })
             })
             .transpose()?;
         let (state, cache, claim) = self.prepare_mutation(agent)?;
+        if !cache.replay_valid {
+            return Err(GoalError::new(
+                "goal replay is invalid",
+                GoalErrorCode::CompletionBlocked,
+            ));
+        }
         let current = self.expect_current(&cache, ref_)?.clone();
-        if requirements_identity(&cache).as_ref() != Some(&identity) {
-            return Err(GoalError::new(
-                "goal requirements changed during verification",
-                GoalErrorCode::StaleRevision,
+        if !matches!(
+            current.phase,
+            GoalPhase::Active | GoalPhase::Paused | GoalPhase::Blocked
+        ) {
+            return Err(self.transition_error(
+                &current,
+                GoalOperation::Complete,
+                &["active", "paused", "blocked"],
             ));
         }
-        // Keep the Host's cancellation/commit cutoff through the durable
-        // Goal append and its synchronous notifications, without a TaskDB lock.
-        let checked = permit
-            .as_ref()
-            .map(|permit| permit.check(agent, &identity))
-            .transpose();
-        if cancellation_generation != agent.cancellation_generation() {
-            return Err(GoalError::new(
-                "goal completion was cancelled before commit",
-                GoalErrorCode::Cancelled,
-            ));
-        }
-        let _commit_guard = checked.map_err(completion_error)?;
         let goal = self.with_phase(&current, GoalPhase::Complete);
         self.commit_current(
             agent,

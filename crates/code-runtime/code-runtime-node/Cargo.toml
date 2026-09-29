@@ -17,5 +17,6 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 dsh-sandbox-local = { path = "../../sandbox/sandbox-local" }
 dsh-subprocess-local = { path = "../../subprocess/subprocess-local" }

@@ -48,17 +48,29 @@ async fn local_path(agent: &Arc<dyn dsh_agent::Agent>, raw: &str) -> Result<Path
         .cwd
         .clone()
         .ok_or("Video files require a workspace")?;
+    let fs = agent
+        .ctx()
+        .get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs", false)
+        .ok_or("Video files require the session filesystem")?
+        .as_ref()
+        .clone();
+    let fs = fs.for_tool(Some(agent.id().as_str())).unwrap_or(fs);
+    let target = fs
+        .resolve(
+            raw,
+            Some(&dsh_fs::ResolveOptions {
+                cwd: Some(root.clone()),
+                signal: None,
+            }),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     let root = tokio::fs::canonicalize(root)
         .await
         .map_err(|e| e.to_string())?;
-    let path = Path::new(raw);
-    let path = tokio::fs::canonicalize(if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let path = tokio::fs::canonicalize(fs.process_path(&target))
+        .await
+        .map_err(|e| e.to_string())?;
     if !path.starts_with(&root) {
         return Err(
             "Video files must stay inside the workspace; attach external files first".into(),
@@ -248,7 +260,17 @@ async fn read(
                 if let Ok(meta) = tokio::fs::symlink_metadata(&sidecar).await {
                     if meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= 128 * 1024
                     {
-                        if let Ok(text) = tokio::fs::read_to_string(&sidecar).await {
+                        let fs = ctx
+                            .get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs", false)
+                            .ok_or("Video subtitles require the session filesystem")?
+                            .as_ref()
+                            .clone();
+                        let fs = fs.for_tool(Some(agent.id().as_str())).unwrap_or(fs);
+                        let target = fs
+                            .resolve(&sidecar.to_string_lossy(), None)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        if let Ok(text) = fs.read_text(&target, Some(signal.clone())).await {
                             subtitles = json!({"kind":ext,"text":text.chars().take(32000).collect::<String>(),"truncated":text.chars().count()>32000});
                             break;
                         }

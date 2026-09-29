@@ -1,84 +1,45 @@
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-struct Verifier {
-    stale: AtomicBool,
-}
-#[async_trait]
-impl SkillEvidenceVerifier for Verifier {
-    async fn verify(
-        &self,
-        owner: &str,
-        subject: &str,
-        samples: &[SampleRef],
-    ) -> Result<ValidationEvidence, String> {
-        if owner != "owner" {
-            return Err("owner mismatch".into());
-        }
-        Ok(ValidationEvidence {
-            subject_identity: subject.into(),
-            environment_fingerprint: "env1".into(),
-            project: samples[0].task_id.clone(),
-            checker_version: "test-1".into(),
-            evidence_refs: vec!["immutable-result".into()],
-            positive_samples: samples.iter().filter(|s| s.expected_success).count(),
-            negative_samples: samples.iter().filter(|s| !s.expected_success).count(),
-            all_matched: true,
-        })
-    }
-    async fn environment_fingerprint(&self, _: &str, _: Option<&str>) -> Result<String, String> {
-        Ok(if self.stale.load(Ordering::SeqCst) {
-            "env2"
-        } else {
-            "env1"
-        }
-        .into())
-    }
-}
 fn fixture() -> PathBuf {
     let root = std::env::temp_dir().join(format!("skill-lifecycle-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
     root
 }
-fn samples(project: &str) -> Vec<SampleRef> {
-    vec![
-        SampleRef {
-            task_id: project.into(),
-            revision: 1,
-            expected_success: true,
-        },
-        SampleRef {
-            task_id: "negative".into(),
-            revision: 1,
-            expected_success: false,
-        },
-    ]
-}
 async fn create(store: &SkillLifecycle, root: &Path, revision: u64, body: &str) -> SkillRevision {
     store
         .create(
             revision,
-            "safe-fixture",
-            "Fixture skill",
+            "manual-fixture",
+            "Project procedure",
             body,
             &root.to_string_lossy(),
-            "owner",
-            vec!["observed-failure".into()],
+            "",
+            vec![],
         )
         .await
         .unwrap()
 }
-
-#[tokio::test]
-async fn candidates_require_trusted_positive_and_negative_evidence_and_remain_scoped() {
-    let root = fixture();
-    let store = SkillLifecycle::open(&root).await.unwrap();
-    let item = create(&store, &root, 0, "Inspect only the project fixture.").await;
-    let opts = SkillLookupOptions {
+fn options(root: &Path) -> SkillLookupOptions {
+    SkillLookupOptions {
         cwd: Some(root.to_string_lossy().into_owned()),
         signal: None,
-        session_id: Some("owner".into()),
-    };
+        session_id: None,
+    }
+}
+
+#[tokio::test]
+async fn skill_lifecycle_manual_activation_is_independent_and_project_scoped() {
+    let root = fixture();
+    let other = fixture();
+    let store = SkillLifecycle::open(&root).await.unwrap();
+    let item = create(
+        &store,
+        &root,
+        0,
+        "Read the project configuration before editing.",
+    )
+    .await;
+    let opts = options(&root);
     assert!(
         SkillProvider::list(store.as_ref(), &opts)
             .await
@@ -86,87 +47,66 @@ async fn candidates_require_trusted_positive_and_negative_evidence_and_remain_sc
             .candidates
             .is_empty()
     );
-    assert!(store.activate(1, &item.id).await.is_err());
-    assert!(
-        store
-            .validate(1, &item.id, samples(&item.project))
-            .await
-            .is_err()
-    );
-    let verifier = Arc::new(Verifier {
-        stale: AtomicBool::new(false),
-    });
-    store.set_verifier(verifier.clone());
-    assert!(
-        store
-            .validate(1, &item.id, vec![samples(&item.project)[0].clone()])
-            .await
-            .is_err()
-    );
-    store
-        .validate(1, &item.id, samples(&item.project))
-        .await
-        .unwrap();
-    store.activate(2, &item.id).await.unwrap();
+    store.activate(1, &item.id).await.unwrap();
     let listed = SkillProvider::list(store.as_ref(), &opts).await.unwrap();
     assert_eq!(listed.candidates.len(), 1);
-    assert!(
+    assert_eq!(listed.candidates[0].source, "手动项目技能");
+    assert_eq!(
+        listed.candidates[0].metadata.as_ref().unwrap()["activationMode"],
+        "manual"
+    );
+    assert_eq!(
         SkillProvider::get(store.as_ref(), &listed.candidates[0], &opts)
             .await
             .unwrap()
-            .is_some()
+            .unwrap()
+            .content,
+        item.content
     );
-    let other = fixture();
-    let other_opts = SkillLookupOptions {
-        cwd: Some(other.to_string_lossy().into_owned()),
-        signal: None,
-        session_id: Some("owner".into()),
-    };
     assert!(
-        SkillProvider::list(store.as_ref(), &other_opts)
+        SkillProvider::list(store.as_ref(), &options(&other))
             .await
             .unwrap()
             .candidates
             .is_empty()
     );
-    verifier.stale.store(true, Ordering::SeqCst);
+    let cancelled = SkillLookupOptions {
+        signal: Some(Arc::new(|| true)),
+        ..opts
+    };
     assert!(
-        SkillProvider::get(store.as_ref(), &listed.candidates[0], &opts)
+        SkillProvider::list(store.as_ref(), &cancelled)
             .await
             .unwrap()
-            .is_none()
+            .candidates
+            .is_empty()
     );
-    assert!(store.activate(3, &item.id).await.is_err());
+    let public = store.list().await;
+    assert_eq!(public["candidates"][0]["activationMode"], "manual");
+    for key in ["validation", "validated", "samples"] {
+        assert!(public["candidates"][0].get(key).is_none());
+    }
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(other).unwrap();
 }
 
 #[tokio::test]
-async fn versions_survive_restart_and_withdrawal_invalidates_loaded_handles() {
+async fn skill_lifecycle_versions_withdraw_restore_and_disabled_state_survive_restart() {
     let root = fixture();
     let store = SkillLifecycle::open(&root).await.unwrap();
-    let first = create(&store, &root, 0, "First version.").await;
-    store.set_verifier(Arc::new(Verifier {
-        stale: AtomicBool::new(false),
-    }));
-    store
-        .validate(1, &first.id, samples(&first.project))
-        .await
-        .unwrap();
-    store.activate(2, &first.id).await.unwrap();
-    let second = create(&store, &root, 3, "Second version.").await;
-    assert!(store.withdraw(3, &first.id).await.is_err());
-    let opts = SkillLookupOptions {
-        cwd: Some(root.to_string_lossy().into_owned()),
-        signal: None,
-        session_id: Some("owner".into()),
-    };
+    let first = create(&store, &root, 0, "First immutable version.").await;
+    store.activate(1, &first.id).await.unwrap();
+    let second = create(&store, &root, 2, "Second immutable version.").await;
+    assert_ne!(first.content_hash, second.content_hash);
+    let opts = options(&root);
     let handle = SkillProvider::list(store.as_ref(), &opts)
         .await
         .unwrap()
         .candidates
         .remove(0);
-    store.withdraw(4, &first.id).await.unwrap();
+    assert!(store.withdraw(2, &first.id).await.is_err());
+    assert!(store.remove(3, &first.id).await.is_err());
+    store.withdraw(3, &first.id).await.unwrap();
     assert!(
         SkillProvider::get(store.as_ref(), &handle, &opts)
             .await
@@ -174,75 +114,132 @@ async fn versions_survive_restart_and_withdrawal_invalidates_loaded_handles() {
             .is_none()
     );
     drop(store);
-    let restored = SkillLifecycle::open(&root).await.unwrap();
-    assert!(restored.get(&first.id).await.unwrap().withdrawn);
+    let reopened = SkillLifecycle::open(&root).await.unwrap();
+    assert!(reopened.get(&first.id).await.unwrap().withdrawn);
     assert_eq!(
-        restored.get(&second.id).await.unwrap().content,
-        "Second version."
+        reopened.get(&second.id).await.unwrap().content,
+        second.content
     );
-    assert!(restored.activate(5, &first.id).await.is_err());
-    restored.remove(5, &second.id).await.unwrap();
-    assert!(restored.get(&second.id).await.is_err());
-    restored.set_verifier(Arc::new(Verifier {
-        stale: AtomicBool::new(false),
-    }));
-    restored.restore(6, &first.id).await.unwrap();
-    assert!(!restored.get(&first.id).await.unwrap().withdrawn);
+    assert!(reopened.activate(4, &first.id).await.is_err());
+    reopened.restore(4, &first.id).await.unwrap();
+    assert!(!reopened.get(&first.id).await.unwrap().withdrawn);
+    reopened.activate(5, &second.id).await.unwrap();
+    assert!(
+        SkillProvider::get(reopened.as_ref(), &handle, &opts)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    reopened.set_enabled(6, false).await.unwrap();
+    drop(reopened);
+    let reopened = SkillLifecycle::open(&root).await.unwrap();
+    assert_eq!(reopened.list().await["enabled"], false);
+    assert!(
+        SkillProvider::list(reopened.as_ref(), &opts)
+            .await
+            .unwrap()
+            .candidates
+            .is_empty()
+    );
+    assert!(reopened.restore(7, &first.id).await.is_err());
+    assert!(
+        reopened
+            .create(
+                7,
+                "another",
+                "Procedure",
+                "Content",
+                &root.to_string_lossy(),
+                "",
+                vec![]
+            )
+            .await
+            .is_err()
+    );
+    reopened.set_enabled(7, true).await.unwrap();
     assert_eq!(
-        SkillProvider::list(restored.as_ref(), &opts)
+        SkillProvider::list(reopened.as_ref(), &opts)
             .await
             .unwrap()
             .candidates
             .len(),
         1
     );
-    restored.set_enabled(7, false).await.unwrap();
-    assert!(
-        SkillProvider::get(restored.as_ref(), &handle, &opts)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(restored.restore(8, &first.id).await.is_err());
-    assert!(
-        restored
-            .create(
-                8,
-                "another",
-                "Fixture",
-                "Content",
-                &root.to_string_lossy(),
-                "owner",
-                vec!["source".into()]
-            )
-            .await
-            .is_err()
-    );
-    restored.set_enabled(8, true).await.unwrap();
-    assert!(
-        SkillProvider::get(restored.as_ref(), &handle, &opts)
-            .await
-            .unwrap()
-            .is_some()
-    );
+    reopened.restore(8, &first.id).await.unwrap();
+    reopened.remove(9, &second.id).await.unwrap();
+    assert!(reopened.get(&second.id).await.is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
-async fn corrupt_or_oversized_revision_files_do_not_activate_instructions() {
+async fn skill_lifecycle_legacy_fields_are_ignored_and_old_active_versions_are_manual() {
     let root = fixture();
     let store = SkillLifecycle::open(&root).await.unwrap();
-    let item = create(&store, &root, 0, "Original.").await;
+    let item = create(&store, &root, 0, "Retained procedure.").await;
+    store.activate(1, &item.id).await.unwrap();
     drop(store);
     let path = root.join("skill-revisions-v1.json");
     let mut data: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    data["revisions"][0]["content"] = "Replaced without validation".into();
+    data["revisions"][0]["samples"] = serde_json::json!({"legacy":"unavailable task database"});
+    data["revisions"][0]["validation"] =
+        serde_json::json!({"retiredField":"no verifier is installed"});
+    data["revisions"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("ownerSessionId");
+    data["revisions"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("sourceEvidence");
+    std::fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
+    let reopened = SkillLifecycle::open(&root).await.unwrap();
+    let listed = SkillProvider::list(reopened.as_ref(), &options(&root))
+        .await
+        .unwrap();
+    assert_eq!(listed.candidates.len(), 1);
+    assert_eq!(listed.candidates[0].provider, "manual-skill-revisions");
+    let record = serde_json::to_value(reopened.get(&item.id).await.unwrap()).unwrap();
+    assert!(record.get("samples").is_none());
+    assert!(record.get("validation").is_none());
+    reopened.set_enabled(2, false).await.unwrap();
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(written["revisions"][0].get("samples").is_none());
+    assert!(written["revisions"][0].get("validation").is_none());
+    assert_eq!(written["enabled"], false);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn skill_lifecycle_content_integrity_and_project_identity_are_preserved() {
+    let root = fixture();
+    let project = root.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let store = SkillLifecycle::open(&root).await.unwrap();
+    let item = create(&store, &project, 0, "Original.").await;
+    std::fs::remove_dir(&project).unwrap();
+    assert!(store.activate(1, &item.id).await.is_err());
+    assert!(
+        store
+            .create(
+                1,
+                "relative",
+                "Description",
+                "Body",
+                "relative-project",
+                "",
+                vec![]
+            )
+            .await
+            .is_err()
+    );
+    drop(store);
+    let path = root.join("skill-revisions-v1.json");
+    let mut data: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    data["revisions"][0]["content"] = "Different bytes with the old hash".into();
     std::fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
     assert!(SkillLifecycle::open(&root).await.is_err());
-    assert_ne!(
-        SkillLifecycle::hash("Replaced without validation"),
-        item.content_hash
-    );
     std::fs::remove_dir_all(root).unwrap();
 }

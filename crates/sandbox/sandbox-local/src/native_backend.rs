@@ -433,16 +433,24 @@ impl NativeBackend {
         if let Some(session) = &policy.session_id {
             wrapped.extend(["--session-id".into(), session.as_str().into()]);
         }
+        for root in dsh_sandbox::roots::private_roots() {
+            wrapped.extend(["--private-root".into(), root]);
+        }
         for root in &policy.read_only_roots {
             wrapped.extend(["--read-root".into(), root.clone()]);
         }
         for root in runtime_roots {
             wrapped.extend(["--runtime-root".into(), root.to_string_lossy().into_owned()]);
         }
-        if policy.mode == dsh_sandbox::ConfinedSandboxMode::WorkspaceWrite {
-            for root in dsh_sandbox::roots::managed_temp_roots() {
-                wrapped.extend(["--temp-root".into(), root]);
-            }
+        for root in
+            dsh_sandbox::roots::managed_temp_roots(policy.session_id.as_ref().map(|id| id.as_str()))
+        {
+            let flag = if policy.mode == dsh_sandbox::ConfinedSandboxMode::WorkspaceWrite {
+                "--temp-root"
+            } else {
+                "--read-root"
+            };
+            wrapped.extend([flag.into(), root]);
         }
         wrapped.push("--".into());
         wrapped.extend_from_slice(argv);
@@ -465,6 +473,61 @@ impl NativeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_arguments_use_only_this_sessions_managed_roots() {
+        let config: NativeBackend = serde_json::from_value(serde_json::json!({
+            "version":1,"backend":"windows-native","runner":"runner.exe",
+            "stateDirectory":"state","sha256":"","commandRunnerSha256":"","setupSha256":""
+        }))
+        .unwrap();
+        let _grant =
+            dsh_sandbox::roots::register_managed_temp(std::sync::Arc::new(|owner| match owner {
+                Some("native-root-a") => vec!["D:/private/owned-a".into()],
+                Some("native-root-b") => vec!["D:/private/owned-b".into()],
+                _ => vec![],
+            }));
+        let _private = dsh_sandbox::roots::register_private_roots(std::sync::Arc::new(|| {
+            vec!["D:/private".into()]
+        }));
+        for (mode, flag) in [
+            (
+                dsh_sandbox::ConfinedSandboxMode::WorkspaceWrite,
+                "--temp-root",
+            ),
+            (dsh_sandbox::ConfinedSandboxMode::ReadOnly, "--read-root"),
+        ] {
+            let mut policy = SandboxPolicy {
+                mode,
+                workspace_root: "D:/project".into(),
+                read_only_roots: vec![],
+                session_id: Some("native-root-a".into()),
+            };
+            let call = config.confine(&["python.exe".into()], &policy, &[]);
+            assert!(
+                call.argv
+                    .windows(2)
+                    .any(|pair| pair == ["--private-root", "D:/private"])
+            );
+            assert!(
+                call.argv
+                    .windows(2)
+                    .any(|pair| pair == [flag, "D:/private/owned-a"])
+            );
+            assert!(!call.argv.iter().any(|arg| arg == "D:/private/owned-b"));
+            assert!(!call.argv.windows(2).any(|pair| (pair[0] == "--temp-root"
+                || pair[0] == "--read-root")
+                && pair[1] == "D:/private"));
+            policy.session_id = None;
+            let anonymous = config.confine(&["python.exe".into()], &policy, &[]);
+            assert!(
+                !anonymous
+                    .argv
+                    .iter()
+                    .any(|arg| arg.starts_with("D:/private/"))
+            );
+        }
+    }
 
     #[test]
     fn malformed_or_failed_status_never_becomes_an_initialization_request() {

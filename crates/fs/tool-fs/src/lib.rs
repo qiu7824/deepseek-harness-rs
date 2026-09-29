@@ -209,6 +209,16 @@ struct Service {
 }
 
 impl Service {
+    fn for_execution(&self, exec: &ToolExecution) -> Self {
+        Self {
+            ctx: self.ctx.clone(),
+            fs: self
+                .fs
+                .for_tool(exec.agent.as_ref().map(|agent| agent.id().as_str()))
+                .unwrap_or_else(|| self.fs.clone()),
+        }
+    }
+
     fn install(ctx: &Context) -> Result<Arc<Self>, String> {
         let fs = ctx
             .get_typed::<Arc<dyn FileSystem>>("fs", false)
@@ -301,6 +311,7 @@ impl Service {
                 let args = args.clone();
                 let exec = run.execution.clone();
                 Box::pin(async move {
+                    let s = s.for_execution(&exec);
                     let path = args
                         .get("file_path")
                         .and_then(|v| v.as_str())
@@ -397,14 +408,15 @@ impl Service {
         let service = self.clone();
         ToolDefinition {
             name: "read_image".into(),
-            description: "Read a PNG/JPEG/WebP/GIF file or an image attachment from the current conversation and return the image itself. file_path accepts the exact attachmentId (sha256:... or its bare digest) for uploaded images; never prepend the workspace to an attachment ID. Extension-less files are detected from content.".into(),
+            description: "Read a PNG/JPEG/WebP/GIF file or an image attachment from the current conversation and return the image itself. file_path accepts the exact attachmentId (sha256:... or its bare digest) for uploaded images; never prepend the workspace to an attachment ID. For an uploaded image, localPath is a private working copy for scripts; use it instead of searching application storage. Extension-less files are detected from content.".into(),
             parameters: serde_json::json!({"type":"object","additionalProperties":false,"properties":{"file_path":{"type":"string"}},"required":["file_path"]}),
             output: output_object(
                 |_args, value| {
                     let image = &value["image"];
+                    let local = value["localPath"].as_str().map(|path| format!("\nScript input path: {path}\nThis is a session-owned working copy; the original attachment is unchanged.\n")).unwrap_or_default();
                     Ok(vec![
                         dsh_llm::ContentBlock::Text { text: format!(
-                            "<path>{}</path>\n<type>image</type>\n<content>\n{} image, {}x{} px, {} bytes\n</content>",
+                            "<path>{}</path>\n<type>image</type>\n<content>\n{} image, {}x{} px, {} bytes{local}\n</content>",
                             value["path"].as_str().unwrap_or(""), image["mediaType"].as_str().unwrap_or(""),
                             image["width"].as_u64().unwrap_or(0), image["height"].as_u64().unwrap_or(0), image["bytes"].as_u64().unwrap_or(0),
                         ) },
@@ -415,7 +427,7 @@ impl Service {
                         }},
                     ])
                 },
-                serde_json::json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"image":{"type":"object","additionalProperties":false,"properties":{"attachmentId":{"type":"string"},"mediaType":{"type":"string"},"bytes":{"type":"integer"},"width":{"type":"integer"},"height":{"type":"integer"},"name":{"type":"string"}},"required":["attachmentId","mediaType","bytes","width","height"]}},"required":["path","image"]}),
+                serde_json::json!({"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"localPath":{"type":"string"},"image":{"type":"object","additionalProperties":false,"properties":{"attachmentId":{"type":"string"},"mediaType":{"type":"string"},"bytes":{"type":"integer"},"width":{"type":"integer"},"height":{"type":"integer"},"name":{"type":"string"}},"required":["attachmentId","mediaType","bytes","width","height"]}},"required":["path","image"]}),
                 Some(Arc::new(|_args, value| Ok(serde_json::json!({"path": value["path"]})))),
             ),
             timeout_ms: None,
@@ -425,12 +437,13 @@ impl Service {
                 let args = args.clone();
                 let exec = run.execution.clone();
                 Box::pin(async move {
+                    let service = service.for_execution(&exec);
                     let path = args.get("file_path").and_then(serde_json::Value::as_str).ok_or_else(|| ToolBodyError::plain("file_path is required"))?;
                     if path.trim().is_empty() { return Err(ToolBodyError::plain("file_path must be a non-empty string")); }
                     let mut reference = None;
                     if let Some(agent) = exec.agent.as_ref() {
                         agent.session().visit_events(0, None, |event| {
-                            reference = dsh_attachment::find_image_reference(&event.data, path);
+                            reference = dsh_attachment::find_image_reference(&event.type_, &event.data, path);
                             Ok(reference.is_none())
                         }).map_err(ToolBodyError::plain)?;
                     }
@@ -439,7 +452,16 @@ impl Service {
                             .ok_or_else(|| ToolBodyError::plain("Attachment store unavailable"))?;
                         let image = store.open_image(&reference, Some(&signal(&exec))).await
                             .map_err(|error| ToolBodyError::coded(error.message, "AttachmentError", &error.code))?;
-                        return Ok(serde_json::json!({"path":path,"image":image.reference}));
+                        let mut value = serde_json::json!({"path":path,"image":image.reference});
+                        if let (Some(agent), Some(materializer)) = (
+                            exec.agent.as_ref(),
+                            service.ctx.get_typed::<Arc<dyn dsh_attachment::SessionAttachmentMaterializer>>("sessionAttachmentMaterializer", false),
+                        ) {
+                            let local = materializer.materialize_image(agent.id().as_str(), cwd(&exec).as_deref(), image, Some(&signal(&exec))).await
+                                .map_err(|error| ToolBodyError::coded(error.message, "AttachmentError", &error.code))?;
+                            value["localPath"] = serde_json::json!(local);
+                        }
+                        return Ok(value);
                     }
                     if path.starts_with("sha256:") || (path.len() == 64 && path.bytes().all(|b| b.is_ascii_hexdigit())) {
                         return Err(ToolBodyError::coded("Image attachment is not present in this session; use its exact attachmentId from the current conversation.", "AttachmentError", "ATTACHMENT_NOT_IN_SESSION"));
@@ -500,6 +522,7 @@ impl Service {
                 let a = args.clone();
                 let e = run.execution.clone();
                 Box::pin(async move {
+                    let s = s.for_execution(&e);
                     let p = a["file_path"]
                         .as_str()
                         .ok_or_else(|| ToolBodyError::plain("file_path is required"))?;
@@ -591,6 +614,7 @@ impl Service {
                 let a = args.clone();
                 let e = run.execution.clone();
                 Box::pin(async move {
+                    let s = s.for_execution(&e);
                     let p = a["file_path"]
                         .as_str()
                         .ok_or_else(|| ToolBodyError::plain("file_path is required"))?;

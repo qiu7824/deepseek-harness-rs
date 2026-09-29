@@ -154,6 +154,7 @@ impl Plugin for PresentPlugin {
                     let arguments=arguments.clone(); let execution=run.execution.clone();
                     Box::pin(async move {
                         let agent=execution.agent.as_ref().ok_or_else(||failure("present requires an agent Session"))?;
+                        let fs=fs.for_tool(Some(agent.id().as_str())).unwrap_or(fs);
                         let session=agent.session().clone();
                         let turn=session.with_event_reader(read_open_turn).map_err(failure)?.ok_or_else(||failure("present requires an open turn"))?;
                         let cwd=session.header().cwd.as_deref().ok_or_else(||failure("present requires a workspace"))?;

@@ -1,44 +1,6 @@
 use super::idle_retirement_tests::control_admission_fixture;
 use super::*;
 use crate::api::goals::{GoalCreateRequest, GoalEditRequest, GoalVerbRequest};
-use dsh_goal::{
-    GoalCompletionCommitGuard, GoalCompletionError, GoalCompletionGuard, GoalCompletionPermit,
-    GoalRequirementsIdentity,
-};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-struct AcceptanceGuard {
-    bound: GoalRequirementsIdentity,
-    calls: Arc<AtomicUsize>,
-}
-struct Permit;
-struct Commit;
-impl GoalCompletionCommitGuard for Commit {}
-impl GoalCompletionPermit for Permit {
-    fn check<'a>(
-        &'a self,
-        _: &Arc<dyn Agent>,
-        _: &GoalRequirementsIdentity,
-    ) -> Result<Box<dyn GoalCompletionCommitGuard + 'a>, GoalCompletionError> {
-        Ok(Box::new(Commit))
-    }
-}
-#[async_trait::async_trait]
-impl GoalCompletionGuard for AcceptanceGuard {
-    async fn prepare(
-        &self,
-        _: &Arc<dyn Agent>,
-        identity: &GoalRequirementsIdentity,
-    ) -> Result<Box<dyn GoalCompletionPermit>, GoalCompletionError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        if identity != &self.bound {
-            return Err(GoalCompletionError::Blocked(
-                "acceptance belongs to the previous objective".into(),
-            ));
-        }
-        Ok(Box::new(Permit))
-    }
-}
 fn req<T>(payload: T) -> RpcRequest<T> {
     RpcRequest {
         rpc_id: crate::api::rpc::rpc_id("goal-test"),
@@ -57,52 +19,6 @@ fn verb(agent: &Arc<dyn Agent>, goal: &dsh_goal::GoalView) -> RpcRequest<GoalVer
         session_id: agent.id().clone(),
         goal_ref: ApiProxyService::wire_goal_ref(goal),
     })
-}
-
-#[tokio::test]
-async fn goal_complete_rpc_uses_same_requirements_guard_as_model_tools() {
-    let (service, agent, detach) = control_admission_fixture("goal-rpc-guard").await;
-    let goals = dsh_goal::GoalService::install(agent.ctx(), dsh_goal::Config::default());
-    assert!(
-        service
-            .goal_create(create(&agent, "A"))
-            .await
-            .result
-            .is_ok()
-    );
-    let first = goals.get(&agent).unwrap().unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let guard: Arc<dyn GoalCompletionGuard> = Arc::new(AcceptanceGuard {
-        bound: goals.requirements_identity(&agent).unwrap().unwrap(),
-        calls: calls.clone(),
-    });
-    agent.ctx().reflect.provide(
-        agent.ctx(),
-        dsh_goal::GOAL_COMPLETION_GUARD_SERVICE,
-        Some(cordis::arc(guard)),
-        None,
-    );
-    let edited = service
-        .goal_edit(req(GoalEditRequest {
-            session_id: agent.id().clone(),
-            goal_ref: ApiProxyService::wire_goal_ref(&first),
-            objective: Some("B".into()),
-            max_goal_rounds: None,
-        }))
-        .await;
-    assert!(edited.result.is_ok());
-    let current = goals.get(&agent).unwrap().unwrap();
-    assert_eq!(current.objective, "B");
-    let completed = service
-        .goal_verb(verb(&agent, &current), GoalVerb::Complete)
-        .await;
-    assert!(!completed.result.is_ok());
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        goals.get(&agent).unwrap().unwrap().phase,
-        dsh_goal::GoalPhase::Active
-    );
-    detach().await;
 }
 
 #[tokio::test]

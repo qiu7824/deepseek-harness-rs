@@ -441,3 +441,93 @@ async fn interrupted_native_tool_calls_recover_flat_error_results_once() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[tokio::test]
+async fn interrupted_native_compaction_is_repaired_before_cold_publication_once() {
+    for compression in [JsonlCompression::None, JsonlCompression::Zstd] {
+        for manual in [false, true] {
+            let root =
+                std::env::temp_dir().join(format!("native-v4-compaction-{}", uuid::Uuid::new_v4()));
+            let meta = header("interrupted-compaction");
+            let mut original = if manual {
+                vec![]
+            } else {
+                events(false)[..5].to_vec()
+            };
+            original.push(serde_json::from_value(json!({"type":"compaction/start","seq":original.len(),"time":10,"data":{"compactionId":"interrupted","turn":if manual { Value::Null } else { json!(1) },"sourceCommandId":"source-command"}})).unwrap());
+            let ctx = Context::root();
+            SessionStore::install(&ctx);
+            let backend = JsonlSessionPersistence::install(
+                &ctx,
+                JsonlConfig {
+                    root: root.to_string_lossy().into_owned(),
+                    compression,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            backend.create(meta.clone(), None).await.unwrap();
+            backend.append(&meta.id, &original).await.unwrap();
+            close(&ctx).await;
+            drop(backend);
+
+            let ctx = Context::root();
+            SessionStore::install(&ctx);
+            let backend = JsonlSessionPersistence::install(
+                &ctx,
+                JsonlConfig {
+                    root: root.to_string_lossy().into_owned(),
+                    compression,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut prepared = backend.prepare(&meta.id).await.unwrap();
+            let restored = prepared.session.events();
+            assert_eq!(&restored[..original.len()], original.as_slice());
+            let closed = &restored[original.len()];
+            assert_eq!(closed.type_, "compaction/end");
+            assert_eq!(closed.data["compactionId"], "interrupted");
+            assert_eq!(closed.data["sourceCommandId"], "source-command");
+            assert!(
+                closed.data["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("interrupted")
+            );
+            let mut validator =
+                dsh_session::format_v4::V4Validator::new(serde_json::to_value(&meta).unwrap(), 0)
+                    .unwrap();
+            for event in restored.iter() {
+                validator
+                    .push(&serde_json::to_value(event).unwrap())
+                    .unwrap();
+            }
+            let validated = validator.finish().unwrap();
+            assert!(!validated.open_compaction);
+            assert!(validated.open_turn.is_none());
+            prepared.dispose();
+            drop(prepared);
+            let again = backend.load(&meta.id).await.unwrap();
+            assert_eq!(
+                again
+                    .events
+                    .iter()
+                    .filter(|event| event.type_ == "compaction/end")
+                    .count(),
+                1
+            );
+            let path = log_path(&root.to_string_lossy(), None, &meta.id, compression);
+            dsh_session_persistence_jsonl::v4_artifact::validate_v4_artifact(
+                &path,
+                compression,
+                meta.id.as_str(),
+                &|| false,
+            )
+            .unwrap();
+            close(&ctx).await;
+            drop(backend);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+}

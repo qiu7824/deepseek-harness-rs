@@ -463,12 +463,23 @@ List<TranscriptItem> projectTranscript(
           break;
         }
         if (sourceKind != null && sourceKind != 'user') {
+          final producer = sourceKind == 'plugin'
+              ? messageSource['plugin']
+              : sourceKind;
+          final runtimeUpdate =
+              producer == 'runtime-context' ||
+              producer == '@deepseek-ai/dsh-system-prompt';
           add(
             'context',
             contentText(data['content']),
-            title: '上下文注入',
-            summary:
-                '${messageSource['plugin'] ?? messageSource['name'] ?? sourceKind ?? ''}',
+            title: runtimeUpdate
+                ? '运行信息更新'
+                : producer == 'repeat-tool-reminder'
+                ? '重复调用提醒'
+                : '补充上下文',
+            summary: runtimeUpdate
+                ? '自动同步，无需操作'
+                : '${messageSource['plugin'] ?? messageSource['name'] ?? sourceKind}',
             iconKind: 'context',
           );
           break;
@@ -548,6 +559,7 @@ List<TranscriptItem> projectTranscript(
             .write(chunk['text'] ?? '');
         chunkPositions.putIfAbsent(key, () => seq);
       case 'tool/call':
+        if (data['name'] == 'task_execution') break;
         final view = object(event.view?['view']),
             result = results[callKey(event)],
             resultData = result?.data ?? <String, dynamic>{};
@@ -594,6 +606,9 @@ List<TranscriptItem> projectTranscript(
       case 'tool/result':
         if (calls.contains(callKey(event, result: true))) break;
         final message = object(data['message']);
+        if (message['name'] == 'task_execution' ||
+            message['toolName'] == 'task_execution')
+          break;
         final failed =
             data['error'] != null ||
             message['isError'] == true ||
@@ -650,27 +665,6 @@ List<TranscriptItem> projectTranscript(
           }),
         );
       case 'turn/end':
-        final acceptance = object(data['acceptance']);
-        if (object(data['reason'])['kind'] == 'completed' &&
-            [
-              'verified',
-              'incomplete',
-              'blocked',
-              'cancelled',
-              'unverified',
-            ].contains(acceptance['status']) &&
-            acceptance['summary'] is String) {
-          final blockers = acceptance['blockers'];
-          add(
-            acceptance['status'] == 'verified' ? 'notice' : 'error',
-            [
-              acceptance['summary'] as String,
-              if (blockers is List) ...blockers.take(8).map((item) => '$item'),
-            ].join('\n'),
-            title: '任务验收',
-            status: acceptance['status'] as String,
-          );
-        }
         final reason = object(data['reason']);
         if (reason['kind'] == 'aborted' &&
             object(reason['reason'])['kind'] == 'user') {

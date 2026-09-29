@@ -111,83 +111,31 @@ async fn identical_calls_are_stopped_before_dispatch_and_new_user_input_resets_t
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn acceptance_review_retains_prose_but_cannot_report_a_failed_task_as_verified() {
+async fn ordinary_reply_finishes_without_an_acceptance_contract_or_extra_model_calls() {
     let harness = harness().await;
-    let adapter = Arc::new(Adapter::new(vec![Reply::Plain("已完成。")]));
+    let adapter = Arc::new(Adapter::new(vec![Reply::Plain(
+        "Finished writing the file.",
+    )]));
     register_adapter(&harness, adapter.clone());
-    harness
-        .ctx
-        .register_service(Arc::new(dsh_agent::CompletionReview {
-            review: Arc::new(|_| {
-                Box::pin(async {
-                    Ok(Some(dsh_agent::CompletionAssessment {
-                        status: "incomplete".into(),
-                        summary: "任务验收未通过。".into(),
-                        task_id: Some("task".into()),
-                        blockers: vec!["wrong file".into()],
-                        follow_up: Some("修复验收或明确报告未完成".into()),
-                    }))
-                })
-            }),
-        }));
-    harness.agent.followup(message("finish the task"));
+    harness.agent.followup(message("finish the requested work"));
     tokio::time::timeout(Duration::from_secs(5), harness.agent.when_idle())
         .await
         .unwrap();
-    assert_eq!(
-        adapter.calls.load(Ordering::SeqCst),
-        3,
-        "completion retries are bounded even when the host keeps requesting them"
-    );
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(turn_end_kinds(&harness.agent), ["completed"]);
     let events = harness.agent.session().events();
-    let end = events.iter().find(|e| e.type_ == "turn/end").unwrap();
-    assert_eq!(end.data["acceptance"]["status"], "incomplete");
-    assert!(end.data["acceptance"].get("followUp").is_none());
+    assert!(
+        events
+            .iter()
+            .filter(|e| e.type_ == "turn/end")
+            .all(|e| e.data.get("acceptance").is_none())
+    );
     assert_eq!(
         events
             .iter()
             .filter(|e| e.type_ == "assistant/message")
             .count(),
-        3
-    );
-    assert_eq!(
-        turn_end_kinds(&harness.agent),
-        ["completed"],
-        "a finished reply does not imply accepted work"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancellation_interrupts_a_pending_completion_review() {
-    let harness = harness().await;
-    register_adapter(&harness, Arc::new(Adapter::new(vec![Reply::Plain("done")])));
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let notify = entered.clone();
-    harness
-        .ctx
-        .register_service(Arc::new(dsh_agent::CompletionReview {
-            review: Arc::new(move |_| {
-                notify.notify_one();
-                Box::pin(futures::future::pending())
-            }),
-        }));
-    harness.agent.followup(message("work"));
-    tokio::time::timeout(Duration::from_secs(3), entered.notified())
-        .await
-        .unwrap();
-    harness.agent.cancel(AgentCancelCause::User, None);
-    tokio::time::timeout(Duration::from_secs(3), harness.agent.when_idle())
-        .await
-        .unwrap();
-    assert_eq!(turn_end_kinds(&harness.agent), ["aborted"]);
-    assert!(
-        harness
-            .agent
-            .session()
-            .events()
-            .iter()
-            .filter(|e| e.type_ == "turn/end")
-            .all(|e| e.data.get("acceptance").is_none())
+        1
     );
 }
 

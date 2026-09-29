@@ -27,8 +27,7 @@ class SkillRevisionsPage extends StatefulWidget {
 class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
   RequestScope scope = RequestScope();
   Json? state, detail;
-  List<Json> samples = [];
-  final selected = <String>{};
+  Map<String, TextEditingController>? editor;
   String? error, notice;
   bool busy = false;
   int generation = 0;
@@ -66,8 +65,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
       scope = RequestScope();
       state = null;
       detail = null;
-      samples = [];
-      selected.clear();
+      disposeEditor();
       busy = false;
       load();
     }
@@ -78,6 +76,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
     generation++;
     widget.controller?.removeListener(connectionChanged);
     scope.cancel();
+    disposeEditor();
     super.dispose();
   }
 
@@ -123,30 +122,10 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
     });
     try {
       final candidate = await call('Read', {'id': id});
-      final value = await widget.api.request(
-        '/__dsh-task-execution',
-        body: {
-          'action': 'list',
-          'sessionId': candidate['ownerSessionId'],
-          'summaryOnly': true,
-        },
-        scope: scope,
-      );
-      final tasks = objects(value['tasks']).where((task) {
-        final subject = object(object(task['spec'])['validationSubject']);
-        return task['state'] == 'completed' &&
-            subject['kind'] == 'skill' &&
-            subject['identity'] == candidate['contentHash'];
-      }).toList();
       if (mounted && current && token == generation) {
         setState(() {
           detail = candidate;
-          samples = tasks;
-          selected
-            ..clear()
-            ..addAll(
-              objects(candidate['samples']).map((s) => '${s['taskId']}'),
-            );
+          disposeEditor();
         });
       }
     } catch (e) {
@@ -174,11 +153,9 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
       if (mounted && current && token == generation) {
         setState(() {
           state = value['state'] is Map ? object(value['state']) : value;
-          notice = '操作已保存';
-          if (action == 'Validate' && detail != null) {
-            detail = {...detail!, 'validation': value['evidence']};
-          }
-          if (['Activate', 'Withdraw', 'Restore'].contains(action)) {
+          notice = action == 'Create' ? '版本已保存，尚未启用' : '操作已保存';
+          if (action == 'Create') disposeEditor();
+          if (['Activate', 'Withdraw', 'Restore', 'Create'].contains(action)) {
             detail = null;
           }
         });
@@ -198,20 +175,41 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
     }
   }
 
-  List<Json> get references => samples
-      .where((task) => selected.contains(task['taskId']))
-      .map(
-        (task) => {
-          'taskId': task['taskId'],
-          'revision': task['revision'],
-          'expectedSuccess':
-              object(
-                object(task['spec'])['validationSubject'],
-              )['expectedOutcome'] ==
-              'success',
-        },
-      )
-      .toList();
+  void disposeEditor() {
+    for (final controller in editor?.values ?? <TextEditingController>[]) {
+      controller.dispose();
+    }
+    editor = null;
+  }
+
+  void editRevision(Json? record) {
+    if (busy || !current) return;
+    setState(() {
+      disposeEditor();
+      editor = {
+        for (final field in ['name', 'description', 'project', 'content'])
+          field: TextEditingController(
+            text:
+                '${record?[field] ?? (field == 'project' ? widget.controller?.selected?.cwd : null) ?? ''}',
+          ),
+      };
+      detail = null;
+      error = null;
+    });
+  }
+
+  Future<void> saveRevision() async {
+    final fields = editor;
+    if (fields == null) return;
+    if (fields.values.any((controller) => controller.text.trim().isEmpty)) {
+      setState(() => error = '请填写名称、说明、项目目录和技能正文。');
+      return;
+    }
+    await perform('Create', {
+      for (final field in fields.entries) field.key: field.value.text,
+    });
+  }
+
   Future<void> saveText() async {
     final record = detail;
     if (record == null) return;
@@ -230,17 +228,11 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
   String label(Json candidate) => candidate['withdrawn'] == true
       ? '已撤回'
       : candidate['active'] == true
-      ? '已启用，使用前复核适用性'
-      : candidate['validation'] != null
-      ? '有验证记录，尚未启用'
-      : '待验证';
+      ? '已启用'
+      : '未启用';
   @override
   Widget build(BuildContext context) {
     final candidates = objects(state?['candidates']);
-    final refs = references,
-        canValidate =
-            refs.any((s) => s['expectedSuccess'] == true) &&
-            refs.any((s) => s['expectedSuccess'] == false);
     final text = '${detail?['content'] ?? ''}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -249,7 +241,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
           children: [
             const Expanded(
               child: Text(
-                '技能版本与验证',
+                '技能版本',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
               ),
             ),
@@ -262,7 +254,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
           ],
         ),
         const SizedBox(height: 10),
-        const Text('候选版本通过正向与反向样本验证后启用，限定对应项目和运行环境；撤回与恢复保留历史。'),
+        const Text('手动选择对应项目使用的技能版本。编辑会保存新版本，启用、撤回和恢复均由你选择。'),
         if (busy) const LinearProgressIndicator(minHeight: 2),
         if (error != null)
           Text(error!, style: const TextStyle(color: Colors.red)),
@@ -274,7 +266,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
               if (state != null)
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('启用经过验证的技能版本'),
+                  title: const Text('启用项目技能版本'),
                   value: state!['enabled'] == true,
                   onChanged: busy || !current
                       ? null
@@ -287,10 +279,19 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                   child: const Text('刷新版本'),
                 ),
               ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: DshButton(
+                  onPressed: busy || !current || state?['enabled'] != true
+                      ? null
+                      : () => editRevision(null),
+                  child: const Text('创建技能版本'),
+                ),
+              ),
               if (state != null && candidates.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 14),
-                  child: Text('暂无候选版本。可在任务会话中创建技能候选，再建立该版本的正向、反向验收任务。'),
+                  child: Text('暂无技能版本。'),
                 ),
               for (final candidate in candidates)
                 Card(
@@ -321,34 +322,32 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                               onPressed: busy || !current
                                   ? null
                                   : () => inspect('${candidate['id']}'),
-                              child: const Text('查看与验证'),
+                              child: const Text('查看版本'),
                             ),
                             DshButton(
                               onPressed:
                                   busy ||
                                       !current ||
                                       state?['enabled'] != true ||
-                                      candidate['validation'] == null ||
                                       candidate['active'] == true ||
                                       candidate['withdrawn'] == true
                                   ? null
                                   : () => perform('Activate', {
                                       'id': candidate['id'],
                                     }),
-                              child: const Text('验证并启用'),
+                              child: const Text('启用版本'),
                             ),
                             if (candidate['withdrawn'] == true)
                               DshButton(
                                 onPressed:
                                     busy ||
                                         !current ||
-                                        state?['enabled'] != true ||
-                                        candidate['validation'] == null
+                                        state?['enabled'] != true
                                     ? null
                                     : () => perform('Restore', {
                                         'id': candidate['id'],
                                       }),
-                                child: const Text('复核并恢复此版本'),
+                                child: const Text('恢复版本'),
                               )
                             else
                               DshButton(
@@ -359,6 +358,64 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                                       }),
                                 child: const Text('撤回版本'),
                               ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (editor != null)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '保存技能版本',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const Text('同名技能的旧版本仍会保留，保存后需要单独启用。'),
+                        for (final field in const {
+                          'name': '技能名称',
+                          'description': '说明',
+                          'project': '项目目录',
+                          'content': '技能正文',
+                        }.entries)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 10),
+                            child: TextField(
+                              controller: editor![field.key],
+                              enabled: !busy && current,
+                              decoration: InputDecoration(
+                                labelText: field.value,
+                              ),
+                              minLines: field.key == 'content' ? 8 : 1,
+                              maxLines: field.key == 'content' ? 16 : 1,
+                              maxLength: {
+                                'name': 80,
+                                'description': 1024,
+                                'project': 8192,
+                                'content': 262144,
+                              }[field.key],
+                            ),
+                          ),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            DshButton(
+                              onPressed:
+                                  busy || !current || state?['enabled'] != true
+                                  ? null
+                                  : saveRevision,
+                              child: const Text('保存新版本'),
+                            ),
+                            DshButton(
+                              onPressed: busy
+                                  ? null
+                                  : () => setState(disposeEditor),
+                              child: const Text('取消编辑'),
+                            ),
                           ],
                         ),
                       ],
@@ -376,7 +433,6 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                           '${detail!['name']}',
                           style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
-                        const Text('至少选择一个正向和一个反向的已验收任务。'),
                         ExpansionTile(
                           tilePadding: EdgeInsets.zero,
                           title: const Text('技能正文'),
@@ -402,40 +458,15 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                             ),
                           ],
                         ),
-                        if (samples.isEmpty) const Text('尚无符合条件的验收任务。'),
-                        for (final task in samples)
-                          CheckboxListTile(
-                            contentPadding: EdgeInsets.zero,
-                            controlAffinity: ListTileControlAffinity.leading,
-                            title: Text(
-                              '${object(object(task['spec'])['validationSubject'])['expectedOutcome'] == 'success' ? '正向' : '反向'}：${object(task['spec'])['objective']}',
-                            ),
-                            value: selected.contains(task['taskId']),
-                            onChanged: busy || !current
-                                ? null
-                                : (checked) => setState(() {
-                                    if (checked == true) {
-                                      selected.add('${task['taskId']}');
-                                    } else {
-                                      selected.remove(task['taskId']);
-                                    }
-                                  }),
-                          ),
                         Wrap(
                           spacing: 8,
                           children: [
                             DshButton(
                               onPressed:
-                                  busy ||
-                                      !current ||
-                                      detail!['withdrawn'] == true ||
-                                      !canValidate
+                                  busy || !current || state?['enabled'] != true
                                   ? null
-                                  : () => perform('Validate', {
-                                      'id': detail!['id'],
-                                      'samples': refs,
-                                    }),
-                              child: const Text('核验所选样本'),
+                                  : () => editRevision(detail),
+                              child: const Text('编辑为新版本'),
                             ),
                             DshButton(
                               onPressed: busy

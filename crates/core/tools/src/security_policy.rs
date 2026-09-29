@@ -302,6 +302,7 @@ fn classify_tool_security_with_config(
         is_subagent,
         dsh_sandbox::SandboxMode::WorkspaceWrite,
         config,
+        None,
     )
 }
 
@@ -312,6 +313,7 @@ fn classify_tool_security_in_mode(
     is_subagent: bool,
     mode: dsh_sandbox::SandboxMode,
     config: &SecurityPolicyConfig,
+    owner: Option<&str>,
 ) -> SecurityDecision {
     match tool {
         "workspace_scratch"
@@ -332,6 +334,7 @@ fn classify_tool_security_in_mode(
                 is_subagent,
                 mode,
                 config,
+                owner,
             )
         }
         "read" | "read_file" | "read_image" => {
@@ -383,7 +386,7 @@ fn classify_tool_security_in_mode(
                 };
             }
             if path_is_in_workspace(&path, workspace)
-                || dsh_sandbox::roots::managed_temp_roots()
+                || dsh_sandbox::roots::managed_temp_roots(owner)
                     .iter()
                     .any(|root| path_is_in_workspace(&path, Some(root)))
             {
@@ -508,6 +511,7 @@ pub(crate) fn install(ctx: &Context, config: SecurityPolicyState) {
                 is_subagent,
                 mode,
                 &config,
+                execution.agent.as_ref().map(|agent| agent.id().as_str()),
             ) {
                 SecurityDecision::Allow => match next {
                     Some(next) => Some(next.call().await),
@@ -729,6 +733,7 @@ mod tests {
                 outside_write_policy: OutsideWritePolicy::Allow,
                 ..SecurityPolicyConfig::default()
             },
+            None,
         );
         assert_eq!(decision, SecurityDecision::Allow);
     }
@@ -748,6 +753,54 @@ mod tests {
                 rememberable: false,
             }
         );
+    }
+
+    #[test]
+    fn managed_scratch_write_permission_does_not_leak_between_owners() {
+        let base = std::env::temp_dir().join("dsh-security-owned-scratch");
+        let own = base.join("owner");
+        let other = base.join("other");
+        let own_root = own.to_string_lossy().into_owned();
+        let other_root = other.to_string_lossy().into_owned();
+        let _grant =
+            dsh_sandbox::roots::register_managed_temp(std::sync::Arc::new(
+                move |owner| match owner {
+                    Some("security-scratch-owner") => vec![own_root.clone()],
+                    Some("security-scratch-other") => vec![other_root.clone()],
+                    _ => vec![],
+                },
+            ));
+        let config = SecurityPolicyConfig {
+            outside_write_policy: OutsideWritePolicy::Deny,
+            ..Default::default()
+        };
+        let decision = |path: &std::path::Path, owner| {
+            super::classify_tool_security_in_mode(
+                "write",
+                &json!({"file_path":path.join("result.txt"),"content":"x"}),
+                Some("D:/unrelated-project"),
+                false,
+                dsh_sandbox::SandboxMode::WorkspaceWrite,
+                &config,
+                owner,
+            )
+        };
+        assert_eq!(
+            decision(&own, Some("security-scratch-owner")),
+            SecurityDecision::Allow
+        );
+        assert!(matches!(
+            decision(&other, Some("security-scratch-owner")),
+            SecurityDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            decision(&own, Some("security-scratch-other")),
+            SecurityDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            decision(&own, None),
+            SecurityDecision::Deny { .. }
+        ));
     }
 
     #[test]

@@ -35,11 +35,8 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::ffi::c_void;
 use std::io::Write;
-use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
-use std::process::Stdio;
 use std::sync::mpsc;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
@@ -69,7 +66,6 @@ const WRITE_ROOT_ALLOW_MASK: u32 =
 mod sandbox_users;
 mod setup_runtime_bin;
 use read_acl_mutex::acquire_read_acl_mutex;
-use read_acl_mutex::read_acl_mutex_exists;
 use sandbox_users::commit_setup_marker;
 use sandbox_users::prepare_setup_marker;
 use sandbox_users::provision_sandbox_users;
@@ -86,6 +82,8 @@ struct Payload {
     command_cwd: PathBuf,
     read_roots: Vec<PathBuf>,
     write_roots: Vec<PathBuf>,
+    #[serde(default)]
+    private_roots: Vec<PathBuf>,
     #[serde(default)]
     deny_read_paths: Vec<PathBuf>,
     #[serde(default)]
@@ -156,24 +154,6 @@ fn workspace_write_cap_sids_for_path(
         }
     }
     Ok(sid_strs)
-}
-
-fn spawn_read_acl_helper(payload: &Payload, _log: &mut dyn Write) -> Result<()> {
-    let mut read_payload = payload.clone();
-    read_payload.mode = SetupMode::ReadAclsOnly;
-    read_payload.refresh_only = true;
-    let payload_json = serde_json::to_vec(&read_payload)?;
-    let payload_b64 = BASE64.encode(payload_json);
-    let exe = std::env::current_exe().context("locate setup helper")?;
-    Command::new(&exe)
-        .arg(payload_b64)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .spawn()
-        .context("spawn read ACL helper")?;
-    Ok(())
 }
 
 struct ReadAclSubjects<'a> {
@@ -510,6 +490,10 @@ fn run_read_acl_only(payload: &Payload, log: &mut dyn Write) -> Result<()> {
             return Ok(());
         }
     };
+    apply_read_roots(payload,log)
+}
+
+fn apply_read_roots(payload: &Payload, log: &mut dyn Write) -> Result<()> {
     log_line(log, "read-acl-only mode: applying read ACLs")?;
     let sandbox_group_sid = resolve_sandbox_users_group_sid()?;
     let sandbox_group_psid = sid_bytes_to_psid(&sandbox_group_sid)?;
@@ -526,8 +510,9 @@ fn run_read_acl_only(payload: &Payload, log: &mut dyn Write) -> Result<()> {
             sandbox_group_psid,
             rx_psids: &rx_psids,
         };
+        let public_read_roots:Vec<_>=payload.read_roots.iter().filter(|root|!is_private_path(payload,root)).cloned().collect();
         apply_read_acls(
-            &payload.read_roots,
+            &public_read_roots,
             &subjects,
             log,
             &mut refresh_errors,
@@ -563,6 +548,14 @@ fn run_read_acl_only(payload: &Payload, log: &mut dyn Write) -> Result<()> {
     }
     log_line(log, "read ACL run completed")?;
     Ok(())
+}
+
+fn is_private_path(payload:&Payload,path:&Path)->bool {
+    let path=codex_windows_sandbox::canonicalize_path(path).to_string_lossy().replace('/',"\\").to_lowercase();
+    payload.private_roots.iter().any(|root|{
+        let root=codex_windows_sandbox::canonicalize_path(root).to_string_lossy().replace('/',"\\").to_lowercase();
+        path==root||path.strip_prefix(root.trim_end_matches('\\')).is_some_and(|tail|tail.starts_with('\\'))
+    })
 }
 
 fn provision_and_hide_sandbox_users(
@@ -734,6 +727,7 @@ fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) ->
 }
 
 fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    let _acl_guard=acquire_read_acl_mutex()?.context("private ACL update lease is unavailable")?;
     let refresh_only = payload.refresh_only;
     if !refresh_only {
         provision_and_hide_sandbox_users(payload, log, sbx_dir)?;
@@ -788,37 +782,10 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         )?;
     }
 
-    if payload.read_roots.is_empty() {
-        log_line(log, "no read roots to grant; skipping read ACL helper")?;
-    } else {
-        match read_acl_mutex_exists() {
-            Ok(true) => {
-                log_line(log, "read ACL helper already running; skipping spawn")?;
-            }
-            Ok(false) => {
-                spawn_read_acl_helper(payload, log).map_err(|err| {
-                    anyhow::Error::new(SetupFailure::new(
-                        SetupErrorCode::HelperReadAclHelperSpawnFailed,
-                        format!("spawn read ACL helper failed: {err}"),
-                    ))
-                })?;
-            }
-            Err(err) => {
-                log_line(
-                    log,
-                    &format!("read ACL mutex check failed: {err}; spawning anyway"),
-                )?;
-                spawn_read_acl_helper(payload, log).map_err(|spawn_err| {
-                    anyhow::Error::new(SetupFailure::new(
-                        SetupErrorCode::HelperReadAclHelperSpawnFailed,
-                        format!(
-                            "spawn read ACL helper failed after mutex error {err}: {spawn_err}"
-                        ),
-                    ))
-                })?;
-            }
-        }
-    }
+    // Every selected root must be ready before command dispatch. A detached
+    // read-grant helper could skip this request or reintroduce shared grants
+    // after the account-scoped private boundary had already been installed.
+    apply_read_roots(payload, log)?;
 
     if refresh_only {
         setup_runtime_bin::ensure_codex_app_runtime_paths_readable(
@@ -849,8 +816,9 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
             convert_string_sid_to_sid(&root_cap_sid_str)
                 .ok_or_else(|| anyhow::anyhow!("convert write root capability SID failed"))?
         };
+        let subjects=if is_private_path(payload,root){vec![root_cap_psid]}else{vec![sandbox_group_psid,root_cap_psid]};
         let need_grant =
-            match path_write_aces_need_refresh(root, &[sandbox_group_psid, root_cap_psid]) {
+            match path_write_aces_need_refresh(root, &subjects) {
                 Ok(needs_refresh) => needs_refresh,
                 Err(e) => {
                     refresh_errors.push(format!(
@@ -887,7 +855,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
     let (tx, rx) = mpsc::channel::<(PathBuf, Result<bool>)>();
     std::thread::scope(|scope| {
         for (root, root_cap_sid_str) in grant_tasks {
-            let sid_strings = vec![sandbox_group_sid_str.clone(), root_cap_sid_str];
+            let sid_strings = if is_private_path(payload,&root){vec![root_cap_sid_str]}else{vec![sandbox_group_sid_str.clone(), root_cap_sid_str]};
             let tx = tx.clone();
             scope.spawn(move || {
                 // Convert SID strings to psids locally in this thread.
@@ -983,6 +951,12 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         }
     }
 
+    let account_bytes=[resolve_sid(&payload.offline_username)?,resolve_sid(&payload.online_username)?];
+    let account_psids=account_bytes.iter().map(|sid|sid_bytes_to_psid(sid)).collect::<Result<Vec<_>>>()?;
+    let private_result=unsafe{codex_windows_sandbox::sync_private_read_acls(&payload.codex_home,&payload.private_roots,&payload.read_roots,&payload.write_roots,&account_psids,sandbox_group_psid)};
+    for sid in account_psids {unsafe{LocalFree(sid as HLOCAL);}}
+    let protected=private_result.map_err(|error|anyhow::anyhow!("reconcile account private read access: {error:#}"))?;
+    log_line(log,&format!("private read boundary reconciled {protected} objects"))?;
     lock_sandbox_bin_dir(payload, &sandbox_group_sid, log)?;
 
     if refresh_only {

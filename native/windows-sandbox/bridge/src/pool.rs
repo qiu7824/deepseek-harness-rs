@@ -40,6 +40,19 @@ pub fn home(root: &Path, workspace: &Path, index: usize) -> PathBuf {
         .join((index - READ_SLOTS).to_string())
 }
 
+pub fn runtime_roots(root:&Path,workspace:&Path)->Result<Vec<PathBuf>> {
+    let mut roots:Vec<_>=(0..SIZE).map(|index|home(root,workspace,index).join("runtime")).collect();
+    let projects=root.join("projects");
+    if projects.exists(){
+        for entry in std::fs::read_dir(projects)? {
+            let entry=entry?;ensure!(!entry.file_type()?.is_symlink(),"private native pool contains a directory alias");
+            if !entry.file_type()?.is_dir(){continue;}
+            for index in 0..WRITE_SLOTS {roots.push(entry.path().join(index.to_string()).join("runtime"));}
+        }
+    }
+    roots.sort();roots.dedup();Ok(roots)
+}
+
 pub fn validate_owner(root: &Path, setup: bool) -> Result<bool> {
     let path = root.join("dsh-native-pool.json");
     let principal = codex_windows_sandbox::current_user_sid_string()?;

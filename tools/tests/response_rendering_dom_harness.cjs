@@ -7,7 +7,7 @@ const dom = new JSDOM('<!doctype html><main id="root"></main>', { url: 'http://f
 Object.assign(global, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, MutationObserver: dom.window.MutationObserver, IS_REACT_ACT_ENVIRONMENT: true });
 const React = require(path.join(modules, 'react')), jsx = require(path.join(modules, 'react/jsx-runtime'));
 const Client = require(path.join(modules, 'react-dom/client'));
-const plugins = path.resolve(__dirname, '../../web/dist/plugins'), assets = path.resolve(__dirname, '../../web/dist/assets');
+const plugins = process.env.DSH_TEST_PLUGIN_DIR || path.resolve(__dirname, '../../web/dist/plugins'), assets = path.resolve(__dirname, '../../web/dist/assets');
 const temporary = fs.mkdtempSync(path.join(process.env.DSH_TEST_TEMP_DIR || os.tmpdir(), 'dsh-response-dom-'));
 const shellPath = path.join(assets, fs.readdirSync(assets).find(name => /^index-.*\.js$/.test(name)));
 const shell = fs.readFileSync(shellPath, 'utf8');
@@ -24,7 +24,8 @@ function load(file, names) {
   const context = { document, URL: imageURL, Blob, console, queueMicrotask, setTimeout, clearTimeout, setInterval, clearInterval, requestAnimationFrame: callback => setTimeout(callback, 0), cancelAnimationFrame: clearTimeout,
     window: { getSelection: () => dom.window.getSelection(), __ModuleLoader__: { load: definition => { module = definition.factory(id => id === 'react' ? React : id === 'react/jsx-runtime' ? jsx : id === 'react-dom' ? require(path.join(modules, 'react-dom')) : id.endsWith('ui-primitives') ? primitives : id === '@deepseek-ai/cordis' ? { Service: class { constructor(ctx) { this.ctx = ctx; } } } : runtime); } } } };
   if (file === 'ui-subagent.js') context.URL = URL;
-  vm.runInNewContext(fs.readFileSync(path.join(plugins, file), 'utf8').replace('return module.exports;', `exports.test={${names}};return module.exports;`), context);
+  const bundle = file === 'ui-conversation.js' && process.env.DSH_TEST_CONVERSATION_BUNDLE || path.join(plugins, file);
+  vm.runInNewContext(fs.readFileSync(bundle, 'utf8').replace('return module.exports;', `exports.test={${names}};return module.exports;`), context);
   return module.test;
 }
 async function nativeMarkdown() {
@@ -47,20 +48,19 @@ async function main() {
   primitives = new Proxy({ DisclosureRow: disclosure.Component, MarkdownText: await nativeMarkdown(), Menu: ({ anchor, open, items, onSelect }) => React.createElement(React.Fragment, null, anchor, open && React.createElement('div', { role: 'menu' }, items.map(item => React.createElement('button', { key: item.id, title: item.detail, role: 'menuitem', onClick: () => onSelect?.(item.id) }, item.label)))) }, { get: (target, key) => target[key] ?? (() => null) });
   Object.assign(runtime, load('client-runtime.js', 'contextProvenance,contextForm,createRevisionDraftStore'));
   const tool = load('ui-tool.js', 'GenericToolCard,ToolImage,toolDisplayTitle,toolDisplaySummary');
-  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect,registerChatNodeRenderers,StatsLine,turnAcceptanceDefinition,TurnAcceptanceNodeView');
+  const conversation = load('ui-conversation.js', 'ConversationController,zh,en,ReasoningRow,messageDefinition,PermissionSelect,registerChatNodeRenderers,StatsLine,registerTurnMaxTokensConversationNode,toolDefinition');
   const subagent = load('ui-subagent.js', 'SubagentMarkdownOutput,SubagentToolRow,subagentFileLinks,zh,en');
   const trajectory = load('ui-trajectory.js', 'TrajectoryLocale,LaneLabels,RecordTiming,AssistantTimingPanel,StartedAtValue,zh,en');
   const modelUi = load('ui-model-selection.js', 'ModelSelect,zh,en');
   const permissionUi = load('ui-permission.js', 'optionsOf,accessZh,accessEn');
   const zh = translate(conversation.zh), en = translate(conversation.en);
-  const acceptanceEvent={type:'turn/end',seq:42,time:1,data:{turn:1,reason:{kind:'completed'},acceptance:{status:'incomplete',summary:'任务验收未通过，尚未完成。',blockers:['文件内容不匹配']}}};
-  assert.ok(conversation.turnAcceptanceDefinition.match(acceptanceEvent));
-  assert.equal(conversation.turnAcceptanceDefinition.match({...acceptanceEvent,data:{...acceptanceEvent.data,acceptance:undefined}}),null);
-  assert.equal(conversation.turnAcceptanceDefinition.match({...acceptanceEvent,data:{...acceptanceEvent.data,reason:{kind:'aborted'}}}),null);
-  await act(()=>root.render(React.createElement(conversation.TurnAcceptanceNodeView,{node:{data:acceptanceEvent.data},t:zh})));
-  assert.match(document.body.textContent,/任务验收未通过/);
-  assert.equal(document.querySelector('[data-task-acceptance]').getAttribute('data-task-acceptance'),'incomplete');
-  assert.match(document.body.textContent,/文件内容不匹配/);
+  const retired={type:'turn/end',seq:42,time:1,data:{turn:1,reason:{kind:'completed'},acceptance:{status:'incomplete',summary:'旧任务验收状态'}}};
+  const terminalDefinitions=[];
+  conversation.registerTurnMaxTokensConversationNode({conversationEvents:{register:definition=>terminalDefinitions.push(definition)}});
+  assert.ok(terminalDefinitions.length>0);
+  assert.ok(terminalDefinitions.every(definition=>definition.match(retired)==null),'retired acceptance metadata must not create a status card');
+  assert.equal(conversation.toolDefinition.buildViewNode({state:{root:{name:'task_execution'}}}),null);
+  assert.equal(conversation.toolDefinition.buildViewNode({state:{root:{kind:'tool-result',call:{name:'task_execution'}}}}),null);
 
   assert.deepEqual(Object.keys(conversation.zh).sort(), Object.keys(conversation.en).sort());
   assert.deepEqual(Object.keys(trajectory.zh).sort(), Object.keys(trajectory.en).sort());
@@ -229,7 +229,19 @@ async function main() {
   const dynamicState = conversation.messageDefinition.start({}, { event: dynamicContext }, { previous: () => undefined });
   assert.equal(dynamicState.provenance.role, 'inject', 'the same producer can publish runtime context without presenting it as another system prompt');
   await act(() => root.render(React.createElement(nodeRenderers.get('context'), { key: dynamicMatch.id, node: { data: dynamicState }, t: zh })));
-  assert.match(document.body.textContent, /上下文注入.*@deepseek-ai\/dsh-system-prompt/);
+  assert.match(document.body.textContent, /运行信息更新.*自动同步，无需操作/);
+  for (const [kind, title] of [['runtime-context', '运行信息更新'], ['repeat-tool-reminder', '重复调用提醒'], ['unknown-producer', '补充上下文']]) {
+    const event = { ...dynamicContext, data: { ...dynamicContext.data, id: kind, source: { kind } } };
+    const state = conversation.messageDefinition.start({}, { event }, { previous: () => undefined });
+    await act(() => root.render(React.createElement(nodeRenderers.get('context'), { key: kind, node: { data: state }, t: zh })));
+    assert.ok(document.body.textContent.includes(title));
+    assert.equal(document.querySelector('[data-context-injection-body]'), null, 'automatic information stays collapsed without requiring an action');
+    await act(() => document.querySelector('[data-disclosure-row]').click());
+    assert.equal(document.querySelector('[data-context-injection-body]').textContent, 'DYNAMIC_RUNTIME_CONTEXT', 'new labels do not change the durable context body');
+    await act(() => document.querySelector('[data-disclosure-row]').click());
+    assert.equal(document.querySelector('[data-context-injection-body]'), null);
+    assert.equal(event.data.content[0].text, 'DYNAMIC_RUNTIME_CONTEXT');
+  }
   assert.equal(conversation.messageDefinition.match({ type: 'system/message', seq: 9, surfaceOp: 'append', data: { message: null } }), null, 'malformed system records retain the diagnostic fallback');
   await act(() => root.unmount()); dispose();
   console.log('PASS response rendering DOM: same attachment leases; collapse/paging/late load cleanup; image dedup; live locales; native safe Markdown and actual local-file click; internal recovery filtering; initial, dynamic and legacy system context disclosures');

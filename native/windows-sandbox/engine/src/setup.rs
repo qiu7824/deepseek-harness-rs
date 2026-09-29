@@ -32,6 +32,7 @@ use crate::setup_error::failure;
 use crate::setup_error::read_setup_error_report;
 use crate::ssh_config_dependencies::ssh_config_dependency_paths;
 use anyhow::Result;
+use anyhow::Context as _;
 use anyhow::anyhow;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -325,6 +326,7 @@ fn run_setup_refresh_inner(
         command_cwd: request.command_cwd.to_path_buf(),
         read_roots,
         write_roots,
+        private_roots: private_roots_for_request(&request)?,
         deny_read_paths,
         deny_write_paths,
         proxy_ports: offline_proxy_settings.proxy_ports,
@@ -654,6 +656,8 @@ struct ElevationPayload {
     command_cwd: PathBuf,
     read_roots: Vec<PathBuf>,
     write_roots: Vec<PathBuf>,
+    #[serde(default)]
+    private_roots: Vec<PathBuf>,
     #[serde(default)]
     deny_read_paths: Vec<PathBuf>,
     #[serde(default)]
@@ -1041,6 +1045,7 @@ fn run_elevated_setup_inner(
         command_cwd: request.command_cwd.to_path_buf(),
         read_roots,
         write_roots,
+        private_roots: private_roots_for_request(&request)?,
         deny_read_paths,
         deny_write_paths,
         proxy_ports: offline_proxy_settings.proxy_ports,
@@ -1090,6 +1095,7 @@ pub fn run_elevated_provisioning_setup(
         command_cwd: codex_home.to_path_buf(),
         read_roots: Vec::new(),
         write_roots: Vec::new(),
+        private_roots: Vec::new(),
         deny_read_paths: Vec::new(),
         deny_write_paths: Vec::new(),
         proxy_ports: settings.proxy_ports,
@@ -1100,6 +1106,10 @@ pub fn run_elevated_provisioning_setup(
         refresh_only: false,
     };
     run_setup_exe(&payload, /*needs_elevation*/ false, codex_home)
+}
+
+fn private_roots_for_request(request: &SandboxSetupRequest<'_>) -> Result<Vec<PathBuf>> {
+    request.env_map.get("DSH_NATIVE_PRIVATE_ROOTS").map(|value|serde_json::from_str(value).context("parse private execution roots")).transpose().map(Option::unwrap_or_default)
 }
 
 fn build_payload_roots(

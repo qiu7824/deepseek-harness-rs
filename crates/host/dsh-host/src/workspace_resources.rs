@@ -14,6 +14,9 @@ use std::{
 #[path = "workspace_resources_contract_tests.rs"]
 mod contract_tests;
 
+#[path = "workspace_attachment_inputs.rs"]
+mod attachment_inputs;
+
 fn scratch_parameters() -> Value {
     let mut schema = json!({
         "type":"object",
@@ -90,53 +93,74 @@ pub(crate) struct Resources {
     stores: parking_lot::Mutex<BTreeMap<String, Arc<Store>>>,
     agents: Arc<dsh_agent::AgentRegistry>,
     size_jobs: Arc<parking_lot::Mutex<BTreeMap<String, (u64, bool)>>>,
-    /// Runtime-token-bound acceptance receipts; never accepted as model arguments.
-    validated_promotions: parking_lot::Mutex<BTreeMap<u64, (String, String, String)>>,
 }
 impl Resources {
-    pub(crate) fn seal_promotion(
-        &self,
-        token: u64,
-        owner: &str,
-        arguments: &Value,
-        sha256: String,
+    pub(crate) fn register_private_boundary(
+        self: &Arc<Self>,
+        ctx: &Context,
+        home: &Path,
+        data: &Path,
     ) {
-        let mut receipts = self.validated_promotions.lock();
-        if receipts.len() >= 256
-            && let Some(oldest) = receipts.keys().next().copied()
-        {
-            receipts.remove(&oldest);
-        }
-        receipts.insert(
-            token,
-            (
-                owner.into(),
-                digest(arguments.to_string().as_bytes()),
-                sha256,
-            ),
+        let roots = vec![home.to_path_buf(), data.to_path_buf()];
+        let weak = Arc::downgrade(self);
+        let grant = dsh_sandbox::roots::register_private_roots(Arc::new(move || {
+            let mut paths = roots.clone();
+            if let Some(manager) = weak.upgrade() {
+                // Keep offline registered storage protected as well as live
+                // stores; unavailability must not silently drop a boundary.
+                paths.extend(manager.private_roots());
+            }
+            paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        }));
+        let grant = parking_lot::Mutex::new(Some(grant));
+        let _ = ctx.effect(
+            "native private file boundary",
+            Box::pin(async move {
+                Some(make_disposer(move || {
+                    grant.lock().take();
+                    Box::pin(async {})
+                }))
+            }),
         );
     }
-    fn take_promotion(
-        &self,
-        token: u64,
-        owner: &str,
-        arguments: &Value,
-    ) -> Result<Option<String>, String> {
-        let Some((expected_owner, input, sha256)) = self.validated_promotions.lock().remove(&token)
-        else {
-            return Ok(None);
-        };
-        if expected_owner != owner || input != digest(arguments.to_string().as_bytes()) {
-            return Err("验收凭据与当前执行身份不匹配".into());
-        }
-        Ok(Some(sha256))
-    }
+
     pub fn policy(&self) -> Policy {
         self.settings
             .get(&settings_namespace("workspace-scratch").unwrap())
             .and_then(|value| value.to_json())
             .and_then(|value| Policy::from_json(value).ok())
             .unwrap_or_default()
+    }
+    /// Read fences include configured and retired stores even when a store is
+    /// offline. Enumerating these roots must not create storage or measure files.
+    pub(crate) fn private_roots(&self) -> Vec<PathBuf> {
+        let mut roots = self.known_roots.lock().clone();
+        roots.insert(self.default_root.to_string_lossy().into_owned());
+        let location = self.policy().location;
+        if !location.trim().is_empty() {
+            roots.insert(location);
+        }
+        if let Some(value) = self
+            .settings
+            .get(&settings_namespace("workspace-scratch-paths").unwrap())
+            .and_then(|value| value.to_json())
+            && let Some(locations) = value["locations"].as_object()
+        {
+            roots.extend(
+                locations
+                    .values()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned),
+            );
+        }
+        roots
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .collect()
     }
     pub fn current(&self) -> Result<Arc<Store>, String> {
         let policy = self.policy();
@@ -613,7 +637,6 @@ impl Resources {
             stores: parking_lot::Mutex::new(BTreeMap::new()),
             agents,
             size_jobs: Default::default(),
-            validated_promotions: Default::default(),
         });
         for root in known {
             if Path::new(&root).join(".dsh-resources").is_file() {
@@ -630,6 +653,9 @@ impl Resources {
         let _ = manager.current();
         let managed: Arc<dyn dsh_workspace_resources::ManagedWorkspaces> = manager.clone();
         ctx.register_service(managed);
+        let attachment_inputs: Arc<dyn dsh_attachment::SessionAttachmentMaterializer> =
+            manager.clone();
+        ctx.register_service(attachment_inputs);
         let weak = Arc::downgrade(&manager);
         subprocess.set_resource_provider(Arc::new(move |cwd, env| {
             let Some(manager) = weak.upgrade() else {
@@ -647,12 +673,22 @@ impl Resources {
             }
         }));
         let weak = Arc::downgrade(&manager);
-        let grant = dsh_sandbox::roots::register_managed_temp(Arc::new(move || {
+        let grant = dsh_sandbox::roots::register_managed_temp(Arc::new(move |owner| {
+            let Some(owner) = owner else {
+                return vec![];
+            };
             weak.upgrade()
                 .and_then(|manager| manager.stores().ok())
                 .unwrap_or_default()
                 .into_iter()
-                .map(|store| store.writable_root().to_string_lossy().into_owned())
+                .flat_map(|store| store.list_brief().unwrap_or_default())
+                .filter(|row| {
+                    row.owner == owner
+                        && row.state != "reclaimed"
+                        && !row.path.is_empty()
+                        && dsh_workspace_resources::checked_path(Path::new(&row.path)).is_ok()
+                })
+                .map(|row| row.path)
                 .collect()
         }));
         let weak = Arc::downgrade(&manager);
@@ -696,10 +732,10 @@ impl Resources {
             output:dsh_tools::ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:None},
             timeout_ms:Some(30000),is_concurrency_safe:None,finalize_content:None,present_call:None,present_result:None,
             execute:Arc::new(move |args,run| {
-                let args=args.clone();let manager=manager.clone();let signal=run.signal.lock().clone();let mark_effects=run.track_cancellable_effects();let token=run.token;let owner=run.agent.as_ref().map(|agent|(agent.id().as_str().to_string(),agent.session().header().cwd.clone().unwrap_or_default()));
+                let args=args.clone();let manager=manager.clone();let signal=run.signal.lock().clone();let mark_effects=run.track_cancellable_effects();let owner=run.agent.as_ref().map(|agent|(agent.id().as_str().to_string(),agent.session().header().cwd.clone().unwrap_or_default()));
                 Box::pin(async move {let (owner,project)=owner.ok_or_else(||dsh_tools::ToolBodyError::plain("临时资源必须归属于任务"))?;
-                    let validated_source=manager.take_promotion(token,&owner,&args).map_err(dsh_tools::ToolBodyError::plain)?;
-                    tokio::task::spawn_blocking(move ||manager.tool_action(&owner,&project,&args,validated_source.as_deref(),signal,mark_effects)).await.map_err(|e|dsh_tools::ToolBodyError::plain(e.to_string()))?.map_err(dsh_tools::ToolBodyError::plain)
+                    manager.authorize_tool_paths(&owner,&project,&args).await.map_err(dsh_tools::ToolBodyError::plain)?;
+                    tokio::task::spawn_blocking(move ||manager.tool_action(&owner,&project,&args,signal,mark_effects)).await.map_err(|e|dsh_tools::ToolBodyError::plain(e.to_string()))?.map_err(dsh_tools::ToolBodyError::plain)
                 })
             }),
         }).map(|_|())?;
@@ -717,12 +753,67 @@ impl Resources {
         );
         Ok(())
     }
+    async fn authorize_tool_paths(
+        &self,
+        owner: &str,
+        project: &str,
+        args: &Value,
+    ) -> Result<(), String> {
+        let Some(fs) = self
+            .ctx
+            .get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs", false)
+        else {
+            return Err("Managed resources require the session filesystem".into());
+        };
+        let fs = fs.as_ref().clone();
+        let fs = fs.for_tool(Some(owner)).unwrap_or(fs);
+        let options = dsh_fs::ResolveOptions {
+            cwd: Some(project.into()),
+            signal: None,
+        };
+        match args["action"].as_str() {
+            Some("prepare_copy") => {
+                // A Git worktree can read committed files beyond the requested overlay.
+                let root = fs
+                    .resolve(project, Some(&options))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                fs.authorize_search(&root)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                for path in args["files"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    fs.resolve(path, Some(&options))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            Some("inspect" | "promote") => {
+                if let Some(path) = args["target"].as_str() {
+                    let target = fs
+                        .resolve(path, Some(&options))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if args["action"] == "promote" {
+                        fs.authorize_write(&target)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     fn tool_action(
         &self,
         owner: &str,
         project: &str,
         args: &Value,
-        validated_source: Option<&str>,
         signal: Arc<dyn Fn() -> bool + Send + Sync>,
         mark_effects: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Result<Value, String> {
@@ -768,7 +859,7 @@ impl Resources {
                     string("target")?,
                     args.get("expectedSha256")
                         .ok_or("交付前请 inspect 目标并提供 expectedSha256")?,
-                    validated_source,
+                    None,
                     signal,
                     mark_effects,
                 )

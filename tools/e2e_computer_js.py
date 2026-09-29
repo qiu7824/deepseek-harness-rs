@@ -51,9 +51,6 @@ def main():
         with running_fixture_host(binary,run,env,None,'computer-js') as port:
             def call(method,payload):return require_ok(rpc(port,method,payload,uuid.uuid4().hex),method)
             sid=call('session.create',{'cwd':str(workspace)})['sessionId']
-            contract={'action':'create','sessionId':sid,'taskId':'js-regression','idempotencyKey':'create-js-regression','contract':{'objective':'Verify persistent isolated JavaScript','acceptanceChecks':[{'id':'kernel-result','description':'Kernel has no process global','checker':{'kind':'tool_result','step_id':'tool:computer_use_js','assertions':{'/logs/0/value':'undefined'}}}]}}
-            request=urllib.request.Request(f'http://127.0.0.1:{port}/__dsh-task-execution',data=json.dumps(contract).encode(),headers={'Content-Type':'application/json','Origin':f'http://127.0.0.1:{port}'})
-            with urllib.request.urlopen(request,timeout=30) as response:json.load(response)
             call('session.prompt',{'sessionId':sid,'mode':'queue','content':[{'type':'text','text':TASK}]})
             deadline=time.monotonic()+90
             while time.monotonic()<deadline:
@@ -70,10 +67,8 @@ def main():
             values=[json.loads(next(c['text'] for c in p['content'] if c['type']=='text')) for p in results[1:]]
             assert values[0]['logs'][0]['value']==42 and values[1]['logs'][0]['value']==43,values
             assert [row['value'] for row in values[2]['logs']]==['undefined']*3,values
-            request=urllib.request.Request(f'http://127.0.0.1:{port}/__dsh-task-execution',data=json.dumps({'action':'list','sessionId':sid}).encode(),headers={'Content-Type':'application/json','Origin':f'http://127.0.0.1:{port}'})
-            with urllib.request.urlopen(request,timeout=30) as response:task=json.load(response)['tasks'][0]
-            assert not any(step['state']=='unknown' for step in task['steps']),task
-            assert any(step['state']=='not_dispatched' for step in task['steps']),task
+            receipts=[e['data'].get('meta',{}).get('executionReceipt',{}) for e in events if e['type']=='tool/result' and e['data'].get('error')]
+            assert receipts and all(receipt.get('effects')=='none' for receipt in receipts),receipts
             if os.name=='nt':
                 assert (workspace/'scope-proof.txt').read_text(encoding='utf-8-sig')=='scoped'
                 assert Model.protected.read_text(encoding='utf-8')=='preserve'

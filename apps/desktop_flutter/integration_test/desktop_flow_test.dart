@@ -278,56 +278,7 @@ void main() {
     await until(() => c.interactions.isEmpty && !c.running && !c.sending);
     expect(c.error, isNull);
     expect(tester.takeException(), isNull);
-    await c.client!.request(
-      '/__dsh-task-execution',
-      body: {
-        'sessionId': c.selectedId,
-        'action': 'create',
-        'taskId': 'native-acceptance',
-        'idempotencyKey': newRequestId(),
-        'contract': {
-          'objective': '原生界面验收验证',
-          'acceptanceChecks': [
-            {
-              'id': 'visual',
-              'description': '验收状态和确认操作正确显示',
-              'checker': {'kind': 'manual', 'reason': '原生界面交互核对'},
-            },
-          ],
-        },
-      },
-      mutation: true,
-    );
-    await tester.tap(find.text('任务验收'));
-    await until(
-      () =>
-          find.text('任务验收与恢复').evaluate().isNotEmpty &&
-          find.text('重新验收').evaluate().isNotEmpty,
-    );
-    await tester.tap(find.text('重新验收'));
-    await until(() => find.text('核对并确认此项').evaluate().isNotEmpty);
-    await capture('task-acceptance');
-    await tester.ensureVisible(find.text('核对并确认此项'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('核对并确认此项'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('确认验收通过'));
-    await until(() => find.text('核对版本并完成').evaluate().isNotEmpty);
-    await tester.ensureVisible(find.text('核对版本并完成'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('核对版本并完成'));
-    await until(() => find.text('已验收完成').evaluate().isNotEmpty);
-    final verified = await c.client!.request(
-      '/__dsh-task-execution',
-      body: {
-        'sessionId': c.selectedId,
-        'action': 'get',
-        'taskId': 'native-acceptance',
-      },
-    );
-    expect(object(verified['task'])['state'], 'completed');
-    expect(verified['blockers'], isEmpty);
-    expect(tester.takeException(), isNull);
+    expect(find.text('任务验收'), findsNothing);
     final output = Platform.environment['DSH_QA_RESULT'];
     if (output != null) {
       await File(output).writeAsString(
@@ -347,7 +298,6 @@ void main() {
           'localizedFileActivities': true,
           'questionHistoryCountAndInlineDetails': true,
           'approvalAllowedOnceAndWriteRejectedThroughUI': true,
-          'nativeTaskAcceptanceConfirmedThroughUI': true,
           'scope': 'Windows native Profile integration with an isolated Host and local deterministic model provider',
         }),
       );

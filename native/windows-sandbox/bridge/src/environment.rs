@@ -76,6 +76,7 @@ pub fn prepare(request: &Request) -> Result<Environment> {
     );
     let runtime = request.home.join("runtime").join(&key[..20]);
     let mut reads = request.reads.clone();
+    values.insert("DSH_NATIVE_PRIVATE_ROOTS".into(), serde_json::to_string(&request.private_roots)?);
     let mut writes = Vec::new();
     // Read-only policy never grants writes to runtime caches. Initialization
     // by the host is separate from permissions given to the child.

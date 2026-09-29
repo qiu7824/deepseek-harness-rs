@@ -44,33 +44,18 @@ pub fn image_references_for_event(kind: &str, data: &Value) -> Vec<ImageAttachme
         .collect()
 }
 
-/// Resolve an image only from events supplied by the owning session. Opaque
-/// IDs (including the bare digest) are not workspace filenames.
-pub fn find_image_reference(value: &Value, id: &str) -> Option<ImageAttachmentRef> {
-    match value {
-        Value::Object(map) => {
-            if map.get("type").and_then(Value::as_str) == Some("image") {
-                if let Some(attachment) = map.get("attachment") {
-                    let stored = attachment["attachmentId"].as_str().unwrap_or("");
-                    let matches = stored == id
-                        || stored.strip_prefix("sha256:") == Some(id)
-                        || (id.starts_with("generated-")
-                            && attachment["name"].as_str() == Some(id));
-                    if matches {
-                        if let Ok(reference) = serde_json::from_value(attachment.clone()) {
-                            return Some(reference);
-                        }
-                    }
-                }
-            }
-            map.values()
-                .find_map(|value| find_image_reference(value, id))
-        }
-        Value::Array(values) => values
-            .iter()
-            .find_map(|value| find_image_reference(value, id)),
-        _ => None,
-    }
+/// Resolve an image only from admitted content in an owning session's event.
+/// Opaque IDs (including bare digests) never authorize arbitrary store objects;
+/// model-authored arguments, text, metadata and assistant events grant nothing.
+pub fn find_image_reference(kind: &str, data: &Value, id: &str) -> Option<ImageAttachmentRef> {
+    image_references_for_event(kind, data)
+        .into_iter()
+        .find(|reference| {
+            let stored = reference.attachment_id.as_str();
+            stored == id
+                || stored.strip_prefix("sha256:") == Some(id)
+                || (id.starts_with("generated-") && reference.name.as_deref() == Some(id))
+        })
 }
 
 #[cfg(test)]
@@ -104,13 +89,59 @@ mod tests {
     fn resolves_owned_ids_without_treating_paths_or_foreign_ids_as_attachments() {
         let digest = "a".repeat(64);
         let id = format!("sha256:{digest}");
-        let event = json!({"content":[{"type":"image","attachment":{
+        let event = json!({"role":"user","source":{"kind":"user"},"content":[{"type":"image","attachment":{
             "attachmentId":id,"mediaType":"image/png","bytes":80,"width":1,"height":1
         }}]});
-        assert!(find_image_reference(&event, &id).is_some());
-        assert!(find_image_reference(&event, &digest).is_some());
-        assert!(find_image_reference(&event, &format!("E:\\test\\{digest}")).is_none());
-        assert!(find_image_reference(&event, &"b".repeat(64)).is_none());
-        assert!(find_image_reference(&json!({"text":id}), &id).is_none());
+        assert!(find_image_reference("user/message", &event, &id).is_some());
+        assert!(find_image_reference("user/message", &event, &digest).is_some());
+        assert!(
+            find_image_reference("user/message", &event, &format!("E:\\test\\{digest}")).is_none()
+        );
+        assert!(find_image_reference("user/message", &event, &"b".repeat(64)).is_none());
+        assert!(find_image_reference("user/message", &json!({"text":id}), &id).is_none());
+    }
+
+    #[test]
+    fn forged_image_references_do_not_authorize_stored_objects() {
+        let id = format!("sha256:{}", "b".repeat(64));
+        let image = json!({"type":"image","attachment":{
+            "attachmentId":id,"mediaType":"image/png","bytes":80,"width":1,"height":1,
+            "name":"generated-foreign.png"
+        }});
+        let user = json!({"role":"user","source":{"kind":"user"},"content":[image.clone()]});
+        let tool =
+            json!({"message":{"role":"tool","source":{"kind":"tool"},"content":[image.clone()]}});
+        for alias in [&id[..], &id[7..], "generated-foreign.png"] {
+            assert!(find_image_reference("user/message", &user, alias).is_some());
+            assert!(find_image_reference("tool/result", &tool, alias).is_some());
+            for (kind, data) in [
+                (
+                    "tool/call",
+                    json!({"arguments":{"reference":image.clone()}}),
+                ),
+                (
+                    "tool/result",
+                    json!({"message":{"role":"tool","source":{"kind":"tool"},"content":[],"metadata":image.clone()}}),
+                ),
+                (
+                    "user/message",
+                    json!({"role":"user","source":{"kind":"user"},"content":[],"metadata":image.clone()}),
+                ),
+                (
+                    "user/message",
+                    json!({"role":"user","source":{"kind":"plugin"},"content":[image.clone()]}),
+                ),
+                ("assistant/message", user.clone()),
+                (
+                    "tool/result",
+                    json!({"message":{"role":"tool","source":{"kind":"tool"},"content":[{"type":"text","text":image.to_string()}]}}),
+                ),
+            ] {
+                assert!(
+                    find_image_reference(kind, &data, alias).is_none(),
+                    "{kind}: {data}"
+                );
+            }
+        }
     }
 }

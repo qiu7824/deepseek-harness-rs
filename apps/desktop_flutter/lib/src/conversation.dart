@@ -20,7 +20,6 @@ import '../design/context_menu.dart';
 import '../features/conversation/attachment_view.dart';
 import '../features/conversation/session_status.dart';
 import '../features/conversation/session_views.dart';
-import '../features/conversation/task_execution_view.dart';
 import '../features/conversation/artifacts_view.dart';
 import '../features/workbench/workbench_panel.dart' show previewUrl;
 import '../features/conversation/code_graph_view.dart';
@@ -782,7 +781,6 @@ class _ConversationState extends State<Conversation>
                             children: [
                               for (final tab in {
                                 'conversation': '对话',
-                                'task-acceptance': '任务验收',
                                 if (c.menuSettings['trajectory'] != false)
                                   'trajectory': '轨迹',
                                 if (c.menuSettings['artifacts'] != false)
@@ -850,15 +848,6 @@ class _ConversationState extends State<Conversation>
                     Expanded(
                       child: view == 'context'
                           ? ContextView(controller: c)
-                          : view == 'task-acceptance' &&
-                                c.client != null &&
-                                c.selectedId != null
-                          ? TaskExecutionView(
-                              key: ValueKey('acceptance-${c.selectedId}'),
-                              api: c.client!,
-                              session: c.selectedId!,
-                              controller: c,
-                            )
                           : view == 'code-graph' &&
                                 c.client != null &&
                                 c.selectedId != null

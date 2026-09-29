@@ -136,6 +136,10 @@ pub fn install(
                     let agent=agent.ok_or_else(||ToolBodyError::plain("code intelligence requires an initiating Agent"))?;
                     let cwd=agent.session().header().cwd.clone().ok_or_else(||ToolBodyError::plain("this Agent has no workspace"))?;
                     let root=std::fs::canonicalize(&cwd).map_err(|error|ToolBodyError::plain(format!("workspace is unavailable: {error}")))?;
+                    let fs=agent.ctx().get_typed::<Arc<dyn dsh_fs::FileSystem>>("fs",false).ok_or_else(||ToolBodyError::plain("code intelligence requires the session filesystem"))?.as_ref().clone();
+                    let fs=fs.for_tool(Some(agent.id().as_str())).unwrap_or(fs);
+                    let target=fs.resolve(&cwd,None).await.map_err(|error|ToolBodyError::coded(error.to_string(),"FsError",error.code.as_str()))?;
+                    fs.authorize_search(&target).await.map_err(|error|ToolBodyError::coded(error.to_string(),"FsError",error.code.as_str()))?;
                     let string=|key:&str|args.get(key).and_then(Value::as_str).unwrap_or("").to_string();
                     let scope=scoped_path(&root,&string("path")).map_err(ToolBodyError::plain)?;
                     let files=args.get("files").and_then(Value::as_array).into_iter().flatten().map(|file|scoped_path(&root,file.as_str().unwrap_or(""))).collect::<Result<Vec<_>,_>>().map_err(ToolBodyError::plain)?;

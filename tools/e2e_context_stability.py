@@ -11,7 +11,7 @@ class Model(BaseHTTPRequestHandler):
  def log_message(self,*args):pass
  def do_POST(self):
   body=json.loads(self.rfile.read(int(self.headers['Content-Length'])));messages=body['messages'];idx,marker=next((i,m['content']) for i,m in reversed(list(enumerate(messages))) if m.get('role')=='user' and m.get('content') in ['FIRST','SECOND','RESTORED']);out=[m for m in messages[idx+1:] if m.get('role')=='tool'];steps=[('read',{'file_path':str(workspace/'proof.txt')})]
-  if marker=='FIRST':steps=[('task_execution',{'action':'create','contract':{'objective':'Check stable context','acceptanceChecks':[{'id':'content','description':'sentinel','checker':{'kind':'text','path':str(workspace/'proof.txt'),'required':['SENTINEL']}}]}}),*steps,*steps,*steps]
+  if marker=='FIRST':steps=[*steps,*steps,*steps]
   if len(out)<len(steps):
    name,args=steps[len(out)];delta={'role':'assistant','tool_calls':[{'index':0,'id':'call_'+uuid.uuid4().hex,'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]};finish='tool_calls'
   else:delta={'role':'assistant','content':'Fixture response'};finish='stop'
@@ -35,7 +35,7 @@ def turn(port,sid,marker,count):
  snapshots=[e for e in events if e['type']=='user/message' and e['data'].get('source',{}).get('plugin')=='@deepseek-ai/dsh-system-prompt'];print(marker,'runtime snapshots',len(snapshots),flush=True);return snapshots
 try:
  with running_fixture_host(binary,run,env,None,'first') as port:
-  sid=call(port,'session.create',{'cwd':str(workspace),'agentPreset':'standard'})['sessionId'];call(port,'session.rename',{'sessionId':sid,'title':'Context stability acceptance'});first=turn(port,sid,'FIRST',1);assert len(first)==3,[(e['seq'],e['data']['source']) for e in first]
+  sid=call(port,'session.create',{'cwd':str(workspace),'agentPreset':'standard'})['sessionId'];call(port,'session.rename',{'sessionId':sid,'title':'Context stability acceptance'});first=turn(port,sid,'FIRST',1);assert len(first)==1,[(e['seq'],e['data']['source']) for e in first]
   second=turn(port,sid,'SECOND',2);assert len(second)==len(first),'unchanged second turn reinjected context'
   deadline=time.monotonic()+5
   while time.monotonic()<deadline:

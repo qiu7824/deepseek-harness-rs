@@ -227,6 +227,25 @@ pub type AttachmentAbort = Arc<dyn Fn() -> bool + Send + Sync>;
 
 use std::sync::Arc;
 
+/// Copies a verified, session-authorized image into that session's managed
+/// execution resources without disclosing the shared attachment object store.
+#[async_trait::async_trait]
+pub trait SessionAttachmentMaterializer: Send + Sync + 'static {
+    async fn materialize_image(
+        &self,
+        owner: &str,
+        workspace: Option<&str>,
+        image: ImageAttachmentStream,
+        signal: Option<&AttachmentAbort>,
+    ) -> Result<std::path::PathBuf, AttachmentError>;
+}
+
+impl cordis::Service for dyn SessionAttachmentMaterializer {
+    fn service_name(&self) -> &'static str {
+        "sessionAttachmentMaterializer"
+    }
+}
+
 /// Immutable binary attachment service. Implementations validate bytes
 /// before publishing a reference (TS `AttachmentStore`).
 #[async_trait::async_trait]

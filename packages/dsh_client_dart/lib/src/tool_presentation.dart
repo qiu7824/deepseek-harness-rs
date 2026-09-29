@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'models.dart';
 import 'display_path.dart';
 
@@ -122,7 +123,6 @@ ToolPresentation toolPresentation({
     'present': '展示内容',
     'navigate': '打开网页',
     'web_fetch': '获取网页',
-    'task_execution': '任务执行',
   };
   if (name == 'tool_search' || name == 'computer_use') {
     final action = pick(args, ['action']) ?? '';

@@ -105,7 +105,7 @@ pub(crate) async fn snapshot_pdf(source: &Path) -> Result<(String, Arc<PreviewPd
     let identity = snapshot(source, &path, 64 * 1024 * 1024).await?;
     let check = path.clone();
     let bytes = tokio::task::spawn_blocking(move || {
-        dsh_task_runtime::office::validate_export_file_framing(&check)
+        crate::office_input_validation::validate_export_file_framing(&check)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -164,7 +164,7 @@ impl OfficePreview {
         }
         let check = input.clone();
         tokio::task::spawn_blocking(move || {
-            dsh_task_runtime::office::validate_office_file_for_automation(&check, &ext)
+            crate::office_input_validation::validate_office_file_for_automation(&check, &ext)
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -211,7 +211,7 @@ impl OfficePreview {
             }
             let check = output.clone();
             let bytes = tokio::task::spawn_blocking(move || {
-                dsh_task_runtime::office::validate_export_file_framing(&check)
+                crate::office_input_validation::validate_export_file_framing(&check)
             })
             .await
             .map_err(|e| e.to_string())??;

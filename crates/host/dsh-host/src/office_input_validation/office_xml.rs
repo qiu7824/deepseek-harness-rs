@@ -1,5 +1,5 @@
 //! Streaming namespace-aware OOXML validation; retains no document tree.
-use crate::Result;
+use super::Result;
 use quick_xml::{
     Reader,
     events::{BytesStart, Event},

@@ -70,9 +70,6 @@ fn snapshot(execution: &ToolExecution) -> Result<Value, String> {
             .map(|provider|provider.backend_fingerprint_for(policy));
         json!({"mode":policy.mode.as_str(),"workspace":policy.workspace_root,"readOnlyRoots":roots,"backend":backend})
     });
-    let task = ctx.get_typed::<Arc<crate::task_execution::TaskExecution>>("taskExecution", false)
-        .map(|service| service.runtime.active(agent.id().as_str())).transpose()?.flatten()
-        .map(|task|json!({"taskId":task.task_id,"requirementsRevision":task.requirements_revision,"goalBinding":task.goal_binding}));
     let role = match execution.name.as_str() {
         "generate_image" => Some("image"),
         "web_search" => Some("search"),
@@ -84,7 +81,7 @@ fn snapshot(execution: &ToolExecution) -> Result<Value, String> {
             .map(|models| models.admission_identity(role, agent))
     });
     let mut value = json!({"version":1,"sessionId":agent.id().as_str(),"workspace":workspace,"workingDirectory":workdir,
-        "task":task,"nativeRoute":native_route,"selectedPolicy":selected,"profile":profile,"requestedPermissions":execution.arguments.get("sandbox_permissions")});
+        "nativeRoute":native_route,"selectedPolicy":selected,"profile":profile,"requestedPermissions":execution.arguments.get("sandbox_permissions")});
     let fingerprint = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&value).map_err(|error| error.to_string())?)

@@ -18,7 +18,7 @@ vm.runInNewContext(source.slice(start,end),context);
 const root=require(path.join(modules,'react-dom/client')).createRoot(document.getElementById('root'));
 const act=fn=>React.act(async()=>{await fn();}),t=key=>key;
 const panel=context.createTeamPanel();
-const board={teamId:'a',config:{revision:0,mode:'auto',profile:null},leadRunning:false,members:{worker:{id:'child-a',name:'worker',description:'Worker',phase:'active',status:'idle'}},tasks:{check:{id:'check',revision:1,subject:'Review module',description:'Verify behavior',ownerId:'child-a',status:'pending',blockedBy:[],writeScopes:['src/module'],acceptance:'Tests pass',result:''}},mailbox:[]};
+const board={teamId:'a',config:{revision:0,mode:'auto',profile:null},leadRunning:false,members:{worker:{id:'child-a',name:'worker',description:'Worker',phase:'active',status:'idle'}},tasks:{check:{id:'check',revision:1,subject:'Review module',description:'Verify behavior',ownerId:'child-a',status:'pending',blockedBy:[],writeScopes:['src/module'],result:''}},mailbox:[]};
 const value=(id='a')=>({enabled:true,settings:settings.value,board:{...structuredClone(board),teamId:id}});
 const controls=()=>requests.filter(r=>JSON.parse(r.options.body).action==='control');
 const reply=(request,data,status=200)=>act(()=>{request.done=true;request.resolve({ok:status===200,status,json:async()=>data});});
@@ -51,7 +51,7 @@ const render=id=>root.render(React.createElement(React.Fragment,null,
  await act(()=>form.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));await reply(controls().at(-1),value());await settleViews();assert.equal(field('team.memberName').value,'');
  await click('team.tasks');await act(()=>document.querySelector('.dshTeamCreate>summary').click());await input(field('team.subject'),'First task');
  const taskForm=field('team.subject').closest('form');await act(()=>taskForm.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));
- const firstTask=controls().at(-1),firstId=JSON.parse(firstTask.options.body).arguments.taskId;assert.equal(JSON.parse(firstTask.options.body).arguments.expectedRevision,0);
+ const firstTask=controls().at(-1),firstId=JSON.parse(firstTask.options.body).arguments.taskId;assert.equal(JSON.parse(firstTask.options.body).arguments.expectedRevision,0);assert.equal('acceptance' in JSON.parse(firstTask.options.body).arguments,false);
  await reply(firstTask,value());await settleViews();await input(field('team.subject'),'Second task');await act(()=>taskForm.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));
  assert.notEqual(JSON.parse(controls().at(-1).options.body).arguments.taskId,firstId,'new tasks receive a new identity after successful creation');
  await reply(controls().at(-1),value());await settleViews();await click('team.dispatch');
