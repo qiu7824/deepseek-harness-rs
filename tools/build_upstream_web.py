@@ -121,7 +121,8 @@ def main() -> None:
     rows = contract(work)
     target = args.contract or ROOT / "docs" / "upstream" / f"remote-contract-{tag}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({"release": tag, "endpoints": rows}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    with open(target, "w", encoding="utf-8", newline="\n") as output:
+        output.write(json.dumps({"release": tag, "endpoints": rows}, ensure_ascii=False, indent=1) + "\n")
     streams = sum(1 for row in rows if row["stream"])
     matched = sum(1 for row in rows if row["rustEquivalent"])
     print(f"{tag}: {len(rows)} Remote endpoints ({streams} streams), {matched} with a same-named Rust method")
