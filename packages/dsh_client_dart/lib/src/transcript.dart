@@ -188,11 +188,58 @@ class ConversationWindow {
       needsRefresh = true;
       return false;
     }
-    _insert(event);
+    if (!_extendDelta(event)) _insert(event);
     revision++;
     lastSeq = event.endSeq;
     firstSeq ??= event.startSeq;
     _bound();
+    return true;
+  }
+
+  static const _deltaFields = {
+    'text-delta': 'text',
+    'reasoning-delta': 'text',
+    'tool-call-delta': 'argumentsDelta',
+  };
+
+  /// Live streams deliver one chunk per token. Extend the directly preceding
+  /// delta of the same block, as history reads coalesce them, so a single long
+  /// step cannot exhaust the event budget. The run keeps its first seq and
+  /// time, which the trajectory reports as the first token.
+  bool _extendDelta(HistoryEvent event) {
+    if (event.type != 'assistant/chunk' || _events.isEmpty) return false;
+    final chunk = object(event.data['chunk']);
+    final field = _deltaFields[chunk['type']];
+    final delta = field == null ? null : chunk[field];
+    final previous = _events[_events.lastKey()]!;
+    if (delta is! String ||
+        previous.type != 'assistant/chunk' ||
+        previous.endSeq + 1 != event.startSeq) {
+      return false;
+    }
+    final prior = object(previous.data['chunk']);
+    final text = prior[field];
+    if (text is! String ||
+        prior['type'] != chunk['type'] ||
+        prior['index'] != chunk['index'] ||
+        prior['id'] != chunk['id'] ||
+        prior['name'] != chunk['name'] ||
+        previous.data['turn'] != event.data['turn'] ||
+        previous.data['step'] != event.data['step']) {
+      return false;
+    }
+    final size = utf8.encode(jsonEncode(delta)).length;
+    if ((_sizes[previous.seq] ?? 0) + size > maxBytes) return false;
+    _events[previous.seq] = HistoryEvent.fromJson({
+      ...previous.raw,
+      'data': {
+        ...previous.data,
+        'chunk': {...prior, field!: '$text$delta'},
+        '__historyEndSeq': event.endSeq,
+      },
+    }, view: previous.view);
+    _sizes[previous.seq] = (_sizes[previous.seq] ?? 0) + size;
+    _bytes += size;
     return true;
   }
 
@@ -208,6 +255,34 @@ class ConversationWindow {
     _events[event.seq] = event;
     _sizes[event.seq] = size;
     _bytes += size;
+    if (event.type == 'assistant/message') _dropSupersededChunks(event);
+  }
+
+  /// A completed Assistant message cites the streamed chunks it replaces.
+  /// History reads already omit them; dropping them from the live window too
+  /// keeps one long turn's per-token chunks from evicting the conversation.
+  void _dropSupersededChunks(HistoryEvent message) {
+    final sources = message.raw['sourceEventSeqs'];
+    if (sources is! List) return;
+    for (final source in sources) {
+      // Live events list single seqs; exported logs compress inclusive ranges.
+      final (start, end) = switch (source) {
+        num seq => (seq.toInt(), seq.toInt()),
+        [num first, num last] => (first.toInt(), last.toInt()),
+        _ => (1, 0),
+      };
+      var seq = _events.containsKey(start)
+          ? start
+          : _events.firstKeyAfter(start);
+      while (seq != null && seq <= end && seq < message.seq) {
+        final next = _events.firstKeyAfter(seq);
+        if (_events[seq]!.type == 'assistant/chunk') {
+          _events.remove(seq);
+          _bytes -= _sizes.remove(seq)!;
+        }
+        seq = next;
+      }
+    }
   }
 
   void _bound() {

@@ -179,4 +179,125 @@ void main() {
     expect(window.append(event(101, 'step/end', {})), isTrue);
     expect(window.needsRefresh, isFalse);
   });
+  group('live token streams', () {
+    HistoryEvent chunk(int seq, String type, String text, {int step = 1}) =>
+        HistoryEvent.fromJson({
+          'seq': seq,
+          'time': 1000 + seq,
+          'type': 'assistant/chunk',
+          'data': {
+            'turn': 1,
+            'step': step,
+            'chunk': {'type': type, 'index': 0, 'text': text},
+          },
+        });
+    HistoryEvent answer(int seq, Object sources, {int step = 1}) =>
+        HistoryEvent.fromJson({
+          'seq': seq,
+          'time': 1000 + seq,
+          'type': 'assistant/message',
+          'surfaceOp': 'append',
+          'sourceEventSeqs': sources,
+          'data': {
+            'turn': 1,
+            'step': step,
+            'message': {
+              'id': 'm$step',
+              'content': [
+                {'type': 'reasoning', 'text': 'thinking'},
+              ],
+            },
+          },
+        });
+    ConversationWindow started({int maxEvents = 64}) =>
+        ConversationWindow(maxEvents: maxEvents)..replace(
+          page([
+            event(0, 'user/message', {
+              'content': [
+                {'type': 'text', 'text': 'question'},
+              ],
+            }),
+            event(1, 'turn/start', {'turn': 1}),
+          ]),
+        );
+
+    test('one block keeps one retained delta per uninterrupted run', () {
+      final window = started();
+      for (var seq = 2; seq < 20002; seq++) {
+        expect(window.append(chunk(seq, 'reasoning-delta', 't')), isTrue);
+      }
+      expect(window.eventCount, 3);
+      expect(window.hasBefore, isFalse);
+      final retained = window.events.last;
+      expect(retained.seq, 2);
+      expect(retained.raw['time'], 1002);
+      expect(retained.endSeq, 20001);
+      expect(window.lastSeq, 20001);
+      final items = window.project();
+      expect(items.first.text, 'question');
+      expect(items.last.text, 't' * 20000);
+      expect(items.last.streaming, isTrue);
+      window.append(event(20002, 'request/phase', {'turn': 1, 'step': 1}));
+      window.append(chunk(20003, 'reasoning-delta', 'u'));
+      window.append(chunk(20004, 'text-delta', 'answer'));
+      expect(window.eventCount, 6);
+      expect(
+        window.project().where((i) => i.kind == 'reasoning').single.text,
+        '${'t' * 20000}u',
+      );
+    });
+
+    test('a completed message releases the chunks it cites', () {
+      for (final sources in [
+        [for (var seq = 2; seq < 300; seq++) seq],
+        [
+          [2, 299],
+        ],
+      ]) {
+        final window = started(maxEvents: 1024);
+        for (var seq = 2; seq < 300; seq++) {
+          window.append(
+            chunk(seq, seq.isEven ? 'reasoning-delta' : 'usage', 'x'),
+          );
+        }
+        window.append(answer(300, sources));
+        expect(window.events.map((e) => e.type), [
+          'user/message',
+          'turn/start',
+          'assistant/message',
+        ]);
+        expect(window.project().map((i) => i.text), ['question', 'thinking']);
+      }
+    });
+
+    test('a long turn no longer evicts the question it answers', () {
+      final window = started(maxEvents: 256);
+      var seq = 2;
+      for (var step = 1; step <= 40; step++) {
+        final first = seq;
+        window.append(event(seq++, 'step/start', {'turn': 1, 'step': step}));
+        for (var token = 0; token < 400; token++) {
+          window.append(
+            chunk(
+              seq++,
+              token % 100 == 99 ? 'usage' : 'reasoning-delta',
+              'r',
+              step: step,
+            ),
+          );
+        }
+        window.append(
+          answer(seq++, [
+            [first + 1, seq - 2],
+          ], step: step),
+        );
+        window.append(event(seq++, 'step/end', {'turn': 1, 'step': step}));
+      }
+      expect(window.hasBefore, isFalse);
+      expect(window.eventCount, 2 + 40 * 3);
+      final items = window.project();
+      expect(items.first.text, 'question');
+      expect(items.where((i) => i.kind == 'reasoning'), hasLength(40));
+    });
+  });
 }
