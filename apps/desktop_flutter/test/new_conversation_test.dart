@@ -87,6 +87,95 @@ void main() {
     c.dispose();
   });
 
+  test(
+    'new conversation starts in the Workspace of the selected folder',
+    () async {
+      final api = FakeClient();
+      final c = DesktopController(
+        MemoryPreferences(),
+        clientFactory: (_) => api,
+      );
+      await c.connect('http://127.0.0.1');
+      await Future<void>.delayed(Duration.zero);
+      final workspaces = [
+        {
+          'workspaceId': 'first',
+          'path': r'E:\first',
+          'title': 'first',
+          'sessionIds': <String>[],
+        },
+        {
+          'workspaceId': 'road',
+          'path': r'E:\资料\交通\龙江路',
+          'title': '龙江路',
+          'sessionIds': <String>[],
+        },
+      ];
+      Json? created;
+      api.handleCall = (method, payload) async {
+        if (method == 'session.create') {
+          created = payload;
+          return {'sessionId': 'next'};
+        }
+        return {'items': workspaces, 'archivedSessionIds': []};
+      };
+      c.workspaces = workspaces;
+      c.workspaceId = 'first';
+      // The Host reports this session's folder with the extended-length prefix
+      // and without Workspace membership; the sidebar still groups it there.
+      c.sessions = [
+        SessionSummary.fromJson({
+          'sessionId': 'task',
+          'cwd': r'\\?\E:\资料\交通\龙江路',
+        }),
+      ];
+      await c.select('task');
+      expect(c.workspaceId, 'road');
+      await c.startConversation();
+      expect(created?['cwd'], r'E:\资料\交通\龙江路');
+      expect(created?['workspaceId'], 'road');
+      c.dispose();
+    },
+  );
+
+  test('refresh keeps the chosen Workspace, else resumes the latest', () async {
+    final api = FakeClient();
+    final c = DesktopController(MemoryPreferences(), clientFactory: (_) => api);
+    await c.connect('http://127.0.0.1');
+    await Future<void>.delayed(Duration.zero);
+    final items = [
+      {
+        'workspaceId': 'first',
+        'path': r'E:\first',
+        'sessionIds': ['old'],
+      },
+      {'workspaceId': 'latest', 'path': r'E:\latest', 'sessionIds': []},
+    ];
+    api.liveSessions = [
+      SessionSummary.fromJson({
+        'sessionId': 'old',
+        'cwd': r'E:\first',
+        'updatedAt': 1,
+      }),
+      SessionSummary.fromJson({
+        'sessionId': 'new',
+        'cwd': r'\\?\E:\latest',
+        'updatedAt': 2,
+      }),
+    ];
+    api.handleCall = (method, payload) async => {
+      'items': items,
+      'archivedSessionIds': [],
+    };
+    c.workspaceId = null;
+    await c.refreshSessions();
+    expect(c.workspaceId, 'latest');
+    c.targetWorkspace('first');
+    await c.refreshSessions();
+    expect(c.workspaceId, 'first');
+    c.dispose();
+  });
+
   testWidgets(
     'selected blank session keeps the hero and hides active conversation chrome',
     (tester) async {

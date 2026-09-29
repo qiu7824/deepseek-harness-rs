@@ -828,11 +828,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         c.archivedSessionIds.contains(session.id) ||
         (session.id == c.selectedId && query.isEmpty);
     var groupCount = 0;
+    final owners = {
+      for (final s in visibleSessions) s.id: c.workspaceOf(s)?['workspaceId'],
+    };
     for (final workspace in c.workspaces) {
       final id = workspace['workspaceId'] as String;
-      final ids = (workspace['sessionIds'] as List? ?? []).cast<String>();
       final entries = visibleSessions
-          .where((s) => ids.contains(s.id) || s.cwd == workspace['path'])
+          .where((s) => owners[s.id] == id)
           .where(hasVisibleContent)
           .where(
             (s) =>
@@ -852,8 +854,17 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
             title: '${workspace['title']}',
             path: '${workspace['path']}',
             expanded: groupExpanded(id),
-            active: c.workspaceId == id || c.selected?.cwd == workspace['path'],
-            onPressed: () => setGroupExpanded(id, !groupExpanded(id)),
+            // Highlight only where 新会话 will start.
+            active: c.workspaceId == id,
+            onPressed: () {
+              final expanded = groupExpanded(id), previous = c.workspaceId;
+              // Default expansion follows the target; keep the old one as shown.
+              if (previous != null && previous != id) {
+                groupExpansion.putIfAbsent(previous, () => true);
+              }
+              c.targetWorkspace(id);
+              setGroupExpanded(id, !expanded);
+            },
             onMenu: (position) => workspaceMenu(workspace, position),
           ),
         ),

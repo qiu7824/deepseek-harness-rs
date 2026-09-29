@@ -100,6 +100,43 @@ class DesktopController extends ChangeNotifier {
   };
   Json? get currentWorkspace =>
       workspaces.where((w) => w['workspaceId'] == workspaceId).firstOrNull;
+
+  /// The Workspace a session belongs to: its registered membership, else the
+  /// folder it runs in. The sidebar groups sessions by the same rule.
+  Json? workspaceOf(SessionSummary session) {
+    final registered = workspaces
+        .where((w) => (w['sessionIds'] as List? ?? []).contains(session.id))
+        .firstOrNull;
+    if (registered != null) return registered;
+    final folder = _pathKey(session.cwd);
+    return workspaces.where((w) => _pathKey(w['path']) == folder).firstOrNull;
+  }
+
+  final _pathKeys = <String, String>{};
+  String _pathKey(Object? path) {
+    final raw = '${path ?? ''}';
+    if (_pathKeys.length > 4096) _pathKeys.clear();
+    return _pathKeys[raw] ??= workspacePathKey(raw);
+  }
+
+  /// New sessions start in this Workspace until another one is chosen.
+  void targetWorkspace(String id) {
+    if (workspaceId == id) return;
+    workspaceId = id;
+    emit();
+  }
+
+  String? get _recentWorkspaceId {
+    final recent =
+        sessions.where((s) => !archivedSessionIds.contains(s.id)).toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    for (final session in recent) {
+      final owner = workspaceOf(session)?['workspaceId'];
+      if (owner is String) return owner;
+    }
+    return null;
+  }
+
   String? selectedId;
   ModelCatalog? catalog;
   ConversationWindow window = ConversationWindow();
@@ -470,7 +507,11 @@ class DesktopController extends ChangeNotifier {
           )
           .toList();
       this.workspaces = objects(workspaces['items']);
-      workspaceId ??= this.workspaces.firstOrNull?['workspaceId'] as String?;
+      // Without a chosen Workspace, continue where the user last worked
+      // instead of whichever Workspace happens to be listed first.
+      workspaceId ??=
+          _recentWorkspaceId ??
+          this.workspaces.firstOrNull?['workspaceId'] as String?;
       emit();
     }();
     _listRequest = task;
@@ -496,10 +537,9 @@ class DesktopController extends ChangeNotifier {
     clearProjections();
     queued = [];
     jobs = [];
+    final session = selected;
     workspaceId =
-        workspaces
-                .where((w) => (w['sessionIds'] as List? ?? []).contains(id))
-                .firstOrNull?['workspaceId']
+        (session == null ? null : workspaceOf(session))?['workspaceId']
             as String? ??
         workspaceId;
     loading = false;
