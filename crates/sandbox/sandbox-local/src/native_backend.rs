@@ -212,7 +212,42 @@ impl NativeBackend {
         // Legacy workspace lists remain parseable, but Windows execution now
         // consistently uses the selected native implementation for every project.
         config.validate_configuration()?;
-        Ok(Some(config))
+        Ok(Some(
+            config.rebind_missing_helpers(|| Self::installed(root)),
+        ))
+    }
+
+    /// A selection saved by another installation (for example a Web core that
+    /// was since removed) names helpers that no longer exist, which disables
+    /// every command. Rebind it to the verified helpers packaged with this Host
+    /// and keep the chosen implementation, network policy and state. Helpers
+    /// that exist with another identity still fail closed in `verify`.
+    fn rebind_missing_helpers(self, packaged: impl FnOnce() -> Result<Self, String>) -> Self {
+        let Some(folder) = self.runner.parent() else {
+            return self;
+        };
+        let missing = [
+            self.runner.clone(),
+            folder.join("dsh-command-runner.exe"),
+            folder.join("dsh-windows-sandbox-setup.exe"),
+        ]
+        .iter()
+        .any(|path| {
+            matches!(std::fs::metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        });
+        if !missing {
+            return self;
+        }
+        match packaged() {
+            Ok(packaged) => Self {
+                runner: packaged.runner,
+                sha256: packaged.sha256,
+                command_runner_sha256: packaged.command_runner_sha256,
+                setup_sha256: packaged.setup_sha256,
+                ..self
+            },
+            Err(_) => self,
+        }
     }
 
     pub(crate) fn installed(home: &Path) -> Result<Self, String> {
@@ -221,6 +256,10 @@ impl NativeBackend {
             .parent()
             .ok_or("Host executable has no directory")?
             .join("native-sandbox");
+        Self::packaged(&folder, home)
+    }
+
+    fn packaged(folder: &Path, home: &Path) -> Result<Self, String> {
         let digest = |name: &str| {
             digest_file(&folder.join(name)).map_err(|e| {
                 format!(
@@ -657,6 +696,55 @@ mod tests {
             digest_reader(Failed).unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied
         );
+    }
+
+    #[test]
+    fn selection_of_a_removed_installation_rebinds_to_packaged_helpers() {
+        let root = std::env::temp_dir().join(format!("dsh-native-rebind-{}", std::process::id()));
+        let packaged = root.join("desktop/host/native-sandbox");
+        std::fs::create_dir_all(&packaged).unwrap();
+        for name in [
+            "dsh-windows-native.exe",
+            "dsh-command-runner.exe",
+            "dsh-windows-sandbox-setup.exe",
+        ] {
+            std::fs::write(packaged.join(name), format!("packaged {name}")).unwrap();
+        }
+        let stale: NativeBackend = serde_json::from_value(serde_json::json!({
+            "version": 1, "backend": "windows-native", "implementation": "unelevated",
+            "network": "enabled", "runner": root.join("core/native-sandbox/dsh-windows-native.exe"),
+            "stateDirectory": root.join("state"), "sha256": "0".repeat(64),
+            "commandRunnerSha256": "0".repeat(64), "setupSha256": "0".repeat(64)
+        }))
+        .unwrap();
+        assert!(
+            stale
+                .verify()
+                .unwrap_err()
+                .contains("missing native helper")
+        );
+        let rebound = stale
+            .clone()
+            .rebind_missing_helpers(|| NativeBackend::packaged(&packaged, &root));
+        assert_eq!(rebound.runner, packaged.join("dsh-windows-native.exe"));
+        assert_eq!(
+            (rebound.implementation.as_str(), rebound.network.as_str()),
+            ("unelevated", "enabled")
+        );
+        assert_eq!(rebound.state_directory, root.join("state"));
+        rebound.verify().unwrap();
+        // Without packaged helpers the stale selection keeps failing closed.
+        let kept = stale
+            .clone()
+            .rebind_missing_helpers(|| NativeBackend::packaged(&root.join("absent"), &root));
+        assert!(kept == stale);
+        // A present helper with another identity is never replaced.
+        let mut tampered = rebound.clone();
+        tampered.sha256 = "0".repeat(64);
+        let tampered =
+            tampered.rebind_missing_helpers(|| panic!("present helpers must not be rebound"));
+        assert!(tampered.verify().unwrap_err().contains("identity mismatch"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
