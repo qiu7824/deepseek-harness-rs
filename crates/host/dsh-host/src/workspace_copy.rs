@@ -95,6 +95,17 @@ fn hash(path: &Path) -> Result<String, String> {
     }
     Ok(format!("{:x}", state.finalize()))
 }
+/// Leading bytes for a format signature check.
+pub(crate) fn head(path: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(dsh_fs::formats::SIGNATURE_BYTES);
+    std::fs::File::open(path)
+        .and_then(|file| {
+            file.take(dsh_fs::formats::SIGNATURE_BYTES as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
 
 pub fn prepare(
     store: &Arc<Store>,
@@ -358,6 +369,9 @@ pub fn promote_validated_tracked(
         if expected_source_sha256.is_some_and(|expected| expected != checksum) {
             return Err("候选产物内容与预期摘要不一致；目标未修改".into());
         }
+        if !dsh_fs::formats::content_matches_extension(&destination, &head(&temp)?) {
+            return Err("BINARY_FORMAT_REQUIRED: 候选产物不是目标扩展名对应的真实格式（改扩展名不会转换格式）；目标未修改。DOCX/XLSX 请用 office_write 生成".into());
+        }
         if !matches(&destination)? {
             return Err("交付期间目标被修改，候选产物保留".into());
         }
@@ -571,6 +585,86 @@ mod tests {
         assert!(error.contains("预期摘要不一致"));
         assert!(!project.join("result.txt").exists());
         assert_eq!(std::fs::read(&path).unwrap(), b"changed bytes");
+        assert!(!std::fs::read_dir(&project).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".dsh-delivery-")
+        }));
+        drop(candidate);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn promotion_rejects_text_renamed_as_an_office_document() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = fixture();
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let store = Store::open(root.join("managed")).unwrap();
+        let mut candidate = store
+            .allocate("owner", &project.to_string_lossy(), "candidate", "contacts")
+            .unwrap();
+        let id = candidate.id().to_owned();
+        std::fs::write(
+            candidate.path().join("通讯录.xlsx"),
+            "<html><table><tr><td>17603339142</td></tr></table></html>",
+        )
+        .unwrap();
+        std::fs::write(candidate.path().join("real.xlsx"), b"PK\x03\x04 workbook").unwrap();
+        candidate.finish(true).unwrap();
+        let seen = Arc::new(AtomicBool::new(false));
+        let seen_marker = seen.clone();
+        let marker: Arc<dyn Fn() -> Result<(), String> + Send + Sync> = Arc::new(move || {
+            seen_marker.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        for target in ["通讯录.xlsx", "通讯录.XLSX", "通讯录.docx"] {
+            let error = promote_validated_tracked(
+                &store,
+                &id,
+                "通讯录.xlsx",
+                &project.to_string_lossy(),
+                target,
+                &Value::Null,
+                None,
+                Arc::new(|| false),
+                marker.clone(),
+            )
+            .unwrap_err();
+            assert!(error.starts_with("BINARY_FORMAT_REQUIRED"), "{error}");
+            assert!(
+                !seen.load(Ordering::SeqCst),
+                "rejection has no effect boundary"
+            );
+        }
+        assert_eq!(std::fs::read_dir(&project).unwrap().count(), 0);
+        promote_validated_tracked(
+            &store,
+            &id,
+            "通讯录.xlsx",
+            &project.to_string_lossy(),
+            "通讯录.html",
+            &Value::Null,
+            None,
+            Arc::new(|| false),
+            marker.clone(),
+        )
+        .unwrap();
+        promote_validated_tracked(
+            &store,
+            &id,
+            "real.xlsx",
+            &project.to_string_lossy(),
+            "通讯录.xlsx",
+            &Value::Null,
+            None,
+            Arc::new(|| false),
+            marker,
+        )
+        .unwrap();
+        assert!(project.join("通讯录.xlsx").is_file());
         assert!(!std::fs::read_dir(&project).unwrap().any(|entry| {
             entry
                 .unwrap()

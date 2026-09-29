@@ -1,4 +1,4 @@
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +136,8 @@ impl Request {
                 request.workspace.is_absolute(),
                 "workspace must be absolute"
             );
-            request.workspace = std::fs::canonicalize(&request.workspace)?;
+            request.workspace = std::fs::canonicalize(&request.workspace)
+                .with_context(|| format!("workspace is unavailable: {}", request.workspace.display()))?;
             ensure!(
                 request.workspace.is_dir() && request.workspace.parent().is_some(),
                 "workspace must be a specific project directory"
@@ -155,19 +156,22 @@ impl Request {
             request.reads.len() + request.temps.len() + request.private_roots.len() <= 4096,
             "too many execution roots"
         );
+        // Name the offending root: callers cannot otherwise tell which of many
+        // attachment, runtime or temporary grants blocked the whole launch.
         for path in &request.reads {
-            ensure!(path.is_absolute() && (path.is_dir() || path.is_file()), "read root must be an existing absolute file or directory");
+            ensure!(path.is_absolute() && (path.is_dir() || path.is_file()), "read root must be an existing absolute file or directory: {}", path.display());
         }
         for path in &request.temps {
             ensure!(
                 path.is_absolute() && path.is_dir(),
-                "execution root must be an existing absolute directory"
+                "execution root must be an existing absolute directory: {}",
+                path.display()
             );
         }
         for path in &request.private_roots {
-            ensure!(path.is_absolute() && path.parent().is_some() && !path.components().any(|part|matches!(part,std::path::Component::ParentDir)), "private root must be an absolute product directory");
-            if path.exists() { ensure!(path.is_dir(),"private root must be a directory"); }
-            ensure!(crate::toolchain::real_profile().map(|profile|codex_windows_sandbox::canonicalize_path(path)!=codex_windows_sandbox::canonicalize_path(&profile)).unwrap_or(false),"the whole user profile cannot be a private root");
+            ensure!(path.is_absolute() && path.parent().is_some() && !path.components().any(|part|matches!(part,std::path::Component::ParentDir)), "private root must be an absolute product directory: {}", path.display());
+            if path.exists() { ensure!(path.is_dir(),"private root must be a directory: {}", path.display()); }
+            ensure!(crate::toolchain::real_profile().map(|profile|codex_windows_sandbox::canonicalize_path(path)!=codex_windows_sandbox::canonicalize_path(&profile)).unwrap_or(false),"the whole user profile cannot be a private root: {}", path.display());
         }
         if request.action == Action::Run {
             ensure!(!request.command.is_empty(), "missing command");
@@ -198,7 +202,11 @@ mod tests {
         let mut args=base.clone();for _ in 0..40 {args.extend(["--read-root".into(),file.display().to_string()]);}
         args.extend(["--private-root".into(),root.join("offline-private").display().to_string(),"--".into(),"whoami.exe".into()]);
         let parsed=Request::parse(args.into_iter()).unwrap();assert_eq!(parsed.reads.len(),40);assert!(parsed.reads.iter().all(|path|path==&file));
-        let mut invalid=base;invalid.extend(["--temp-root".into(),file.display().to_string(),"--".into(),"whoami.exe".into()]);assert!(Request::parse(invalid.into_iter()).is_err());
+        let mut invalid=base.clone();invalid.extend(["--temp-root".into(),file.display().to_string(),"--".into(),"whoami.exe".into()]);
+        let error=Request::parse(invalid.into_iter()).unwrap_err().to_string();assert!(error.contains(&file.display().to_string()),"{error}");
+        let missing=root.join("已清理的附件.docx");
+        let mut invalid=base;invalid.extend(["--read-root".into(),missing.display().to_string(),"--".into(),"whoami.exe".into()]);
+        let error=Request::parse(invalid.into_iter()).unwrap_err().to_string();assert!(error.contains(&missing.display().to_string()),"{error}");
         std::fs::remove_file(file).unwrap();std::fs::remove_dir(root).unwrap();
     }
 }

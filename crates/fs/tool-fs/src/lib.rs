@@ -27,32 +27,7 @@ const READ_MAX_BYTES: usize = 50 * 1024;
 const STREAM_MIN_SIZE: u64 = 10 * 1024 * 1024;
 
 fn require_text_output_path(path: &str) -> Result<(), ToolBodyError> {
-    let extension = std::path::Path::new(path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if matches!(
-        extension.as_str(),
-        "doc"
-            | "docx"
-            | "docm"
-            | "dotx"
-            | "xls"
-            | "xlsx"
-            | "xlsm"
-            | "xlsb"
-            | "ppt"
-            | "pptx"
-            | "pptm"
-            | "pdf"
-            | "zip"
-            | "png"
-            | "jpg"
-            | "jpeg"
-            | "gif"
-            | "webp"
-    ) {
+    if dsh_fs::formats::is_binary_format_path(std::path::Path::new(path)) {
         return Err(ToolBodyError::coded(
             "write only creates UTF-8 text. Use office_write for real DOCX/XLSX, or a format-aware tool for other binary formats. Renaming HTML/text does not convert its format.",
             "ToolInputError",

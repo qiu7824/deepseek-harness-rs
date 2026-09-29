@@ -55,6 +55,60 @@ fn resolve_workspace_root(path: &str) -> String {
         .into_owned()
 }
 
+/// Attachment roots granted to one confined execution. Native helpers receive
+/// every root on a single command line (32767 UTF-16 units shared with the
+/// runtime roots and the command itself) and reconcile each grant per launch,
+/// so screenshots, video frames and rendered pages accumulating in a long
+/// session must not grow the grant set without bound.
+pub const MAX_ATTACHMENT_ROOTS: usize = 64;
+/// Budget for the attachment root paths, in UTF-16 units.
+pub const MAX_ATTACHMENT_ROOT_UNITS: usize = 8 * 1024;
+
+enum Admitted {
+    File(dsh_attachment::FileAttachmentRef),
+    Image(dsh_attachment::ImageAttachmentRef),
+}
+
+/// Content the user admitted outranks tool-produced images; within each tier
+/// the newest wins. Missing objects are skipped rather than handed to a helper
+/// that rejects the whole launch. Images left out stay reachable through
+/// `read_image`, which gives scripts a session-owned copy.
+fn attachment_roots(
+    store: &dyn dsh_attachment::AttachmentStore,
+    admitted: &[(bool, Admitted)],
+) -> Vec<String> {
+    let mut roots = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut units = 0;
+    'tiers: for user_tier in [true, false] {
+        for (user, item) in admitted.iter().rev() {
+            if *user != user_tier {
+                continue;
+            }
+            if roots.len() == MAX_ATTACHMENT_ROOTS {
+                break 'tiers;
+            }
+            let path = match item {
+                Admitted::File(reference) => store
+                    .file_host_path(reference)
+                    .filter(|path| path.is_file()),
+                Admitted::Image(reference) => store.image_host_path(reference),
+            };
+            let Some(path) = path.map(|path| path.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let cost = path.encode_utf16().count();
+            if units + cost > MAX_ATTACHMENT_ROOT_UNITS || !seen.insert(path.clone()) {
+                continue;
+            }
+            units += cost;
+            roots.push(path);
+        }
+    }
+    roots.sort();
+    roots
+}
+
 /// The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment
 /// default mode, fallback workspace root, and current request-time policy
 /// section.
@@ -117,7 +171,7 @@ impl SandboxPolicyService {
     ) -> Result<SandboxExecutionPolicy, String> {
         let session = request.session.as_deref();
         let mut mode_override = None;
-        let mut paths = std::collections::BTreeSet::new();
+        let mut admitted = Vec::new();
         let store = self
             .ctx
             .get_typed::<Arc<dyn dsh_attachment::AttachmentStore>>("attachments", false);
@@ -126,25 +180,25 @@ impl SandboxPolicyService {
                 if event.type_ == "sandbox/mode" {
                     mode_override = effective_sandbox_mode(std::slice::from_ref(event));
                 }
-                if let Some(store) = &store {
-                    for reference in
+                if store.is_some() {
+                    let user = event.type_ == "user/message";
+                    admitted.extend(
                         dsh_attachment::file_references_for_event(&event.type_, &event.data)
-                    {
-                        if let Some(path) = store.file_host_path(&reference) {
-                            paths.insert(path.to_string_lossy().into_owned());
-                        }
-                    }
-                    for reference in
+                            .into_iter()
+                            .map(|reference| (user, Admitted::File(reference))),
+                    );
+                    admitted.extend(
                         dsh_attachment::image_references_for_event(&event.type_, &event.data)
-                    {
-                        if let Some(path) = store.image_host_path(&reference) {
-                            paths.insert(path.to_string_lossy().into_owned());
-                        }
-                    }
+                            .into_iter()
+                            .map(|reference| (user, Admitted::Image(reference))),
+                    );
                 }
                 Ok(true)
             })?;
         }
+        let read_only_roots = store
+            .map(|store| attachment_roots(&**store, &admitted))
+            .unwrap_or_default();
         let mode = request.mode.or(mode_override).unwrap_or(self.default_mode);
         let workspace_root = resolve_workspace_root(
             session
@@ -152,7 +206,7 @@ impl SandboxPolicyService {
                 .unwrap_or(&self.workspace_root),
         );
         Ok(SandboxExecutionPolicy {
-            read_only_roots: paths.into_iter().collect(),
+            read_only_roots,
             mode,
             workspace_root,
             session_id: session.map(|session| session.header().id.clone()),
@@ -292,6 +346,125 @@ mod image_access_tests {
                 .read_only_roots
                 .is_empty()
         );
+    }
+
+    struct Objects(ImageAttachmentLimits, std::path::PathBuf);
+    #[async_trait::async_trait]
+    impl AttachmentStore for Objects {
+        fn image_limits(&self) -> &ImageAttachmentLimits {
+            &self.0
+        }
+        fn image_host_path(&self, image: &ImageAttachmentRef) -> Option<std::path::PathBuf> {
+            Some(
+                self.1
+                    .join(image.attachment_id.as_str().strip_prefix("sha256:")?),
+            )
+        }
+        fn file_host_path(&self, file: &FileAttachmentRef) -> Option<std::path::PathBuf> {
+            Some(self.1.join(&file.name))
+        }
+        async fn validate_image(&self, _: &SaveImageAttachment) -> Result<(), AttachmentError> {
+            unreachable!()
+        }
+        async fn save_image(
+            &self,
+            _: &SaveImageAttachment,
+        ) -> Result<ImageAttachmentRef, AttachmentError> {
+            unreachable!()
+        }
+        async fn read_image(
+            &self,
+            _: &ImageAttachmentRef,
+            _: Option<&AttachmentAbort>,
+        ) -> Result<StoredImageAttachment, AttachmentError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn long_image_histories_keep_user_files_and_fit_one_native_command_line() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-attachment-roots-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("值班表.docx"), "fixture").unwrap();
+        let ctx = Context::root();
+        let store: Arc<dyn AttachmentStore> = Arc::new(Objects(
+            ImageAttachmentLimits {
+                max_image_bytes: 0,
+                max_images_per_message: 0,
+                max_message_image_bytes: 0,
+                max_image_pixels: 0,
+                media_types: vec![ImageMediaType::Png],
+            },
+            root.clone(),
+        ));
+        ctx.register_service(store);
+        let service = SandboxPolicyService::install(
+            &ctx,
+            Config {
+                mode: Some(SandboxMode::WorkspaceWrite),
+                ..Default::default()
+            },
+        );
+        let session = Arc::new(
+            Session::create(dsh_session::session_id("image-history"), None, None, None).unwrap(),
+        );
+        let digest = |index: usize| format!("{index:064x}");
+        let image = |index: usize| json!({"type":"image","attachment":{"attachmentId":format!("sha256:{}",digest(index)),"mediaType":"image/png","bytes":80,"width":1,"height":1}});
+        let file = |name: &str| json!({"type":"file","attachment":{"attachmentId":format!("sha256:{}","f".repeat(64)),"name":name,"bytes":7}});
+        let surface = || {
+            Some(dsh_session::SurfaceIntent {
+                surface_op: dsh_session::SurfaceOp::Append,
+                source_event_seqs: None,
+            })
+        };
+        session
+            .append(
+                "user/message",
+                json!({"id":"u","role":"user","source":{"kind":"user"},"content":[file("值班表.docx"),file("已清理.docx"),image(100_000)]}),
+                surface(),
+            )
+            .unwrap();
+        for index in 0..300 {
+            session
+                .append(
+                    "tool/result",
+                    json!({"message":{"id":format!("t{index}"),"role":"tool","toolCallId":format!("c{index}"),"source":{"kind":"tool","callId":format!("c{index}")},"content":[image(index)]}}),
+                    surface(),
+                )
+                .unwrap();
+        }
+        let roots = service
+            .try_resolve(&SandboxPolicyRequest {
+                session: Some(session),
+                mode: None,
+            })
+            .unwrap()
+            .read_only_roots;
+        let path = |name: String| root.join(name).to_string_lossy().into_owned();
+        assert!(roots.contains(&path("值班表.docx".into())));
+        assert!(roots.contains(&path(digest(100_000))));
+        assert!(
+            !roots.contains(&path("已清理.docx".into())),
+            "missing files are skipped"
+        );
+        assert!(
+            roots.contains(&path(digest(299))),
+            "the newest tool image stays"
+        );
+        assert!(
+            !roots.contains(&path(digest(0))),
+            "the oldest tool image is dropped"
+        );
+        assert!(roots.len() <= MAX_ATTACHMENT_ROOTS);
+        assert!(
+            roots
+                .iter()
+                .map(|root| root.encode_utf16().count())
+                .sum::<usize>()
+                <= MAX_ATTACHMENT_ROOT_UNITS
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

@@ -1,6 +1,7 @@
 //! Filesystem Service Definition (`ctx.fs`). Rust port of
 //! `@deepseek-ai/dsh-fs`.
 
+pub mod formats;
 pub mod index;
 pub mod invariant;
 pub mod types;

@@ -171,6 +171,17 @@ async fn execute(
         {
             return Err(error("目标已存在，不覆盖任何文件", "FILE_TARGET_EXISTS"));
         }
+        let path = source.path.clone();
+        let head = tokio::task::spawn_blocking(move || crate::workspace_copy::head(&path))
+            .await
+            .map_err(|e| error(e.to_string(), "FILE_READ_FAILED"))?
+            .map_err(|e| error(e, "FILE_READ_FAILED"))?;
+        if !dsh_fs::formats::content_matches_extension(&destination.path, &head) {
+            return Err(error(
+                "重命名不会转换格式：文件内容不是目标扩展名对应的真实格式，原文件保留。DOCX/XLSX 请用 office_write 生成",
+                "BINARY_FORMAT_REQUIRED",
+            ));
+        }
         Some(destination)
     } else if action == "delete" {
         None

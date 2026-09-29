@@ -895,6 +895,9 @@ impl Resources {
                         if store.get(id)?.kind == "trash" {
                             return Err("回收副本只读，请通过恢复操作还原原文件".into());
                         }
+                        if dsh_fs::formats::is_binary_format_path(Path::new(string("path")?)) {
+                            return Err("BINARY_FORMAT_REQUIRED: write 只保存 UTF-8 文本；真实 DOCX/XLSX 请用 office_write，改扩展名不会转换格式".into());
+                        }
                         mark_effects()?;
                         let path = store.write_text(id, string("path")?, string("content")?)?;
                         let saved = std::fs::read(&path).map_err(|error| error.to_string())?;

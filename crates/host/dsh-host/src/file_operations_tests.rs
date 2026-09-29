@@ -306,6 +306,41 @@ async fn file_manage_real_runtime_approvals_recovery_scope_and_stale_inputs() {
     );
     assert_eq!(std::fs::read(&owned_new).unwrap(), b"owned scratch");
 
+    // Neither a text scratch write nor an approved rename can publish HTML
+    // under an Office extension; the check runs before any prompt.
+    let allocated = call(
+        &host,
+        &owner,
+        "workspace_scratch",
+        json!({"action":"allocate","kind":"candidate","label":"contacts"}),
+        Arc::new(|| false),
+    )
+    .await;
+    let scratch_id = allocated.value.as_ref().unwrap()["id"].clone();
+    let disguised = call(
+        &host,
+        &owner,
+        "workspace_scratch",
+        json!({"action":"write","id":scratch_id,"path":"通讯录.xlsx","content":"<table><tr><td>17603339142</td></tr></table>"}),
+        Arc::new(|| false),
+    )
+    .await;
+    assert!(disguised.is_error);
+    assert!(format!("{:?}", disguised.error).contains("BINARY_FORMAT_REQUIRED"));
+    let html = workspace.join("通讯录.html");
+    std::fs::write(&html, "<table><tr><td>17603339142</td></tr></table>").unwrap();
+    let before = asks.load(Ordering::SeqCst);
+    let renamed = manage(
+        &host,
+        &owner,
+        json!({"action":"rename","file_path":html,"new_path":workspace.join("通讯录.xlsx")}),
+    )
+    .await;
+    assert!(renamed.is_error);
+    assert!(format!("{:?}", renamed.error).contains("BINARY_FORMAT_REQUIRED"));
+    assert!(html.exists() && !workspace.join("通讯录.xlsx").exists());
+    assert_eq!(asks.load(Ordering::SeqCst), before);
+
     let entered = Arc::new(tokio::sync::Notify::new());
     *answer.lock() = Answer::Pending(entered.clone());
     let cancel = Arc::new(AtomicBool::new(false));
