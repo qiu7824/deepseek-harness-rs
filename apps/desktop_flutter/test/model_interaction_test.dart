@@ -379,18 +379,14 @@ void main() {
     await tester.pumpWidget(
       ShadApp(
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: TextScaler.linear(scale),
-          ),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.linear(scale)),
           child: child!,
         ),
         home: Scaffold(
           body: Column(
             children: [
-              TextField(
-                key: const Key('integration-prompt'),
-                focusNode: focus,
-              ),
+              TextField(key: const Key('integration-prompt'), focusNode: focus),
               const Spacer(),
               Align(
                 alignment: Alignment.bottomRight,
@@ -411,7 +407,23 @@ void main() {
     if (openModels) {
       await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('model-menu-model-row')));
+      await tester.pumpAndSettle();
     }
+  }
+
+  Future<void> reopenModels(WidgetTester tester) async {
+    await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('model-menu-model-row')));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> openReasoning(WidgetTester tester) async {
+    await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
+    await tester.pumpAndSettle();
   }
 
   testWidgets(
@@ -431,13 +443,13 @@ void main() {
       expect(find.byKey(const Key('context-quick-settings')), findsNothing);
       expect(find.byKey(const ValueKey('reasoning-level-high')), findsNothing);
       final model = tester.getRect(
-        find.byKey(const ValueKey('model-picker-trigger')),
+        find.byKey(const ValueKey('model-trigger-name')),
       );
       final reasoning = tester.getRect(
-        find.byKey(const ValueKey('reasoning-picker-trigger')),
+        find.byKey(const ValueKey('model-trigger-reasoning')),
       );
-      expect(model.top, reasoning.top);
-      expect(reasoning.left, greaterThanOrEqualTo(model.right));
+      expect(model.center.dy, closeTo(reasoning.center.dy, 1));
+      expect(reasoning.left - model.right, inInclusiveRange(0, 12));
       await tester.enterText(
         find.byKey(const ValueKey('model-picker-search')),
         'Model B',
@@ -460,75 +472,95 @@ void main() {
       expect(c.catalog!.current['model'], 'b');
       expect(c.catalog!.current['reasoningEffort'], 'low');
       expect(reads, 0);
-      expect(find.text('思考：低'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('model-trigger-reasoning')))
+            .data,
+        '低',
+      );
       reading.complete(catalogFor({...api.selected}));
       expect(tester.takeException(), isNull);
     },
   );
 
-  testWidgets('reasoning has its own anchored menu and retains the current model', (
+  testWidgets(
+    'reasoning submenu dismisses before receipt and retains the model',
+    (tester) async {
+      await openPicker(tester, openModels: false);
+      await openReasoning(tester);
+      expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+      expect(find.byKey(const ValueKey('model-picker-search')), findsNothing);
+      expect(find.byKey(const Key('context-quick-settings')), findsNothing);
+      expect(find.byKey(const ValueKey('reasoning-level-low')), findsOneWidget);
+      api.mutation = Completer<void>();
+      await tester.tap(find.byKey(const ValueKey('reasoning-level-low')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('reasoning-menu')), findsNothing);
+      expect(find.byKey(const ValueKey('model-selection-menu')), findsNothing);
+      final input = tester.widget<EditableText>(
+        find.descendant(
+          of: find.byKey(const Key('integration-prompt')),
+          matching: find.byType(EditableText),
+        ),
+      );
+      expect(input.focusNode.hasFocus, isTrue);
+      expect(c.catalog!.current['model'], 'a');
+      expect(c.catalog!.current['reasoningEffort'], 'high');
+      expect(c.pendingModelSelection?['reasoningEffort'], 'low');
+      api.mutation!.complete();
+      await tester.pumpAndSettle();
+      expect(c.catalog!.current['model'], 'a');
+      expect(c.catalog!.current['reasoningEffort'], 'low');
+      expect(api.selections.single['model'], 'a');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'pending and default-save failure remain secondary to model choices',
+    (tester) async {
+      api.mutation = Completer<void>();
+      api.failDefault = true;
+      await openPicker(tester);
+      await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000b')));
+      await tester.pump();
+      await reopenModels(tester);
+      expect(
+        find.byKey(const ValueKey('model-pending-p\u0000b')),
+        findsOneWidget,
+      );
+      expect(c.catalog!.current['model'], 'a');
+      expect(
+        tester
+            .widget<ListTile>(
+              find.byKey(const ValueKey('model-choice-p\u0000a')),
+            )
+            .onTap,
+        isNotNull,
+      );
+      api.mutation!.complete();
+      await tester.pumpAndSettle();
+      expect(c.catalog!.current['model'], 'b');
+      expect(find.byKey(const ValueKey('model-default-error')), findsOneWidget);
+      expect(c.changingModel, isFalse);
+      await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000a')));
+      await tester.pumpAndSettle();
+      expect(c.catalog!.current['model'], 'a');
+      expect(api.selections, hasLength(2));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('session and Host changes retire open model menus', (
     tester,
   ) async {
-    await openPicker(tester, openModels: false);
-    await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('model-picker')), findsNothing);
-    expect(find.byKey(const ValueKey('model-picker-search')), findsNothing);
-    expect(find.byKey(const Key('context-quick-settings')), findsNothing);
-    expect(find.byKey(const ValueKey('reasoning-level-low')), findsOneWidget);
-    api.mutation = Completer<void>();
-    await tester.tap(find.byKey(const ValueKey('reasoning-level-low')));
-    await tester.pump();
-    expect(c.catalog!.current['model'], 'a');
-    expect(c.catalog!.current['reasoningEffort'], 'high');
-    expect(c.pendingModelSelection?['reasoningEffort'], 'low');
-    api.mutation!.complete();
-    await tester.pumpAndSettle();
-    expect(c.catalog!.current['model'], 'a');
-    expect(c.catalog!.current['reasoningEffort'], 'low');
-    expect(api.selections.single['model'], 'a');
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('pending and default-save failure remain secondary to model choices', (
-    tester,
-  ) async {
-    api.mutation = Completer<void>();
-    api.failDefault = true;
-    await openPicker(tester);
-    await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000b')));
-    await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('model-pending-p\u0000b')), findsOneWidget);
-    expect(c.catalog!.current['model'], 'a');
-    expect(
-      tester.widget<ListTile>(
-        find.byKey(const ValueKey('model-choice-p\u0000a')),
-      ).onTap,
-      isNotNull,
-    );
-    api.mutation!.complete();
-    await tester.pumpAndSettle();
-    expect(c.catalog!.current['model'], 'b');
-    expect(find.byKey(const ValueKey('model-default-error')), findsOneWidget);
-    expect(c.changingModel, isFalse);
-    await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000a')));
-    await tester.pumpAndSettle();
-    expect(c.catalog!.current['model'], 'a');
-    expect(api.selections, hasLength(2));
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('session and Host changes retire open model menus', (tester) async {
     await openPicker(tester);
     c.newConversation();
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('model-picker')), findsNothing);
     await c.select('other');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
-    await tester.pumpAndSettle();
+    await reopenModels(tester);
     expect(find.byKey(const ValueKey('model-picker')), findsOneWidget);
     c.host = HostInfo.fromJson({
       'home': 'replacement',
@@ -541,27 +573,27 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('separate choices remain reachable without overflow at 200 percent', (
-    tester,
-  ) async {
-    await openPicker(tester, scale: 2, width: 280);
-    expect(find.byKey(const ValueKey('model-picker-done')), findsNothing);
-    expect(find.byType(Dialog), findsNothing);
-    final option = find.byKey(const ValueKey('model-choice-p\u0000b'));
-    await tester.ensureVisible(option);
-    await tester.pumpAndSettle();
-    expect(option.hitTestable(), findsOneWidget);
-    await tester.tap(option);
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
-    await tester.pumpAndSettle();
-    final effort = find.byKey(const ValueKey('reasoning-level-off'));
-    await tester.ensureVisible(effort);
-    await tester.pumpAndSettle();
-    expect(effort.hitTestable(), findsOneWidget);
-    await tester.tap(effort);
-    await tester.pumpAndSettle();
-    expect(c.catalog!.current['reasoningEffort'], 'off');
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'nested choices remain reachable without overflow at 200 percent',
+    (tester) async {
+      await openPicker(tester, scale: 2, width: 280);
+      expect(find.byKey(const ValueKey('model-picker-done')), findsNothing);
+      expect(find.byType(Dialog), findsNothing);
+      final option = find.byKey(const ValueKey('model-choice-p\u0000b'));
+      await tester.ensureVisible(option);
+      await tester.pumpAndSettle();
+      expect(option.hitTestable(), findsOneWidget);
+      await tester.tap(option);
+      await tester.pumpAndSettle();
+      await openReasoning(tester);
+      final effort = find.byKey(const ValueKey('reasoning-level-off'));
+      await tester.ensureVisible(effort);
+      await tester.pumpAndSettle();
+      expect(effort.hitTestable(), findsOneWidget);
+      await tester.tap(effort);
+      await tester.pumpAndSettle();
+      expect(c.catalog!.current['reasoningEffort'], 'off');
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

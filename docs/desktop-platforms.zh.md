@@ -4,7 +4,7 @@
 
 | 平台 | 客户端工程 | 服务与设置目录 | 当前集成版本的交付状态 |
 | --- | --- | --- | --- |
-| Windows x86_64 | 原生客户端已构建并安装 | 同目录 `host`；用户 LocalAppData | 2026-10-01 `20261001-model-selection-r3` 已安装；模型与思考同行并使用独立锚定弹层，目录缓存及启动补读、最后意图切换、后台默认保存与上下文范围保护完成；全量 689 项通过、4 项条件跳过，66 张视觉图通过，155 个会话及定时库保留、核心进程保留；详见[构建与验收记录](desktop-fidelity/model-selector-2026-10-01.md)。键盘、输入法、读屏的完整实机验收边界仍见[体验升级记录](desktop-fidelity/flutter-upgrade-2026-09-29.md) |
+| Windows x86_64 | 原生客户端已构建并安装 | 同目录 `host`；用户 LocalAppData | 2026-10-02 `20261001-model-menu-r4` 已安装；型号与思考等级合为紧凑入口，菜单分层、等级纵向左对齐，支持逐级返回；目录缓存及启动补读、最后意图切换、后台默认保存与上下文范围保护完成；Flutter 全量 695 项通过、4 项条件跳过，70 张视觉图通过，155 个会话及定时库保留、核心进程保留；详见[构建与验收记录](desktop-fidelity/model-selector-2026-10-01.md)。键盘、输入法、读屏的完整实机验收边界仍见[体验升级记录](desktop-fidelity/flutter-upgrade-2026-09-29.md) |
 | macOS x86_64 / arm64 | 已接入 macOS 工程 | 应用包 `Contents/Resources/host`；用户 Application Support | 图片／文件剪贴板原生通道已实现，尚未完成平台构建、安装与实际验收 |
 | Linux x86_64 | 已接入 Linux 工程 | 同目录 `host`；XDG_CONFIG_HOME 或用户 `.config` | 图片／文件剪贴板原生通道已实现，尚未完成平台构建、安装与实际验收 |
 

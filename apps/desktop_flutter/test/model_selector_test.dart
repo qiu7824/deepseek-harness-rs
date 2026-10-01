@@ -154,8 +154,20 @@ void main() {
     await tester.pump();
   }
 
-  Future<void> open(WidgetTester tester) async {
+  Future<void> openRoot(WidgetTester tester) async {
     await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> open(WidgetTester tester) async {
+    await openRoot(tester);
+    await tester.tap(find.byKey(const ValueKey('model-menu-model-row')));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> openReasoning(WidgetTester tester) async {
+    await openRoot(tester);
+    await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
     await tester.pumpAndSettle();
   }
 
@@ -168,6 +180,33 @@ void main() {
       expect(hasReasoning(catalog), isTrue);
       expect(hasReasoning(_catalog(reasoning: false)), isFalse);
       expect(composerModelLabel(null), '选择模型');
+    },
+  );
+
+  testWidgets(
+    'single compact trigger opens model and reasoning navigation without reads',
+    (tester) async {
+      await show(tester);
+      final trigger = find.byKey(const ValueKey('model-picker-trigger'));
+      expect(trigger, findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('reasoning-picker-trigger')),
+        findsNothing,
+      );
+      await openRoot(tester);
+      expect(
+        find.byKey(const ValueKey('model-menu-model-row')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('reasoning-picker-trigger')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('model-picker-search')), findsNothing);
+      expect(find.byKey(const ValueKey('reasoning-level-high')), findsNothing);
+      expect(controller.reads, 0);
+      expect(controller.creates, 0);
+      expect(controller.submitted, isEmpty);
     },
   );
 
@@ -270,23 +309,73 @@ void main() {
   );
 
   testWidgets(
-    'reasoning opens separately with declared default and no model list',
+    'reasoning submenu shows the declared default without the model list',
     (tester) async {
       controller.catalog = _catalog(current: {'provider': 'p', 'model': 'm0'});
       await show(tester);
-      expect(find.text('思考：模型默认（高）'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
-      await tester.pumpAndSettle();
-      expect(find.text('默认等级：高'), findsOneWidget);
-      expect(find.text('模型默认'), findsOneWidget);
+      await openReasoning(tester);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('reasoning-menu')),
+          matching: find.text('模型默认（高）'),
+        ),
+        findsOneWidget,
+      );
       expect(find.byKey(const ValueKey('reasoning-level-low')), findsOneWidget);
       expect(find.byKey(const ValueKey('model-picker-search')), findsNothing);
     },
   );
 
-  testWidgets('unsupported reasoning hides its toolbar entry', (tester) async {
+  testWidgets(
+    'reasoning choice closes and restores input focus before receipt',
+    (tester) async {
+      controller.selecting = Completer<void>();
+      var restored = 0;
+      await show(tester, onReturnFocus: () => restored++);
+      await openReasoning(tester);
+      await tester.tap(find.byKey(const ValueKey('reasoning-level-low')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('reasoning-menu')), findsNothing);
+      expect(find.byKey(const ValueKey('model-selection-menu')), findsNothing);
+      expect(controller.submitted, ['low']);
+      expect(controller.catalog!.current['reasoningEffort'], 'high');
+      expect(restored, 1);
+      controller.selecting!.complete();
+      await tester.pumpAndSettle();
+      expect(controller.catalog!.current['reasoningEffort'], 'low');
+    },
+  );
+
+  testWidgets('back navigation keeps the menu open without a selection', (
+    tester,
+  ) async {
+    var restored = 0;
+    await show(tester, onReturnFocus: () => restored++);
+    await open(tester);
+    await tester.tap(find.byKey(const ValueKey('model-menu-back')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+    expect(find.byKey(const ValueKey('model-menu-model-row')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('reasoning-menu')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('reasoning-menu')), findsNothing);
+    expect(find.byKey(const ValueKey('model-menu-model-row')), findsOneWidget);
+    expect(controller.submitted, isEmpty);
+    expect(controller.reads, 0);
+    expect(restored, 0);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('model-selection-menu')), findsNothing);
+    expect(restored, 1);
+  });
+
+  testWidgets('unsupported reasoning hides its menu entry', (tester) async {
     controller.catalog = _catalog(reasoning: false);
     await show(tester);
+    await openRoot(tester);
     expect(
       find.byKey(const ValueKey('reasoning-picker-trigger')),
       findsNothing,
@@ -294,23 +383,102 @@ void main() {
     expect(find.byKey(const ValueKey('model-picker-trigger')), findsOneWidget);
   });
 
-  testWidgets('Escape closes and new session scope retires the old popover', (
+  testWidgets('arrow keys navigate the root and reasoning submenu', (
     tester,
   ) async {
-    var restored = 0;
-    await show(tester, onReturnFocus: () => restored++);
-    await open(tester);
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await show(tester);
+    await openRoot(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('reasoning-menu')), findsOneWidget);
     expect(find.byKey(const ValueKey('model-picker')), findsNothing);
-    expect(restored, 1);
-    await open(tester);
-    controller.selectedId = 'other';
-    controller.emit();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('model-picker')), findsNothing);
-    expect(restored, 1);
+    expect(controller.submitted, ['medium']);
+    expect(find.byKey(const ValueKey('reasoning-menu')), findsNothing);
+    expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Enter activates the focused menu row instead of an old highlight',
+    (tester) async {
+      await show(tester);
+      await openRoot(tester);
+      final reasoningRowLabel = find.descendant(
+        of: find.byKey(const ValueKey('reasoning-picker-trigger')),
+        matching: find.text('思考等级'),
+      );
+      Focus.of(tester.element(reasoningRowLabel)).requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('reasoning-menu')), findsOneWidget);
+      expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+      final mediumLabel = find.descendant(
+        of: find.byKey(const ValueKey('reasoning-level-medium')),
+        matching: find.text('中'),
+      );
+      Focus.of(tester.element(mediumLabel)).requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(controller.submitted, ['medium']);
+      expect(find.byKey(const ValueKey('reasoning-menu')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('arrow navigation starts from the focused menu row', (
+    tester,
+  ) async {
+    await show(tester);
+    await openRoot(tester);
+    final reasoningRowLabel = find.descendant(
+      of: find.byKey(const ValueKey('reasoning-picker-trigger')),
+      matching: find.text('思考等级'),
+    );
+    Focus.of(tester.element(reasoningRowLabel)).requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('model-picker')), findsOneWidget);
+    expect(find.byKey(const ValueKey('reasoning-menu')), findsNothing);
+    expect(controller.submitted, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'Escape returns to root before closing and scopes retire the menu',
+    (tester) async {
+      var restored = 0;
+      await show(tester, onReturnFocus: () => restored++);
+      await open(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('model-menu-model-row')),
+        findsOneWidget,
+      );
+      expect(restored, 0);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('model-menu-model-row')), findsNothing);
+      expect(restored, 1);
+      await open(tester);
+      controller.selectedId = 'other';
+      controller.emit();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+      expect(restored, 1);
+    },
+  );
 
   testWidgets(
     'search matches provider and arrow plus Enter chooses the highlighted model',
@@ -344,7 +512,7 @@ void main() {
   });
 
   testWidgets(
-    'account changes retire both popovers on the same Host and session',
+    'account changes retire model and reasoning menus on the same Host and session',
     (tester) async {
       controller.subscriptionAccounts = [
         {'id': 'p', 'signedIn': true, 'activeAccountId': 'first'},
@@ -364,8 +532,7 @@ void main() {
       controller.catalog = _catalog();
       controller.emit();
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
-      await tester.pumpAndSettle();
+      await openReasoning(tester);
       expect(find.byKey(const ValueKey('reasoning-level-low')), findsOneWidget);
       controller.subscriptionAccounts = [
         {'id': 'p', 'signedIn': true, 'activeAccountId': 'third'},

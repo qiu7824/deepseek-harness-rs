@@ -1835,7 +1835,7 @@ class _ConversationState extends State<Conversation>
                                   child: ConstrainedBox(
                                     constraints: BoxConstraints(
                                       maxWidth:
-                                          420 *
+                                          320 *
                                           MediaQuery.textScalerOf(context)
                                               .scale(1),
                                     ),

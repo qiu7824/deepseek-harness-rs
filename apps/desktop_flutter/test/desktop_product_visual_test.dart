@@ -435,26 +435,48 @@ void main() {
           );
           controller.emit();
           await tester.pumpAndSettle();
-          final gradeTrigger = find.byKey(
-            const ValueKey('reasoning-picker-trigger'),
+          final modelCaption = find.byKey(const ValueKey('model-trigger-name'));
+          final gradeCaption = find.byKey(
+            const ValueKey('model-trigger-reasoning'),
           );
-          final modelRowRect = tester.getRect(modelTrigger);
-          final gradeRowRect = tester.getRect(gradeTrigger);
-          expect(modelRowRect.center.dy, closeTo(gradeRowRect.center.dy, 1));
-          expect(modelRowRect.right, lessThanOrEqualTo(gradeRowRect.left));
+          final triggerRect = tester.getRect(modelTrigger);
+          final modelCaptionRect = tester.getRect(modelCaption);
+          final gradeCaptionRect = tester.getRect(gradeCaption);
+          expect(
+            modelCaptionRect.center.dy,
+            closeTo(gradeCaptionRect.center.dy, 1),
+          );
+          expect(
+            gradeCaptionRect.left - modelCaptionRect.right,
+            inInclusiveRange(0, 12),
+            reason: 'Model and reasoning form one compact phrase',
+          );
+          expect(
+            triggerRect.width,
+            lessThanOrEqualTo(
+              modelCaptionRect.width + gradeCaptionRect.width + 60,
+            ),
+            reason:
+                'The combined trigger must not expand into a wide empty row',
+          );
+          expect(
+            find.byKey(const ValueKey('reasoning-picker-trigger')),
+            findsNothing,
+          );
           final fullViewport = Offset.zero & viewport.size;
-          for (final rect in [modelRowRect, gradeRowRect]) {
+          for (final rect in [
+            triggerRect,
+            modelCaptionRect,
+            gradeCaptionRect,
+          ]) {
             expect(fullViewport.contains(rect.topLeft), isTrue);
             expect(
               fullViewport.contains(rect.bottomRight - const Offset(.01, .01)),
               isTrue,
             );
           }
-          final gradeLabel = find.descendant(
-            of: gradeTrigger,
-            matching: find.byType(Text),
-          );
-          expect(tester.widget<Text>(gradeLabel).data, anyOf('最高', '思考：最高'));
+          final gradeLabel = gradeCaption;
+          expect(tester.widget<Text>(gradeLabel).data, '最高');
           expect(
             tester.renderObject<RenderParagraph>(gradeLabel).didExceedMaxLines,
             isFalse,
@@ -463,7 +485,7 @@ void main() {
           expect(
             find.descendant(
               of: modelTrigger,
-              matching: find.byTooltip('选择模型：DeepSeek-V41-Flash'),
+              matching: find.byTooltip('选择模型与思考等级：DeepSeek-V41-Flash · 最高'),
             ),
             findsOneWidget,
           );
@@ -474,7 +496,7 @@ void main() {
           await tester.pumpAndSettle();
           final readsBeforeModel = controller.api.readPaths.length;
           final methodsBeforeModel = controller.api.readMethods.length;
-          const modelHint = '选择模型：DeepSeek Chat';
+          const modelHint = '选择模型与思考等级：DeepSeek Chat · 高';
           final mouse = await tester.createGesture(
             kind: PointerDeviceKind.mouse,
           );
@@ -482,7 +504,7 @@ void main() {
           const longModelName =
               'DeepSeek Chat Enterprise API Compatible Extended Context '
               'Reasoning Release / Regional Dedicated Provider';
-          const longModelHint = '选择模型：$longModelName';
+          const longModelHint = '选择模型与思考等级：$longModelName · 高';
           controller.catalog = ModelCatalog.fromJson(
             productVisualModelCatalog(modelName: longModelName),
           );
@@ -533,6 +555,30 @@ void main() {
           await mouse.removePointer();
           await tester.tap(modelTrigger);
           await tester.pumpAndSettle();
+          final selectionMenu = find.byKey(
+            const ValueKey('model-selection-menu'),
+          );
+          expect(selectionMenu, findsOneWidget);
+          expectProductPopoverPlacement(
+            tester,
+            selectionMenu,
+            modelTrigger,
+            viewport.size,
+          );
+          expect(
+            find.byKey(const ValueKey('model-picker-search')),
+            findsNothing,
+          );
+          expect(
+            find.byKey(const ValueKey('reasoning-level-high')),
+            findsNothing,
+          );
+          expect(controller.api.readPaths.length, readsBeforeModel);
+          expect(controller.api.readMethods.length, methodsBeforeModel);
+          expect(controller.api.mutationAttempts, isEmpty);
+          await exportProductFrame(tester, boundary, '$prefix-model-menu');
+          await tester.tap(find.byKey(const ValueKey('model-menu-model-row')));
+          await tester.pumpAndSettle();
           final modelPicker = find.byKey(const ValueKey('model-picker'));
           expect(modelPicker, findsOneWidget);
           expectProductPopoverPlacement(
@@ -570,8 +616,8 @@ void main() {
           await tester.pumpAndSettle();
           expectProductPopoverPlacement(
             tester,
-            find.byKey(const Key('reasoning-slider')),
-            reasoningTrigger,
+            find.byKey(const ValueKey('reasoning-menu')),
+            modelTrigger,
             viewport.size,
           );
           expect(find.text('思考等级'), findsOneWidget);
@@ -580,6 +626,7 @@ void main() {
             findsNothing,
           );
           expect(find.byKey(const Key('compact-now')), findsNothing);
+          Rect? previousLevel;
           for (final effort in ['low', 'medium', 'high', 'max']) {
             final level = find.byKey(ValueKey('reasoning-level-$effort'));
             expect(level.hitTestable(), findsOneWidget);
@@ -588,6 +635,13 @@ void main() {
               matching: find.byType(Text),
             );
             expect(tester.getSize(level).height, greaterThanOrEqualTo(36));
+            final levelRect = tester.getRect(level);
+            if (previousLevel != null) {
+              expect(levelRect.left, closeTo(previousLevel.left, 1));
+              expect(levelRect.width, closeTo(previousLevel.width, 1));
+              expect(levelRect.top, greaterThanOrEqualTo(previousLevel.bottom));
+            }
+            previousLevel = levelRect;
             expect(
               tester.widget<Text>(label).data,
               const {
@@ -620,6 +674,10 @@ void main() {
           await tester.sendKeyEvent(LogicalKeyboardKey.escape);
           await tester.pumpAndSettle();
           expect(modelPicker, findsNothing);
+          expect(selectionMenu, findsOneWidget);
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await tester.pumpAndSettle();
+          expect(selectionMenu, findsNothing);
           expect(modelTrigger.hitTestable(), findsOneWidget);
           expect(controller.catalog!.current['reasoningEffort'], 'high');
           expect(controller.api.readPaths.length, readsBeforeModel);

@@ -52,7 +52,7 @@ double _panelWidth(BuildContext context) =>
 double _panelHeight(BuildContext context) =>
     math.max(80, math.min(480, MediaQuery.sizeOf(context).height - 80));
 
-/// Adjacent model and reasoning controls in the composer toolbar.
+/// A compact model summary with a shared, hierarchical selection menu.
 class ModelSelectionControls extends StatefulWidget {
   const ModelSelectionControls({
     super.key,
@@ -68,14 +68,18 @@ class ModelSelectionControls extends StatefulWidget {
   State<ModelSelectionControls> createState() => _ModelSelectionControlsState();
 }
 
+enum _SelectionPage { summary, models, reasoning }
+
 class _ModelSelectionControlsState extends State<ModelSelectionControls> {
-  final models = ShadPopoverController();
-  final reasoning = ShadPopoverController();
-  final modelTrigger = FocusNode();
-  final reasoningTrigger = FocusNode();
+  final menu = ShadPopoverController();
+  final trigger = FocusNode();
+  final menuFocus = FocusNode();
   Object? openedScope;
   Object? openedReasoningScope;
+  var page = _SelectionPage.summary;
   bool keyboardActive = false;
+  bool keyboardNavigated = false;
+  int highlighted = 0;
 
   Object get scope => _scope(widget.controller);
   Object get reasoningScope =>
@@ -85,8 +89,7 @@ class _ModelSelectionControlsState extends State<ModelSelectionControls> {
   void initState() {
     super.initState();
     widget.controller.addListener(changed);
-    models.addListener(syncKeyboard);
-    reasoning.addListener(syncKeyboard);
+    menu.addListener(syncKeyboard);
   }
 
   @override
@@ -102,93 +105,218 @@ class _ModelSelectionControlsState extends State<ModelSelectionControls> {
   void changed() {
     if (!mounted) return;
     if (!widget.controller.connected ||
-        (models.isOpen && openedScope != scope) ||
-        (reasoning.isOpen && openedReasoningScope != reasoningScope)) {
+        (menu.isOpen && openedScope != scope) ||
+        (menu.isOpen &&
+            page == _SelectionPage.reasoning &&
+            openedReasoningScope != reasoningScope)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        models.hide();
-        reasoning.hide();
+        if (mounted) menu.hide();
       });
     }
     setState(() {});
   }
 
   void syncKeyboard() {
-    final active = models.isOpen || reasoning.isOpen;
-    if (active == keyboardActive) return;
-    keyboardActive = active;
-    if (active) {
+    if (menu.isOpen == keyboardActive) return;
+    keyboardActive = menu.isOpen;
+    if (keyboardActive) {
       FocusManager.instance.addEarlyKeyEventHandler(handleKey);
     } else {
       FocusManager.instance.removeEarlyKeyEventHandler(handleKey);
     }
   }
 
+  void navigate(_SelectionPage destination) {
+    setState(() {
+      page = destination;
+      highlighted = 0;
+      keyboardNavigated = false;
+      if (destination == _SelectionPage.reasoning) {
+        openedReasoningScope = reasoningScope;
+      }
+    });
+  }
+
   KeyEventResult handleKey(KeyEvent event) {
-    if (!mounted || ModalRoute.of(context)?.isCurrent == false) {
+    if (!mounted ||
+        !keyboardActive ||
+        event is! KeyDownEvent ||
+        ModalRoute.of(context)?.isCurrent == false) {
       return KeyEventResult.ignored;
     }
-    if (keyboardActive &&
-        event is KeyDownEvent &&
-        event.logicalKey == LogicalKeyboardKey.escape) {
-      dismiss();
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      if (page == _SelectionPage.summary) {
+        dismiss();
+      } else {
+        navigate(_SelectionPage.summary);
+      }
+      return KeyEventResult.handled;
+    }
+    if (page == _SelectionPage.models) return KeyEventResult.ignored;
+    final c = widget.controller;
+    final levels = _currentChoice(c.modelPreviewCatalog)?.reasoning ?? <Json>[];
+    final count = page == _SelectionPage.summary
+        ? (hasReasoning(c.modelPreviewCatalog) ? 2 : 1)
+        : levels.length;
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
+        event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      keyboardNavigated = true;
+      menuFocus.requestFocus();
+      if (count > 0) {
+        setState(
+          () => highlighted =
+              (highlighted +
+                  (event.logicalKey == LogicalKeyboardKey.arrowDown ? 1 : -1)) %
+              count,
+        );
+      }
+      return KeyEventResult.handled;
+    }
+    if (menuFocus.hasPrimaryFocus &&
+        (event.logicalKey == LogicalKeyboardKey.enter ||
+            event.logicalKey == LogicalKeyboardKey.numpadEnter ||
+            event.logicalKey == LogicalKeyboardKey.arrowRight)) {
+      if (page == _SelectionPage.summary) {
+        navigate(
+          highlighted == 0 ? _SelectionPage.models : _SelectionPage.reasoning,
+        );
+      } else if (levels.isNotEmpty) {
+        chooseReasoning(
+          '${levels[highlighted.clamp(0, levels.length - 1)]['id']}',
+        );
+      }
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+        page != _SelectionPage.summary) {
+      navigate(_SelectionPage.summary);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
   }
 
   void dismiss({bool restoreFocus = true}) {
-    final wasModel = models.isOpen;
-    models.hide();
-    reasoning.hide();
+    menu.hide();
     if (!restoreFocus) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || ModalRoute.of(context)?.isCurrent == false) return;
       if (widget.onReturnFocus != null) {
         widget.onReturnFocus!();
       } else {
-        (wasModel ? modelTrigger : reasoningTrigger).requestFocus();
+        trigger.requestFocus();
       }
     });
   }
 
+  bool get canChoose =>
+      menu.isOpen &&
+      openedScope == scope &&
+      widget.controller.connected &&
+      !widget.controller.sending;
+
   void choose(ModelChoice choice) {
-    if (!models.isOpen ||
-        openedScope != scope ||
-        !widget.controller.connected ||
-        widget.controller.sending) {
-      return;
-    }
+    if (!canChoose) return;
     final c = widget.controller;
     dismiss();
     unawaited(c.run(() => c.chooseModel(choice)));
   }
 
-  Widget modelContent(BuildContext context) {
-    if (!models.isOpen ||
-        openedScope != scope ||
-        !widget.controller.connected) {
-      return const SizedBox.shrink();
-    }
-    return ModelPicker(
-      controller: widget.controller,
-      onSelect: choose,
-      onDismiss: dismiss,
-      onManage: widget.onManage == null
-          ? null
-          : () {
-              dismiss(restoreFocus: false);
-              widget.onManage!();
-            },
-    );
+  void chooseReasoning(String id) {
+    if (!canChoose || openedReasoningScope != reasoningScope) return;
+    final c = widget.controller;
+    final actionScope = reasoningScope;
+    dismiss();
+    unawaited(() async {
+      try {
+        await c.setReasoning(id);
+      } catch (error) {
+        if (mounted && actionScope == reasoningScope) {
+          c.error = error.toString();
+          c.emit();
+        }
+      }
+    }());
   }
 
-  Widget reasoningContent(BuildContext context) {
+  Widget menuRow({
+    required Key key,
+    required String label,
+    String? value,
+    String? tooltip,
+    Widget? trailing,
+    required VoidCallback? onPressed,
+    required int index,
+  }) => Focus(
+    canRequestFocus: false,
+    skipTraversal: true,
+    onFocusChange: (focused) {
+      if (focused && mounted) setState(() => highlighted = index);
+    },
+    child: DshButton(
+      key: key,
+      tooltip: tooltip ?? value ?? label,
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      onPressed: onPressed,
+      active: index == highlighted && keyboardNavigated && menuFocus.hasFocus,
+      child: Expanded(
+        child: Row(
+          children: [
+            if (value == null)
+              Expanded(
+                child: Text(
+                  label,
+                  textAlign: TextAlign.left,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              )
+            else
+              Text(label),
+            if (value != null) const SizedBox(width: 20),
+            if (value != null)
+              Expanded(
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: DshTypography.body.copyWith(
+                    color: DshColors(context).muted,
+                  ),
+                ),
+              ),
+            const SizedBox(width: 8),
+            trailing ??
+                DshGlyph(
+                  DshIcons.chevronRight.data,
+                  size: 14,
+                  color: DshColors(context).muted,
+                ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget content(BuildContext context) {
     final c = widget.controller;
-    if (!reasoning.isOpen ||
-        openedReasoningScope != reasoningScope ||
-        !c.connected) {
+    if (!menu.isOpen || openedScope != scope || !c.connected) {
       return const SizedBox.shrink();
+    }
+    if (page == _SelectionPage.models) {
+      return ModelPicker(
+        controller: c,
+        onSelect: choose,
+        onDismiss: () => navigate(_SelectionPage.summary),
+        onBack: () => navigate(_SelectionPage.summary),
+        onManage: widget.onManage == null
+            ? null
+            : () {
+                dismiss(restoreFocus: false);
+                widget.onManage!();
+              },
+      );
     }
     final preview = c.modelPreviewCatalog;
     final choice = _currentChoice(preview);
@@ -196,57 +324,113 @@ class _ModelSelectionControlsState extends State<ModelSelectionControls> {
     final value = confirmed?.currentKey == preview?.currentKey
         ? confirmed?.current['reasoningEffort'] as String?
         : null;
-    final pending = c.pendingModelSelection;
-    return DefaultTextStyle(
-      style: DshTypography.body.copyWith(color: DshColors(context).text),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: _panelHeight(context)),
-        child: SingleChildScrollView(
-          child: SizedBox(
-            width: _panelWidth(context),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  '思考等级',
-                  style: DshTypography.body.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (value == null && choice?.defaultReasoningEffort != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Text(
-                      '默认等级：${reasoningLevelLabel(choice!.reasoning.where((level) => level['id'] == choice.defaultReasoningEffort).firstOrNull ?? {'id': choice.defaultReasoningEffort, 'name': choice.defaultReasoningEffort})}',
-                      style: DshTypography.auxiliary.copyWith(
-                        color: DshColors(context).muted,
-                      ),
-                    ),
-                  ),
-                ReasoningSlider(
-                  scope: reasoningScope,
-                  showHeading: false,
-                  levels: choice?.reasoning ?? const [],
-                  value: value,
-                  pendingValue: pending?['reasoningEffort'] as String?,
-                  enabled: c.connected && !c.sending,
-                  onChanged: (id) async {
-                    final actionScope = reasoningScope;
-                    try {
-                      await c.setReasoning(id);
-                    } catch (error) {
-                      if (mounted && actionScope == reasoningScope) {
-                        c.error = error.toString();
-                        c.emit();
-                      }
-                      rethrow;
-                    }
-                  },
-                ),
-                _DefaultNotice(controller: c),
-              ],
+    final pending = c.pendingModelSelection?['reasoningEffort'] as String?;
+    final colors = DshColors(context);
+    final width = math.min(
+      _panelWidth(context),
+      (page == _SelectionPage.summary ? 304 : 240) *
+          MediaQuery.textScalerOf(context).scale(1),
+    );
+    return Focus(
+      focusNode: menuFocus,
+      autofocus: true,
+      child: DefaultTextStyle(
+        style: DshTypography.body.copyWith(color: colors.text),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: _panelHeight(context)),
+          child: SingleChildScrollView(
+            child: SizedBox(
+              key: ValueKey(
+                page == _SelectionPage.summary
+                    ? 'model-selection-menu'
+                    : 'reasoning-menu',
+              ),
+              width: width,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: page == _SelectionPage.summary
+                    ? [
+                        menuRow(
+                          key: const ValueKey('model-menu-model-row'),
+                          label: '模型',
+                          value: composerModelLabel(preview),
+                          index: 0,
+                          onPressed: () => navigate(_SelectionPage.models),
+                        ),
+                        if (hasReasoning(preview))
+                          menuRow(
+                            key: const ValueKey('reasoning-picker-trigger'),
+                            label: '思考等级',
+                            value: composerReasoningLabel(preview),
+                            index: 1,
+                            onPressed: () => navigate(_SelectionPage.reasoning),
+                          ),
+                        _DefaultNotice(controller: c),
+                      ]
+                    : [
+                        Row(
+                          children: [
+                            DshIcon(
+                              DshIcons.chevronLeft.data,
+                              key: const ValueKey('model-menu-back'),
+                              label: '返回模型菜单',
+                              onPressed: () => navigate(_SelectionPage.summary),
+                            ),
+                            Text(
+                              '思考等级',
+                              style: DshTypography.body.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (value == null &&
+                            choice?.defaultReasoningEffort != null)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+                            child: Text(
+                              composerReasoningLabel(preview),
+                              style: DshTypography.caption.copyWith(
+                                color: colors.muted,
+                              ),
+                            ),
+                          ),
+                        for (final (index, level)
+                            in (choice?.reasoning ?? <Json>[]).indexed)
+                          menuRow(
+                            key: ValueKey('reasoning-level-${level['id']}'),
+                            label: reasoningLevelLabel(level),
+                            tooltip:
+                                '${level['description'] ?? reasoningLevelLabel(level)}',
+                            index: index,
+                            trailing: pending == level['id']
+                                ? DshGlyph(
+                                    DshIcons.clock.data,
+                                    key: ValueKey(
+                                      'reasoning-pending-${level['id']}',
+                                    ),
+                                    size: 14,
+                                    color: colors.muted,
+                                  )
+                                : (value ?? choice?.defaultReasoningEffort) ==
+                                      level['id']
+                                ? DshGlyph(
+                                    DshIcons.check.data,
+                                    key: ValueKey(
+                                      'reasoning-selected-${level['id']}',
+                                    ),
+                                    size: 14,
+                                    color: colors.text,
+                                  )
+                                : const SizedBox(width: 14),
+                            onPressed: c.sending
+                                ? null
+                                : () => chooseReasoning('${level['id']}'),
+                          ),
+                        _DefaultNotice(controller: c),
+                      ],
+              ),
             ),
           ),
         ),
@@ -254,136 +438,134 @@ class _ModelSelectionControlsState extends State<ModelSelectionControls> {
     );
   }
 
-  Widget popover({
-    required ShadPopoverController controller,
-    required WidgetBuilder content,
-    required Widget child,
-  }) => ShadPopover(
-    controller: controller,
-    padding: const EdgeInsets.all(12),
-    effects: const [],
-    reverseDuration: Duration.zero,
-    anchor: const ShadAnchorAuto(
-      targetAnchor: Alignment.topRight,
-      followerAnchor: Alignment.topLeft,
-      offset: Offset(0, -8),
-      fallback: ShadAnchorAuto(
-        targetAnchor: Alignment.bottomRight,
-        followerAnchor: Alignment.bottomLeft,
-        offset: Offset(0, 8),
-      ),
-    ),
-    popover: content,
-    child: child,
-  );
-
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
     final catalog = c.modelPreviewCatalog;
     final name = composerModelLabel(catalog);
-    final effort = composerReasoningLabel(catalog);
-    final enabled = c.connected && !c.sending;
+    final choice = _currentChoice(catalog);
+    final effective =
+        catalog?.current['reasoningEffort'] as String? ??
+        choice?.defaultReasoningEffort;
+    final effort = effective == null
+        ? '默认'
+        : reasoningLevelLabel(
+            choice?.reasoning
+                    .where((level) => level['id'] == effective)
+                    .firstOrNull ??
+                {'id': effective, 'name': effective},
+          );
+    final showEffort = hasReasoning(catalog);
+    final colors = DshColors(context);
+    final style = DshTypography.body.copyWith(
+      fontSize: 13,
+      color: colors.muted,
+    );
+    double measure(String value) {
+      final painter = TextPainter(
+        text: TextSpan(text: value, style: style),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+        maxLines: 1,
+      )..layout();
+      final width = painter.width;
+      painter.dispose();
+      return width;
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = constraints.maxWidth.isFinite
             ? constraints.maxWidth
-            : 360.0;
-        final compact = maxWidth < 260 ||
-            MediaQuery.textScalerOf(context).scale(1) >= 1.5;
-        final choice = _currentChoice(catalog);
-        final effective = catalog?.current['reasoningEffort'] as String? ??
-            choice?.defaultReasoningEffort;
-        final shortEffort = effective == null
-            ? '默认'
-            : reasoningLevelLabel(
-                choice?.reasoning.where((level) => level['id'] == effective).firstOrNull ??
-                    {'id': effective, 'name': effective},
-              );
-        final gradeText = compact ? shortEffort : '思考：$effort';
-        final painter = TextPainter(
-          text: TextSpan(text: gradeText, style: DshTypography.body),
-          textDirection: Directionality.of(context),
-          textScaler: MediaQuery.textScalerOf(context),
-          maxLines: 1,
-        )..layout();
-        final gradeWidth = math.min(painter.width + 44, maxWidth * .45);
-        painter.dispose();
-        return Row(
-          mainAxisSize: MainAxisSize.max,
-          children: [
-            Expanded(
-              child: popover(
-                controller: models,
-                content: modelContent,
-                child: DshButton(
-                  key: const ValueKey('model-picker-trigger'),
-                  focusNode: modelTrigger,
-                  tooltip: '选择模型：$name',
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  trailing: DshGlyph(
-                    c.pendingModelSelection != null
-                        ? DshIcons.clock.data
-                        : DshIcons.chevronDown.data,
-                    size: 14,
-                  ),
-                  onPressed: enabled
-                      ? () {
-                          if (models.isOpen) {
-                            dismiss();
-                            return;
-                          }
-                          dismiss(restoreFocus: false);
-                          openedScope = scope;
-                          models.show();
+            : 320.0;
+        final width = math.min(
+          maxWidth,
+          measure(name) + (showEffort ? measure(effort) + 8 : 0) + 44,
+        );
+        return Align(
+          alignment: Alignment.centerRight,
+          widthFactor: 1,
+          child: ShadPopover(
+            controller: menu,
+            padding: const EdgeInsets.all(6),
+            effects: const [],
+            reverseDuration: Duration.zero,
+            anchor: const ShadAnchorAuto(
+              targetAnchor: Alignment.topRight,
+              followerAnchor: Alignment.topLeft,
+              offset: Offset(0, -8),
+              fallback: ShadAnchorAuto(
+                targetAnchor: Alignment.bottomRight,
+                followerAnchor: Alignment.bottomLeft,
+                offset: Offset(0, 8),
+              ),
+            ),
+            popover: content,
+            child: SizedBox(
+              width: width,
+              child: DshButton(
+                key: const ValueKey('model-picker-trigger'),
+                focusNode: trigger,
+                tooltip: showEffort
+                    ? '选择模型与思考等级：$name · ${composerReasoningLabel(catalog)}'
+                    : '选择模型：$name',
+                height: 32,
+                fontSize: 13,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                trailing: DshGlyph(
+                  c.pendingModelSelection != null
+                      ? DshIcons.clock.data
+                      : DshIcons.chevronDown.data,
+                  size: 14,
+                  color: colors.muted,
+                ),
+                onPressed: c.connected && !c.sending
+                    ? () {
+                        if (menu.isOpen) {
+                          dismiss();
+                          return;
                         }
-                      : null,
-                  child: Flexible(
-                    child: Text(
-                      name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                        openedScope = scope;
+                        page = _SelectionPage.summary;
+                        highlighted = 0;
+                        keyboardNavigated = false;
+                        menu.show();
+                      }
+                    : null,
+                child: Flexible(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          name,
+                          key: const ValueKey('model-trigger-name'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: style,
+                        ),
+                      ),
+                      if (showEffort) ...[
+                        const SizedBox(width: 8),
+                        ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: math.max(0, width * .35),
+                          ),
+                          child: Text(
+                            effort,
+                            key: const ValueKey('model-trigger-reasoning'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: style,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ),
             ),
-            if (hasReasoning(catalog)) ...[
-              const SizedBox(width: 2),
-              SizedBox(
-                width: gradeWidth,
-                child: popover(
-                  controller: reasoning,
-                  content: reasoningContent,
-                  child: DshButton(
-                    key: const ValueKey('reasoning-picker-trigger'),
-                    focusNode: reasoningTrigger,
-                    tooltip: '思考等级：$effort',
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    trailing: DshGlyph(DshIcons.chevronDown.data, size: 14),
-                    onPressed: enabled
-                        ? () {
-                            if (reasoning.isOpen) {
-                              dismiss();
-                              return;
-                            }
-                            dismiss(restoreFocus: false);
-                            openedReasoningScope = reasoningScope;
-                            reasoning.show();
-                          }
-                        : null,
-                    child: Flexible(
-                      child: Text(
-                        gradeText,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ],
+          ),
         );
       },
     );
@@ -392,15 +574,13 @@ class _ModelSelectionControlsState extends State<ModelSelectionControls> {
   @override
   void dispose() {
     widget.controller.removeListener(changed);
-    models.removeListener(syncKeyboard);
-    reasoning.removeListener(syncKeyboard);
+    menu.removeListener(syncKeyboard);
     if (keyboardActive) {
       FocusManager.instance.removeEarlyKeyEventHandler(handleKey);
     }
-    models.dispose();
-    reasoning.dispose();
-    modelTrigger.dispose();
-    reasoningTrigger.dispose();
+    menu.dispose();
+    trigger.dispose();
+    menuFocus.dispose();
     super.dispose();
   }
 }
@@ -413,11 +593,13 @@ class ModelPicker extends StatefulWidget {
     this.onSelect,
     this.onManage,
     this.onDismiss,
+    this.onBack,
   });
   final DesktopController controller;
   final ValueChanged<ModelChoice>? onSelect;
   final VoidCallback? onManage;
   final VoidCallback? onDismiss;
+  final VoidCallback? onBack;
   @override
   State<ModelPicker> createState() => _ModelPickerState();
 }
@@ -595,6 +777,13 @@ class _ModelPickerState extends State<ModelPicker> {
             children: [
               Row(
                 children: [
+                  if (widget.onBack != null)
+                    DshIcon(
+                      DshIcons.chevronLeft.data,
+                      key: const ValueKey('model-menu-back'),
+                      label: '返回模型菜单',
+                      onPressed: widget.onBack,
+                    ),
                   Expanded(
                     child: Text(
                       '选择模型',
