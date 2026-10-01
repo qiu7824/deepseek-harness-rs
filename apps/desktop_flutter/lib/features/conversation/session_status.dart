@@ -7,6 +7,7 @@ import '../../design/error.dart';
 import '../../design/statistics_popover.dart';
 import '../../l10n/statistics_zh.dart';
 import '../../src/controller.dart';
+import 'context_quick_settings.dart' show ContextQuickSettings;
 
 import 'package:dsh_desktop/design/typography.dart';
 import 'package:dsh_desktop/l10n/conversation_zh.dart';
@@ -252,14 +253,28 @@ class ContextMeter extends StatelessWidget {
         object(controller.projections['contextPressure']),
       );
       return StatisticsPopover(
-        scope: (controller.client, controller.selectedId, reading != null),
+        scope: (
+          controller.client,
+          controller.host,
+          controller.selectedId,
+          controller.selectionRevision,
+          controller.catalog?.currentKey,
+          reading != null,
+        ),
         label: reading == null
             ? DshStatisticsZh.context
             : '${DshStatisticsZh.context} ${reading.percent}%',
         title: DshStatisticsZh.context,
         icon: DshIcons.brain.data,
         rows: const [],
-        details: ContextSummary(controller: controller),
+        details: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ContextSummary(controller: controller),
+            const Divider(height: 24),
+            ContextQuickSettings(controller: controller, showUsage: false),
+          ],
+        ),
       );
     },
   );

@@ -233,17 +233,20 @@ class _ModelsPageState extends State<ModelsPage> {
   }
 
   Future<void> settingsSaved() async {
-    await widget.onSettingsChanged();
     final c = widget.controller,
-        id = widget.controller.selectedId,
-        owner = widget.controller.client;
-    if (id == null || owner == null || !mounted) return;
+        owner = widget.controller.client,
+        host = widget.controller.host;
+    await widget.onSettingsChanged();
+    if (owner == null ||
+        !mounted ||
+        !identical(c, widget.controller) ||
+        !identical(owner, c.client) ||
+        !identical(host, c.host)) {
+      return;
+    }
     try {
-      final value = await owner.models(id);
-      if (mounted && c.client == owner && c.selectedId == id) {
-        c.catalog = value;
-        c.emit();
-      }
+      c.invalidateModelCatalog();
+      await c.refreshModels();
     } catch (e) {
       if (mounted) {
         setState(() => notice = DshSettingsZh.modelsRefreshFailed(detail: e));

@@ -133,6 +133,7 @@ class DesktopController extends ChangeNotifier {
 
   /// `context-compaction` settings: `thresholds` keyed by `provider/model`.
   Json contextCompaction = {};
+  final _compactionSaves = <DshClient, Future<void>>{};
   Set<String> disabledPlugins = {};
   int scheduleRevision = 0;
   bool? scheduleEnabled;
@@ -264,13 +265,161 @@ class DesktopController extends ChangeNotifier {
         : null;
   }
 
-  ModelCatalog? catalog;
+  ModelCatalog? _catalog;
+  Object? _catalogScope;
+  int _modelConfigurationRevision = 0;
+  ModelCatalog? get catalog => _catalog;
+  set catalog(ModelCatalog? value) {
+    _catalog = value;
+    _catalogScope = value == null ? null : modelCatalogScope;
+  }
+
+  Object get modelCatalogScope => (
+    _client,
+    host,
+    _epoch,
+    _modelConfigurationRevision,
+    _modelAccountSignature,
+  );
+  String get _modelAccountSignature {
+    final providers = List<Json>.of(subscriptionAccounts)
+      ..sort((a, b) => '${a['id']}'.compareTo('${b['id']}'));
+    return jsonEncode([
+      for (final provider in providers)
+        [
+          provider['id'],
+          provider['signedIn'] == true,
+          provider['activeAccountId'],
+          ...(() {
+            final accounts = objects(provider['accounts'])
+              ..sort(
+                (a, b) => '${a['accountId']}\u0000${a['accountScope']}'
+                    .compareTo('${b['accountId']}\u0000${b['accountScope']}'),
+              );
+            return [
+              for (final account in accounts)
+                [
+                  account['accountId'],
+                  account['accountScope'],
+                  account['loginGeneration'],
+                  account['active'] == true,
+                  account['needsLogin'] == true,
+                ],
+            ];
+          })(),
+        ],
+    ]);
+  }
+
+  void invalidateModelCatalog() {
+    _modelConfigurationRevision++;
+    _modelRevision++;
+    _cachedModelDirectory = null;
+    emit();
+  }
+
+  ModelCatalog? _cachedModelDirectory;
+  DshClient? _modelDirectoryClient;
+  HostInfo? _modelDirectoryHost;
+  Object? _modelDirectoryScope, _modelPreparationCatalogScope;
+  Object? _modelMetadataRecoveryScope;
+  ModelCatalog? get availableModelCatalog =>
+      (_catalogScope == modelCatalogScope ? catalog : null) ??
+      (identical(_modelDirectoryClient, _client) &&
+              identical(_modelDirectoryHost, host) &&
+              _modelDirectoryScope == modelCatalogScope
+          ? _cachedModelDirectory
+          : null);
   Object? _modelChange;
+  (DshClient, HostInfo?, int, Object)? _modelChangeOwner;
+  Future<String?>? _modelPreparation;
+  (DshClient, HostInfo?, int, int, int)? _modelPreparationScope;
+  Json? _pendingModelSelection;
   int _modelRevision = 0;
+  final _modelSelectionWrites = <(DshClient, String), Future<void>>{};
+  final _modelReads =
+      <(DshClient, String, int, int, int, HostInfo?, Object), Future<void>>{};
   final _modelDefaultSaves = <DshClient, Future<void>>{};
+  String? _modelDefaultError;
+  (DshClient, HostInfo?, int, Object)? _modelDefaultErrorOwner,
+      _modelDefaultSaveOwner,
+      _unconfirmedModelOwner;
+  int _modelDefaultErrorSelection = -1, _modelDefaultErrorRevision = -1;
+  int _modelDefaultSaveSelection = -1, _modelDefaultSaveRevision = -1;
   int _modelChangeSelection = -1;
-  bool get changingModel =>
-      _modelChange != null && _modelChangeSelection == _selection;
+  int _unconfirmedModelSelection = -1;
+  bool get changingModel {
+    final owner = _modelChangeOwner;
+    return _modelChange != null &&
+        owner != null &&
+        identical(owner.$1, _client) &&
+        identical(owner.$2, host) &&
+        owner.$3 == _epoch &&
+        owner.$4 == modelCatalogScope &&
+        ((_modelChangeSelection == _selection &&
+                (_modelPreparationScope?.$4 != _modelChangeSelection ||
+                    _ownsModelPreparation)) ||
+            _ownsModelPreparation);
+  }
+
+  bool get _ownsModelPreparation {
+    final scope = _modelPreparationScope;
+    return _modelPreparation != null &&
+        scope != null &&
+        identical(scope.$1, _client) &&
+        identical(scope.$2, host) &&
+        scope.$3 == _epoch &&
+        scope.$5 == _workspaceTargetRevision &&
+        _modelPreparationCatalogScope == modelCatalogScope &&
+        (scope.$4 == _selection ||
+            (scope.$4 + 1 == _selection && selectionAdoptsDraft));
+  }
+
+  bool get modelSelectionUnconfirmed {
+    final owner = _unconfirmedModelOwner;
+    return _unconfirmedModelSelection == _selection &&
+        owner != null &&
+        identical(owner.$1, _client) &&
+        identical(owner.$2, host) &&
+        owner.$3 == _epoch;
+  }
+
+  String? get modelDefaultError =>
+      _modelDefaultErrorSelection == _selection &&
+          _modelDefaultErrorRevision == _modelRevision &&
+          _ownsModelState(_modelDefaultErrorOwner)
+      ? _modelDefaultError
+      : null;
+  bool get savingModelDefault =>
+      _modelDefaultSaveSelection == _selection &&
+      _modelDefaultSaveRevision == _modelRevision &&
+      _ownsModelState(_modelDefaultSaveOwner) &&
+      _modelDefaultSaves.containsKey(_client);
+  bool _ownsModelState((DshClient, HostInfo?, int, Object)? owner) =>
+      owner != null &&
+      identical(owner.$1, _client) &&
+      identical(owner.$2, host) &&
+      owner.$3 == _epoch &&
+      owner.$4 == modelCatalogScope;
+  Json? get pendingModelSelection =>
+      changingModel ? _pendingModelSelection : null;
+  ModelCatalog? get modelPreviewCatalog {
+    final confirmed = availableModelCatalog, pending = pendingModelSelection;
+    return confirmed == null || pending == null
+        ? confirmed
+        : ModelCatalog.withCurrent(confirmed, pending);
+  }
+
+  bool get refreshingModels => _modelReads.keys.any(
+    (scope) =>
+        identical(scope.$1, _client) &&
+        scope.$2 == (selectedId ?? '') &&
+        scope.$3 == _selection &&
+        scope.$4 == _epoch &&
+        scope.$5 == _modelRevision &&
+        identical(scope.$6, host) &&
+        scope.$7 == modelCatalogScope,
+  );
   ConversationWindow window = ConversationWindow();
   List<TranscriptItem> transcript = [];
   final Map<String, HostFrame> pending = {};
@@ -431,6 +580,8 @@ class DesktopController extends ChangeNotifier {
       selectedWorkspace?['title'],
       selectedWorkspace?['path'],
       catalog,
+      modelCatalogScope,
+      modelSelectionUnconfirmed,
       loading,
       sending,
       commandRunning,
@@ -551,6 +702,10 @@ class DesktopController extends ChangeNotifier {
     pending.clear();
     answering.clear();
     catalog = null;
+    _cachedModelDirectory = null;
+    _modelDirectoryClient = null;
+    _modelDirectoryHost = null;
+    _modelMetadataRecoveryScope = null;
     selectedId = null;
     historyTargetSeq = null;
     _holdingLiveHistory = false;
@@ -802,7 +957,11 @@ class DesktopController extends ChangeNotifier {
     }
   }
 
-  Future<void> select(String id, {bool adoptDraft = false}) async {
+  Future<void> select(
+    String id, {
+    bool adoptDraft = false,
+    bool loadModels = true,
+  }) async {
     _clearCommandActivity();
     _historyScope?.cancel();
     _planScope?.cancel();
@@ -853,17 +1012,7 @@ class DesktopController extends ChangeNotifier {
         }
       }(),
       refreshCommandActivity(),
-      () async {
-        final revision = _modelRevision;
-        final models = await _client!.models(id);
-        if (generation == _selection &&
-            epoch == _epoch &&
-            !_disposed &&
-            revision == _modelRevision) {
-          catalog = models;
-          emit();
-        }
-      }(),
+      if (loadModels) refreshModels(),
       preferences.save(),
     ]);
   }
@@ -1259,7 +1408,11 @@ class DesktopController extends ChangeNotifier {
     computerUseRequests.value++;
   }
 
-  Future<String?> create(String cwd) async {
+  Future<String?> create(
+    String cwd, {
+    bool loadModels = true,
+    bool Function()? isCurrent,
+  }) async {
     if (!connected) throw StateError(DshRuntimeZh.connectLocalService);
     if (cwd.trim().isEmpty) {
       throw const FormatException(DshRuntimeZh.workingDirectoryRequired);
@@ -1282,7 +1435,8 @@ class DesktopController extends ChangeNotifier {
         selection == _selection &&
         ownerWorkspace == workspaceId &&
         workspaceTarget == _workspaceTargetRevision &&
-        (!fromDraft || draftScope == draftScopeKey);
+        (!fromDraft || draftScope == draftScopeKey) &&
+        isCurrent?.call() != false;
     if (!current()) return null;
     await refreshSessions();
     if (!current()) return null;
@@ -1294,12 +1448,13 @@ class DesktopController extends ChangeNotifier {
       if (text != null) preferences.drafts[id] = text;
       preferences.drafts.remove(draftScope);
     }
-    await select(id, adoptDraft: fromDraft);
+    await select(id, adoptDraft: fromDraft, loadModels: loadModels);
     return !_disposed &&
             epoch == _epoch &&
             _selection == selection + 1 &&
             workspaceTarget == _workspaceTargetRevision &&
-            selectedId == id
+            selectedId == id &&
+            isCurrent?.call() != false
         ? id
         : null;
   }
@@ -1312,6 +1467,7 @@ class DesktopController extends ChangeNotifier {
         sending ||
         changingPlanMode ||
         changingModel ||
+        modelSelectionUnconfirmed ||
         text.trim().isEmpty) {
       return;
     }
@@ -1349,6 +1505,7 @@ class DesktopController extends ChangeNotifier {
         sending ||
         changingPlanMode ||
         changingModel ||
+        modelSelectionUnconfirmed ||
         _disposed) {
       return null;
     }
@@ -1480,6 +1637,9 @@ class DesktopController extends ChangeNotifier {
       optional(loadAccounts),
       optional(loadPlugins),
     ]);
+    if (!_disposed && epoch == _epoch && identical(api, _client)) {
+      _recoverModelsAfterMetadata();
+    }
   }
 
   Future<void> loadPlugins() async {
@@ -1503,7 +1663,39 @@ class DesktopController extends ChangeNotifier {
     if (!_disposed && epoch == _epoch) {
       subscriptionAccounts = objects(result['providers']);
       emit();
+      _recoverModelsAfterMetadata();
     }
+  }
+
+  void _recoverModelsAfterMetadata() {
+    final api = _client, id = selectedId;
+    if (_disposed ||
+        api == null ||
+        id == null ||
+        !connected ||
+        changingModel ||
+        availableModelCatalog != null) {
+      return;
+    }
+    final scope = (
+      api,
+      id,
+      _selection,
+      _epoch,
+      _modelRevision,
+      modelCatalogScope,
+    );
+    if (_modelMetadataRecoveryScope == scope) return;
+    _modelMetadataRecoveryScope = scope;
+    // Authorization and the restored session load in parallel. A directory
+    // read started before authorization arrived retires with its old scope.
+    // Recover once in the final metadata scope, sharing any read already active;
+    // failures remain available for explicit refresh instead of polling.
+    unawaited(() async {
+      try {
+        await refreshModels();
+      } catch (_) {}
+    }());
   }
 
   void newConversation() {
@@ -1665,21 +1857,50 @@ class DesktopController extends ChangeNotifier {
   /// Automatic compaction threshold for one `provider/model`; null restores
   /// the default.
   Future<void> setCompactionThreshold(String key, double? ratio) async {
-    final api = _client;
+    final api = _client, ownerHost = host, epoch = _epoch;
     if (api == null) throw StateError(DshRuntimeZh.connectLocalService);
-    final thresholds = {...object(contextCompaction['thresholds'])};
-    if (ratio == null) {
-      thresholds.remove(key);
-    } else {
-      thresholds[key] = ratio;
+    if (ratio != null && (!ratio.isFinite || ratio < 0.3 || ratio > 0.98)) {
+      throw ArgumentError.value(ratio, 'ratio', '压缩阈值应在 30% 到 98% 之间');
     }
-    await api.call('settings.replace', {
-      'ns': 'context-compaction',
-      'section': {'thresholds': thresholds},
-    }, true);
-    if (_disposed || api != _client) return;
-    contextCompaction = {...contextCompaction, 'thresholds': thresholds};
-    emit();
+    bool current() =>
+        !_disposed &&
+        identical(api, _client) &&
+        identical(ownerHost, host) &&
+        epoch == _epoch;
+    final previous = _compactionSaves[api] ?? Future<void>.value();
+    final saving = () async {
+      await previous;
+      if (!current()) return;
+      // Derive the next whole section only after the previous write settled.
+      // Concurrent per-model edits must not discard another confirmed key.
+      final thresholds = {...object(contextCompaction['thresholds'])};
+      if (ratio == null) {
+        thresholds.remove(key);
+      } else {
+        thresholds[key] = ratio;
+      }
+      try {
+        await api.call('settings.replace', {
+          'ns': 'context-compaction',
+          'section': {'thresholds': thresholds},
+        }, true);
+      } catch (_) {
+        if (current()) rethrow;
+        return;
+      }
+      if (!current()) return;
+      contextCompaction = {...contextCompaction, 'thresholds': thresholds};
+      emit();
+    }();
+    final settled = saving.catchError((Object _) {});
+    _compactionSaves[api] = settled;
+    try {
+      await saving;
+    } finally {
+      if (identical(_compactionSaves[api], settled)) {
+        _compactionSaves.remove(api);
+      }
+    }
   }
 
   /// Run the `/compact` command in the selected session now.
@@ -1698,8 +1919,8 @@ class DesktopController extends ChangeNotifier {
   }
 
   Future<void> setReasoning(String effort) async {
-    final current = catalog;
-    if (selectedId == null || current == null) return;
+    final current = modelPreviewCatalog;
+    if (current == null) return;
     final choice = current.choices
         .where((model) => model.key == current.currentKey)
         .firstOrNull;
@@ -1707,7 +1928,10 @@ class DesktopController extends ChangeNotifier {
         !choice.reasoning.any((level) => level['id'] == effort)) {
       throw StateError('当前模型不支持该推理等级');
     }
-    if (current.current['reasoningEffort'] == effort) return;
+    if (!modelSelectionUnconfirmed &&
+        current.current['reasoningEffort'] == effort) {
+      return;
+    }
     await _changeModelSelection({
       ...current.current,
       'reasoningEffort': effort,
@@ -1719,12 +1943,23 @@ class DesktopController extends ChangeNotifier {
     Json current, {
     bool Function()? isCurrent,
   }) async {
+    final selection = _selection,
+        revision = _modelRevision,
+        ownerHost = host,
+        directoryScope = modelCatalogScope,
+        epoch = _epoch;
+    bool currentScope() =>
+        !_disposed &&
+        identical(api, _client) &&
+        identical(ownerHost, host) &&
+        directoryScope == modelCatalogScope &&
+        epoch == _epoch;
     final previous = _modelDefaultSaves[api] ?? Future<void>.value();
     final saving = () async {
       await previous;
       // A write already accepted by the Host cannot be recalled. Serialize
       // newer defaults after it, and discard queued writes whose scope retired.
-      if (_disposed || api != _client || isCurrent?.call() == false) return;
+      if (!currentScope() || isCurrent?.call() == false) return;
       try {
         await api.call('settings.replace', {
           'ns': 'agent-default-model',
@@ -1737,19 +1972,62 @@ class DesktopController extends ChangeNotifier {
           },
         }, true);
       } catch (failure) {
-        if (!_disposed && api == _client && isCurrent?.call() != false) {
-          error = DshRuntimeZh.defaultModelSaveFailed(error: failure);
+        if (currentScope() && isCurrent?.call() != false) {
+          _modelDefaultError = DshRuntimeZh.defaultModelSaveFailed(
+            error: failure,
+          );
+          _modelDefaultErrorSelection = selection;
+          _modelDefaultErrorRevision = revision;
+          _modelDefaultErrorOwner = (api, ownerHost, epoch, directoryScope);
+          emit();
         }
       }
     }();
     _modelDefaultSaves[api] = saving;
+    _modelDefaultSaveSelection = selection;
+    _modelDefaultSaveRevision = revision;
+    _modelDefaultSaveOwner = (api, ownerHost, epoch, directoryScope);
+    if (currentScope() && isCurrent?.call() != false) emit();
     try {
       await saving;
     } finally {
       if (identical(_modelDefaultSaves[api], saving)) {
         _modelDefaultSaves.remove(api);
+        if (currentScope() && isCurrent?.call() != false) emit();
       }
     }
+  }
+
+  Future<void> retryModelDefault() async {
+    final api = _client,
+        current = catalog?.current,
+        generation = _selection,
+        revision = _modelRevision,
+        ownerHost = host,
+        directoryScope = modelCatalogScope,
+        epoch = _epoch;
+    if (api == null ||
+        current == null ||
+        changingModel ||
+        modelSelectionUnconfirmed ||
+        savingModelDefault ||
+        _disposed) {
+      return;
+    }
+    _modelDefaultError = null;
+    emit();
+    await rememberModel(
+      api,
+      current,
+      isCurrent: () =>
+          !_disposed &&
+          identical(api, _client) &&
+          identical(ownerHost, host) &&
+          directoryScope == modelCatalogScope &&
+          generation == _selection &&
+          revision == _modelRevision &&
+          epoch == _epoch,
+    );
   }
 
   Future<void> stop() async {
@@ -1761,115 +2039,309 @@ class DesktopController extends ChangeNotifier {
   }
 
   Future<void> chooseModel(ModelChoice model) async {
-    if (catalog?.currentKey == model.key) return;
-    await _changeModelSelection({
-      'provider': model.provider,
-      'model': model.id,
-    });
+    if (!modelSelectionUnconfirmed &&
+        modelPreviewCatalog?.currentKey == model.key) {
+      return;
+    }
+    await _changeModelSelection(
+      {'provider': model.provider, 'model': model.id},
+      preview: {
+        'provider': model.provider,
+        'model': model.id,
+        'executionMode': 'standard',
+        if (model.defaultReasoningEffort != null)
+          'reasoningEffort': model.defaultReasoningEffort,
+      },
+    );
   }
 
   Future<void> refreshModels() async {
     final api = _client,
         id = selectedId,
+        ownerHost = host,
+        directoryScope = modelCatalogScope,
         generation = _selection,
         epoch = _epoch,
         revision = _modelRevision;
-    if (api == null || id == null || changingModel) return;
+    if (api == null || changingModel || _disposed) return;
+    final scope = (
+      api,
+      id ?? '',
+      generation,
+      epoch,
+      revision,
+      ownerHost,
+      directoryScope,
+    );
+    final existing = _modelReads[scope];
+    if (existing != null) return existing;
     bool current() =>
         !_disposed &&
         api == _client &&
+        identical(ownerHost, host) &&
+        directoryScope == modelCatalogScope &&
         epoch == _epoch &&
         generation == _selection &&
         revision == _modelRevision;
+    final reading = () async {
+      try {
+        if (id != null) {
+          final pendingWrite = _modelSelectionWrites[(api, id)];
+          if (pendingWrite != null) {
+            await pendingWrite;
+            if (!current()) return;
+          }
+        }
+        final next = id == null
+            ? ModelCatalog.fromJson(await api.call('llm.models'))
+            : await api.models(id);
+        if (!current()) return;
+        _cachedModelDirectory = ModelCatalog.withCurrent(
+          next,
+          const {},
+          routable: false,
+        );
+        _modelDirectoryClient = api;
+        _modelDirectoryHost = ownerHost;
+        _modelDirectoryScope = directoryScope;
+        if (id != null) catalog = next;
+        _unconfirmedModelSelection = -1;
+        emit();
+      } catch (_) {
+        if (current()) rethrow;
+      }
+    }();
+    _modelReads[scope] = reading;
+    emit();
     try {
-      final next = await api.models(id);
-      if (!current()) return;
-      catalog = next;
-      emit();
-    } catch (_) {
-      if (current()) rethrow;
+      await reading;
+    } finally {
+      if (identical(_modelReads[scope], reading)) {
+        _modelReads.remove(scope);
+        if (current()) emit();
+      }
     }
   }
 
-  Future<void> _changeModelSelection(Json selection) async {
+  Future<void> _changeModelSelection(Json selection, {Json? preview}) async {
     final id = selectedId,
         api = _client,
+        ownerHost = host,
+        directoryScope = modelCatalogScope,
         generation = _selection,
         epoch = _epoch;
-    if (_disposed || id == null || api == null) return;
+    if (_disposed || api == null) return;
     if (sending) throw StateError('正在提交消息，请稍候再调整模型或推理等级');
-    if (changingModel) throw StateError('正在切换模型或推理等级，请稍候');
+    if (id == null) {
+      await _prepareModelSelection(selection, preview: preview);
+      return;
+    }
     final token = Object();
-    _modelRevision++;
+    final revision = ++_modelRevision;
     _modelChange = token;
+    _modelChangeOwner = (api, ownerHost, epoch, directoryScope);
     _modelChangeSelection = generation;
+    _pendingModelSelection = Map<String, dynamic>.of(preview ?? selection);
+    _modelDefaultError = null;
     error = null;
-    bool current() =>
+    bool ownsScope() =>
         !_disposed &&
         epoch == _epoch &&
         identical(api, _client) &&
+        identical(ownerHost, host) &&
+        directoryScope == modelCatalogScope &&
         generation == _selection &&
-        selectedId == id &&
-        identical(_modelChange, token);
+        selectedId == id;
+    bool latest() => ownsScope() && identical(_modelChange, token);
+    void rememberConfirmed() {
+      final confirmed = catalog?.current;
+      if (confirmed == null || !latest()) return;
+      // The next-session default is a separate ordered side effect. It must
+      // neither hold the current session's selector nor block prompt admission.
+      unawaited(
+        rememberModel(
+          api,
+          confirmed,
+          isCurrent: () => ownsScope() && revision == _modelRevision,
+        ),
+      );
+    }
+
+    bool matchesRequested(Json confirmed) =>
+        confirmed['provider'] == selection['provider'] &&
+        confirmed['model'] == selection['model'] &&
+        (selection['executionMode'] == null ||
+            confirmed['executionMode'] == selection['executionMode']) &&
+        (selection['reasoningEffort'] == null ||
+            confirmed['reasoningEffort'] == selection['reasoningEffort']);
+    // Serialize mutations for this exact Host/session, including requests whose
+    // view has since retired. An already dispatched mutation cannot be recalled;
+    // a newer selection must land after it instead of racing it on the Host.
+    final writeScope = (api, id);
+    final previous = _modelSelectionWrites[writeScope] ?? Future<void>.value();
     emit();
-    try {
-      final result = await api.call('session.selectModel', {
-        ...selection,
-        'sessionId': id,
-      }, true);
-      if (!current()) return;
-      final confirmed = object(result['selected']);
-      if (confirmed['provider'] is String && confirmed['model'] is String) {
-        final previous = catalog;
-        catalog = ModelCatalog.fromJson({
-          'current': confirmed,
-          'routable': true,
-          'failures': previous?.failures ?? const <Json>[],
-          'groups': [
-            for (final provider
-                in previous?.providerNames.entries ??
-                    const <MapEntry<String, String>>[])
-              {
-                'id': provider.key,
-                'name': provider.value,
-                'models': [
-                  for (final model in previous!.choices.where(
-                    (model) => model.provider == provider.key,
-                  ))
-                    {
-                      'id': model.id,
-                      'name': model.name,
-                      'reasoning': {'efforts': model.reasoning},
-                    },
-                ],
-              },
-          ],
-        });
-        emit();
-      }
-      ModelCatalog next;
-      try {
-        next = await api.models(id);
-      } catch (failure) {
-        if (!current()) return;
-        if (confirmed.isNotEmpty) {
-          await rememberModel(api, confirmed, isCurrent: current);
-          if (!current()) return;
-          throw StateError('模型或推理等级已更新，但刷新列表失败：$failure');
+    final changing = () async {
+      await previous;
+      if (!latest()) {
+        if (identical(_modelChange, token)) {
+          _modelChange = null;
+          _pendingModelSelection = null;
+          if (!_disposed) emit();
         }
-        rethrow;
+        return;
       }
-      if (!current()) return;
-      catalog = next;
-      await rememberModel(api, next.current, isCurrent: current);
-      if (current()) emit();
+      var accepted = false, verified = false;
+      try {
+        final result = await api.call('session.selectModel', {
+          ...selection,
+          'sessionId': id,
+        }, true);
+        accepted = true;
+        if (!ownsScope()) return;
+        final confirmed = object(result['selected']);
+        if (confirmed['provider'] is String &&
+            confirmed['model'] is String &&
+            matchesRequested(confirmed)) {
+          final existing = availableModelCatalog;
+          catalog = existing == null
+              ? ModelCatalog.fromJson({'current': confirmed, 'routable': true})
+              : ModelCatalog.withCurrent(existing, confirmed, routable: true);
+          verified = true;
+        } else {
+          // Older Hosts may omit the selection receipt. Keep prompt admission
+          // closed until an authoritative read confirms what was committed.
+          _unconfirmedModelSelection = generation;
+          _unconfirmedModelOwner = (api, ownerHost, epoch, directoryScope);
+          final next = await api.models(id);
+          if (!ownsScope()) return;
+          catalog = next;
+          verified = true;
+          _unconfirmedModelSelection = -1;
+          if (!matchesRequested(next.current)) {
+            throw StateError('所选模型或思考等级未生效，请重新选择');
+          }
+        }
+        _unconfirmedModelSelection = -1;
+        emit();
+        rememberConfirmed();
+      } catch (failure) {
+        if (!ownsScope()) return;
+        if (!verified &&
+            (accepted || (failure is DshException && failure.outcomeUnknown))) {
+          _unconfirmedModelSelection = generation;
+          _unconfirmedModelOwner = (api, ownerHost, epoch, directoryScope);
+          if (!accepted) {
+            try {
+              final next = await api.models(id);
+              if (!ownsScope()) return;
+              catalog = next;
+              verified = true;
+              _unconfirmedModelSelection = -1;
+              emit();
+              if (matchesRequested(next.current)) {
+                rememberConfirmed();
+                return;
+              }
+            } catch (_) {
+              if (!ownsScope()) return;
+            }
+          }
+        }
+        if (latest()) rethrow;
+      } finally {
+        if (identical(_modelChange, token)) {
+          _modelChange = null;
+          _pendingModelSelection = null;
+          if (!_disposed) emit();
+        }
+      }
+    }();
+    // Keep the queue itself fulfilled after a rejected intent so a later
+    // explicit choice can still be submitted and confirmed.
+    final settled = changing.catchError((Object _) {});
+    _modelSelectionWrites[writeScope] = settled;
+    try {
+      await changing;
+    } finally {
+      if (identical(_modelSelectionWrites[writeScope], settled)) {
+        _modelSelectionWrites.remove(writeScope);
+      }
+    }
+  }
+
+  Future<void> _prepareModelSelection(Json selection, {Json? preview}) async {
+    final api = _client,
+        ownerHost = host,
+        directoryScope = modelCatalogScope,
+        epoch = _epoch,
+        generation = _selection,
+        workspaceRevision = _workspaceTargetRevision,
+        path = currentWorkspace?['path'] as String?;
+    if (api == null || !connected) {
+      throw StateError(DshRuntimeZh.connectLocalService);
+    }
+    if (path == null) throw StateError(DshRuntimeZh.selectWorkspace);
+    final token = Object();
+    _modelRevision++;
+    _modelChange = token;
+    _modelChangeOwner = (api, ownerHost, epoch, directoryScope);
+    _modelChangeSelection = generation;
+    _pendingModelSelection = Map<String, dynamic>.of(preview ?? selection);
+    _modelDefaultError = null;
+    error = null;
+    final existing = _ownsModelPreparation ? _modelPreparation : null;
+    _modelPreparationScope = (
+      api,
+      ownerHost,
+      epoch,
+      generation,
+      workspaceRevision,
+    );
+    _modelPreparationCatalogScope = directoryScope;
+    // Opening a selector is read-only; only an explicit selection creates a
+    // session. Rapid choices share that creation and only the final intent lands.
+    final creating =
+        existing ??
+        create(
+          path,
+          loadModels: false,
+          isCurrent: () => !_disposed && directoryScope == modelCatalogScope,
+        );
+    _modelPreparation = creating;
+    emit();
+    bool ownsScope() =>
+        !_disposed &&
+        identical(api, _client) &&
+        identical(ownerHost, host) &&
+        directoryScope == modelCatalogScope &&
+        epoch == _epoch &&
+        workspaceRevision == _workspaceTargetRevision &&
+        (generation == _selection ||
+            (generation + 1 == _selection && selectionAdoptsDraft));
+    var submitted = false;
+    try {
+      final id = await creating;
+      if (!ownsScope() ||
+          !identical(_modelChange, token) ||
+          id == null ||
+          selectedId != id) {
+        return;
+      }
+      _modelChangeSelection = _selection;
+      submitted = true;
+      await _changeModelSelection(selection, preview: preview);
     } catch (_) {
-      if (current()) rethrow;
+      if (ownsScope() && (submitted || identical(_modelChange, token))) rethrow;
     } finally {
       if (identical(_modelChange, token)) {
         _modelChange = null;
-        if (!_disposed) emit();
+        _pendingModelSelection = null;
       }
+      if (identical(_modelPreparation, creating)) {
+        _modelPreparation = null;
+        _modelPreparationScope = null;
+      }
+      if (!_disposed) emit();
     }
   }
 

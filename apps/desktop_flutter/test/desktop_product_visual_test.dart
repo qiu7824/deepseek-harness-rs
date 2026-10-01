@@ -6,7 +6,6 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/features/settings/plugin_page.dart';
 import 'package:dsh_desktop/features/settings/settings_shell.dart';
 import 'package:dsh_desktop/features/workbench/start_panel.dart';
-import 'package:dsh_desktop/l10n/conversation_zh.dart';
 import 'package:dsh_desktop/l10n/statistics_zh.dart';
 import 'package:dsh_desktop/src/app.dart';
 import 'package:flutter/foundation.dart';
@@ -134,12 +133,16 @@ class ProductVisualController extends TestController {
   }
 }
 
-Json productVisualModelCatalog() => {
+Json productVisualModelCatalog({
+  String modelName = 'DeepSeek Chat',
+  String modelId = 'deepseek-chat',
+  String effort = 'high',
+}) => {
   'routable': true,
   'current': {
     'provider': 'deepseek',
-    'model': 'deepseek-chat',
-    'reasoningEffort': 'high',
+    'model': modelId,
+    'reasoningEffort': effort,
   },
   'groups': [
     {
@@ -147,8 +150,8 @@ Json productVisualModelCatalog() => {
       'name': 'DeepSeek',
       'models': [
         {
-          'id': 'deepseek-chat',
-          'name': 'DeepSeek Chat',
+          'id': modelId,
+          'name': modelName,
           'reasoning': {
             'efforts': [
               for (final effort in ['low', 'medium', 'high', 'max'])
@@ -292,6 +295,50 @@ Future<void> exportProductFrame(
   });
 }
 
+Rect productPopoverRect(WidgetTester tester, Finder content) {
+  RenderObject? node = tester.renderObject(content);
+  while (node != null) {
+    if (node is RenderDecoratedBox) {
+      return node.localToGlobal(Offset.zero) & node.size;
+    }
+    node = node.parent;
+  }
+  throw TestFailure('The anchored popover decoration is missing');
+}
+
+void expectProductPopoverPlacement(
+  WidgetTester tester,
+  Finder content,
+  Finder trigger,
+  Size viewport,
+) {
+  final panel = productPopoverRect(tester, content);
+  final target = tester.getRect(trigger);
+  final viewportRect = Offset.zero & viewport;
+  expect(viewportRect.contains(panel.topLeft), isTrue);
+  expect(
+    viewportRect.contains(panel.bottomRight - const Offset(.01, .01)),
+    isTrue,
+    reason: 'Popover borders must remain inside the viewport',
+  );
+  if (target.top >= panel.height + 16) {
+    expect(panel.bottom, lessThanOrEqualTo(target.top - 6));
+    expect(panel.right, lessThanOrEqualTo(target.right + 1));
+  }
+  for (final control in [
+    trigger,
+    find.byKey(const ValueKey('conversation-view-conversation')),
+    find.byKey(const Key('more-header-menu')),
+  ]) {
+    if (control.evaluate().isEmpty) continue;
+    expect(
+      panel.overlaps(tester.getRect(control)),
+      isFalse,
+      reason: 'Popover panels must not cover their trigger or header controls',
+    );
+  }
+}
+
 void main() {
   var fontsLoaded = false;
   for (final dark in [false, true]) {
@@ -374,26 +421,112 @@ void main() {
           );
           expect(find.byKey(const Key('prompt-input')), findsOneWidget);
           expect(tester.takeException(), isNull);
-          await exportProductFrame(tester, boundary, '$prefix-main');
           final modelTrigger = find.byKey(
-            const ValueKey('composer-model-menu'),
+            const ValueKey('model-picker-trigger'),
           );
           expect(modelTrigger.hitTestable(), findsOneWidget);
+          final originalModelCatalog = controller.catalog!;
+          controller.catalog = ModelCatalog.fromJson(
+            productVisualModelCatalog(
+              modelName: 'DeepSeek-V41-Flash',
+              modelId: 'deepseek-v41-flash',
+              effort: 'max',
+            ),
+          );
+          controller.emit();
+          await tester.pumpAndSettle();
+          final gradeTrigger = find.byKey(
+            const ValueKey('reasoning-picker-trigger'),
+          );
+          final modelRowRect = tester.getRect(modelTrigger);
+          final gradeRowRect = tester.getRect(gradeTrigger);
+          expect(modelRowRect.center.dy, closeTo(gradeRowRect.center.dy, 1));
+          expect(modelRowRect.right, lessThanOrEqualTo(gradeRowRect.left));
+          final fullViewport = Offset.zero & viewport.size;
+          for (final rect in [modelRowRect, gradeRowRect]) {
+            expect(fullViewport.contains(rect.topLeft), isTrue);
+            expect(
+              fullViewport.contains(rect.bottomRight - const Offset(.01, .01)),
+              isTrue,
+            );
+          }
+          final gradeLabel = find.descendant(
+            of: gradeTrigger,
+            matching: find.byType(Text),
+          );
+          expect(tester.widget<Text>(gradeLabel).data, anyOf('最高', '思考：最高'));
+          expect(
+            tester.renderObject<RenderParagraph>(gradeLabel).didExceedMaxLines,
+            isFalse,
+            reason: 'The highest reasoning level must remain fully readable',
+          );
+          expect(
+            find.descendant(
+              of: modelTrigger,
+              matching: find.byTooltip('选择模型：DeepSeek-V41-Flash'),
+            ),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+          await exportProductFrame(tester, boundary, '$prefix-main');
+          controller.catalog = originalModelCatalog;
+          controller.emit();
+          await tester.pumpAndSettle();
           final readsBeforeModel = controller.api.readPaths.length;
           final methodsBeforeModel = controller.api.readMethods.length;
-          final modelHint =
-              '${DshConversationZh.modelAndReasoning}：'
-              'DeepSeek Chat · ${DshConversationZh.reasoningHigh}';
+          const modelHint = '选择模型：DeepSeek Chat';
           final mouse = await tester.createGesture(
             kind: PointerDeviceKind.mouse,
           );
           await mouse.addPointer(location: Offset.zero);
+          const longModelName =
+              'DeepSeek Chat Enterprise API Compatible Extended Context '
+              'Reasoning Release / Regional Dedicated Provider';
+          const longModelHint = '选择模型：$longModelName';
+          controller.catalog = ModelCatalog.fromJson(
+            productVisualModelCatalog(modelName: longModelName),
+          );
+          controller.emit();
+          await tester.pumpAndSettle();
+          final longTriggerRect = tester.getRect(modelTrigger);
+          final longLabelRect = tester.getRect(
+            find.descendant(
+              of: modelTrigger,
+              matching: find.text(longModelName),
+            ),
+          );
+          final viewportRect = Offset.zero & viewport.size;
+          expect(viewportRect.contains(longTriggerRect.topLeft), isTrue);
+          expect(
+            viewportRect.contains(
+              longTriggerRect.bottomRight - const Offset(.01, .01),
+            ),
+            isTrue,
+          );
+          expect(longTriggerRect.contains(longLabelRect.topLeft), isTrue);
+          expect(
+            longTriggerRect.contains(
+              longLabelRect.bottomRight - const Offset(.01, .01),
+            ),
+            isTrue,
+            reason: 'Long model captions must stay inside the trigger',
+          );
+          await mouse.moveTo(tester.getCenter(modelTrigger));
+          await tester.pump(const Duration(milliseconds: 700));
+          await tester.pumpAndSettle();
+          expect(find.text(longModelHint), findsOneWidget);
+          expect(tester.takeException(), isNull);
+          await exportProductFrame(tester, boundary, '$prefix-model-tooltip');
+          await mouse.moveTo(Offset.zero);
+          await tester.pumpAndSettle();
+          controller.catalog = originalModelCatalog;
+          controller.emit();
+          await tester.pumpAndSettle();
           await mouse.moveTo(tester.getCenter(modelTrigger));
           await tester.pump(const Duration(milliseconds: 700));
           await tester.pumpAndSettle();
           expect(find.text(modelHint), findsOneWidget);
           expect(tester.takeException(), isNull);
-          await exportProductFrame(tester, boundary, '$prefix-model-tooltip');
           await mouse.moveTo(Offset.zero);
           await tester.pumpAndSettle();
           expect(find.text(modelHint), findsNothing);
@@ -402,14 +535,71 @@ void main() {
           await tester.pumpAndSettle();
           final modelPicker = find.byKey(const ValueKey('model-picker'));
           expect(modelPicker, findsOneWidget);
+          expectProductPopoverPlacement(
+            tester,
+            modelPicker,
+            modelTrigger,
+            viewport.size,
+          );
           expect(find.text(modelHint), findsNothing);
-          expect(find.text('当前模型：DeepSeek Chat').hitTestable(), findsOneWidget);
+          final modelChoice = find.byKey(
+            const ValueKey('model-choice-deepseek\u0000deepseek-chat'),
+          );
+          expect(modelChoice.hitTestable(), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('reasoning-level-high')),
+            findsNothing,
+          );
+          expect(find.byKey(const Key('compact-now')), findsNothing);
+          expect(find.byKey(const ValueKey('model-picker-done')), findsNothing);
+          expect(find.byType(Dialog), findsNothing);
+          expect(controller.catalog!.current['reasoningEffort'], 'high');
+          expect(controller.api.readPaths.length, readsBeforeModel);
+          expect(controller.api.readMethods.length, methodsBeforeModel);
+          expect(controller.api.mutationAttempts, isEmpty);
+          expect(tester.takeException(), isNull);
+          await exportProductFrame(tester, boundary, '$prefix-model-picker');
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await tester.pumpAndSettle();
+          expect(modelPicker, findsNothing);
+          final reasoningTrigger = find.byKey(
+            const ValueKey('reasoning-picker-trigger'),
+          );
+          expect(reasoningTrigger.hitTestable(), findsOneWidget);
+          await tester.tap(reasoningTrigger);
+          await tester.pumpAndSettle();
+          expectProductPopoverPlacement(
+            tester,
+            find.byKey(const Key('reasoning-slider')),
+            reasoningTrigger,
+            viewport.size,
+          );
+          expect(find.text('思考等级'), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('model-picker-search')),
+            findsNothing,
+          );
+          expect(find.byKey(const Key('compact-now')), findsNothing);
           for (final effort in ['low', 'medium', 'high', 'max']) {
             final level = find.byKey(ValueKey('reasoning-level-$effort'));
             expect(level.hitTestable(), findsOneWidget);
             final label = find.descendant(
               of: level,
               matching: find.byType(Text),
+            );
+            expect(tester.getSize(level).height, greaterThanOrEqualTo(36));
+            expect(
+              tester.widget<Text>(label).data,
+              const {
+                'low': '低',
+                'medium': '中',
+                'high': '高',
+                'max': '最高',
+              }[effort],
+            );
+            expect(
+              tester.renderObject<RenderParagraph>(label).didExceedMaxLines,
+              isFalse,
             );
             expect(
               tester
@@ -422,28 +612,18 @@ void main() {
           }
           expect(controller.catalog!.current['reasoningEffort'], 'high');
           expect(tester.takeException(), isNull);
-          await exportProductFrame(tester, boundary, '$prefix-model-picker');
-          final contextAction = find.byKey(const Key('compact-now'));
-          await tester.ensureVisible(contextAction);
-          await tester.pumpAndSettle();
-          expect(contextAction.hitTestable(), findsOneWidget);
-          final modelDone = find.byKey(const ValueKey('model-picker-done'));
-          expect(modelDone.hitTestable(), findsOneWidget);
-          expect(tester.takeException(), isNull);
           await exportProductFrame(
             tester,
             boundary,
-            '$prefix-model-picker-tail',
+            '$prefix-reasoning-picker',
           );
-          await tester.tap(modelDone);
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
           await tester.pumpAndSettle();
           expect(modelPicker, findsNothing);
           expect(modelTrigger.hitTestable(), findsOneWidget);
           expect(controller.catalog!.current['reasoningEffort'], 'high');
           expect(controller.api.readPaths.length, readsBeforeModel);
-          expect(controller.api.readMethods.skip(methodsBeforeModel), [
-            'session.models',
-          ]);
+          expect(controller.api.readMethods.length, methodsBeforeModel);
           expect(controller.api.mutationAttempts, isEmpty);
           expect(find.byTooltip('显示工作台').hitTestable(), findsOneWidget);
           await tester.tap(find.byKey(const Key('more-header-menu')));
@@ -521,15 +701,48 @@ void main() {
               boundary,
               '$prefix-${overlay.name}',
             );
-            if (viewport.scale > 1.5 && overlay.name != 'context') {
-              final lastRow = find.text(
-                overlay.name == 'statistics'
-                    ? DshStatisticsZh.sources
-                    : DshStatisticsZh.cacheHit,
-              );
+            if (viewport.scale > 1.5) {
+              final lastRow = overlay.name == 'context'
+                  ? find.byKey(const Key('compact-now'))
+                  : find.text(
+                      overlay.name == 'statistics'
+                          ? DshStatisticsZh.sources
+                          : DshStatisticsZh.cacheHit,
+                    );
               await tester.ensureVisible(lastRow);
               await tester.pumpAndSettle();
               expect(lastRow.hitTestable(), findsOneWidget);
+              if (overlay.name == 'context') {
+                final viewportRect = Offset.zero & viewport.size;
+                final scrollViewport = tester.getRect(
+                  find
+                      .ancestor(
+                        of: lastRow,
+                        matching: find.byType(SingleChildScrollView),
+                      )
+                      .first,
+                );
+                for (final control in [
+                  lastRow,
+                  find.text('80%'),
+                  find.byKey(const Key('context-quick-settings')),
+                ]) {
+                  final controlRect = tester.getRect(control);
+                  expect(
+                    controlRect.right,
+                    lessThanOrEqualTo(scrollViewport.right - 12 + .01),
+                    reason: 'The scrollbar must not cover context values or actions',
+                  );
+                  expect(viewportRect.contains(controlRect.topLeft), isTrue);
+                  expect(
+                    viewportRect.contains(
+                      controlRect.bottomRight - const Offset(.01, .01),
+                    ),
+                    isTrue,
+                    reason: 'Context controls must remain entirely visible',
+                  );
+                }
+              }
               expect(tester.takeException(), isNull);
               await exportProductFrame(
                 tester,

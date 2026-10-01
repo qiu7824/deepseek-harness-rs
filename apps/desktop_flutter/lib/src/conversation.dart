@@ -42,8 +42,9 @@ import '../features/conversation/permission_control.dart';
 import '../features/conversation/streaming_presentation.dart';
 import '../features/conversation/turn_activity.dart';
 import '../features/conversation/read_aloud.dart';
-import '../features/conversation/reasoning_slider.dart';
-import '../features/conversation/context_quick_settings.dart';
+import '../features/conversation/model_selector.dart';
+export '../features/conversation/model_selector.dart'
+    show ModelPicker, ModelSelectionControls, composerModelLabel;
 import '../features/conversation/turn_stats.dart';
 import 'resource_diagnostics.dart';
 import '../features/conversation/retry_message.dart';
@@ -145,8 +146,6 @@ class _ConversationState extends State<Conversation>
   bool follow = true, dropping = false;
   int revision = 0, voiceRevision = 0;
   String view = 'conversation';
-  bool _modelMenuOpen = false;
-  bool _readingModels = false;
   Widget? _cachedLayout;
   ConversationReadingPosition? _pendingReadingPosition;
   bool _restoringScroll = false;
@@ -1834,41 +1833,23 @@ class _ConversationState extends State<Conversation>
                               children: [
                                 Flexible(
                                   child: ConstrainedBox(
-                                    constraints: const BoxConstraints(
-                                      maxWidth: 180,
+                                    constraints: BoxConstraints(
+                                      maxWidth:
+                                          420 *
+                                          MediaQuery.textScalerOf(context)
+                                              .scale(1),
                                     ),
-                                    child: DshButton(
-                                      key: const ValueKey(
-                                        'composer-model-menu',
-                                      ),
-                                      height: 30,
-                                      tooltip:
-                                          '${DshConversationZh.modelAndReasoning}：${composerModelLabel(c.catalog)}',
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                      ),
-                                      onPressed:
-                                          c.connected &&
-                                              !c.sending &&
-                                              !_modelMenuOpen
-                                          ? modelMenu
-                                          : null,
-                                      trailing: DshGlyph(
-                                        DshIcons.chevronDown.data,
-                                        size: 12,
-                                      ),
-                                      child: Flexible(
-                                        child: Text(
-                                          _readingModels
-                                              ? '正在读取模型…'
-                                              : composerModelLabel(c.catalog),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontSize: DshTypography.sizeCaption,
-                                          ),
-                                        ),
-                                      ),
+                                    child: ModelSelectionControls(
+                                      controller: c,
+                                      onManage: widget.onOpenSettings,
+                                      onReturnFocus: () {
+                                        if (mounted &&
+                                            focus.context != null &&
+                                            ModalRoute.of(context)?.isCurrent !=
+                                                false) {
+                                          focus.requestFocus();
+                                        }
+                                      },
                                     ),
                                   ),
                                 ),
@@ -1914,6 +1895,7 @@ class _ConversationState extends State<Conversation>
                                             importingAttachments == 0 &&
                                             !c.changingPlanMode &&
                                             !c.changingModel &&
+                                            !c.modelSelectionUnconfirmed &&
                                             (value.text.trim().isNotEmpty ||
                                                 attachments.isNotEmpty);
                                         return ShadButton(
@@ -1980,72 +1962,6 @@ class _ConversationState extends State<Conversation>
           ),
       ],
     );
-  }
-
-  Future<void> modelMenu() async {
-    if (_modelMenuOpen) return;
-    setState(() {
-      _modelMenuOpen = true;
-      _readingModels = true;
-    });
-    final owner = c, api = c.client, host = c.host;
-    var selection = c.selectionRevision;
-    bool current() =>
-        mounted &&
-        identical(owner, c) &&
-        identical(api, c.client) &&
-        identical(host, c.host) &&
-        selection == c.selectionRevision;
-    try {
-      if (c.selectedId == null) {
-        final path = c.currentWorkspace?['path'] as String?;
-        if (path == null) {
-          widget.onSelectWorkspace?.call();
-          return;
-        }
-        String? created;
-        await c.run(() async {
-          created = await owner.create(path);
-        });
-        if (!mounted ||
-            !identical(owner, c) ||
-            !identical(api, c.client) ||
-            !identical(host, c.host) ||
-            created == null ||
-            c.selectedId != created ||
-            c.selectionRevision != selection + 1) {
-          return;
-        }
-        selection = c.selectionRevision;
-      }
-      if (!current()) return;
-      Object? loadError;
-      await c.run(() async {
-        try {
-          await c.refreshModels();
-        } catch (failure) {
-          loadError = failure;
-          rethrow;
-        }
-      });
-      if (!mounted || !current() || c.catalog == null) return;
-      setState(() => _readingModels = false);
-      await showDialog<void>(
-        context: context,
-        builder: (_) => ModelPicker(
-          controller: owner,
-          onManage: widget.onOpenSettings,
-          initialError: loadError,
-        ),
-      );
-    } finally {
-      _modelMenuOpen = false;
-      _readingModels = false;
-      if (mounted) setState(() {});
-      if (mounted && current() && ModalRoute.of(context)?.isCurrent == true) {
-        focus.requestFocus();
-      }
-    }
   }
 
   Future<void> commandMenu() async {
@@ -2226,318 +2142,6 @@ class ComposerAction extends StatelessWidget {
       ),
     ),
   );
-}
-
-String composerModelLabel(ModelCatalog? catalog) {
-  if (catalog == null) return DshConversationZh.chooseModel;
-  final effort = catalog.current['reasoningEffort'];
-  if (effort == null) return catalog.currentName;
-  final choice = catalog.choices
-      .where((model) => model.key == catalog.currentKey)
-      .firstOrNull;
-  final level = choice?.reasoning
-      .where((level) => level['id'] == effort)
-      .firstOrNull;
-  return '${catalog.currentName} · ${reasoningLevelLabel(level ?? {'id': effort, 'name': effort})}';
-}
-
-class ModelPicker extends StatefulWidget {
-  const ModelPicker({
-    super.key,
-    required this.controller,
-    this.onManage,
-    this.initialError,
-  });
-  final DesktopController controller;
-  final VoidCallback? onManage;
-  final Object? initialError;
-  @override
-  State<ModelPicker> createState() => _ModelPickerState();
-}
-
-class _ModelPickerState extends State<ModelPicker> {
-  final search = TextEditingController();
-  bool busy = false;
-  Object? error;
-  String? notice;
-  late Object ownerScope;
-  bool _closeScheduled = false;
-
-  Object get scope => (
-    widget.controller,
-    widget.controller.client,
-    widget.controller.host,
-    widget.controller.selectedId,
-    widget.controller.selectionRevision,
-  );
-
-  bool get current => mounted && ownerScope == scope;
-
-  @override
-  void initState() {
-    super.initState();
-    ownerScope = scope;
-    error = widget.initialError;
-    widget.controller.addListener(changed);
-  }
-
-  @override
-  void didUpdateWidget(ModelPicker oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.controller, widget.controller)) {
-      oldWidget.controller.removeListener(changed);
-      widget.controller.addListener(changed);
-      changed();
-    }
-  }
-
-  void changed() {
-    if (!mounted) return;
-    if (!current || widget.controller.catalog == null) {
-      if (_closeScheduled) return;
-      _closeScheduled = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final route = ModalRoute.of(context);
-        if (route == null) return;
-        final navigator = Navigator.of(context);
-        if (route.isCurrent) {
-          navigator.pop();
-        } else {
-          navigator.removeRoute(route);
-        }
-      });
-    }
-    setState(() {});
-  }
-
-  Future<void> select(Future<void> Function() action) async {
-    if (!current || busy || widget.controller.changingModel) return;
-    setState(() {
-      busy = true;
-      error = null;
-      notice = null;
-    });
-    try {
-      await action();
-      if (current) {
-        setState(() {
-          notice = '已更新：${composerModelLabel(widget.controller.catalog)}';
-          error = widget.controller.error;
-        });
-      }
-    } catch (failure) {
-      if (current) setState(() => error = failure);
-    } finally {
-      if (current) setState(() => busy = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.controller.removeListener(changed);
-    search.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = widget.controller;
-    final catalog = c.catalog;
-    if (!current || catalog == null) return const SizedBox.shrink();
-    final pending = busy || c.changingModel || c.sending;
-    final colors = DshColors(context);
-    final choices = catalog.choices
-        .where(
-          (m) => '${m.name} ${m.id} ${m.provider}'.toLowerCase().contains(
-            search.text.trim().toLowerCase(),
-          ),
-        )
-        .toList();
-    final levels =
-        catalog.choices
-            .where((model) => model.key == catalog.currentKey)
-            .firstOrNull
-            ?.reasoning ??
-        const <Json>[];
-    return Dialog(
-      key: const ValueKey('model-picker'),
-      child: SizedBox(
-        width: 500,
-        height: 660,
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      DshConversationZh.modelAndReasoning,
-                      style: TextStyle(
-                        fontSize: DshTypography.sizeComposer,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  DshIcon(
-                    DshIcons.close.data,
-                    label: DshConversationZh.close,
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              DshField(
-                key: const ValueKey('model-picker-search'),
-                controller: search,
-                prefix: DshIcons.search.data,
-                hint: DshConversationZh.searchModelsHint,
-                autofocus: true,
-                onChanged: (_) => setState(() {}),
-              ),
-              const SizedBox(height: 8),
-              if (error != null) DshErrorView(error: error!),
-              if (pending)
-                Semantics(
-                  liveRegion: true,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      c.sending ? '正在提交消息，请稍候再调整模型或推理等级' : '正在更新模型或推理等级…',
-                      key: const ValueKey('model-selection-pending'),
-                      style: DshTypography.caption,
-                    ),
-                  ),
-                ),
-              if (notice != null)
-                Semantics(
-                  liveRegion: true,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      notice!,
-                      key: const ValueKey('model-selection-notice'),
-                      style: DshTypography.caption,
-                    ),
-                  ),
-                ),
-              Expanded(
-                child: CustomScrollView(
-                  slivers: [
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(0, 8, 12, 8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Text(
-                              '当前模型：${catalog.currentName}',
-                              style: DshTypography.body,
-                            ),
-                            const SizedBox(height: 8),
-                            ReasoningSlider(
-                              key: ValueKey(catalog.currentKey),
-                              levels: levels,
-                              value:
-                                  catalog.current['reasoningEffort'] as String?,
-                              enabled: !pending,
-                              onChanged: (id) =>
-                                  select(() => c.setReasoning(id)),
-                            ),
-                            if (levels.isEmpty)
-                              Text(
-                                '当前模型未提供可调推理等级',
-                                style: DshTypography.caption.copyWith(
-                                  color: colors.muted,
-                                ),
-                              ),
-                            const Divider(),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (choices.isEmpty)
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          child: Text(
-                            search.text.trim().isEmpty
-                                ? '暂无可选模型，请在管理模型中配置连接'
-                                : '没有找到匹配的模型',
-                            style: DshTypography.body.copyWith(
-                              color: colors.muted,
-                            ),
-                          ),
-                        ),
-                      ),
-                    SliverList.builder(
-                      itemCount: choices.length,
-                      itemBuilder: (context, i) {
-                        final m = choices[i];
-                        final selected = m.key == catalog.currentKey;
-                        return ListTile(
-                          key: ValueKey('model-choice-${m.key}'),
-                          dense: true,
-                          selected: selected,
-                          title: Text(m.name, style: DshTypography.body),
-                          subtitle: Text(
-                            '${catalog.providerNames[m.provider] ?? m.provider} · ${m.id}',
-                            style: DshTypography.caption,
-                          ),
-                          trailing: selected
-                              ? DshGlyph(DshIcons.check.data, size: 16)
-                              : null,
-                          onTap: pending || selected
-                              ? null
-                              : () => select(() => c.chooseModel(m)),
-                        );
-                      },
-                    ),
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.only(top: 12, right: 12),
-                        child: IgnorePointer(
-                          ignoring: pending,
-                          child: ExcludeFocus(
-                            excluding: pending,
-                            child: ContextQuickSettings(controller: c),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  DshButton(
-                    onPressed: pending || widget.onManage == null
-                        ? null
-                        : () {
-                            if (!current) return;
-                            Navigator.pop(context);
-                            widget.onManage?.call();
-                          },
-                    child: const Text(DshConversationZh.manageModels),
-                  ),
-                  const SizedBox(width: 8),
-                  DshButton(
-                    key: const ValueKey('model-picker-done'),
-                    outline: true,
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('完成'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class MessageCard extends StatelessWidget {

@@ -46,7 +46,11 @@ class _Controller extends DesktopController {
   @override
   bool get connected => true;
   @override
-  Future<void> select(String id, {bool adoptDraft = false}) async {
+  Future<void> select(
+    String id, {
+    bool adoptDraft = false,
+    bool loadModels = true,
+  }) async {
     selectedId = id;
     emit();
   }

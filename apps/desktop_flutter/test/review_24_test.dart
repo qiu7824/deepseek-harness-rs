@@ -14,6 +14,16 @@ void main() {
       final api = FakeClient()
         ..handleCall = (method, payload) async {
           calls.add((method: method, payload: payload));
+          if (method == 'session.selectModel') {
+            return {
+              'selected': {
+                'provider': 'p',
+                'model': 'chosen',
+                'executionMode': 'standard',
+                'reasoningEffort': 'low',
+              },
+            };
+          }
           return {};
         };
       final c = DesktopController(
@@ -25,6 +35,7 @@ void main() {
       await c.chooseModel(
         ModelChoice(provider: 'p', id: 'chosen', name: 'Chosen'),
       );
+      await Future<void>.delayed(Duration.zero);
       final saved = calls
           .where((call) => call.method == 'settings.replace')
           .single;
@@ -33,6 +44,8 @@ void main() {
         object(saved.payload['section'])['model'],
         c.catalog!.current['model'],
       );
+      expect(object(saved.payload['section'])['model'], 'chosen');
+      expect(object(saved.payload['section'])['reasoningEffort'], 'low');
       c.dispose();
     },
   );

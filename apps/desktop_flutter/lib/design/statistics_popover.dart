@@ -112,75 +112,79 @@ class _StatisticsPopoverState extends State<StatisticsPopover> {
             child: SingleChildScrollView(
               child: SizedBox(
                 width: math.max(120, math.min(360, size.width - 56)),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      widget.title,
-                      style: TextStyle(
-                        fontSize: DshTypography.sizeBody,
-                        fontWeight: FontWeight.w600,
-                        color: colors.text,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Divider(height: 1, color: colors.border),
-                    const SizedBox(height: 10),
-                    for (final row in widget.rows)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 5),
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            final label = Text(
-                              row.$1,
-                              style: TextStyle(
-                                fontSize: DshTypography.sizeCaption,
-                                height: 1.5,
-                                color: colors.muted,
-                              ),
-                            );
-                            final stacked =
-                                constraints.maxWidth < 250 ||
-                                MediaQuery.textScalerOf(context).scale(1) > 1.5;
-                            final value = SelectableText(
-                              row.$2,
-                              textAlign: stacked
-                                  ? TextAlign.start
-                                  : TextAlign.end,
-                              style: TextStyle(
-                                fontSize: DshTypography.sizeCaption,
-                                height: 1.5,
-                                color: colors.text,
-                                fontFeatures: const [
-                                  FontFeature.tabularFigures(),
-                                ],
-                              ),
-                            );
-                            return stacked
-                                ? Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      label,
-                                      const SizedBox(height: 3),
-                                      value,
-                                    ],
-                                  )
-                                : Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(flex: 4, child: label),
-                                      const SizedBox(width: 16),
-                                      Expanded(flex: 6, child: value),
-                                    ],
-                                  );
-                          },
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        widget.title,
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeBody,
+                          fontWeight: FontWeight.w600,
+                          color: colors.text,
                         ),
                       ),
-                    if (widget.details != null) widget.details!,
-                  ],
+                      const SizedBox(height: 10),
+                      Divider(height: 1, color: colors.border),
+                      const SizedBox(height: 10),
+                      for (final row in widget.rows)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final label = Text(
+                                row.$1,
+                                style: TextStyle(
+                                  fontSize: DshTypography.sizeCaption,
+                                  height: 1.5,
+                                  color: colors.muted,
+                                ),
+                              );
+                              final stacked =
+                                  constraints.maxWidth < 250 ||
+                                  MediaQuery.textScalerOf(context).scale(1) >
+                                      1.5;
+                              final value = SelectableText(
+                                row.$2,
+                                textAlign: stacked
+                                    ? TextAlign.start
+                                    : TextAlign.end,
+                                style: TextStyle(
+                                  fontSize: DshTypography.sizeCaption,
+                                  height: 1.5,
+                                  color: colors.text,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                              );
+                              return stacked
+                                  ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        label,
+                                        const SizedBox(height: 3),
+                                        value,
+                                      ],
+                                    )
+                                  : Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(flex: 4, child: label),
+                                        const SizedBox(width: 16),
+                                        Expanded(flex: 6, child: value),
+                                      ],
+                                    );
+                            },
+                          ),
+                        ),
+                      if (widget.details != null) widget.details!,
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -198,8 +202,13 @@ class _StatisticsPopoverState extends State<StatisticsPopover> {
       padding: const EdgeInsets.all(14),
       anchor: const ShadAnchorAuto(
         targetAnchor: Alignment.topRight,
-        followerAnchor: Alignment.bottomRight,
+        followerAnchor: Alignment.topLeft,
         offset: Offset(0, -8),
+        fallback: ShadAnchorAuto(
+          targetAnchor: Alignment.bottomRight,
+          followerAnchor: Alignment.bottomLeft,
+          offset: Offset(0, 8),
+        ),
       ),
       popover: content,
       child: ShadButton.ghost(

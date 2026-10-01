@@ -152,9 +152,11 @@ class ModelChoice {
     required this.id,
     required this.name,
     this.reasoning = const [],
+    this.defaultReasoningEffort,
   });
   final String provider, id, name;
   final List<Json> reasoning;
+  final String? defaultReasoningEffort;
   String get key => '$provider\u0000$id';
 }
 
@@ -174,9 +176,20 @@ class ModelCatalog {
               id: model['id'] as String,
               name: model['name'] as String? ?? model['id'] as String,
               reasoning: objects(object(model['reasoning'])['efforts']),
+              defaultReasoningEffort:
+                  object(model['reasoning'])['defaultEffort'] as String?,
             ),
       ],
       failures = objects(value['failures']);
+  ModelCatalog.withCurrent(
+    ModelCatalog source,
+    Json selection, {
+    bool? routable,
+  }) : current = Map<String, dynamic>.from(selection),
+       providerNames = source.providerNames,
+       choices = source.choices,
+       failures = source.failures,
+       routable = routable ?? source.routable;
   final Json current;
   final Map<String, String> providerNames;
   final bool routable;

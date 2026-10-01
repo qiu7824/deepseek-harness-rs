@@ -21,6 +21,7 @@ ModelCatalog catalogFor(Json current) => ModelCatalog.fromJson({
           'id': 'a',
           'name': 'Model A',
           'reasoning': {
+            'defaultEffort': 'high',
             'efforts': [
               {'id': 'low', 'name': 'Low'},
               {'id': 'medium', 'name': 'Medium'},
@@ -32,6 +33,7 @@ ModelCatalog catalogFor(Json current) => ModelCatalog.fromJson({
           'id': 'b',
           'name': 'Model B',
           'reasoning': {
+            'defaultEffort': 'low',
             'efforts': [
               {'id': 'off', 'name': 'Off'},
               {'id': 'low', 'name': 'Low'},
@@ -151,18 +153,21 @@ void main() {
         'executionMode': 'standard',
       });
       expect(c.catalog!.current['reasoningEffort'], 'medium');
+      await Future<void>.delayed(Duration.zero);
       expect(api.defaults.single['reasoningEffort'], 'medium');
     },
   );
 
   test(
-    'one model change blocks stale effort submission and chat admission',
+    'pending model choice admits its own effort and blocks chat admission',
     () async {
       api.mutation = Completer<void>();
       final changing = c.chooseModel(c.catalog!.choices.last);
       expect(c.changingModel, isTrue);
       expect(c.catalog!.current['model'], 'a');
-      await expectLater(c.setReasoning('low'), throwsStateError);
+      expect(c.modelPreviewCatalog!.current['model'], 'b');
+      await expectLater(c.setReasoning('high'), throwsStateError);
+      await Future<void>.delayed(Duration.zero);
       expect(await c.sendParts('retained draft', []), isNull);
       expect(api.selections, hasLength(1));
       api.mutation!.complete();
@@ -170,6 +175,7 @@ void main() {
       expect(c.changingModel, isFalse);
       expect(c.catalog!.current['model'], 'b');
       expect(c.catalog!.current['reasoningEffort'], 'low');
+      await Future<void>.delayed(Duration.zero);
       expect(api.defaults.single['reasoningEffort'], 'low');
       await c.chooseModel(c.catalog!.choices.last);
       expect(
@@ -197,11 +203,11 @@ void main() {
   );
 
   test(
-    'late model read cannot restore a previous selection of the same id',
+    'late catalog read cannot restore a previous selection of the same id',
     () async {
       final reading = Completer<ModelCatalog>();
       api.read = (_) => reading.future;
-      final changing = c.chooseModel(c.catalog!.choices.last);
+      final readingModels = c.refreshModels();
       await Future<void>.delayed(Duration.zero);
       c.newConversation();
       api.read = null;
@@ -214,9 +220,9 @@ void main() {
           'reasoningEffort': 'medium',
         }),
       );
-      await changing;
+      await readingModels;
       expect(identical(c.catalog, current), isTrue);
-      expect(c.catalog!.current['model'], 'b');
+      expect(c.catalog!.current['model'], 'a');
       expect(api.defaults, isEmpty);
     },
   );
@@ -235,15 +241,13 @@ void main() {
   });
 
   test(
-    'confirmed selection survives refresh failure and reports partial success',
+    'confirmed selection does not depend on a full catalog refresh',
     () async {
       api.readFailure = StateError('catalog unavailable');
-      await expectLater(
-        c.chooseModel(c.catalog!.choices.last),
-        throwsA(predicate((error) => '$error'.contains('已更新'))),
-      );
+      await c.chooseModel(c.catalog!.choices.last);
       expect(c.catalog!.current['model'], 'b');
       expect(c.catalog!.current['reasoningEffort'], 'low');
+      await Future<void>.delayed(Duration.zero);
       expect(api.defaults.single['model'], 'b');
       expect(c.changingModel, isFalse);
     },
@@ -253,7 +257,9 @@ void main() {
     api.failDefault = true;
     await c.setReasoning('low');
     expect(c.catalog!.current['reasoningEffort'], 'low');
-    expect(c.error, contains('默认'));
+    await Future<void>.delayed(Duration.zero);
+    expect(c.modelDefaultError, contains('默认'));
+    expect(c.error, isNull);
   });
 
   test(
@@ -280,6 +286,7 @@ void main() {
       );
       slow.firstWriteReply.complete();
       await Future.wait([first, second]);
+      await Future<void>.delayed(Duration.zero);
       expect(owner.catalog!.current['model'], 'a');
       expect(slow.savedDefault['model'], 'a');
       expect(slow.defaultCount, 2);
@@ -308,6 +315,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       slow.firstWriteReply.complete();
       await Future.wait([first, second, latest]);
+      await Future<void>.delayed(Duration.zero);
       expect(
         slow.defaultCount,
         2,
@@ -341,7 +349,7 @@ void main() {
   );
 
   test(
-    'initial catalog response cannot overwrite a later confirmed selection',
+    'initial catalog response cannot leak into a different session',
     () async {
       c.newConversation();
       final initial = Completer<ModelCatalog>();
@@ -351,124 +359,209 @@ void main() {
           ++reads == 1 ? initial.future : catalogFor({...api.selected});
       final selecting = c.select('s');
       await Future<void>.delayed(Duration.zero);
-      await c.refreshModels();
-      await c.chooseModel(c.catalog!.choices.last);
+      await c.select('other');
+      final other = c.catalog;
       initial.complete(old);
       await selecting;
-      expect(c.catalog!.current['model'], 'b');
+      expect(identical(c.catalog, other), isTrue);
+      expect(c.selectedId, 'other');
     },
   );
 
-  Future<void> openPicker(WidgetTester tester, {double scale = 1}) async {
+  Future<void> openPicker(
+    WidgetTester tester, {
+    double scale = 1,
+    double width = 600,
+    bool openModels = true,
+  }) async {
+    final focus = FocusNode();
+    addTearDown(focus.dispose);
     await tester.pumpWidget(
       ShadApp(
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(context)
-              .copyWith(textScaler: TextScaler.linear(scale)),
+          data: MediaQuery.of(context).copyWith(
+            textScaler: TextScaler.linear(scale),
+          ),
           child: child!,
         ),
         home: Scaffold(
-          body: Builder(
-            builder: (context) => TextButton(
-              onPressed: () => showDialog<void>(
-                context: context,
-                builder: (_) => ModelPicker(controller: c),
+          body: Column(
+            children: [
+              TextField(
+                key: const Key('integration-prompt'),
+                focusNode: focus,
               ),
-              child: const Text('Open'),
-            ),
+              const Spacer(),
+              Align(
+                alignment: Alignment.bottomRight,
+                child: SizedBox(
+                  width: width,
+                  child: ModelSelectionControls(
+                    controller: c,
+                    onReturnFocus: focus.requestFocus,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
-    await tester.tap(find.text('Open'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    if (openModels) {
+      await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
+      await tester.pumpAndSettle();
+    }
   }
 
   testWidgets(
-    'model choice keeps the picker, refreshes levels, and retains search focus',
+    'cached menu opens immediately and model selection returns to input before receipt',
     (tester) async {
+      final reading = Completer<ModelCatalog>();
+      var reads = 0;
+      api.read = (_) {
+        reads++;
+        return reading.future;
+      };
+      api.mutation = Completer<void>();
       await openPicker(tester);
+      expect(reads, 0);
+      expect(find.byKey(const ValueKey('model-picker')), findsOneWidget);
+      expect(find.byType(Dialog), findsNothing);
+      expect(find.byKey(const Key('context-quick-settings')), findsNothing);
+      expect(find.byKey(const ValueKey('reasoning-level-high')), findsNothing);
+      final model = tester.getRect(
+        find.byKey(const ValueKey('model-picker-trigger')),
+      );
+      final reasoning = tester.getRect(
+        find.byKey(const ValueKey('reasoning-picker-trigger')),
+      );
+      expect(model.top, reasoning.top);
+      expect(reasoning.left, greaterThanOrEqualTo(model.right));
       await tester.enterText(
         find.byKey(const ValueKey('model-picker-search')),
-        ' Model ',
+        'Model B',
       );
       await tester.pump();
-      final search = tester.widget<EditableText>(
+      await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000b')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+      expect(c.catalog!.current['model'], 'a');
+      expect(c.pendingModelSelection?['model'], 'b');
+      final input = tester.widget<EditableText>(
         find.descendant(
-          of: find.byKey(const ValueKey('model-picker-search')),
+          of: find.byKey(const Key('integration-prompt')),
           matching: find.byType(EditableText),
         ),
       );
-      expect(search.focusNode.hasFocus, isTrue);
-      await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000b')));
+      expect(input.focusNode.hasFocus, isTrue);
+      api.mutation!.complete();
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('model-picker')), findsOneWidget);
-      expect(find.byKey(const ValueKey('reasoning-level-off')), findsOneWidget);
-      expect(find.byKey(const ValueKey('reasoning-level-high')), findsNothing);
-      expect(search.controller.text, ' Model ');
-      expect(search.focusNode.hasFocus, isTrue);
-      expect(
-        find.byKey(const ValueKey('model-selection-notice')),
-        findsOneWidget,
-      );
-      await tester.tap(find.byKey(const ValueKey('reasoning-level-off')));
-      await tester.pumpAndSettle();
-      expect(c.catalog!.current['reasoningEffort'], 'off');
-      expect(find.byKey(const ValueKey('model-picker')), findsOneWidget);
+      expect(c.catalog!.current['model'], 'b');
+      expect(c.catalog!.current['reasoningEffort'], 'low');
+      expect(reads, 0);
+      expect(find.text('思考：低'), findsOneWidget);
+      reading.complete(catalogFor({...api.selected}));
+      expect(tester.takeException(), isNull);
     },
   );
 
-  testWidgets('picker closes safely after selection clears its catalog', (
+  testWidgets('reasoning has its own anchored menu and retains the current model', (
     tester,
   ) async {
+    await openPicker(tester, openModels: false);
+    await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+    expect(find.byKey(const ValueKey('model-picker-search')), findsNothing);
+    expect(find.byKey(const Key('context-quick-settings')), findsNothing);
+    expect(find.byKey(const ValueKey('reasoning-level-low')), findsOneWidget);
+    api.mutation = Completer<void>();
+    await tester.tap(find.byKey(const ValueKey('reasoning-level-low')));
+    await tester.pump();
+    expect(c.catalog!.current['model'], 'a');
+    expect(c.catalog!.current['reasoningEffort'], 'high');
+    expect(c.pendingModelSelection?['reasoningEffort'], 'low');
+    api.mutation!.complete();
+    await tester.pumpAndSettle();
+    expect(c.catalog!.current['model'], 'a');
+    expect(c.catalog!.current['reasoningEffort'], 'low');
+    expect(api.selections.single['model'], 'a');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('pending and default-save failure remain secondary to model choices', (
+    tester,
+  ) async {
+    api.mutation = Completer<void>();
+    api.failDefault = true;
+    await openPicker(tester);
+    await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000b')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('model-pending-p\u0000b')), findsOneWidget);
+    expect(c.catalog!.current['model'], 'a');
+    expect(
+      tester.widget<ListTile>(
+        find.byKey(const ValueKey('model-choice-p\u0000a')),
+      ).onTap,
+      isNotNull,
+    );
+    api.mutation!.complete();
+    await tester.pumpAndSettle();
+    expect(c.catalog!.current['model'], 'b');
+    expect(find.byKey(const ValueKey('model-default-error')), findsOneWidget);
+    expect(c.changingModel, isFalse);
+    await tester.tap(find.byKey(const ValueKey('model-choice-p\u0000a')));
+    await tester.pumpAndSettle();
+    expect(c.catalog!.current['model'], 'a');
+    expect(api.selections, hasLength(2));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('session and Host changes retire open model menus', (tester) async {
     await openPicker(tester);
     c.newConversation();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('model-picker')), findsNothing);
+    await c.select('other');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('model-picker-trigger')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('model-picker')), findsOneWidget);
+    c.host = HostInfo.fromJson({
+      'home': 'replacement',
+      'version': 'test',
+      'cwd': 'test',
+    });
+    c.emit();
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('model-picker')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'pending and failed default persistence are visible inside the picker',
-    (tester) async {
-      await openPicker(tester);
-      api.mutation = Completer<void>();
-      api.failDefault = true;
-      await tester.tap(find.byKey(const ValueKey('reasoning-level-low')));
-      await tester.pump();
-      expect(
-        find.byKey(const ValueKey('model-selection-pending')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey('model-selection-notice')),
-        findsNothing,
-      );
-      expect(c.catalog!.current['reasoningEffort'], 'high');
-      api.mutation!.complete();
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const ValueKey('model-selection-pending')),
-        findsNothing,
-      );
-      expect(find.textContaining('默认'), findsWidgets);
-      expect(c.catalog!.current['reasoningEffort'], 'low');
-      expect(find.byKey(const ValueKey('model-picker')), findsOneWidget);
-    },
-  );
-
-  testWidgets(
-    'reasoning remains reachable without overflow at 200 percent scale',
-    (tester) async {
-      await openPicker(tester, scale: 2);
-      expect(
-        find.byKey(const ValueKey('reasoning-level-high')),
-        findsOneWidget,
-      );
-      expect(tester.takeException(), isNull);
-      await tester.tap(find.byKey(const ValueKey('model-picker-done')));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('model-picker')), findsNothing);
-    },
-  );
+  testWidgets('separate choices remain reachable without overflow at 200 percent', (
+    tester,
+  ) async {
+    await openPicker(tester, scale: 2, width: 280);
+    expect(find.byKey(const ValueKey('model-picker-done')), findsNothing);
+    expect(find.byType(Dialog), findsNothing);
+    final option = find.byKey(const ValueKey('model-choice-p\u0000b'));
+    await tester.ensureVisible(option);
+    await tester.pumpAndSettle();
+    expect(option.hitTestable(), findsOneWidget);
+    await tester.tap(option);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('reasoning-picker-trigger')));
+    await tester.pumpAndSettle();
+    final effort = find.byKey(const ValueKey('reasoning-level-off'));
+    await tester.ensureVisible(effort);
+    await tester.pumpAndSettle();
+    expect(effort.hitTestable(), findsOneWidget);
+    await tester.tap(effort);
+    await tester.pumpAndSettle();
+    expect(c.catalog!.current['reasoningEffort'], 'off');
+    expect(tester.takeException(), isNull);
+  });
 }
