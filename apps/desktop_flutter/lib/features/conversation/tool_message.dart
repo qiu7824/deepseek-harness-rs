@@ -2,10 +2,12 @@ import 'dart:convert';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
 import '../../design/text_document.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class ToolMessage extends StatefulWidget {
   const ToolMessage({
@@ -69,7 +71,7 @@ class _ToolMessageState extends State<ToolMessage> {
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Text(
-                item.title.isEmpty ? '计划' : item.title,
+                item.title.isEmpty ? DshConversationZh.plan : item.title,
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
               DshButton(
@@ -87,11 +89,14 @@ class _ToolMessageState extends State<ToolMessage> {
                           setState(() => previewError = '$e');
                         }
                       },
-                child: const Text('预览计划'),
+                child: const Text(DshConversationZh.previewPlan),
               ),
               Text(
-                '批准与拒绝在原计划审批卡中处理。',
-                style: TextStyle(fontSize: 12, color: colors.muted),
+                DshConversationZh.planApprovalHint,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             ],
           ),
@@ -111,14 +116,14 @@ class _ToolMessageState extends State<ToolMessage> {
         ? displayPathText(item.summary)
         : toolPathLabel(path, widget.cwd);
     final icon = switch (item.iconKind) {
-      'question' => LucideIcons.circleHelp,
-      'read' => LucideIcons.fileText,
-      'read_image' => LucideIcons.image,
-      'read_video' => LucideIcons.video,
-      'write' || 'edit' => LucideIcons.pencil,
-      'search' => LucideIcons.search,
-      'todo' => LucideIcons.listChecks,
-      _ => LucideIcons.squareTerminal,
+      'question' => DshIcons.circleHelp.data,
+      'read' => DshIcons.fileText.data,
+      'read_image' => DshIcons.image.data,
+      'read_video' => DshIcons.video.data,
+      'write' || 'edit' => DshIcons.pencil.data,
+      'search' => DshIcons.search.data,
+      'todo' => DshIcons.listChecks.data,
+      _ => DshIcons.squareTerminal.data,
     };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -138,9 +143,9 @@ class _ToolMessageState extends State<ToolMessage> {
                   if (widget.hintDisplay != 'text') ...[
                     DshGlyph(
                       failed
-                          ? LucideIcons.circleAlert
+                          ? DshIcons.circleAlert.data
                           : expanded
-                          ? LucideIcons.chevronDown
+                          ? DshIcons.chevronDown.data
                           : icon,
                       size: 14,
                       color: color,
@@ -156,11 +161,13 @@ class _ToolMessageState extends State<ToolMessage> {
                     Flexible(
                       flex: 0,
                       child: Text(
-                        item.title.isEmpty ? '工具结果' : item.title,
+                        item.title.isEmpty
+                            ? DshConversationZh.toolResult
+                            : item.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 14,
+                          fontSize: DshTypography.sizeBody,
                           height: 24 / 14,
                           color: color,
                         ),
@@ -183,7 +190,7 @@ class _ToolMessageState extends State<ToolMessage> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    fontSize: 14,
+                                    fontSize: DshTypography.sizeBody,
                                     height: 24 / 14,
                                     color: colors.muted,
                                     decoration: TextDecoration.underline,
@@ -196,7 +203,7 @@ class _ToolMessageState extends State<ToolMessage> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontSize: 14,
+                                fontSize: DshTypography.sizeBody,
                                 height: 24 / 14,
                                 color: colors.muted,
                               ),
@@ -204,13 +211,16 @@ class _ToolMessageState extends State<ToolMessage> {
                     ),
                   ],
                   if (stopped &&
-                      !item.title.contains('停止') &&
-                      item.summary != '已中断')
+                      !item.title.contains(DshConversationZh.stop) &&
+                      item.summary != DshConversationZh.interrupted)
                     Padding(
                       padding: const EdgeInsets.only(left: 8),
                       child: Text(
-                        '已停止',
-                        style: TextStyle(fontSize: 11, color: colors.muted),
+                        DshConversationZh.stopped,
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                          color: colors.muted,
+                        ),
                       ),
                     ),
                 ],
@@ -235,13 +245,21 @@ class _ToolMessageState extends State<ToolMessage> {
                   child: TextDocument(
                     sections: [
                       if (item.text.isNotEmpty)
-                        (title: '输入', text: input ??= display(item.text)),
+                        (
+                          title: DshConversationZh.input,
+                          text: input ??= display(item.text),
+                        ),
                       if (item.output.isNotEmpty)
-                        (title: '输出', text: output ??= display(item.output)),
+                        (
+                          title: DshConversationZh.output,
+                          text: output ??= display(item.output),
+                        ),
                       if (item.output.isEmpty)
                         (
-                          title: '输出',
-                          text: item.status == 'pending' ? '运行中…' : '暂无输出',
+                          title: DshConversationZh.output,
+                          text: item.status == 'pending'
+                              ? DshConversationZh.runningProgress
+                              : DshConversationZh.noOutput,
                         ),
                     ],
                   ),
@@ -252,7 +270,7 @@ class _ToolMessageState extends State<ToolMessage> {
                     child: DshButton(
                       height: 28,
                       onPressed: widget.onDetails,
-                      child: const Text('调用详情'),
+                      child: const Text(DshConversationZh.callDetails),
                     ),
                   ),
               ],

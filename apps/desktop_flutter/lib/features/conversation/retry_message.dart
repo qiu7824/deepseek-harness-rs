@@ -3,9 +3,11 @@ import 'dart:convert';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class RetryMessage extends StatefulWidget {
   const RetryMessage({super.key, required this.item});
@@ -59,9 +61,9 @@ class _RetryMessageState extends State<RetryMessage> {
   Widget build(BuildContext context) {
     final colors = DshColors(context);
     final label = switch (widget.item.status) {
-      'started' => '已重试模型请求',
-      'cancelled' => '已取消模型重试',
-      _ => '正在重试模型请求',
+      'started' => DshConversationZh.modelRetried,
+      'cancelled' => DshConversationZh.modelRetryCancelled,
+      _ => DshConversationZh.modelRetrying,
     };
     final failure = object(data['failure']);
     return SizedBox(
@@ -80,7 +82,7 @@ class _RetryMessageState extends State<RetryMessage> {
                     child: Text(
                       '$label（${data['retry']}/${data['maximum']}） · ${remaining}s',
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: DshTypography.sizeAuxiliary,
                         height: 20 / 13,
                         color: colors.muted,
                       ),
@@ -89,8 +91,8 @@ class _RetryMessageState extends State<RetryMessage> {
                   const SizedBox(width: 7),
                   DshGlyph(
                     expanded
-                        ? LucideIcons.chevronDown
-                        : LucideIcons.chevronRight,
+                        ? DshIcons.chevronDown.data
+                        : DshIcons.chevronRight.data,
                     size: 12,
                     color: colors.muted,
                   ),
@@ -102,9 +104,13 @@ class _RetryMessageState extends State<RetryMessage> {
             Padding(
               padding: const EdgeInsets.only(left: 14, top: 3),
               child: SelectableText(
-                '重试延迟：${data['delayMs']}ms\n${failure['code'] ?? ''}\n${failure['message'] ?? ''}',
+                DshConversationZh.retryDetails(
+                  delay: data['delayMs'],
+                  code: failure['code'] ?? '',
+                  message: failure['message'] ?? '',
+                ),
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: DshTypography.sizeCaption,
                   height: 18 / 12,
                   color: colors.muted,
                 ),

@@ -62,9 +62,9 @@ void main() {
     await tester.tap(find.text('用量 3.4K'));
     await tester.pumpAndSettle();
     expect(find.text('本轮用量'), findsOneWidget);
-    expect(find.text('1,000'), findsOneWidget);
-    expect(find.text('2,000'), findsOneWidget);
-    expect(find.text('300'), findsOneWidget);
+    expect(find.text('1,000 tok'), findsOneWidget);
+    expect(find.text('2,000 tok'), findsOneWidget);
+    expect(find.text('300 tok'), findsOneWidget);
     expect(find.text('100（其中推理 25）'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     expect(tester.takeException(), isNull);

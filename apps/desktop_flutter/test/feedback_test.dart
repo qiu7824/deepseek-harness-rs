@@ -55,7 +55,14 @@ void main() {
     };
     expect(await c.save('m', 'positive', ifVersion: null), isFalse);
     expect(c.item('m'), isNull);
-    expect(c.error, contains('target-not-found'));
+    expect(
+      c.error,
+      isA<DshException>().having(
+        (error) => error.code,
+        'code',
+        'target-not-found',
+      ),
+    );
     expect(object(calls.last['payload']).containsKey('ifVersion'), isTrue);
     expect(object(calls.last['payload'])['ifVersion'], isNull);
     handle = (_) => {'ok': true, 'value': row('v1')};
@@ -67,7 +74,14 @@ void main() {
     };
     expect(await c.save('m', null, ifVersion: 'v1'), isFalse);
     expect(c.item('m')?['rating'], 'negative');
-    expect(c.error, contains('version-conflict'));
+    expect(
+      c.error,
+      isA<DshException>().having(
+        (error) => error.code,
+        'code',
+        'version-conflict',
+      ),
+    );
     handle = (_) => {
       'ok': true,
       'value': {'absent': true},

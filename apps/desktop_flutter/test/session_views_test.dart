@@ -82,7 +82,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('send-message')), findsOneWidget);
-      expect(find.byTooltip('上下文已用 50%'), findsOneWidget);
+      expect(find.text('上下文 50%'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
@@ -103,7 +103,7 @@ void main() {
       }, 1);
       await tester.pumpWidget(DesktopApp(controller: c));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('上下文'));
+      await tester.tap(find.byKey(const ValueKey('conversation-view-context')));
       await tester.pumpAndSettle();
       expect(find.byType(ContextView), findsOneWidget);
       expect(find.byKey(const Key('prompt-input')), findsOneWidget);
@@ -128,7 +128,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(TraceView), findsNothing);
       expect(find.text('轨迹'), findsNothing);
-      expect(find.byTooltip('显示工作台'), findsNothing);
+      expect(find.byTooltip('显示工作台'), findsOneWidget);
+      expect(find.byKey(const Key('hero-open-workbench')), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();

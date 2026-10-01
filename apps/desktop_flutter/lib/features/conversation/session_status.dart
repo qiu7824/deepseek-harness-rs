@@ -1,10 +1,15 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
+import '../../design/statistics_popover.dart';
+import '../../l10n/statistics_zh.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 String oneDecimal(num n) =>
     n.toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '');
@@ -25,29 +30,46 @@ String sessionStatsText(Json projections) {
   final groups = <String>[];
   if (nonNegative(stats, 'steps') > 0) {
     groups.add(
-      '${nonNegative(stats, 'turns')} 轮 · ${nonNegative(stats, 'steps')} 步',
+      DshConversationZh.turnsAndSteps(
+        turns: nonNegative(stats, 'turns'),
+        steps: nonNegative(stats, 'steps'),
+      ),
     );
     final times = <String>[];
     if (nonNegative(stats, 'llmMs') > 0) {
       times.add('LLM ${compactDuration(nonNegative(stats, 'llmMs'))}');
     }
     if (nonNegative(stats, 'toolMs') > 0) {
-      times.add('工具调用 ${compactDuration(nonNegative(stats, 'toolMs'))}');
+      times.add(
+        DshConversationZh.toolCallTime(
+          duration: compactDuration(nonNegative(stats, 'toolMs')),
+        ),
+      );
     }
     if (times.isNotEmpty) groups.add(times.join(' · '));
     final rates = <String>[];
     if (nonNegative(stats, 'ttftSteps') > 0) {
       rates.add(
-        '首 token 平均 ${compactDuration(nonNegative(stats, 'ttftMs') / nonNegative(stats, 'ttftSteps'))}',
+        DshConversationZh.averageFirstTokenTime(
+          duration: compactDuration(
+            nonNegative(stats, 'ttftMs') / nonNegative(stats, 'ttftSteps'),
+          ),
+        ),
       );
     }
     if (nonNegative(stats, 'requestMs') > 0 &&
         nonNegative(stats, 'requestSamples') > 0) {
       rates.add(
-        '请求平均 ${requestRate(nonNegative(stats, 'requestOutputTokens') * 1000 / nonNegative(stats, 'requestMs'))} tok/s',
+        DshConversationZh.averageRequestRate(
+          rate: requestRate(
+            nonNegative(stats, 'requestOutputTokens') *
+                1000 /
+                nonNegative(stats, 'requestMs'),
+          ),
+        ),
       );
     } else {
-      rates.add('请求速率未提供');
+      rates.add(DshConversationZh.requestRateUnavailable);
     }
     groups.add(rates.join(' · '));
   }
@@ -55,14 +77,39 @@ String sessionStatsText(Json projections) {
     final hit = cacheHitPercent(usage);
     groups.add(
       hit == null
-          ? '缓存统计未提供'
-          : '缓存命中 $hit%${nonNegative(object(usage['cacheStatistics']), 'unreportedSamples') > 0 ? '（部分请求）' : ''}',
+          ? DshConversationZh.cacheUsageUnavailable
+          : DshConversationZh.cacheHitSummary(
+              hit: hit,
+              coverage:
+                  nonNegative(
+                        object(usage['cacheStatistics']),
+                        'unreportedSamples',
+                      ) >
+                      0
+                  ? DshConversationZh.partialRequestsSuffix
+                  : '',
+            ),
     );
     groups.add(
-      '输入 ${compactTokens(billedInputTokens(usage))} tok · 输出 ${compactTokens(nonNegative(usage, 'outputTokens'))} tok',
+      DshConversationZh.inputOutputTokens(
+        input: compactTokens(billedInputTokens(usage)),
+        output: compactTokens(nonNegative(usage, 'outputTokens')),
+      ),
     );
   }
   return groups.join('  |  ');
+}
+
+num? _statNumber(Json values, String key) {
+  final value = values[key];
+  return value is num && value.isFinite && value >= 0 ? value : null;
+}
+
+String _statAmount(Json values, String key, [String suffix = '']) {
+  final value = _statNumber(values, key);
+  return value == null
+      ? DshStatisticsZh.unavailable
+      : '${oneDecimal(value)}$suffix';
 }
 
 class SessionStatsLine extends StatelessWidget {
@@ -70,113 +117,149 @@ class SessionStatsLine extends StatelessWidget {
   final DesktopController controller;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: controller.projectionChanges,
+    listenable: Listenable.merge([controller, controller.projectionChanges]),
     builder: (context, _) {
-      final line = sessionStatsText(controller.projections);
-      if (line.isEmpty) return const SizedBox(height: 18);
-      final sources = objects(
-        object(controller.projections['sessionStats'])['requestSources'],
-      );
-      return Tooltip(
-        message: [
-          line,
-          ...sources.map(
-            (s) =>
-                '${s['provider']} / ${s['model']} · ${s['executionInstanceId'] ?? ''}',
-          ),
-        ].join('\n'),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(48, 28, 48, 8),
-          child: SingleChildScrollView(
-            key: const ValueKey('session-stats-scroll'),
-            scrollDirection: Axis.horizontal,
-            child: Text(
-              line,
-              maxLines: 1,
-              softWrap: false,
-              style: TextStyle(
-                fontSize: 12,
-                height: 20 / 12,
-                color: DshColors(context).muted,
-              ),
+      final stats = object(controller.projections['sessionStats']);
+      final usage = object(controller.projections['tokenUsage']);
+      final scope = (controller.client, controller.selectedId);
+      final requestMs = _statNumber(stats, 'requestMs');
+      final requestTokens = _statNumber(stats, 'requestOutputTokens');
+      final samples = _statNumber(stats, 'requestSamples');
+      final ttftMs = _statNumber(stats, 'ttftMs');
+      final ttftSteps = _statNumber(stats, 'ttftSteps');
+      final inputParts = [
+        'uncachedInputTokens',
+        'cacheReadTokens',
+        'cacheWriteTokens',
+      ];
+      final input = inputParts.every((key) => _statNumber(usage, key) != null)
+          ? billedInputTokens(usage)
+          : null;
+      final output = _statNumber(usage, 'outputTokens');
+      final total = input != null && output != null ? input + output : null;
+      final hit = cacheHitPercent(usage);
+      final partial =
+          nonNegative(object(usage['cacheStatistics']), 'unreportedSamples') >
+          0;
+      final sources = objects(stats['requestSources'])
+          .map((s) => '${s['provider'] ?? '—'} / ${s['model'] ?? '—'}')
+          .toSet();
+      String duration(String key) => _statNumber(stats, key) == null
+          ? DshStatisticsZh.unavailable
+          : '${oneDecimal(_statNumber(stats, key)! / 1000)}秒';
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 4,
+          runSpacing: 2,
+          children: [
+            StatisticsPopover(
+              key: const ValueKey('session-statistics-button'),
+              scope: scope,
+              label: DshStatisticsZh.session,
+              title: DshStatisticsZh.session,
+              icon: DshIcons.clock.data,
+              rows: [
+                (DshStatisticsZh.rounds, _statAmount(stats, 'turns')),
+                (DshStatisticsZh.steps, _statAmount(stats, 'steps')),
+                (DshStatisticsZh.modelTime, duration('llmMs')),
+                (DshStatisticsZh.toolTime, duration('toolMs')),
+                (
+                  DshStatisticsZh.firstToken,
+                  ttftMs != null && ttftSteps != null && ttftSteps > 0
+                      ? '${oneDecimal(ttftMs / ttftSteps / 1000)}秒'
+                      : DshStatisticsZh.unavailable,
+                ),
+                (
+                  DshStatisticsZh.outputSpeed,
+                  requestMs != null &&
+                          requestMs > 0 &&
+                          samples != null &&
+                          samples > 0 &&
+                          requestTokens != null
+                      ? '${requestRate(requestTokens * 1000 / requestMs)} tok/s'
+                      : DshStatisticsZh.unavailable,
+                ),
+                if (sources.isNotEmpty)
+                  (DshStatisticsZh.sources, sources.join('\n')),
+              ],
             ),
-          ),
+            StatisticsPopover(
+              key: const ValueKey('session-usage-button'),
+              scope: scope,
+              label: total == null
+                  ? DshStatisticsZh.usage
+                  : '${DshStatisticsZh.usage} ${compactTokens(total)} tok',
+              title: DshStatisticsZh.sessionUsage,
+              icon: DshIcons.database.data,
+              rows: [
+                (
+                  DshStatisticsZh.total,
+                  total == null
+                      ? DshStatisticsZh.unavailable
+                      : '${oneDecimal(total)} tok',
+                ),
+                (
+                  DshStatisticsZh.input,
+                  input == null
+                      ? DshStatisticsZh.unavailable
+                      : '${oneDecimal(input)} tok',
+                ),
+                (
+                  DshStatisticsZh.output,
+                  _statAmount(usage, 'outputTokens', ' tok'),
+                ),
+                (
+                  DshStatisticsZh.uncached,
+                  _statAmount(usage, 'uncachedInputTokens', ' tok'),
+                ),
+                (
+                  DshStatisticsZh.cacheRead,
+                  _statAmount(usage, 'cacheReadTokens', ' tok'),
+                ),
+                (
+                  DshStatisticsZh.cacheWrite,
+                  _statAmount(usage, 'cacheWriteTokens', ' tok'),
+                ),
+                (
+                  DshStatisticsZh.cacheHit,
+                  hit == null
+                      ? DshStatisticsZh.unavailable
+                      : '$hit%${partial ? DshStatisticsZh.partial : ''}',
+                ),
+              ],
+            ),
+            ContextMeter(
+              key: const ValueKey('session-context-button'),
+              controller: controller,
+            ),
+          ],
         ),
       );
     },
   );
 }
 
-class ContextMeter extends StatefulWidget {
+class ContextMeter extends StatelessWidget {
   const ContextMeter({super.key, required this.controller});
   final DesktopController controller;
   @override
-  State<ContextMeter> createState() => _ContextMeterState();
-}
-
-class _ContextMeterState extends State<ContextMeter> {
-  final popover = ShadPopoverController();
-  @override
-  void dispose() {
-    popover.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller.projectionChanges,
+    listenable: Listenable.merge([controller, controller.projectionChanges]),
     builder: (context, _) {
       final reading = ContextOccupancy.fromJson(
-        object(widget.controller.projections['contextPressure']),
+        object(controller.projections['contextPressure']),
       );
-      if (reading == null) {
-        if (popover.isOpen) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) popover.hide();
-          });
-        }
-        return const SizedBox();
-      }
-      return CallbackShortcuts(
-        bindings: {
-          const SingleActivator(LogicalKeyboardKey.escape): popover.hide,
-        },
-        child: ShadPopover(
-          controller: popover,
-          padding: const EdgeInsets.all(12),
-          anchor: const ShadAnchorAuto(
-            targetAnchor: Alignment.topRight,
-            followerAnchor: Alignment.bottomRight,
-            offset: Offset(0, -8),
-          ),
-          popover: (_) => SizedBox(
-            width: 240,
-            child: ContextSummary(controller: widget.controller),
-          ),
-          child: Tooltip(
-            message: '上下文已用 ${reading.percent}%',
-            child: Semantics(
-              label: '上下文已用 ${reading.percent}%',
-              button: true,
-              child: ShadButton.ghost(
-                width: 28,
-                height: 28,
-                padding: EdgeInsets.zero,
-                onPressed: popover.toggle,
-                child: SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(
-                    value: reading.ratio,
-                    strokeWidth: 2,
-                    backgroundColor: DshColors(context).border,
-                    color: DshColors(context).muted,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
+      return StatisticsPopover(
+        scope: (controller.client, controller.selectedId, reading != null),
+        label: reading == null
+            ? DshStatisticsZh.context
+            : '${DshStatisticsZh.context} ${reading.percent}%',
+        title: DshStatisticsZh.context,
+        icon: DshIcons.brain.data,
+        rows: const [],
+        details: ContextSummary(controller: controller),
       );
     },
   );
@@ -210,15 +293,23 @@ class ContextSummary extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            reading == null ? '上下文占用尚未提供' : '上下文已用 ${reading.percent}%',
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+            reading == null
+                ? DshConversationZh.contextUsageUnavailable
+                : DshConversationZh.contextPercent(percent: reading.percent),
+            style: const TextStyle(
+              fontSize: DshTypography.sizeBody,
+              fontWeight: FontWeight.w500,
+            ),
           ),
           if (reading != null)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                '${compactTokens(reading.used)} / ${compactTokens(reading.capacity)} tokens${reading.estimated ? ' · 容量估算' : ''}',
-                style: TextStyle(fontSize: 12, color: colors.muted),
+                '${compactTokens(reading.used)} / ${compactTokens(reading.capacity)} tokens${reading.estimated ? DshConversationZh.estimatedCapacitySuffix : ''}',
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             ),
           if (sum > 0) ...[
@@ -255,26 +346,41 @@ class ContextSummary extends StatelessWidget {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        const ['系统提示词', '工具定义', '对话内容'][i],
-                        style: const TextStyle(fontSize: 12),
+                        const [
+                          DshConversationZh.systemPrompt,
+                          DshConversationZh.toolDefinitions,
+                          DshConversationZh.conversationContent,
+                        ][i],
+                        style: const TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                        ),
                       ),
                     ),
                     Text(
                       compactTokens(slices[i]),
-                      style: const TextStyle(fontSize: 12),
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                      ),
                     ),
                   ],
                 ),
               ),
             Text(
-              '组成按启发式估算，与供应商计费用量可能不同。',
-              style: TextStyle(fontSize: 11, height: 1.5, color: colors.muted),
+              DshConversationZh.contextEstimateHint,
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                height: 1.5,
+                color: colors.muted,
+              ),
             ),
           ],
           if (controller.projectionWindow.oversized.isNotEmpty)
             Text(
-              '部分状态数据超过显示预算，未载入。',
-              style: TextStyle(fontSize: 12, color: colors.muted),
+              DshConversationZh.statusDisplayLimit,
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                color: colors.muted,
+              ),
             ),
         ],
       );
@@ -314,7 +420,7 @@ class _ProgressDockState extends State<ProgressDock> {
     });
   }
 
-  String? error;
+  Object? error;
   Object? todoSource;
   List<Json> retainedTodos = [];
   DesktopController get c => widget.controller;
@@ -327,7 +433,7 @@ class _ProgressDockState extends State<ProgressDock> {
     try {
       await work();
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted) setState(() => error = e);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -339,11 +445,11 @@ class _ProgressDockState extends State<ProgressDock> {
       context: context,
       barrierDismissible: false,
       builder: (_) => ProjectionTextEditor(
-        title: '编辑任务',
+        title: DshConversationZh.editTask,
         initial: '${expected[index]['content']}',
         onSave: (text) async {
           if (!mounted || c.selectedId != session) {
-            throw StateError('会话已切换，请保留草稿后重新打开任务。');
+            throw StateError(DshConversationZh.taskSessionChanged);
           }
           await c.updateTodos(expected, {
             'kind': 'edit',
@@ -359,9 +465,9 @@ class _ProgressDockState extends State<ProgressDock> {
     final session = c.selectedId;
     if (!await confirmAction(
       context,
-      '移除任务',
+      DshConversationZh.removeTask,
       '${expected[index]['content']}',
-      action: '移除',
+      action: DshConversationZh.remove,
     )) {
       return;
     }
@@ -375,7 +481,7 @@ class _ProgressDockState extends State<ProgressDock> {
     final session = c.selectedId;
     Future<void> commit({String? objective}) async {
       if (!mounted || session == null || c.selectedId != session) {
-        throw StateError('会话已切换，请重新打开目标。');
+        throw StateError(DshConversationZh.goalSessionChanged);
       }
       await c.changeGoal(operation, expected, objective: objective);
     }
@@ -390,7 +496,12 @@ class _ProgressDockState extends State<ProgressDock> {
       return;
     }
     if (operation == 'clear' &&
-        !await confirmAction(context, '清除目标', '清除当前目标，保留会话历史。', action: '清除')) {
+        !await confirmAction(
+          context,
+          DshConversationZh.clearGoal,
+          DshConversationZh.clearGoalHint,
+          action: DshConversationZh.clear,
+        )) {
       return;
     }
     if (mounted) await action(commit);
@@ -425,7 +536,10 @@ class _ProgressDockState extends State<ProgressDock> {
                       controller: goalDraft,
                       autofocus: true,
                       enabled: !busy,
-                      style: const TextStyle(fontSize: 13, height: 20 / 13),
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeAuxiliary,
+                        height: 20 / 13,
+                      ),
                       decoration: const InputDecoration(
                         isDense: true,
                         contentPadding: EdgeInsets.symmetric(
@@ -433,7 +547,7 @@ class _ProgressDockState extends State<ProgressDock> {
                           vertical: 3,
                         ),
                         border: OutlineInputBorder(),
-                        hintText: '目标',
+                        hintText: DshConversationZh.goal,
                       ),
                       onSubmitted: (_) => saveGoal(),
                     ),
@@ -443,10 +557,10 @@ class _ProgressDockState extends State<ProgressDock> {
                 ValueListenableBuilder(
                   valueListenable: goalDraft,
                   builder: (_, value, _) => DshIcon(
-                    LucideIcons.check,
+                    DshIcons.check.data,
                     glyphSize: 14,
                     size: 28,
-                    label: '保存目标',
+                    label: DshConversationZh.saveGoal,
                     onPressed: busy || value.text.trim().isEmpty
                         ? null
                         : saveGoal,
@@ -454,10 +568,10 @@ class _ProgressDockState extends State<ProgressDock> {
                 ),
                 const SizedBox(width: 10),
                 DshIcon(
-                  LucideIcons.x,
+                  DshIcons.close.data,
                   glyphSize: 14,
                   size: 28,
-                  label: '取消编辑目标',
+                  label: DshConversationZh.cancelGoalEdit,
                   onPressed: busy
                       ? null
                       : () => setState(() => editingGoal = null),
@@ -476,41 +590,49 @@ class _ProgressDockState extends State<ProgressDock> {
               const SizedBox(width: 10),
               Text(
                 const {
-                      'active': '进行中的目标',
-                      'paused': '已暂停的目标',
-                      'blocked': '受阻的目标',
+                      'active': DshConversationZh.activeGoal,
+                      'paused': DshConversationZh.pausedGoal,
+                      'blocked': DshConversationZh.blockedGoal,
                     }[goal['phase']] ??
-                    '目标',
+                    DshConversationZh.goal,
                 style: const TextStyle(
-                  fontSize: 13,
+                  fontSize: DshTypography.sizeAuxiliary,
                   fontWeight: FontWeight.w500,
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Tooltip(
-                  message:
-                      '${goal['objective']}\n${projected['roundsStarted'] ?? 0} / ${goal['maxGoalRounds'] ?? '—'} 轮${goal['blockedReason'] is Map ? '\n${object(goal['blockedReason'])['message'] ?? ''}' : ''}',
+                  message: DshConversationZh.goalProgress(
+                    objective: goal['objective'],
+                    started: projected['roundsStarted'] ?? 0,
+                    maximum: goal['maxGoalRounds'] ?? '—',
+                    blockedDetail: goal['blockedReason'] is Map
+                        ? '\n${object(goal['blockedReason'])['message'] ?? ''}'
+                        : '',
+                  ),
                   child: Text(
                     '${goal['objective']}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13),
+                    style: const TextStyle(
+                      fontSize: DshTypography.sizeAuxiliary,
+                    ),
                   ),
                 ),
               ),
               if (goal['phase'] == 'active')
                 DshIcon(
-                  LucideIcons.pause,
-                  label: '暂停目标',
+                  DshIcons.pause.data,
+                  label: DshConversationZh.pauseGoal,
                   glyphSize: 14,
                   size: 28,
                   onPressed: busy ? null : () => goalAction('pause', goal),
                 ),
               if (['paused', 'blocked'].contains(goal['phase']))
                 DshIcon(
-                  LucideIcons.play,
-                  label: '恢复目标',
+                  DshIcons.play.data,
+                  label: DshConversationZh.resumeGoal,
                   asset: 'assets/icons/goal-resume.svg',
                   glyphSize: 14,
                   size: 28,
@@ -518,16 +640,16 @@ class _ProgressDockState extends State<ProgressDock> {
                 ),
               const SizedBox(width: 10),
               DshIcon(
-                LucideIcons.pencil,
-                label: '编辑目标',
+                DshIcons.pencil.data,
+                label: DshConversationZh.editGoal,
                 glyphSize: 14,
                 size: 28,
                 onPressed: busy ? null : () => goalAction('edit', goal),
               ),
               const SizedBox(width: 10),
               DshIcon(
-                LucideIcons.trash2,
-                label: '清除目标',
+                DshIcons.trash2.data,
+                label: DshConversationZh.clearGoal,
                 glyphSize: 14,
                 size: 28,
                 onPressed: busy ? null : () => goalAction('clear', goal),
@@ -559,7 +681,7 @@ class _ProgressDockState extends State<ProgressDock> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 13,
+                fontSize: DshTypography.sizeAuxiliary,
                 decoration: todo['status'] == 'completed'
                     ? TextDecoration.lineThrough
                     : null,
@@ -568,8 +690,10 @@ class _ProgressDockState extends State<ProgressDock> {
           ),
           const SizedBox(width: 10),
           DshIcon(
-            LucideIcons.pencil,
-            label: c.canEditTodos ? '编辑任务' : '编辑任务需要更新 Host',
+            DshIcons.pencil.data,
+            label: c.canEditTodos
+                ? DshConversationZh.editTask
+                : DshConversationZh.editTaskRequiresHostUpdate,
             size: 25,
             onPressed: busy || !c.canEditTodos
                 ? null
@@ -577,8 +701,10 @@ class _ProgressDockState extends State<ProgressDock> {
           ),
           if (todo['status'] != 'completed')
             DshIcon(
-              LucideIcons.trash2,
-              label: c.canEditTodos ? '移除任务' : '移除任务需要更新 Host',
+              DshIcons.trash2.data,
+              label: c.canEditTodos
+                  ? DshConversationZh.removeTask
+                  : DshConversationZh.removeTaskRequiresHostUpdate,
               size: 25,
               onPressed: busy || !c.canEditTodos
                   ? null
@@ -607,9 +733,9 @@ class _ProgressDockState extends State<ProgressDock> {
           colors = DshColors(context);
       final pending = todos.length - done - active;
       final summary = [
-        if (done > 0) '$done 已完成',
-        if (active > 0) '$active 进行中',
-        if (pending > 0) '$pending 待处理',
+        if (done > 0) DshConversationZh.completedCount(count: done),
+        if (active > 0) DshConversationZh.activeCount(count: active),
+        if (pending > 0) DshConversationZh.pendingCount(count: pending),
       ].join(' · ');
       return Padding(
         padding: const EdgeInsets.only(bottom: 6),
@@ -648,9 +774,9 @@ class _ProgressDockState extends State<ProgressDock> {
                               ),
                               const SizedBox(width: 10),
                               const Text(
-                                '任务',
+                                DshConversationZh.task,
                                 style: TextStyle(
-                                  fontSize: 13,
+                                  fontSize: DshTypography.sizeAuxiliary,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),
@@ -662,15 +788,15 @@ class _ProgressDockState extends State<ProgressDock> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    fontSize: 13,
+                                    fontSize: DshTypography.sizeAuxiliary,
                                     color: colors.muted,
                                   ),
                                 ),
                               ),
                               DshGlyph(
                                 expanded
-                                    ? LucideIcons.chevronDown
-                                    : LucideIcons.chevronUp,
+                                    ? DshIcons.chevronDown.data
+                                    : DshIcons.chevronUp.data,
                                 size: 14,
                                 color: colors.muted,
                               ),
@@ -699,7 +825,9 @@ class _ProgressDockState extends State<ProgressDock> {
                             height: 28,
                             destructive: true,
                             onPressed: busy ? null : () => action(c.stop),
-                            child: const Text('停止当前任务'),
+                            child: const Text(
+                              DshConversationZh.stopCurrentExecution,
+                            ),
                           ),
                         ),
                     ],
@@ -710,11 +838,7 @@ class _ProgressDockState extends State<ProgressDock> {
               if (todos.isNotEmpty) const SizedBox(height: 6),
               goalRow(projected, goal, colors),
             ],
-            if (error != null)
-              Text(
-                error!,
-                style: const TextStyle(fontSize: 12, color: Colors.red),
-              ),
+            if (error != null) DshErrorView(error: error!),
           ],
         ),
       );
@@ -742,7 +866,7 @@ class ProjectionTextEditor extends StatefulWidget {
 class _ProjectionTextEditorState extends State<ProjectionTextEditor> {
   late final input = TextEditingController(text: widget.initial);
   bool busy = false;
-  String? error;
+  Object? error;
   @override
   void dispose() {
     input.dispose();
@@ -759,7 +883,7 @@ class _ProjectionTextEditorState extends State<ProjectionTextEditor> {
       await widget.onSave(input.text.trim());
       if (mounted) Navigator.pop(context);
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted) setState(() => error = e);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -769,7 +893,10 @@ class _ProjectionTextEditorState extends State<ProjectionTextEditor> {
   Widget build(BuildContext context) => PopScope(
     canPop: !busy,
     child: AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontSize: 17)),
+      title: Text(
+        widget.title,
+        style: const TextStyle(fontSize: DshTypography.sizeSectionTitle),
+      ),
       content: SizedBox(
         width: widget.width,
         child: Column(
@@ -784,10 +911,7 @@ class _ProjectionTextEditorState extends State<ProjectionTextEditor> {
             if (error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
-                child: Text(
-                  error!,
-                  style: const TextStyle(fontSize: 12, color: Colors.red),
-                ),
+                child: DshErrorView(error: error!),
               ),
           ],
         ),
@@ -795,12 +919,12 @@ class _ProjectionTextEditorState extends State<ProjectionTextEditor> {
       actions: [
         DshButton(
           onPressed: busy ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshConversationZh.cancel),
         ),
         DshButton(
           primary: true,
           onPressed: busy ? null : save,
-          child: Text(busy ? '保存中…' : '保存'),
+          child: Text(busy ? DshConversationZh.saving : DshConversationZh.save),
         ),
       ],
     ),

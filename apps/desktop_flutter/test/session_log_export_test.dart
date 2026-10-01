@@ -124,7 +124,7 @@ void main() {
     await tester.tap(find.byTooltip('下载会话日志'));
     await tester.pumpAndSettle();
     expect(suggested, 'dsh-session-session-1.zip');
-    expect(find.text('正在导出 Session'), findsNothing);
+    expect(find.text('正在导出会话'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     controller.dispose();
   });
@@ -155,7 +155,7 @@ void main() {
       );
       await tester.tap(find.byTooltip('下载会话日志'));
       await tester.pumpAndSettle();
-      expect(find.text('Session 导出完成'), findsOneWidget);
+      expect(find.text('会话导出完成'), findsOneWidget);
       expect(File(path).readAsBytesSync(), [80, 75, 3, 4]);
       expect(
         Uri.parse(api.requestedPath!).queryParameters['sessionId'],
@@ -163,7 +163,7 @@ void main() {
       );
       await tester.tap(find.text('关闭'));
       await tester.pumpAndSettle();
-      expect(find.text('Session 导出完成'), findsNothing);
+      expect(find.text('会话导出完成'), findsNothing);
     } finally {
       await tester.pumpWidget(const SizedBox());
       controller.dispose();
@@ -193,11 +193,11 @@ void main() {
     await tester.tap(find.byTooltip('下载会话日志'));
     await tester.pump();
     final scope = await api.started.future;
-    expect(find.text('正在导出 Session'), findsOneWidget);
+    expect(find.text('正在导出会话'), findsOneWidget);
     controller.selectedId = 'session-2';
     controller.emit();
     await tester.pumpAndSettle();
-    expect(find.text('正在导出 Session'), findsNothing);
+    expect(find.text('正在导出会话'), findsNothing);
     expect(scope?.cancelled, isTrue);
     api.finish.complete(0);
     await tester.pump();

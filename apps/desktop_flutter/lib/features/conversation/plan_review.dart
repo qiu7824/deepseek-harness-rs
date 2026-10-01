@@ -1,10 +1,13 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../design/rich_content.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class PlanReviewData {
   const PlanReviewData({
@@ -74,7 +77,7 @@ class PlanReviewCard extends StatefulWidget {
 class _PlanReviewCardState extends State<PlanReviewCard> {
   final scroll = ScrollController();
   bool busy = false;
-  String? error;
+  Object? error;
   bool get enabled =>
       !busy &&
       widget.controller.connected &&
@@ -111,7 +114,7 @@ class _PlanReviewCardState extends State<PlanReviewCard> {
       if (mounted) {
         setState(() {
           busy = false;
-          error = '$e';
+          error = e;
         });
       }
     }
@@ -134,10 +137,10 @@ class _PlanReviewCardState extends State<PlanReviewCard> {
             height: 36,
             pill: true,
             padding: const EdgeInsets.symmetric(horizontal: 14),
-            icon: LucideIcons.pencil,
+            icon: DshIcons.pencil.data,
             onPressed: enabled ? () => decide(null) : null,
             child: const Text(
-              '去聊天里说',
+              DshConversationZh.discussInConversation,
               style: TextStyle(fontWeight: FontWeight.w400),
             ),
           ),
@@ -153,7 +156,7 @@ class _PlanReviewCardState extends State<PlanReviewCard> {
                     ? () => decide(review.decline!['label'] as String)
                     : null,
                 child: const Text(
-                  '拒绝',
+                  DshConversationZh.deny,
                   style: TextStyle(fontWeight: FontWeight.w400),
                 ),
               ),
@@ -170,7 +173,7 @@ class _PlanReviewCardState extends State<PlanReviewCard> {
                   ? () => decide(review.approve['label'] as String)
                   : null,
               child: const Text(
-                '确认执行',
+                DshConversationZh.confirmExecution,
                 style: TextStyle(fontWeight: FontWeight.w400),
               ),
             ),
@@ -226,9 +229,9 @@ class _PlanReviewCardState extends State<PlanReviewCard> {
                     ),
                     const SizedBox(width: 8),
                     const Text(
-                      '计划待审',
+                      DshConversationZh.planAwaitingReview,
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: DshTypography.sizeAuxiliary,
                         height: 18 / 13,
                         color: Color(0xfff59e0b),
                       ),
@@ -257,13 +260,14 @@ class _PlanReviewCardState extends State<PlanReviewCard> {
                 ),
                 child: LayoutBuilder(
                   builder: (_, box) {
-                    final feedback = Text(
-                      error ?? '',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    );
+                    final feedback = error == null
+                        ? const SizedBox.shrink()
+                        : ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 130),
+                            child: SingleChildScrollView(
+                              child: DshErrorView(error: error!),
+                            ),
+                          );
                     if (box.maxWidth < 440) {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,

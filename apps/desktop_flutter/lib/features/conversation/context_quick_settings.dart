@@ -5,13 +5,17 @@ import '../../design/primitives.dart';
 import '../../design/typography.dart';
 import '../../src/controller.dart';
 
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
+
 /// Default automatic compaction threshold (compaction-basic `thresholdRatio`).
 const defaultCompactionThreshold = 0.8;
 
 String compactTokens(num value) {
   if (value >= 10000) {
     final wan = value / 10000;
-    return '${wan >= 100 ? wan.round() : (wan * 10).round() / 10}万';
+    return DshConversationZh.tenThousands(
+      amount: wan >= 100 ? wan.round() : (wan * 10).round() / 10,
+    );
   }
   return '${value.round()}';
 }
@@ -71,7 +75,7 @@ class _ContextQuickSettingsState extends State<ContextQuickSettings> {
           defaultCompactionThreshold;
       final percent = (dragging ?? effective * 100).clamp(50.0, 95.0);
       final usage = used == null || window == null || window == 0
-          ? '尚无用量'
+          ? DshConversationZh.noUsage
           : '${(used / window * 100).clamp(0, 100).round()}% · ${compactTokens(used)} / ${compactTokens(window)}';
       return Column(
         key: const Key('context-quick-settings'),
@@ -80,14 +84,14 @@ class _ContextQuickSettingsState extends State<ContextQuickSettings> {
           Row(
             children: [
               Text(
-                '上下文',
+                DshConversationZh.context,
                 style: DshTypography.caption.copyWith(color: colors.muted),
               ),
               const Spacer(),
               Text(
                 usage,
                 style: const TextStyle(
-                  fontSize: 13,
+                  fontSize: DshTypography.sizeAuxiliary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -109,14 +113,14 @@ class _ContextQuickSettingsState extends State<ContextQuickSettings> {
           Row(
             children: [
               Text(
-                '自动压缩阈值',
+                DshConversationZh.autoCompactionThreshold,
                 style: DshTypography.caption.copyWith(color: colors.muted),
               ),
               const Spacer(),
               Text(
                 '${percent.round()}%',
                 style: const TextStyle(
-                  fontSize: 13,
+                  fontSize: DshTypography.sizeAuxiliary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -156,10 +160,16 @@ class _ContextQuickSettingsState extends State<ContextQuickSettings> {
             children: [
               Expanded(
                 child: Text(
-                  notice ?? (stored == null ? '使用默认阈值' : '当前模型使用自定义阈值'),
+                  notice ??
+                      (stored == null
+                          ? DshConversationZh.useDefaultThreshold
+                          : DshConversationZh.customThreshold),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, color: colors.muted),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
               ),
               if (stored != null)
@@ -169,7 +179,10 @@ class _ContextQuickSettingsState extends State<ContextQuickSettings> {
                   onPressed: busy || key == null
                       ? null
                       : () => run(() => c.setCompactionThreshold(key, null)),
-                  child: const Text('恢复默认', style: TextStyle(fontSize: 12)),
+                  child: const Text(
+                    DshConversationZh.restoreDefaults,
+                    style: TextStyle(fontSize: DshTypography.sizeCaption),
+                  ),
                 ),
               const SizedBox(width: 6),
               DshButton(
@@ -178,10 +191,15 @@ class _ContextQuickSettingsState extends State<ContextQuickSettings> {
                 outline: true,
                 onPressed: busy || c.compacting || c.selectedId == null
                     ? null
-                    : () => run(c.compactNow, '已开始压缩'),
+                    : () => run(
+                        c.compactNow,
+                        DshConversationZh.compactionStarted,
+                      ),
                 child: Text(
-                  c.compacting ? '压缩中…' : '立即压缩',
-                  style: const TextStyle(fontSize: 12),
+                  c.compacting
+                      ? DshConversationZh.compacting
+                      : DshConversationZh.compactNow,
+                  style: const TextStyle(fontSize: DshTypography.sizeCaption),
                 ),
               ),
             ],

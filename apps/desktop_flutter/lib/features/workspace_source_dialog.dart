@@ -1,9 +1,14 @@
+import '../design/error.dart';
+import '../l10n/zh.dart';
+
 import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 
 import '../design/primitives.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class WorkspaceSourceDialog extends StatefulWidget {
   const WorkspaceSourceDialog({
@@ -100,7 +105,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
     final path = field('path').text.trim();
     final source = field(ssh ? 'host' : 'source').text.trim();
     if (path.isEmpty || source.isEmpty) {
-      setState(() => error = '请填写地址和工作目录。');
+      setState(() => error = DshShellZh.addressAndDirectoryRequired);
       return;
     }
     final ports = <String, int>{};
@@ -108,7 +113,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
       for (final key in ['port', 'remotePort']) {
         final port = int.tryParse(field(key).text);
         if (port == null || port < 1 || port > 65535) {
-          setState(() => error = '端口须为 1–65535 的整数。');
+          setState(() => error = DshShellZh.portInvalid);
           return;
         }
         ports[key] = port;
@@ -152,7 +157,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
         );
         final workspace = object(result['workspace']);
         if (workspace['workspaceId'] is! String) {
-          throw StateError('服务未返回有效的工作区。');
+          throw StateError(DshShellZh.workspaceResponseInvalid);
         }
         if (mounted) Navigator.pop(context, workspace);
       }
@@ -203,7 +208,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: const TextStyle(fontSize: 14)),
+        Text(title, style: const TextStyle(fontSize: DshTypography.sizeBody)),
         const SizedBox(height: 6),
         DshField(
           key: ValueKey('workspace-source-$key'),
@@ -220,11 +225,11 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
     child: AlertDialog(
       title: Text(
         ssh
-            ? 'SSH 远程工作目录'
+            ? DshShellZh.sshDirectory
             : widget.kind == 'cloud'
-            ? 'Cloud · 云端 Git 仓库'
-            : '克隆 Git 工作目录',
-        style: const TextStyle(fontSize: 18),
+            ? DshShellZh.cloudRepository
+            : DshShellZh.cloneGitTitle,
+        style: const TextStyle(fontSize: DshTypography.sizeSectionTitle),
       ),
       content: SizedBox(
         width: 520,
@@ -234,39 +239,44 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                ssh
-                    ? '通过 SSH 隧道连接远端已运行的 Harness。Agent、文件、Shell 和 PTC 均在远端运行；本机模型凭据不会复制到远端。'
-                    : '仓库克隆到本机后，Agent 在本机目录运行，不提供云端计算。私有仓库使用已有 Git 凭据或 SSH 密钥；无需填写令牌。',
-                style: const TextStyle(fontSize: 13, height: 1.6),
+                ssh ? DshShellZh.sshExplanation : DshShellZh.cloneExplanation,
+                style: const TextStyle(
+                  fontSize: DshTypography.sizeAuxiliary,
+                  height: 1.6,
+                ),
               ),
               const SizedBox(height: 16),
-              input(ssh ? 'host' : 'source', ssh ? 'SSH 主机或配置别名' : '仓库地址'),
+              input(
+                ssh ? 'host' : 'source',
+                ssh ? DshShellZh.sshHost : DshShellZh.repositoryUrl,
+              ),
               input(
                 'path',
-                ssh ? '远端工作目录' : '本机目标目录',
-                hint: ssh ? '/home/developer/project' : '填写尚不存在的绝对目录',
+                ssh ? DshShellZh.remoteDirectory : DshShellZh.localDirectory,
+                hint: ssh
+                    ? '/home/developer/project'
+                    : DshShellZh.missingDirectoryHint,
               ),
-              if (!ssh) input('branch', '分支（可选）', hint: '留空使用仓库默认分支'),
+              if (!ssh)
+                input(
+                  'branch',
+                  DshShellZh.branch,
+                  hint: DshShellZh.defaultBranch,
+                ),
               if (ssh) ...[
-                input('port', 'SSH 端口'),
-                input('remotePort', '远端 Harness 端口'),
+                input('port', DshShellZh.sshPort),
+                input('remotePort', DshShellZh.hostPort),
                 DshButton(
                   onPressed: () => setState(() => advanced = !advanced),
-                  child: const Text('高级连接设置'),
+                  child: const Text(DshShellZh.advancedConnection),
                 ),
                 if (advanced) ...[
-                  input('user', 'SSH 用户（可选）'),
-                  input('configFile', '本机 SSH 配置文件（可选）'),
-                  const Text(
-                    '请先在远端启动 Harness，配置 SSH 密钥或 ssh-agent，并核对主机密钥；不支持交互密码登录。',
-                  ),
+                  input('user', DshShellZh.sshUser),
+                  input('configFile', DshShellZh.sshConfig),
+                  const Text(DshShellZh.sshPrerequisites),
                 ],
               ],
-              if (error != null)
-                Text(
-                  error!,
-                  style: const TextStyle(color: Colors.red, fontSize: 13),
-                ),
+              if (error != null) DshErrorView(error: error!),
               if (ssh)
                 for (final item in connections) ...[
                   const Divider(),
@@ -277,15 +287,17 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
                   ),
                   Text(
                     item['state'] == 'connected'
-                        ? '已连接 · 远端执行'
+                        ? DshShellZh.remoteConnected
                         : item['state'] == 'connecting'
-                        ? '连接中'
-                        : '已断开',
+                        ? DshShellZh.connectingState
+                        : DshShellZh.disconnectedState,
                   ),
                   if (item['error'] != null)
                     Text(
                       '${item['error']}',
-                      style: const TextStyle(color: Colors.red),
+                      style: TextStyle(
+                        color: DshTokens.of(context).error.foreground,
+                      ),
                     ),
                   Wrap(
                     spacing: 8,
@@ -299,7 +311,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
                               : () => Navigator.pop(context, {
                                   'url': item['url'],
                                 }),
-                          child: const Text('打开远端工作区'),
+                          child: const Text(DshShellZh.openRemoteWorkspace),
                         ),
                       if (item['state'] != 'disconnected')
                         DshButton(
@@ -307,7 +319,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
                             'disconnect',
                             '${object(item['connection'])['id']}',
                           ),
-                          child: const Text('断开连接'),
+                          child: const Text(DshShellZh.disconnect),
                         ),
                       if (item['state'] == 'disconnected') ...[
                         DshButton(
@@ -329,7 +341,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
                                     }
                                   });
                                 },
-                          child: const Text('编辑／重连'),
+                          child: const Text(DshShellZh.editReconnect),
                         ),
                         DshButton(
                           onPressed: busy
@@ -338,7 +350,7 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
                                   'remove',
                                   '${object(item['connection'])['id']}',
                                 ),
-                          child: const Text('移除连接'),
+                          child: const Text(DshShellZh.removeConnection),
                         ),
                       ],
                     ],
@@ -351,17 +363,17 @@ class _WorkspaceSourceDialogState extends State<WorkspaceSourceDialog> {
       actions: [
         DshButton(
           onPressed: cancelling ? null : cancel,
-          child: Text(busy ? '取消操作' : '取消'),
+          child: Text(busy ? DshShellZh.cancelOperation : DshZh.cancel),
         ),
         DshButton(
           primary: true,
           onPressed: busy ? null : submit,
           child: Text(
             busy
-                ? '正在处理…'
+                ? DshShellZh.processing
                 : ssh
-                ? '连接远端工作目录'
-                : '克隆并添加工作区',
+                ? DshShellZh.connectRemoteDirectory
+                : DshShellZh.cloneWorkspace,
           ),
         ),
       ],

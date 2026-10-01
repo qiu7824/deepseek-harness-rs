@@ -1,10 +1,13 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../src/controller.dart';
 import '../../src/conversation.dart' show ComposerAction;
 import '../../design/primitives.dart';
+import '../../design/error.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class PermissionControl extends StatefulWidget {
   const PermissionControl({super.key, required this.controller});
@@ -17,7 +20,7 @@ class _PermissionControlState extends State<PermissionControl> {
   final anchor = GlobalKey();
   RequestScope? request;
   bool busy = false;
-  String? error;
+  Object? error;
   DesktopController get c => widget.controller;
   @override
   void dispose() {
@@ -61,17 +64,20 @@ class _PermissionControlState extends State<PermissionControl> {
               children: [
                 DshGlyph(
                   option.key == 'read-only'
-                      ? LucideIcons.eye
+                      ? DshIcons.eye.data
                       : option.key == 'danger-full-access'
-                      ? LucideIcons.shieldAlert
-                      : LucideIcons.shieldCheck,
+                      ? DshIcons.shieldAlert.data
+                      : DshIcons.shieldCheck.data,
                   size: 16,
                 ),
                 const SizedBox(width: 10),
-                Text(option.value, style: const TextStyle(fontSize: 14)),
+                Text(
+                  option.value,
+                  style: const TextStyle(fontSize: DshTypography.sizeBody),
+                ),
                 const SizedBox(width: 16),
                 if (value == option.key)
-                  const DshGlyph(LucideIcons.check, size: 14),
+                  DshGlyph(DshIcons.check.data, size: 14),
               ],
             ),
           ),
@@ -109,7 +115,9 @@ class _PermissionControlState extends State<PermissionControl> {
       if (!current()) return;
       final outcome = object(result['result']);
       if (outcome['kind'] != 'success') {
-        throw StateError('${outcome['text'] ?? '访问模式未被接受'}');
+        throw StateError(
+          '${outcome['text'] ?? DshConversationZh.accessModeRejected}',
+        );
       }
       accepted = true;
       final version = c.projectionWindow.version;
@@ -126,9 +134,21 @@ class _PermissionControlState extends State<PermissionControl> {
       c.projectionChanges.value++;
     } catch (e) {
       if (mounted && current()) {
-        setState(() => error = '${accepted ? '模式已提交，状态刷新失败：' : ''}$e');
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error!)));
+        final described = DshError.describe(e);
+        setState(
+          () => error = accepted
+              ? DshError(
+                  title: described.title,
+                  message:
+                      '${DshConversationZh.accessRefreshFailedPrefix}\n${described.message}',
+                  details: described.details,
+                  code: described.code,
+                  cancelled: described.cancelled,
+                  outcomeUnknown: described.outcomeUnknown,
+                )
+              : e,
+        );
+        showDshError(context, error!);
       }
     } finally {
       scope.cancel();
@@ -147,16 +167,16 @@ class _PermissionControlState extends State<PermissionControl> {
           .where((o) => o['value'] == value)
           .firstOrNull;
       final description = value == 'workspace-write'
-          ? '工作区内可写，更大范围的操作需要审批'
+          ? DshConversationZh.workspaceAccessHint
           : value == 'danger-full-access'
-          ? '完整文件访问，无需审批提示'
+          ? DshConversationZh.fullAccessHint
           : '${option?['description'] ?? ''}';
       return ComposerAction(
         value == 'read-only'
-            ? LucideIcons.eye
+            ? DshIcons.eye.data
             : value == 'danger-full-access'
-            ? LucideIcons.shieldAlert
-            : LucideIcons.shieldCheck,
+            ? DshIcons.shieldAlert.data
+            : DshIcons.shieldCheck.data,
         key: anchor,
         color: value == 'danger-full-access' || value == 'full-access'
             ? const Color(0xfff97316)
@@ -169,11 +189,14 @@ class _PermissionControlState extends State<PermissionControl> {
             ].contains(value)
             ? 'assets/icons/web-permission-$value.svg'
             : null,
-        label:
-            error ??
-            (busy
-                ? '正在切换访问模式…'
-                : '访问模式，当前：${c.permissionChoices[value] ?? permissionName(value)}${description.isEmpty ? '' : ' · $description'}'),
+        label: error != null
+            ? DshError.describe(error!).message
+            : (busy
+                  ? DshConversationZh.changingAccessMode
+                  : DshConversationZh.accessModeLabel(
+                      mode: c.permissionChoices[value] ?? permissionName(value),
+                      details: description.isEmpty ? '' : ' · $description',
+                    )),
         onPressed:
             busy ||
                 !c.connected ||
@@ -196,23 +219,21 @@ class _FullAccessConfirmationState extends State<FullAccessConfirmation> {
   bool acknowledged = false;
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('确认启用 Full access？'),
+    title: const Text(DshConversationZh.confirmFullAccess),
     content: SizedBox(
       width: 440,
       child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              '启用 Full access 后，agent 将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。',
-            ),
+            const Text(DshConversationZh.fullAccessRiskHint),
             const SizedBox(height: 16),
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
               value: acknowledged,
               onChanged: (v) => setState(() => acknowledged = v == true),
-              title: const Text('我已了解风险，并愿意继续'),
+              title: const Text(DshConversationZh.acknowledgeFullAccess),
             ),
           ],
         ),
@@ -221,12 +242,12 @@ class _FullAccessConfirmationState extends State<FullAccessConfirmation> {
     actions: [
       DshButton(
         onPressed: () => Navigator.pop(context, false),
-        child: const Text('取消'),
+        child: const Text(DshConversationZh.cancel),
       ),
       DshButton(
         primary: true,
         onPressed: acknowledged ? () => Navigator.pop(context, true) : null,
-        child: const Text('启用 Full access'),
+        child: const Text(DshConversationZh.enableFullAccess),
       ),
     ],
   );

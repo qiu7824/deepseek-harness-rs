@@ -83,7 +83,9 @@ void main() {
         ];
       await tester.pumpWidget(ShadApp(home: SettingsShell(controller: c)));
       await tester.pumpAndSettle();
-      expect(find.byType(TextField), findsNothing);
+      expect(find.byKey(const Key('settings-page-search')), findsOneWidget);
+      // The page search is the only free-text field; presets use named choices.
+      expect(find.byType(TextField), findsOneWidget);
       expect(find.text('空白模式'), findsOneWidget);
       expect(find.text('中文'), findsOneWidget);
       expect(find.text('preference'), findsNothing);
@@ -139,7 +141,8 @@ void main() {
       expect(find.text('归档会话'), findsOneWidget);
       expect(find.text('恢复'), findsOneWidget);
       expect(find.text('删除'), findsOneWidget);
-      expect(find.byType(TextField), findsNothing);
+      expect(find.byKey(const Key('settings-page-search')), findsOneWidget);
+      expect(find.byType(TextField), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();

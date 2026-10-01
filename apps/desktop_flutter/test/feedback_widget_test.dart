@@ -2,6 +2,9 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/features/conversation/feedback_controller.dart';
 import 'package:dsh_desktop/features/conversation/feedback_actions.dart';
 import 'package:dsh_desktop/features/shell.dart';
+import 'package:dsh_desktop/design/error.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
+import 'package:dsh_desktop/l10n/zh.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -27,8 +30,20 @@ void main() {
       await tester.tap(find.text('确认评价'));
       await tester.pumpAndSettle();
       expect(c.item('m'), isNull);
-      expect(find.textContaining('session-not-found'), findsOneWidget);
+      expect(find.text(DshConversationZh.sessionUnavailable), findsOneWidget);
+      expect(find.textContaining('session-not-found'), findsNothing);
       expect(find.text('保留说明'), findsOneWidget);
+      await tester.tap(find.text(DshZh.details));
+      await tester.pumpAndSettle();
+      final details = tester.widget<SelectableText>(
+        find.descendant(
+          of: find.byType(DshErrorView),
+          matching: find.byType(SelectableText),
+        ),
+      );
+      expect(details.data, contains('session-not-found'));
+      expect(find.text('保留说明'), findsOneWidget);
+      expect(c.item('m'), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
       await fake.close();

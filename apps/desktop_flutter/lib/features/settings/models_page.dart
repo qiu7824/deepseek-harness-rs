@@ -1,18 +1,25 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+import '../../l10n/conversation_zh.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:dsh_client/dsh_client.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../design/primitives.dart';
+import '../../design/loading.dart';
 import '../../design/select.dart';
+import '../../design/motion.dart';
 import 'account_login.dart';
 import 'model_editor_widgets.dart';
 import 'task_models_page.dart';
 export 'task_models_page.dart' show TaskModelsPage;
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class _DashedBorderPainter extends CustomPainter {
   const _DashedBorderPainter(this.color);
@@ -58,14 +65,15 @@ class ModelsPage extends StatefulWidget {
 
 class _ModelsPageState extends State<ModelsPage> {
   DshClient? boundApi;
-  DshClient get api => boundApi ?? (throw StateError('请先连接服务'));
+  DshClient get api =>
+      boundApi ?? (throw StateError(DshSettingsZh.connectFirst));
   bool get staleConnection =>
       boundApi == null || widget.controller.client != boundApi;
   void connectionChanged() {
     if (staleConnection && mounted) {
       scope.cancel();
       keyInput.clear();
-      setState(() => error = '连接已变化，请关闭后重新打开模型设置。');
+      setState(() => error = DshSettingsZh.modelConnectionChanged);
     }
   }
 
@@ -175,7 +183,7 @@ class _ModelsPageState extends State<ModelsPage> {
           }
         } catch (e) {
           if (!mounted || staleConnection) return;
-          notice = '凭据状态暂不可用：$e';
+          notice = DshSettingsZh.credentialsUnavailable(detail: e);
         }
       }
       provider ??= configuredApiProviders.firstOrNull;
@@ -237,7 +245,9 @@ class _ModelsPageState extends State<ModelsPage> {
         c.emit();
       }
     } catch (e) {
-      if (mounted) setState(() => notice = '设置已保存，模型列表刷新失败：$e');
+      if (mounted) {
+        setState(() => notice = DshSettingsZh.modelsRefreshFailed(detail: e));
+      }
     }
   }
 
@@ -251,9 +261,9 @@ class _ModelsPageState extends State<ModelsPage> {
         dirty &&
         !await confirmAction(
           context,
-          '切换连接',
-          '模型修改尚未保存，切换将放弃修改。',
-          action: '放弃并切换',
+          DshSettingsZh.switchConnection,
+          DshSettingsZh.discardModelHint,
+          action: DshSettingsZh.discardAndSwitch,
         )) {
       return;
     }
@@ -341,7 +351,7 @@ class _ModelsPageState extends State<ModelsPage> {
       connectionDirty = false;
       editingConnection = false;
       addingProvider = false;
-      notice = '连接已保存';
+      notice = DshSettingsZh.connectionSaved;
       if (connectionName.text.trim().isNotEmpty &&
           p['settingsNs'] == 'llm-pi-ai') {
         p['displayName'] = connectionName.text.trim();
@@ -364,7 +374,7 @@ class _ModelsPageState extends State<ModelsPage> {
     if (invalidFields.isNotEmpty ||
         ids.any((id) => id.isEmpty || existing.contains(id)) ||
         ids.toSet().length != ids.length) {
-      setState(() => error = '请修正模型 ID 或容量；容量支持正整数或 K/M。');
+      setState(() => error = DshSettingsZh.modelFieldsInvalid);
       return;
     }
     await run(() async {
@@ -377,7 +387,7 @@ class _ModelsPageState extends State<ModelsPage> {
       if (!mounted || staleConnection) return;
       if (latest['accountScope'] != old['accountScope'] ||
           latest['namespaceRevision'] != old['namespaceRevision']) {
-        throw StateError('连接配置已在其他窗口改变，请先刷新并核对草稿。');
+        throw StateError(DshSettingsZh.connectionConflict);
       }
       final prefix = (latest['preferencePath'] as List).cast<String>();
       final ops = <Json>[];
@@ -435,14 +445,16 @@ class _ModelsPageState extends State<ModelsPage> {
         namespaces[latest['settingsNs'] as String] = updated;
       }
       await selectProvider(provider!, force: true, preserveConnection: true);
-      notice = '模型设置已保存';
+      notice = DshSettingsZh.modelsSaved;
       await settingsSaved();
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (staleConnection) return const DshEmpty('连接已变化，请关闭后重新打开模型设置。');
+    if (staleConnection) {
+      return const DshEmpty(DshSettingsZh.modelConnectionChanged);
+    }
     if (lastReportedDirty != dirty) {
       lastReportedDirty = dirty;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -454,13 +466,19 @@ class _ModelsPageState extends State<ModelsPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          '模型',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+          DshSettingsZh.models,
+          style: TextStyle(
+            fontSize: DshTypography.sizeComposer,
+            fontWeight: FontWeight.w500,
+          ),
         ),
         const SizedBox(height: 12),
         Text(
-          '选择连接，管理模型显示与参数；订阅登录在账号页管理。',
-          style: TextStyle(fontSize: 12, color: colors.muted),
+          DshSettingsZh.modelsDescription,
+          style: TextStyle(
+            fontSize: DshTypography.sizeCaption,
+            color: colors.muted,
+          ),
         ),
         const SizedBox(height: 12),
         Wrap(
@@ -468,13 +486,13 @@ class _ModelsPageState extends State<ModelsPage> {
           runSpacing: 6,
           children: [
             for (final item in {
-              'api': 'API 连接',
-              'accounts': '订阅账号',
-              'tasks': '任务分工',
+              'api': DshSettingsZh.apiConnections,
+              'accounts': DshSettingsZh.subscriptionAccounts,
+              'tasks': DshSettingsZh.taskRoles,
             }.entries)
               DshButton(
                 height: 38,
-                fontSize: 14,
+                fontSize: DshTypography.sizeBody,
                 onPressed: busy ? null : () => switchTab(item.key),
                 active: tab == item.key,
                 child: Text(item.value),
@@ -485,26 +503,32 @@ class _ModelsPageState extends State<ModelsPage> {
         if (error != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
-            child: Text(
-              error!,
-              style: const TextStyle(color: Colors.red, fontSize: 12),
-            ),
+            child: DshErrorView(error: error!),
           ),
         if (notice != null)
           Text(
             notice!,
-            style: const TextStyle(color: Colors.green, fontSize: 12),
+            style: TextStyle(
+              color: DshTokens.of(context).success.foreground,
+              fontSize: DshTypography.sizeCaption,
+            ),
           ),
         if (busy) const LinearProgressIndicator(minHeight: 2),
         Expanded(
-          child: switch (tab) {
-            'accounts' => accountsView(),
-            'tasks' => TaskModelsPage(
-              api: api,
-              namespace: namespaces['task-models'],
-            ),
-            _ => apiView(),
-          },
+          child: busy && providers.isEmpty && namespaces.isEmpty
+              ? DshListSkeleton(
+                  label: DshConversationZh.loadingList(
+                    name: DshSettingsZh.models,
+                  ),
+                )
+              : switch (tab) {
+                  'accounts' => accountsView(),
+                  'tasks' => TaskModelsPage(
+                    api: api,
+                    namespace: namespaces['task-models'],
+                  ),
+                  _ => apiView(),
+                },
         ),
       ],
     );
@@ -514,9 +538,9 @@ class _ModelsPageState extends State<ModelsPage> {
     if (dirty &&
         !await confirmAction(
           context,
-          '未保存的模型修改',
-          '切换页面将放弃模型目录草稿。',
-          action: '放弃修改',
+          DshSettingsZh.unsavedModels,
+          DshSettingsZh.discardCatalogHint,
+          action: DshSettingsZh.discardChanges,
         )) {
       return;
     }
@@ -568,9 +592,12 @@ class _ModelsPageState extends State<ModelsPage> {
       foregroundPainter: _DashedBorderPainter(DshColors(context).border),
       child: DshButton(
         height: 44,
-        icon: LucideIcons.plus,
+        icon: DshIcons.plus.data,
         onPressed: onPressed,
-        child: Text(title, style: const TextStyle(fontSize: 14)),
+        child: Text(
+          title,
+          style: const TextStyle(fontSize: DshTypography.sizeBody),
+        ),
       ),
     ),
   );
@@ -580,9 +607,9 @@ class _ModelsPageState extends State<ModelsPage> {
     if (model['_draftId'] == null &&
         !await confirmAction(
           context,
-          '删除模型',
-          '移除 ${model['name'] ?? model['id']}，保留历史记录。',
-          action: '移除',
+          DshSettingsZh.deleteModel,
+          DshSettingsZh.removeModelHint(name: model['name'] ?? model['id']),
+          action: DshSettingsZh.remove,
         )) {
       return;
     }
@@ -632,9 +659,12 @@ class _ModelsPageState extends State<ModelsPage> {
         );
     if (!await confirmAction(
       context,
-      '删除 API 连接',
-      '删除 ${entry['displayName'] ?? entry['provider']} 的连接配置${removeKey ? '和此连接保存的 API 密钥' : ''}，保留会话记录。',
-      action: '删除连接',
+      DshSettingsZh.deleteApiConnection,
+      DshSettingsZh.deleteConnectionHint(
+        name: entry['displayName'] ?? entry['provider'],
+        keyEffect: removeKey ? DshSettingsZh.deleteApiKeyAlso : '',
+      ),
+      action: DshSettingsZh.deleteConnection,
     )) {
       return;
     }
@@ -670,17 +700,20 @@ class _ModelsPageState extends State<ModelsPage> {
     children: [
       const SizedBox(height: 14),
       if (profile(provider!)['authProvider'] != null)
-        const Text('此连接由订阅账号管理，请在订阅账号页续期或退出。')
+        const Text(DshSettingsZh.subscriptionManaged)
       else ...[
-        const Text('API 密钥', style: TextStyle(fontSize: 12)),
+        const Text(
+          DshSettingsZh.apiKey,
+          style: TextStyle(fontSize: DshTypography.sizeCaption),
+        ),
         const SizedBox(height: 6),
         DshField(
           controller: keyInput,
           hint:
               credentials[profile(provider!)['apiKeyEnv']]?['configured'] ==
                   true
-              ? '已配置——输入新值可替换'
-              : '输入 API 密钥',
+              ? DshSettingsZh.replaceApiKey
+              : DshSettingsZh.apiKeyHint,
           secret: true,
           enabled: !busy,
           onChanged: (_) => setState(() => connectionDirty = true),
@@ -695,12 +728,15 @@ class _ModelsPageState extends State<ModelsPage> {
               children: [
                 DshGlyph(
                   advancedOpen
-                      ? LucideIcons.chevronDown
-                      : LucideIcons.chevronRight,
+                      ? DshIcons.chevronDown.data
+                      : DshIcons.chevronRight.data,
                   size: 12,
                 ),
                 const SizedBox(width: 4),
-                const Text('自定义设置', style: TextStyle(fontSize: 12)),
+                const Text(
+                  DshSettingsZh.customSettings,
+                  style: TextStyle(fontSize: DshTypography.sizeCaption),
+                ),
               ],
             ),
           ),
@@ -710,7 +746,7 @@ class _ModelsPageState extends State<ModelsPage> {
           if (provider!['settingsNs'] == 'llm-pi-ai') ...[
             DshField(
               controller: connectionName,
-              hint: '显示名称',
+              hint: DshSettingsZh.displayName,
               enabled: !busy,
               onChanged: (_) => setState(() => connectionDirty = true),
             ),
@@ -754,12 +790,12 @@ class _ModelsPageState extends State<ModelsPage> {
                         addingProvider = false;
                       });
                     },
-              child: const Text('取消'),
+              child: const Text(DshZh.cancel),
             ),
             DshButton(
               primary: true,
               onPressed: busy ? null : saveConnection,
-              child: const Text('保存'),
+              child: const Text(DshZh.save),
             ),
           ],
         ),
@@ -771,9 +807,9 @@ class _ModelsPageState extends State<ModelsPage> {
     if (dirty &&
         !await confirmAction(
           context,
-          '未保存的修改',
-          '添加连接前是否放弃当前模型和连接草稿？',
-          action: '放弃并继续',
+          DshSettingsZh.unsavedChanges,
+          DshSettingsZh.discardConnectionHint,
+          action: DshSettingsZh.discardAndContinue,
         )) {
       return;
     }
@@ -841,7 +877,7 @@ class _ModelsPageState extends State<ModelsPage> {
             Expanded(
               child: DshField(
                 controller: providerSearch,
-                hint: '搜索连接或模型 ID',
+                hint: DshSettingsZh.searchModels,
                 onChanged: (_) => setState(() {}),
               ),
             ),
@@ -851,14 +887,17 @@ class _ModelsPageState extends State<ModelsPage> {
               outline: true,
               active: needsAttention,
               onPressed: () => setState(() => needsAttention = !needsAttention),
-              child: const Text('仅待修复'),
+              child: const Text(DshSettingsZh.repairOnly),
             ),
           ],
         ),
         if (matches.isEmpty)
           const Padding(
             padding: EdgeInsets.only(top: 12),
-            child: Text('没有匹配的提供方', style: TextStyle(fontSize: 12)),
+            child: Text(
+              DshSettingsZh.noProviders,
+              style: TextStyle(fontSize: DshTypography.sizeCaption),
+            ),
           ),
         const SizedBox(height: 12),
         Wrap(
@@ -875,7 +914,7 @@ class _ModelsPageState extends State<ModelsPage> {
                 onPressed: busy ? null : () => run(() => selectProvider(p)),
                 child: Text(
                   '${p['displayName'] ?? p['provider']}',
-                  style: const TextStyle(fontSize: 13),
+                  style: const TextStyle(fontSize: DshTypography.sizeAuxiliary),
                 ),
               ),
           ],
@@ -903,7 +942,7 @@ class _ModelsPageState extends State<ModelsPage> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                fontSize: 14,
+                                fontSize: DshTypography.sizeBody,
                                 fontWeight: FontWeight.w500,
                               ),
                             ),
@@ -921,8 +960,8 @@ class _ModelsPageState extends State<ModelsPage> {
                                         )['apiKeyEnv']],
                                       )['configured'] ==
                                       true
-                                  ? '已配置 API 密钥'
-                                  : '缺少 API 密钥',
+                                  ? DshSettingsZh.apiKeyConfigured
+                                  : DshSettingsZh.apiKeyMissing,
                               child: Container(
                                 width: 8,
                                 height: 8,
@@ -934,8 +973,8 @@ class _ModelsPageState extends State<ModelsPage> {
                                             )['apiKeyEnv']],
                                           )['configured'] ==
                                           true
-                                      ? const Color(0xff22c55e)
-                                      : const Color(0xffec1313),
+                                      ? DshTokens.of(context).success.foreground
+                                      : DshTokens.of(context).error.foreground,
                                   shape: BoxShape.circle,
                                 ),
                               ),
@@ -952,7 +991,7 @@ class _ModelsPageState extends State<ModelsPage> {
                           : () => setState(
                               () => editingConnection = !editingConnection,
                             ),
-                      child: const Text('编辑连接'),
+                      child: const Text(DshSettingsZh.editConnection),
                     ),
                     if (removableProvider(provider!)) ...[
                       const SizedBox(width: 8),
@@ -960,7 +999,7 @@ class _ModelsPageState extends State<ModelsPage> {
                         outline: true,
                         destructive: true,
                         onPressed: busy ? null : removeConnection,
-                        child: const Text('删除连接'),
+                        child: const Text(DshSettingsZh.deleteConnection),
                       ),
                     ],
                   ],
@@ -971,8 +1010,10 @@ class _ModelsPageState extends State<ModelsPage> {
                   onPressed: () =>
                       setState(() => modelsExpanded = !modelsExpanded),
                   child: Text(
-                    modelsExpanded ? '收起模型' : '展开模型',
-                    style: const TextStyle(fontSize: 12),
+                    modelsExpanded
+                        ? DshSettingsZh.collapseModels
+                        : DshSettingsZh.expandModels,
+                    style: const TextStyle(fontSize: DshTypography.sizeCaption),
                   ),
                 ),
                 if (modelsExpanded) ...[
@@ -983,8 +1024,16 @@ class _ModelsPageState extends State<ModelsPage> {
                     children: [
                       Expanded(
                         child: Text(
-                          '模型目录 · ${all.where((m) => m['enabled'] != false).length} / ${all.length} 显示',
-                          style: TextStyle(fontSize: 12, color: colors.muted),
+                          DshSettingsZh.modelCatalogCount(
+                            enabled: all
+                                .where((m) => m['enabled'] != false)
+                                .length,
+                            total: all.length,
+                          ),
+                          style: TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                            color: colors.muted,
+                          ),
                         ),
                       ),
                       DshButton(
@@ -998,8 +1047,8 @@ class _ModelsPageState extends State<ModelsPage> {
                                 ),
                               ),
                         child: const Text(
-                          '刷新目录',
-                          style: TextStyle(fontSize: 12),
+                          DshSettingsZh.refreshCatalog,
+                          style: TextStyle(fontSize: DshTypography.sizeCaption),
                         ),
                       ),
                     ],
@@ -1015,7 +1064,7 @@ class _ModelsPageState extends State<ModelsPage> {
                           width: (constraints.maxWidth * .54).clamp(180, 420),
                           child: DshField(
                             controller: search,
-                            hint: '搜索模型名称或 ID',
+                            hint: DshSettingsZh.searchModelNames,
                             onChanged: (_) => setState(() => modelLimit = 100),
                           ),
                         ),
@@ -1024,9 +1073,9 @@ class _ModelsPageState extends State<ModelsPage> {
                           outline: true,
                           maxWidth: 100,
                           options: const {
-                            'all': '全部模型',
-                            'shown': '显示',
-                            'hidden': '隐藏',
+                            'all': DshSettingsZh.allModels,
+                            'shown': DshSettingsZh.show,
+                            'hidden': DshSettingsZh.hide,
                           },
                           onChanged: (v) => setState(() => visibility = v),
                         ),
@@ -1043,8 +1092,12 @@ class _ModelsPageState extends State<ModelsPage> {
                                     }
                                   },
                             child: Text(
-                              enabled ? '显示筛选结果' : '隐藏筛选结果',
-                              style: const TextStyle(fontSize: 14),
+                              enabled
+                                  ? DshSettingsZh.showFiltered
+                                  : DshSettingsZh.hideFiltered,
+                              style: const TextStyle(
+                                fontSize: DshTypography.sizeBody,
+                              ),
                             ),
                           ),
                       ],
@@ -1052,9 +1105,9 @@ class _ModelsPageState extends State<ModelsPage> {
                   ),
                   const SizedBox(height: 16),
                   if (catalog == null)
-                    const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Text('正在读取模型目录…'),
+                    const DshListSkeleton(
+                      rows: 3,
+                      label: DshSettingsZh.loadingModels,
                     )
                   else
                     ConstrainedBox(
@@ -1093,17 +1146,24 @@ class _ModelsPageState extends State<ModelsPage> {
                       ),
                     ),
                   if (shown.isEmpty && catalog != null)
-                    const Text('没有匹配的模型', style: TextStyle(fontSize: 12)),
+                    const Text(
+                      DshSettingsZh.noModels,
+                      style: TextStyle(fontSize: DshTypography.sizeCaption),
+                    ),
                   if (rows.length > shown.length)
                     DshButton(
                       onPressed: () => setState(() {
                         modelsExpanded = true;
                         modelLimit += 100;
                       }),
-                      child: Text('还有 ${rows.length - shown.length} 个模型'),
+                      child: Text(
+                        DshSettingsZh.moreModels(
+                          count: rows.length - shown.length,
+                        ),
+                      ),
                     ),
                   DshButton(
-                    icon: LucideIcons.plus,
+                    icon: DshIcons.plus.data,
                     height: 30,
                     onPressed: busy || catalog == null
                         ? null
@@ -1114,38 +1174,50 @@ class _ModelsPageState extends State<ModelsPage> {
                               'enabled': true,
                             }),
                           ),
-                    child: const Text('添加手动模型', style: TextStyle(fontSize: 12)),
+                    child: const Text(
+                      DshSettingsZh.addManualModel,
+                      style: TextStyle(fontSize: DshTypography.sizeCaption),
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    '显示开关仅控制模型选择列表；保存后生效，不会删除会话或更改运行中的任务。',
-                    style: TextStyle(fontSize: 12, color: colors.muted),
+                    DshSettingsZh.visibilityHint,
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: colors.muted,
+                    ),
                   ),
                   if (invalidFields.isNotEmpty)
-                    const Text(
-                      '容量必须为正整数，可使用 K/M。',
-                      style: TextStyle(fontSize: 12, color: Colors.red),
+                    Text(
+                      DshSettingsZh.invalidCapacity,
+                      style: TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        color: DshTokens.of(context).error.foreground,
+                      ),
                     ),
                   if (modelDirty)
                     Wrap(
                       spacing: 8,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        const Text('模型有未保存修改', style: TextStyle(fontSize: 12)),
+                        const Text(
+                          DshSettingsZh.dirtyModels,
+                          style: TextStyle(fontSize: DshTypography.sizeCaption),
+                        ),
                         DshButton(
                           onPressed: busy
                               ? null
                               : () => run(
                                   () => selectProvider(provider!, force: true),
                                 ),
-                          child: const Text('取消'),
+                          child: const Text(DshZh.cancel),
                         ),
                         DshButton(
                           primary: true,
                           onPressed: busy || invalidFields.isNotEmpty
                               ? null
                               : saveModels,
-                          child: const Text('保存模型'),
+                          child: const Text(DshSettingsZh.saveModels),
                         ),
                       ],
                     ),
@@ -1168,7 +1240,7 @@ class _ModelsPageState extends State<ModelsPage> {
                               Text(
                                 '${provider!['displayName'] ?? provider!['provider']}',
                                 style: const TextStyle(
-                                  fontSize: 13,
+                                  fontSize: DshTypography.sizeAuxiliary,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -1176,7 +1248,7 @@ class _ModelsPageState extends State<ModelsPage> {
                               Text(
                                 '${provider!['provider']}',
                                 style: TextStyle(
-                                  fontSize: 12,
+                                  fontSize: DshTypography.sizeCaption,
                                   color: colors.muted,
                                 ),
                               ),
@@ -1202,7 +1274,7 @@ class _ModelsPageState extends State<ModelsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('提供方'),
+                const Text(DshSettingsZh.provider),
                 const SizedBox(height: 8),
                 DshSelect<String>(
                   value: '${provider?['provider'] ?? ''}',
@@ -1256,13 +1328,13 @@ class _ModelsPageState extends State<ModelsPage> {
           LayoutBuilder(
             builder: (context, constraints) {
               final first = addProviderAction(
-                '添加提供方',
+                DshSettingsZh.addModelProvider,
                 busy || addableProviders.isEmpty
                     ? null
                     : () => openCreation(false),
               );
               final second = addProviderAction(
-                '添加自定义提供方',
+                DshSettingsZh.addProvider,
                 busy || namespaces['llm-pi-ai'] == null
                     ? null
                     : () => openCreation(true),
@@ -1300,27 +1372,33 @@ class _ModelsPageState extends State<ModelsPage> {
             children: [
               Row(
                 children: [
-                  const Text('账号登录', style: TextStyle(fontSize: 14)),
+                  const Text(
+                    DshSettingsZh.accountLogin,
+                    style: TextStyle(fontSize: DshTypography.sizeBody),
+                  ),
                   const SizedBox(width: 8),
                   Text(
                     '${accounts.where((a) => a['signedIn'] == true).length} / ${accounts.length}',
-                    style: TextStyle(fontSize: 12, color: colors.muted),
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: colors.muted,
+                    ),
                   ),
                   const SizedBox(width: 12),
                   DshButton(
                     outline: true,
                     height: 32,
-                    fontSize: 12,
+                    fontSize: DshTypography.sizeCaption,
                     onPressed: busy ? null : () => run(refreshAccounts),
-                    child: const Text('刷新状态'),
+                    child: const Text(DshSettingsZh.refreshStatus),
                   ),
                 ],
               ),
               const SizedBox(height: 12),
               Text(
-                '使用供应商订阅登录，凭据保存在本机；支持续期的供应商会自动续期。',
+                DshSettingsZh.subscriptionLoginHint,
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: DshTypography.sizeCaption,
                   height: 1.6,
                   color: colors.muted,
                 ),
@@ -1344,11 +1422,9 @@ class _ModelsPageState extends State<ModelsPage> {
                         turns: expandedAccounts.contains('${account['id']}')
                             ? .25
                             : 0,
-                        duration: const Duration(milliseconds: 120),
-                        child: const DshGlyph(
-                          LucideIcons.chevronRight,
-                          size: 16,
-                        ),
+                        duration: DshMotion.duration(context, DshMotion.quick),
+                        curve: DshMotion.curve,
+                        child: DshGlyph(DshIcons.chevronRight.data, size: 16),
                       ),
                       onExpansionChanged: (open) => setState(() {
                         if (open) {
@@ -1365,7 +1441,7 @@ class _ModelsPageState extends State<ModelsPage> {
                             child: Text(
                               '${account['name'] ?? account['id']}',
                               style: const TextStyle(
-                                fontSize: 14,
+                                fontSize: DshTypography.sizeBody,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -1381,9 +1457,9 @@ class _ModelsPageState extends State<ModelsPage> {
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              '${account['signedIn'] == true ? '已连接' : '未连接'}${account['scope'] == 'subagent' ? ' · 子智能体' : ''}',
+                              '${account['signedIn'] == true ? DshSettingsZh.connected : DshSettingsZh.disconnected}${account['scope'] == 'subagent' ? DshSettingsZh.subagentSuffix : ''}',
                               style: TextStyle(
-                                fontSize: 11,
+                                fontSize: DshTypography.sizeCaption,
                                 color: colors.muted,
                               ),
                             ),
@@ -1394,9 +1470,9 @@ class _ModelsPageState extends State<ModelsPage> {
                         if (account['error'] != null)
                           Text(
                             '${account['error']}',
-                            style: const TextStyle(
-                              color: Colors.red,
-                              fontSize: 12,
+                            style: TextStyle(
+                              color: DshTokens.of(context).error.foreground,
+                              fontSize: DshTypography.sizeCaption,
                             ),
                           ),
                         Wrap(
@@ -1406,7 +1482,7 @@ class _ModelsPageState extends State<ModelsPage> {
                             DshButton(
                               outline: true,
                               height: 32,
-                              fontSize: 13,
+                              fontSize: DshTypography.sizeAuxiliary,
                               onPressed: busy || account['installed'] == false
                                   ? null
                                   : account['signedIn'] == true
@@ -1430,9 +1506,9 @@ class _ModelsPageState extends State<ModelsPage> {
                               child: Text(
                                 account['signedIn'] == true
                                     ? account['scope'] == 'subagent'
-                                          ? '刷新'
-                                          : '重新连接'
-                                    : '登录',
+                                          ? DshSettingsZh.refresh
+                                          : DshSettingsZh.reconnect
+                                    : DshSettingsZh.login,
                               ),
                             ),
                             if (account['signedIn'] == true &&
@@ -1440,7 +1516,7 @@ class _ModelsPageState extends State<ModelsPage> {
                               DshButton(
                                 outline: true,
                                 height: 32,
-                                fontSize: 13,
+                                fontSize: DshTypography.sizeAuxiliary,
                                 onPressed: busy || account['installed'] == false
                                     ? null
                                     : () => showDialog<void>(
@@ -1451,17 +1527,19 @@ class _ModelsPageState extends State<ModelsPage> {
                                           onComplete: refreshAccountState,
                                         ),
                                       ),
-                                child: const Text('登录另一个账号'),
+                                child: const Text(
+                                  DshSettingsZh.loginAnotherAccount,
+                                ),
                               ),
                               DshButton(
                                 outline: true,
                                 destructive: true,
                                 height: 32,
-                                fontSize: 13,
+                                fontSize: DshTypography.sizeAuxiliary,
                                 onPressed: busy
                                     ? null
                                     : () => removeAccount(account),
-                                child: const Text('退出登录'),
+                                child: const Text(DshSettingsZh.signOut),
                               ),
                             ],
                             if (account['installed'] == false &&
@@ -1479,7 +1557,7 @@ class _ModelsPageState extends State<ModelsPage> {
                                     );
                                   }
                                 },
-                                child: const Text('安装官方客户端'),
+                                child: const Text(DshSettingsZh.installClient),
                               ),
                           ],
                         ),
@@ -1490,12 +1568,16 @@ class _ModelsPageState extends State<ModelsPage> {
                               dense: true,
                               title: Text(
                                 '${saved['label'] ?? saved['accountId'] ?? saved['accountScope']}',
-                                style: const TextStyle(fontSize: 13),
+                                style: const TextStyle(
+                                  fontSize: DshTypography.sizeAuxiliary,
+                                ),
                               ),
                               subtitle: saved['needsLogin'] == true
                                   ? const Text(
-                                      '需要重新登录',
-                                      style: TextStyle(fontSize: 12),
+                                      DshSettingsZh.loginRequired,
+                                      style: TextStyle(
+                                        fontSize: DshTypography.sizeCaption,
+                                      ),
                                     )
                                   : null,
                               trailing: Row(
@@ -1503,7 +1585,7 @@ class _ModelsPageState extends State<ModelsPage> {
                                 children: [
                                   DshButton(
                                     height: 30,
-                                    fontSize: 12,
+                                    fontSize: DshTypography.sizeCaption,
                                     onPressed:
                                         busy ||
                                             saved['active'] == true ||
@@ -1530,12 +1612,14 @@ class _ModelsPageState extends State<ModelsPage> {
                                             await refreshAccountState();
                                           }),
                                     child: Text(
-                                      saved['active'] == true ? '当前账号' : '切换',
+                                      saved['active'] == true
+                                          ? DshSettingsZh.currentAccount
+                                          : DshSettingsZh.switchAccount,
                                     ),
                                   ),
                                   DshIcon(
-                                    LucideIcons.trash2,
-                                    label: '移除账号',
+                                    DshIcons.trash2.data,
+                                    label: DshSettingsZh.removeAccount,
                                     onPressed: busy
                                         ? null
                                         : () => removeAccount(account, saved),
@@ -1598,7 +1682,7 @@ class _ModelsPageState extends State<ModelsPage> {
     await run(() async {
       setState(() {
         notice =
-            '已退出账号；该账号任务已停止，排队内容保留且不会自动继续。'
+            '${DshSettingsZh.accountRemoved}'
             '${completed.warning == null ? '' : ' ${completed.warning}'}';
       });
       await refreshAccountState();
@@ -1669,7 +1753,10 @@ class _AccountLogoutDialogState extends State<AccountLogoutDialog> {
 
   void checkConnection() {
     if (requests.cancelled || !widget.isCurrentConnection()) {
-      throw DshException('connection-changed', '连接已变化，请重新打开账号设置。');
+      throw DshException(
+        'connection-changed',
+        DshSettingsZh.accountConnectionChanged,
+      );
     }
   }
 
@@ -1715,7 +1802,7 @@ class _AccountLogoutDialogState extends State<AccountLogoutDialog> {
       if (mounted) {
         setState(() {
           impact = null;
-          failure = '$error；请重新查询影响并确认后再退出。';
+          failure = DshSettingsZh.logoutRecheckRequired(detail: error);
         });
       }
     } finally {
@@ -1727,7 +1814,7 @@ class _AccountLogoutDialogState extends State<AccountLogoutDialog> {
   Widget build(BuildContext context) => PopScope(
     canPop: !working,
     child: AlertDialog(
-      title: const Text('确认退出账号'),
+      title: const Text(DshSettingsZh.signOutTitle),
       content: SingleChildScrollView(
         child: SizedBox(
           width: 520,
@@ -1739,16 +1826,16 @@ class _AccountLogoutDialogState extends State<AccountLogoutDialog> {
               const SizedBox(height: 12),
               Text(
                 impact != null
-                    ? '退出将停止绑定此账号的 ${impact!.taskCount} 个运行中任务。'
+                    ? DshSettingsZh.logoutImpact(count: impact!.taskCount)
                     : working
-                    ? '正在核对该账号的任务…'
-                    : '影响未知，请重试后再退出。',
+                    ? DshSettingsZh.checkingAccount
+                    : DshSettingsZh.unknownAccountImpact,
               ),
               const SizedBox(height: 12),
-              const Text('排队内容和会话记录保留，任务不会自动继续；API 密钥任务和其他账号的任务不受影响。'),
+              const Text(DshSettingsZh.signOutHint),
               if (failure != null) ...[
                 const SizedBox(height: 12),
-                Text('影响未知，请重试后再退出。 $failure'),
+                Text(DshSettingsZh.unknownLogoutImpact(detail: failure)),
               ],
             ],
           ),
@@ -1758,18 +1845,18 @@ class _AccountLogoutDialogState extends State<AccountLogoutDialog> {
         DshButton(
           outline: true,
           onPressed: working ? null : () => Navigator.of(context).pop(),
-          child: const Text('取消'),
+          child: const Text(DshZh.cancel),
         ),
         if (impact == null)
           DshButton(
             outline: true,
             onPressed: working ? null : readImpact,
-            child: const Text('重试影响查询'),
+            child: const Text(DshSettingsZh.retryAccountImpact),
           ),
         DshButton(
           destructive: true,
           onPressed: working || impact == null ? null : signOut,
-          child: const Text('确认退出此账号'),
+          child: const Text(DshSettingsZh.confirmSignOut),
         ),
       ],
     ),
@@ -1815,7 +1902,11 @@ class _AccountLoginDialogState extends State<AccountLoginDialog> {
       await widget.onComplete();
       if (mounted) Navigator.pop(context);
     } catch (e) {
-      if (mounted) setState(() => refreshError = '账号已连接，但刷新列表失败：$e');
+      if (mounted) {
+        setState(
+          () => refreshError = DshSettingsZh.accountRefreshFailed(detail: e),
+        );
+      }
     }
   }
 
@@ -1828,7 +1919,10 @@ class _AccountLoginDialogState extends State<AccountLoginDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('连接订阅账号', style: TextStyle(fontSize: 17)),
+    title: const Text(
+      DshSettingsZh.connectSubscription,
+      style: TextStyle(fontSize: DshTypography.sizeSectionTitle),
+    ),
     content: SizedBox(
       width: 450,
       child: Column(
@@ -1840,16 +1934,22 @@ class _AccountLoginDialogState extends State<AccountLoginDialog> {
           if (login.attempt != null) ...[
             Text(
               login.cli
-                  ? '请在官方客户端中完成授权；此处会自动同步登录结果。'
-                  : '在系统浏览器中完成授权；登录结果和账号配置由本机服务统一保存。',
-              style: const TextStyle(fontSize: 14, height: 1.6),
+                  ? DshSettingsZh.officialClientLoginHint
+                  : DshSettingsZh.browserLoginHint,
+              style: const TextStyle(
+                fontSize: DshTypography.sizeBody,
+                height: 1.6,
+              ),
             ),
             if (login.attempt!['userCode'] != null)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 20),
                 child: SelectableText(
                   '${login.attempt!['userCode']}',
-                  style: const TextStyle(fontSize: 24, letterSpacing: 3),
+                  style: const TextStyle(
+                    fontSize: DshTypography.sizeHeadline,
+                    letterSpacing: 3,
+                  ),
                 ),
               ),
             const SizedBox(height: 12),
@@ -1865,36 +1965,39 @@ class _AccountLoginDialogState extends State<AccountLoginDialog> {
                             login.authorizationUri!,
                             mode: LaunchMode.externalApplication,
                           )) {
-                            throw StateError('无法打开系统浏览器');
+                            throw StateError(DshSettingsZh.browserUnavailable);
                           }
                         } catch (e) {
                           if (mounted) setState(() => refreshError = '$e');
                         }
                       },
-                child: const Text('打开授权页面'),
+                child: const Text(DshSettingsZh.openAuthorization),
               ),
             if (login.attempt!['userCode'] != null)
               DshButton(
                 onPressed: () => Clipboard.setData(
                   ClipboardData(text: '${login.attempt!['userCode']}'),
                 ),
-                child: const Text('复制验证码'),
+                child: const Text(DshSettingsZh.copyVerificationCode),
               ),
             if (!login.expired && !login.complete)
               const Padding(
                 padding: EdgeInsets.only(top: 12),
-                child: Text('等待授权完成…', style: TextStyle(fontSize: 12)),
+                child: Text(
+                  DshSettingsZh.awaitingAuthorization,
+                  style: TextStyle(fontSize: DshTypography.sizeCaption),
+                ),
               ),
           ],
           if (login.notice != null)
-            Text(login.notice!, style: const TextStyle(fontSize: 12)),
+            Text(
+              login.notice!,
+              style: const TextStyle(fontSize: DshTypography.sizeCaption),
+            ),
           if (login.error != null || refreshError != null)
             Padding(
               padding: const EdgeInsets.only(top: 12),
-              child: Text(
-                refreshError ?? login.error!,
-                style: const TextStyle(color: Colors.red, fontSize: 12),
-              ),
+              child: DshErrorView(error: refreshError ?? login.error!),
             ),
         ],
       ),
@@ -1903,16 +2006,16 @@ class _AccountLoginDialogState extends State<AccountLoginDialog> {
       if (login.error != null && !login.expired && login.attempt != null)
         DshButton(
           onPressed: login.polling ? null : login.poll,
-          child: const Text('重新检查'),
+          child: const Text(DshSettingsZh.checkAgain),
         ),
       if ((login.expired || login.error != null) && !login.complete)
         DshButton(
           onPressed: login.starting || login.polling ? null : login.start,
-          child: const Text('重新登录'),
+          child: const Text(DshSettingsZh.loginAgain),
         ),
       DshButton(
         onPressed: () => Navigator.pop(context),
-        child: Text(login.complete ? '关闭' : '取消'),
+        child: Text(login.complete ? DshSettingsZh.close : DshZh.cancel),
       ),
     ],
   );

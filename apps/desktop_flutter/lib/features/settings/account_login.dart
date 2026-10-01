@@ -1,3 +1,5 @@
+import '../../l10n/zh.dart';
+
 import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
@@ -81,11 +83,13 @@ class AccountLogin extends ChangeNotifier {
         await cancelId(value['attempt']);
         return;
       }
-      if (value['attempt'] is! String) throw StateError('服务未返回有效的登录请求');
+      if (value['attempt'] is! String) {
+        throw StateError(DshSettingsZh.loginRequestInvalid);
+      }
       attempt = value;
       interval = ((value['interval'] as num?)?.toInt() ?? 3).clamp(3, 60);
       if (!cli && authorizationUri == null) {
-        throw StateError('服务未返回有效的 HTTPS 授权地址');
+        throw StateError(DshSettingsZh.loginUrlInvalid);
       }
       schedule();
     } catch (e) {
@@ -113,7 +117,7 @@ class AccountLogin extends ChangeNotifier {
     if (polling || attempt == null || _disposed || complete || expired) return;
     if (attemptExpired) {
       expired = true;
-      error = '授权已过期，请重新登录。';
+      error = DshSettingsZh.loginExpired;
       _timer?.cancel();
       unawaited(cancelId(attempt!['attempt']));
       attempt = null;
@@ -142,13 +146,13 @@ class AccountLogin extends ChangeNotifier {
             60,
           );
           notice = value['retryable'] == true
-              ? '连接暂时中断，正在重试当前登录请求。'
+              ? DshSettingsZh.loginRetrying
               : value['message'] as String?;
           error = null;
           schedule();
         default:
           expired = true;
-          error = '${value['message'] ?? '登录已取消或结束，请重新登录。'}';
+          error = '${value['message'] ?? DshSettingsZh.loginEnded}';
           final old = attempt?['attempt'];
           attempt = null;
           unawaited(cancelId(old));
@@ -156,12 +160,12 @@ class AccountLogin extends ChangeNotifier {
     } catch (e) {
       if (!_disposed && retryableLoginError(e) && !attemptExpired) {
         error = null;
-        notice = '连接暂时中断，正在重试当前登录请求。';
+        notice = DshSettingsZh.loginRetrying;
         interval = interval < 5 ? 5 : interval;
         schedule();
       } else if (!_disposed) {
         expired = true;
-        error = attemptExpired ? '授权已过期，请重新登录。' : '$e';
+        error = attemptExpired ? DshSettingsZh.loginExpired : '$e';
         notice = null;
         final old = attempt?['attempt'];
         attempt = null;

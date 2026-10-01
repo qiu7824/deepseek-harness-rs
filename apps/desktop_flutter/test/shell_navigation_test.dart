@@ -52,7 +52,10 @@ class _Controller extends DesktopController {
   }
 }
 
-Future<_Controller> _mount(WidgetTester tester, {bool collapsed = false}) async {
+Future<_Controller> _mount(
+  WidgetTester tester, {
+  bool collapsed = false,
+}) async {
   await tester.binding.setSurfaceSize(const Size(1280, 800));
   final controller = _Controller()
     ..workspaceId = 'workspace'
@@ -92,13 +95,13 @@ void main() {
       tester,
     ) async {
       await _mount(tester, collapsed: collapsed);
-      await tester.tap(find.byTooltip('定时任务'));
+      await tester.tap(find.byKey(const Key('open-schedule-direct')));
       await tester.pumpAndSettle();
       final tasks = find.byType(schedule.SchedulePage);
       expect(tester.getSize(tasks).width, greaterThan(800));
       expect(tester.getSize(tasks).height, greaterThan(600));
       expect(find.text('新建任务').hitTestable(), findsOneWidget);
-      await tester.tap(find.byTooltip('知识'));
+      await tester.tap(find.byKey(const Key('open-knowledge')));
       await tester.pumpAndSettle();
       final knowledge = find.byType(KnowledgePage);
       expect(tester.getSize(knowledge).width, greaterThan(800));
@@ -117,7 +120,7 @@ void main() {
     tester,
   ) async {
     final controller = await _mount(tester);
-    await tester.tap(find.byTooltip('知识'));
+    await tester.tap(find.byKey(const Key('open-knowledge')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('session-history')));
     await tester.pumpAndSettle();
@@ -131,7 +134,7 @@ void main() {
   testWidgets('new conversation leaves a global page', (tester) async {
     final controller = await _mount(tester);
     controller.workspaceId = null;
-    await tester.tap(find.byTooltip('定时任务'));
+    await tester.tap(find.byKey(const Key('open-schedule-direct')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('new-task')));
     await tester.pumpAndSettle();

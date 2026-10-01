@@ -18,6 +18,12 @@ from verify_release_version import verify_build_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 FLUTTER_REVISION = "6a19cca56475dbfba1478ee68d7bd0c2ef891da1"
+LINUX_APPLICATION_ID = "io.deepseek.harness.dsh_desktop"
+LINUX_DESKTOP_FILES = [
+    "share/applications/" + LINUX_APPLICATION_ID + ".desktop",
+    "share/icons/hicolor/scalable/apps/" + LINUX_APPLICATION_ID + ".svg",
+    "install-desktop-entry.py", "DESKTOP-INTEGRATION.md",
+]
 
 
 def digest(path: Path) -> str:
@@ -68,8 +74,16 @@ def stage(client: Path, core: Path, destination: Path, platform: str, arch: str,
     core_inventory = inventory(core)
     if platform == "windows":
         require(client, ["dsh_desktop.exe", "flutter_windows.dll", "data/app.so", "data/icudtl.dat"])
+        runner = (client / "dsh_desktop.exe").read_bytes()
+        if any(marker.encode("utf-16-le") in runner for marker in (
+            "DeepSeekHarnessFlutterDesktop-QA-", "DeepSeek Harness QA ",
+        )):
+            raise ValueError("test-only Windows runner identity cannot be packaged")
+        if runner.startswith(b"MZ") and "Local\\DeepSeekHarnessFlutterDesktop\0".encode("utf-16-le") not in runner:
+            raise ValueError("Windows runner is missing its production singleton identity")
     elif platform == "linux":
         require(client, ["dsh_desktop", "lib/libflutter_linux_gtk.so", "data/icudtl.dat", "lib/libapp.so"])
+        require(client, LINUX_DESKTOP_FILES)
     else:
         info = plistlib.loads((client / "Contents/Info.plist").read_bytes())
         executable = info.get("CFBundleExecutable")

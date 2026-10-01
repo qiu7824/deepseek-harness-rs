@@ -4,16 +4,18 @@ import 'package:flutter/material.dart';
 import '../../design/primitives.dart';
 import '../../design/typography.dart';
 
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
+
 /// Same level names as the Web model menu (`effort.level.*`).
 const reasoningLevelNames = {
-  'none': '不推理',
-  'off': '关闭',
-  'minimal': '极低',
-  'low': '低',
-  'medium': '中',
-  'high': '高',
-  'xhigh': '极高',
-  'max': '最高',
+  'none': DshConversationZh.reasoningNone,
+  'off': DshConversationZh.close,
+  'minimal': DshConversationZh.reasoningMinimal,
+  'low': DshConversationZh.reasoningLow,
+  'medium': DshConversationZh.reasoningMedium,
+  'high': DshConversationZh.reasoningHigh,
+  'xhigh': DshConversationZh.reasoningExtraHigh,
+  'max': DshConversationZh.reasoningMaximum,
 };
 
 const _aliases = {
@@ -58,14 +60,19 @@ class ReasoningSlider extends StatefulWidget {
 
 class _ReasoningSliderState extends State<ReasoningSlider> {
   double? dragging;
+  bool committing = false;
+  String? failure;
+  int revision = 0;
 
   @override
   void didUpdateWidget(ReasoningSlider oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.value != widget.value ||
+        oldWidget.enabled && !widget.enabled ||
         oldWidget.levels.map((level) => level['id']).join('\u0000') !=
             widget.levels.map((level) => level['id']).join('\u0000')) {
       dragging = null;
+      failure = null;
     }
   }
 
@@ -73,14 +80,38 @@ class _ReasoningSliderState extends State<ReasoningSlider> {
     final index = widget.levels.indexWhere(
       (level) => '${level['id']}' == widget.value,
     );
-    return index < 0 ? 0 : index;
+    return index;
   }
 
-  void commit(int index) {
-    if (!widget.enabled || index < 0 || index >= widget.levels.length) return;
-    setState(() => dragging = null);
-    if (index == selected && widget.value != null) return;
-    widget.onChanged('${widget.levels[index]['id']}');
+  Future<void> commit(int index) async {
+    if (!widget.enabled ||
+        committing ||
+        index < 0 ||
+        index >= widget.levels.length) {
+      return;
+    }
+    if (index == selected) {
+      setState(() => dragging = null);
+      return;
+    }
+    final action = ++revision;
+    final levels = widget.levels.map((level) => level['id']).join('\u0000');
+    setState(() {
+      dragging = null;
+      failure = null;
+      committing = true;
+    });
+    try {
+      await widget.onChanged('${widget.levels[index]['id']}');
+    } catch (error) {
+      if (mounted &&
+          action == revision &&
+          levels == widget.levels.map((level) => level['id']).join('\u0000')) {
+        setState(() => failure = '无法更新推理等级：$error');
+      }
+    } finally {
+      if (mounted && action == revision) setState(() => committing = false);
+    }
   }
 
   @override
@@ -88,7 +119,8 @@ class _ReasoningSliderState extends State<ReasoningSlider> {
     final colors = DshColors(context);
     final levels = widget.levels;
     if (levels.isEmpty) return const SizedBox.shrink();
-    final shown = (dragging?.round() ?? selected).clamp(0, levels.length - 1);
+    final shown = dragging?.round() ?? selected;
+    final enabled = widget.enabled && !committing;
     return Column(
       key: const Key('reasoning-slider'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -96,17 +128,26 @@ class _ReasoningSliderState extends State<ReasoningSlider> {
         Row(
           children: [
             Text(
-              '推理强度',
+              DshConversationZh.reasoningStrength,
               style: DshTypography.caption.copyWith(color: colors.muted),
             ),
             const Spacer(),
             Text(
-              reasoningLevelLabel(levels[shown]),
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              dragging != null
+                  ? '预览：${reasoningLevelLabel(levels[shown])}'
+                  : selected >= 0
+                  ? reasoningLevelLabel(levels[selected])
+                  : widget.value == null
+                  ? '模型默认'
+                  : '${reasoningLevelNames[widget.value] ?? widget.value}（未列出）',
+              style: const TextStyle(
+                fontSize: DshTypography.sizeAuxiliary,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
-        if (levels.length > 1)
+        if (levels.length > 1 && selected >= 0)
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
               trackHeight: 4,
@@ -130,12 +171,10 @@ class _ReasoningSliderState extends State<ReasoningSlider> {
               divisions: levels.length - 1,
               semanticFormatterCallback: (value) =>
                   reasoningLevelLabel(levels[value.round()]),
-              onChanged: widget.enabled
+              onChanged: enabled
                   ? (value) => setState(() => dragging = value)
                   : null,
-              onChangeEnd: widget.enabled
-                  ? (value) => commit(value.round())
-                  : null,
+              onChangeEnd: enabled ? (value) => commit(value.round()) : null,
             ),
           ),
         Row(
@@ -145,7 +184,7 @@ class _ReasoningSliderState extends State<ReasoningSlider> {
                 child: InkWell(
                   key: ValueKey('reasoning-level-${level['id']}'),
                   borderRadius: BorderRadius.circular(6),
-                  onTap: widget.enabled ? () => commit(index) : null,
+                  onTap: enabled ? () => commit(index) : null,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Text(
@@ -160,7 +199,7 @@ class _ReasoningSliderState extends State<ReasoningSlider> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: DshTypography.sizeCaption,
                         fontWeight: index == shown ? FontWeight.w600 : null,
                         color: index == shown ? colors.text : colors.muted,
                       ),
@@ -170,6 +209,14 @@ class _ReasoningSliderState extends State<ReasoningSlider> {
               ),
           ],
         ),
+        if (failure != null)
+          Text(
+            failure!,
+            key: const ValueKey('reasoning-update-error'),
+            style: DshTypography.caption.copyWith(
+              color: Theme.of(context).colorScheme.error,
+            ),
+          ),
       ],
     );
   }

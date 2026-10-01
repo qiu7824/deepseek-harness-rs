@@ -1,14 +1,20 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+import '../../l10n/conversation_zh.dart';
+
 import 'dart:async';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:dsh_client/dsh_client.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/loading.dart';
 import '../../src/controller.dart';
 import '../page_operation.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 /// Local knowledge bases over `/__dsh-knowledge/*`. The desktop client only
 /// connects to a Host on this machine, so files and folders are imported by
@@ -30,7 +36,7 @@ class KnowledgeApi {
     Json body = const {},
     RequestScope? scope,
   ]) async {
-    if (_closed) throw DshException('cancelled', '知识库页面已关闭');
+    if (_closed) throw DshException('cancelled', DshKnowledgeZh.pageClosed);
     final Json value;
     try {
       value = await (operation == 'importPath' ? importer : client).request(
@@ -41,9 +47,9 @@ class KnowledgeApi {
         maxBytes: 16 * 1024 * 1024,
       );
     } on DshException catch (error) {
-      throw unsupportedHostPage(error, operation, '知识库');
+      throw unsupportedHostPage(error, operation, DshKnowledgeZh.title);
     }
-    if (_closed) throw DshException('cancelled', '知识库页面已关闭');
+    if (_closed) throw DshException('cancelled', DshKnowledgeZh.pageClosed);
     return value;
   }
 
@@ -140,7 +146,7 @@ class _KnowledgePageState extends State<KnowledgePage> {
         widget.api ?? (client == null ? null : ownedApi = KnowledgeApi(client));
     catalog = null;
     selected = null;
-    error = client == null ? '请先连接本机服务' : null;
+    error = client == null ? DshKnowledgeZh.connectFirst : null;
     if (notify && mounted) setState(() {});
     unawaited(load());
   }
@@ -181,7 +187,7 @@ class _KnowledgePageState extends State<KnowledgePage> {
       if (current()) {
         setState(
           () => error = e is DshException && e.code == 'http-404'
-              ? '本机服务不支持知识库，请更新到最新版本'
+              ? DshKnowledgeZh.unsupportedHost
               : '$e',
         );
       }
@@ -265,8 +271,8 @@ class _KnowledgePageState extends State<KnowledgePage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     DshIcon(
-                      LucideIcons.arrowLeft,
-                      label: '返回对话',
+                      DshIcons.arrowLeft.data,
+                      label: DshKnowledgeZh.backToSession,
                       onPressed: widget.onClose,
                     ),
                     const SizedBox(width: 8),
@@ -275,16 +281,19 @@ class _KnowledgePageState extends State<KnowledgePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            '知识库',
+                            DshKnowledgeZh.title,
                             style: TextStyle(
-                              fontSize: 22,
+                              fontSize: DshTypography.sizeTitle,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '导入文档后，智能体会在回答前检索已启用的知识库，并注明引用的文档。数据只保存在本机。',
-                            style: TextStyle(fontSize: 13, color: colors.muted),
+                            DshKnowledgeZh.description,
+                            style: TextStyle(
+                              fontSize: DshTypography.sizeAuxiliary,
+                              color: colors.muted,
+                            ),
                           ),
                         ],
                       ),
@@ -293,9 +302,9 @@ class _KnowledgePageState extends State<KnowledgePage> {
                     DshButton(
                       key: const Key('knowledge-create'),
                       primary: true,
-                      icon: LucideIcons.plus,
+                      icon: DshIcons.plus.data,
                       onPressed: api == null ? null : create,
-                      child: const Text('新建知识库'),
+                      child: const Text(DshKnowledgeZh.createTitle),
                     ),
                   ],
                 ),
@@ -303,10 +312,7 @@ class _KnowledgePageState extends State<KnowledgePage> {
                 if (error != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
-                    child: Text(
-                      error!,
-                      style: const TextStyle(color: Colors.red),
-                    ),
+                    child: DshErrorView(error: error!),
                   ),
                 Expanded(
                   child: !wide
@@ -347,14 +353,13 @@ class _BaseList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = DshColors(context);
-    if (loading) {
-      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    if (loading && bases.isEmpty) {
+      return DshListSkeleton(
+        label: DshConversationZh.loadingList(name: DshKnowledgeZh.title),
+      );
     }
     if (bases.isEmpty) {
-      return const DshEmpty(
-        '还没有知识库\n新建一个知识库，上传文档或导入整个文件夹。\n支持 PDF、Word、PowerPoint、Excel、网页、Markdown、纯文本和代码。',
-        icon: LucideIcons.bookOpen,
-      );
+      return DshEmpty(DshKnowledgeZh.empty, icon: DshIcons.bookOpen.data);
     }
     return ListView.separated(
       itemCount: bases.length,
@@ -387,7 +392,7 @@ class _BaseList extends StatelessWidget {
                         height: 8,
                         decoration: BoxDecoration(
                           color: enabled
-                              ? const Color(0xff1e9e5a)
+                              ? DshTokens.of(context).success.foreground
                               : colors.muted,
                           shape: BoxShape.circle,
                         ),
@@ -399,15 +404,18 @@ class _BaseList extends StatelessWidget {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 14,
+                            fontSize: DshTypography.sizeBody,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                       if (!enabled)
                         Text(
-                          '已停用',
-                          style: TextStyle(fontSize: 11, color: colors.muted),
+                          DshKnowledgeZh.disabledState,
+                          style: TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                            color: colors.muted,
+                          ),
                         ),
                     ],
                   ),
@@ -417,13 +425,22 @@ class _BaseList extends StatelessWidget {
                       description,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12, color: colors.muted),
+                      style: TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        color: colors.muted,
+                      ),
                     ),
                   ],
                   const SizedBox(height: 4),
                   Text(
-                    '${base['documentCount'] ?? 0} 个文档 · ${base['chunkCount'] ?? 0} 段',
-                    style: TextStyle(fontSize: 12, color: colors.muted),
+                    DshKnowledgeZh.documentSummary(
+                      documents: base['documentCount'] ?? 0,
+                      chunks: base['chunkCount'] ?? 0,
+                    ),
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: colors.muted,
+                    ),
                   ),
                 ],
               ),
@@ -589,12 +606,16 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
     final failed = <String>[];
     setState(() {
       failures = [];
-      status = '正在导入…';
+      status = DshKnowledgeZh.importing;
     });
     await run('import', (op) async {
       for (final path in paths) {
         if (!op.valid) return;
-        setState(() => status = '正在导入 ${path.split(RegExp(r'[\\/]')).last}…');
+        setState(
+          () => status = DshKnowledgeZh.importingFile(
+            name: path.split(RegExp(r'[\\/]')).last,
+          ),
+        );
         try {
           final value = await op.request(
             () => widget.api.call('importPath', {
@@ -617,9 +638,10 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
     if (!owner.valid) return;
     setState(() {
       status = [
-        '已导入 $added 个文档',
-        if (failed.isNotEmpty) '跳过 ${failed.length} 个',
-        if (truncated) '文件夹内容过多，只导入了前 500 个文件',
+        DshKnowledgeZh.importedDocuments(count: added),
+        if (failed.isNotEmpty)
+          DshKnowledgeZh.skippedDocuments(count: failed.length),
+        if (truncated) DshKnowledgeZh.importLimit,
       ].join(' · ');
       failures = failed;
     });
@@ -637,7 +659,10 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
     final owner = operation();
     final files = await openFiles(
       acceptedTypeGroups: [
-        XTypeGroup(label: '文档', extensions: widget.extensions),
+        XTypeGroup(
+          label: DshKnowledgeZh.documents,
+          extensions: widget.extensions,
+        ),
       ],
     );
     if (owner.valid) await importPaths([for (final file in files) file.path]);
@@ -681,7 +706,11 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
         children: [
           Row(
             children: [
-              DshIcon(LucideIcons.x, label: '关闭详情', onPressed: widget.onClose),
+              DshIcon(
+                DshIcons.close.data,
+                label: DshKnowledgeZh.closeDetails,
+                onPressed: widget.onClose,
+              ),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
@@ -689,12 +718,15 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontSize: 17,
+                    fontSize: DshTypography.sizeSectionTitle,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
-              const Text('参与检索', style: TextStyle(fontSize: 13)),
+              const Text(
+                DshKnowledgeZh.includeInSearch,
+                style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
+              ),
               const SizedBox(width: 6),
               DshSwitch(
                 key: const Key('knowledge-enabled'),
@@ -720,7 +752,7 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                 child: DshField(
                   key: const Key('knowledge-name'),
                   controller: name,
-                  hint: '名称',
+                  hint: DshKnowledgeZh.name,
                   onChanged: (_) => setState(() {}),
                 ),
               ),
@@ -730,7 +762,7 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                 child: DshField(
                   key: const Key('knowledge-description'),
                   controller: description,
-                  hint: '说明（可选，告诉智能体这个知识库包含什么）',
+                  hint: DshKnowledgeZh.descriptionHint,
                   onChanged: (_) => setState(() {}),
                 ),
               ),
@@ -742,8 +774,11 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 Text(
-                  '有未保存的修改',
-                  style: TextStyle(fontSize: 12, color: colors.muted),
+                  DshKnowledgeZh.unsaved,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 DshButton(
@@ -754,7 +789,7 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                           description.text = '${base['description'] ?? ''}';
                           _baseline = _signature();
                         }),
-                  child: const Text('取消'),
+                  child: const Text(DshZh.cancel),
                 ),
                 const SizedBox(width: 8),
                 DshButton(
@@ -774,7 +809,9 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                           _baseline = savedSignature;
                           await op.request(widget.onChanged);
                         }),
-                  child: Text(busy == 'save' ? '正在保存…' : '保存'),
+                  child: Text(
+                    busy == 'save' ? DshKnowledgeZh.saving : DshZh.save,
+                  ),
                 ),
               ],
             ),
@@ -783,8 +820,13 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
           Row(
             children: [
               for (final (key, label) in [
-                ('documents', '文档 ${base['documentCount'] ?? 0}'),
-                ('search', '检索测试'),
+                (
+                  'documents',
+                  DshKnowledgeZh.documentsTab(
+                    count: base['documentCount'] ?? 0,
+                  ),
+                ),
+                ('search', DshKnowledgeZh.testSearch),
               ])
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
@@ -794,7 +836,12 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                     pill: true,
                     active: tab == key,
                     onPressed: () => setState(() => tab = key),
-                    child: Text(label, style: const TextStyle(fontSize: 13)),
+                    child: Text(
+                      label,
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeAuxiliary,
+                      ),
+                    ),
                   ),
                 ),
             ],
@@ -803,10 +850,7 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
           if (error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
-              child: Text(
-                error!,
-                style: const TextStyle(fontSize: 12, color: Colors.red),
-              ),
+              child: DshErrorView(error: error!),
             ),
           Expanded(
             child: tab == 'documents'
@@ -826,9 +870,12 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                         final owner = operation();
                         final confirmed = await confirmAction(
                           context,
-                          '删除知识库',
-                          '删除“${base['name']}”及其中的 ${base['documentCount'] ?? 0} 个文档？此操作无法撤销。',
-                          action: '删除',
+                          DshKnowledgeZh.deleteLibrary,
+                          DshKnowledgeZh.deleteLibraryHint(
+                            name: base['name'],
+                            count: base['documentCount'] ?? 0,
+                          ),
+                          action: DshKnowledgeZh.delete,
                         );
                         if (!confirmed || !owner.valid) return;
                         await run('delete', (op) async {
@@ -839,7 +886,7 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                           widget.onDeleted();
                         });
                       },
-                child: const Text('删除知识库'),
+                child: const Text(DshKnowledgeZh.deleteLibrary),
               ),
             ],
           ),
@@ -878,19 +925,22 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                 DshButton(
                   key: const Key('knowledge-upload'),
                   primary: true,
-                  icon: LucideIcons.filePlus,
+                  icon: DshIcons.filePlus.data,
                   onPressed: busy != null ? null : pickFiles,
-                  child: const Text('上传文件'),
+                  child: const Text(DshKnowledgeZh.uploadFiles),
                 ),
                 DshButton(
                   key: const Key('knowledge-import-folder'),
-                  icon: LucideIcons.folderPlus,
+                  icon: DshIcons.folderPlus.data,
                   onPressed: busy != null ? null : pickFolder,
-                  child: const Text('导入文件夹'),
+                  child: const Text(DshKnowledgeZh.importFolder),
                 ),
                 Text(
-                  '也可以把文件或文件夹拖到这里',
-                  style: TextStyle(fontSize: 12, color: colors.muted),
+                  DshKnowledgeZh.dropHint,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
               ],
             ),
@@ -901,7 +951,10 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
               child: Text(
                 status!,
                 key: const Key('knowledge-status'),
-                style: TextStyle(fontSize: 12, color: colors.muted),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             ),
           for (final line in failures.take(20))
@@ -909,7 +962,10 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
               padding: const EdgeInsets.only(top: 4),
               child: Text(
                 line,
-                style: const TextStyle(fontSize: 12, color: Colors.red),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: DshTokens.of(context).error.foreground,
+                ),
               ),
             ),
           const SizedBox(height: 8),
@@ -917,7 +973,10 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
             child: rows == null
                 ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
                 : rows.isEmpty
-                ? const DshEmpty('还没有文档', icon: LucideIcons.fileText)
+                ? DshEmpty(
+                    DshKnowledgeZh.noDocuments,
+                    icon: DshIcons.fileText.data,
+                  )
                 : ListView.separated(
                     itemCount: rows.length,
                     separatorBuilder: (_, _) =>
@@ -931,8 +990,8 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                         padding: const EdgeInsets.symmetric(vertical: 8),
                         child: Row(
                           children: [
-                            Icon(
-                              LucideIcons.fileText,
+                            DshGlyph(
+                              DshIcons.fileText.data,
                               size: 16,
                               color: colors.muted,
                             ),
@@ -947,20 +1006,26 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                                       '${doc['name']}',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 13),
+                                      style: const TextStyle(
+                                        fontSize: DshTypography.sizeAuxiliary,
+                                      ),
                                     ),
                                     Text(
                                       [
                                         formatKnowledgeBytes(
                                           (doc['bytes'] as num?) ?? 0,
                                         ),
-                                        '${doc['chunkCount']} 段',
-                                        '${doc['chars']} 字',
+                                        DshKnowledgeZh.chunks(
+                                          count: doc['chunkCount'],
+                                        ),
+                                        DshKnowledgeZh.characters(
+                                          count: doc['chars'],
+                                        ),
                                         if (created != null)
                                           '${created.year}/${created.month}/${created.day}',
                                       ].join(' · '),
                                       style: TextStyle(
-                                        fontSize: 11,
+                                        fontSize: DshTypography.sizeCaption,
                                         color: colors.muted,
                                       ),
                                     ),
@@ -969,8 +1034,8 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                               ),
                             ),
                             DshIcon(
-                              LucideIcons.trash2,
-                              label: '移除',
+                              DshIcons.trash2.data,
+                              label: DshKnowledgeZh.remove,
                               onPressed: busy != null
                                   ? null
                                   : () => run('remove', (op) async {
@@ -1009,8 +1074,8 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
               child: DshField(
                 key: const Key('knowledge-query'),
                 controller: query,
-                hint: '输入问题或关键词',
-                prefix: LucideIcons.search,
+                hint: DshKnowledgeZh.queryHint,
+                prefix: DshIcons.search.data,
                 onChanged: (_) => setState(() {}),
               ),
             ),
@@ -1021,23 +1086,24 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
               onPressed: busy != null || query.text.trim().isEmpty
                   ? null
                   : search,
-              child: const Text('检索'),
+              child: const Text(DshKnowledgeZh.search),
             ),
           ],
         ),
         const SizedBox(height: 6),
         Text(
-          enabled
-              ? '这里的结果就是智能体调用 knowledge_search 时看到的内容。'
-              : '知识库已停用，智能体不会检索它。',
-          style: TextStyle(fontSize: 12, color: colors.muted),
+          enabled ? DshKnowledgeZh.searchMeaning : DshKnowledgeZh.disabled,
+          style: TextStyle(
+            fontSize: DshTypography.sizeCaption,
+            color: colors.muted,
+          ),
         ),
         const SizedBox(height: 8),
         Expanded(
           child: rows == null
               ? const SizedBox.shrink()
               : rows.isEmpty
-              ? const DshEmpty('没有找到相关内容', icon: LucideIcons.searchX)
+              ? DshEmpty(DshKnowledgeZh.noResults, icon: DshIcons.searchX.data)
               : ListView.separated(
                   itemCount: rows.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 8),
@@ -1056,14 +1122,17 @@ class KnowledgeBaseDetailState extends State<KnowledgeBaseDetail> {
                           Text(
                             '${hit['documentName']}  #${((hit['chunk'] as num?) ?? 0) + 1}',
                             style: const TextStyle(
-                              fontSize: 13,
+                              fontSize: DshTypography.sizeAuxiliary,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                           const SizedBox(height: 4),
                           SelectableText(
                             '${hit['snippet']}',
-                            style: TextStyle(fontSize: 12, color: colors.muted),
+                            style: TextStyle(
+                              fontSize: DshTypography.sizeCaption,
+                              color: colors.muted,
+                            ),
                           ),
                         ],
                       ),
@@ -1135,7 +1204,7 @@ class _KnowledgeCreateDialogState extends State<KnowledgeCreateDialog> {
       if (op.valid) {
         setState(
           () => error = e.outcomeUnknown
-              ? '${e.message}；操作结果尚未确认，请核对知识库后再试。'
+              ? DshKnowledgeZh.unknownCreateResult(message: e.message)
               : e.message,
         );
       }
@@ -1161,14 +1230,17 @@ class _KnowledgeCreateDialogState extends State<KnowledgeCreateDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                '新建知识库',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                DshKnowledgeZh.createTitle,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeSectionTitle,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 14),
               DshField(
                 key: const Key('knowledge-create-name'),
                 controller: name,
-                hint: '名称，例如：产品手册',
+                hint: DshKnowledgeZh.nameHint,
                 autofocus: true,
                 onChanged: (_) => setState(() {}),
               ),
@@ -1176,15 +1248,12 @@ class _KnowledgeCreateDialogState extends State<KnowledgeCreateDialog> {
               DshField(
                 key: const Key('knowledge-create-description'),
                 controller: description,
-                hint: '说明（可选）',
+                hint: DshKnowledgeZh.optionalDescription,
                 maxLines: 3,
               ),
               if (error != null) ...[
                 const SizedBox(height: 8),
-                Text(
-                  error!,
-                  style: const TextStyle(fontSize: 12, color: Colors.red),
-                ),
+                DshErrorView(error: error!),
               ],
               const SizedBox(height: 16),
               Row(
@@ -1192,14 +1261,16 @@ class _KnowledgeCreateDialogState extends State<KnowledgeCreateDialog> {
                 children: [
                   DshButton(
                     onPressed: busy ? null : () => Navigator.of(context).pop(),
-                    child: const Text('取消'),
+                    child: const Text(DshZh.cancel),
                   ),
                   const SizedBox(width: 8),
                   DshButton(
                     key: const Key('knowledge-create-submit'),
                     primary: true,
                     onPressed: busy || name.text.trim().isEmpty ? null : submit,
-                    child: Text(busy ? '正在创建…' : '创建'),
+                    child: Text(
+                      busy ? DshKnowledgeZh.creating : DshKnowledgeZh.create,
+                    ),
                   ),
                 ],
               ),

@@ -1,19 +1,23 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+
 import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
 import '../../design/select.dart';
 import '../../src/controller.dart';
 
+import 'package:dsh_desktop/design/typography.dart';
+
 const scheduleKinds = <String, String>{
-  'after': '延迟一次',
-  'at': '指定时间',
-  'every': '固定间隔',
-  'daily': '每天',
-  'weekly': '每周',
+  'after': DshSettingsZh.delayedOnce,
+  'at': DshSettingsZh.scheduledOnce,
+  'every': DshSettingsZh.fixedInterval,
+  'daily': DshSettingsZh.daily,
+  'weekly': DshSettingsZh.weekly,
   'cron': 'Cron',
 };
 
@@ -21,16 +25,16 @@ String scheduleFailure(Object failure) {
   if (failure is! DshException) return '$failure';
   final reason = failure.details['reason'] ?? failure.code;
   final message = const <String, String>{
-    'schedule_conflict': '提醒已被其他操作更新；草稿已保留，请读取最新版本后再保存。',
-    'schedule_not_found': '提醒已被删除，请刷新目录。',
-    'schedule_ended': '此提醒已结束，不能修改；可新建提醒。',
-    'schedule_disabled': '提醒插件已停用；请在目录中手动启用后再保存。',
-    'session_archived': '绑定会话已归档，不能接收提醒。',
-    'session_not_found': '绑定会话已删除，不能接收提醒。',
+    'schedule_conflict': DshSettingsZh.reminderConflict,
+    'schedule_not_found': DshSettingsZh.reminderDeleted,
+    'schedule_ended': DshSettingsZh.reminderEnded,
+    'schedule_disabled': DshSettingsZh.reminderPluginDisabled,
+    'session_archived': DshSettingsZh.reminderSessionArchived,
+    'session_not_found': DshSettingsZh.reminderSessionDeleted,
   }[reason];
   return message == null
       ? '$failure'
-      : '$message${failure.outcomeUnknown ? ' 操作结果尚未确认，请刷新核对。' : ''}';
+      : '$message${failure.outcomeUnknown ? DshSettingsZh.outcomeUnknownSuffix : ''}';
 }
 
 String _sessionLabel(DesktopController controller, String id) =>
@@ -43,12 +47,18 @@ String _sessionLabel(DesktopController controller, String id) =>
 String _ruleLabel(ScheduleRecord record) {
   final value = record.toJson();
   return switch (record.kind) {
-    'after' => '延迟 ${value['afterSeconds']} 秒，一次',
-    'at' => '指定时间，一次',
-    'every' => '每 ${value['everySeconds']} 秒',
-    'daily' => '每天 ${value['time']} · ${value['timeZone']}',
-    'weekly' =>
-      '周 ${(value['weekdays'] as List).join('、')} ${value['time']} · ${value['timeZone']}',
+    'after' => DshSettingsZh.afterSeconds(seconds: value['afterSeconds']),
+    'at' => DshSettingsZh.onceAt,
+    'every' => DshSettingsZh.everySeconds(seconds: value['everySeconds']),
+    'daily' => DshSettingsZh.dailyAt(
+      time: value['time'],
+      timezone: value['timeZone'],
+    ),
+    'weekly' => DshSettingsZh.weeklyAt(
+      days: (value['weekdays'] as List).join('、'),
+      time: value['time'],
+      timezone: value['timeZone'],
+    ),
     'cron' => '${value['expression']} · ${value['timeZone']}',
     _ => record.kind,
   };
@@ -103,7 +113,7 @@ class _SchedulePanelState extends State<SchedulePanel> {
       mutationScope.cancel();
       setState(() {
         loading = busy = false;
-        error = '连接已变化，请重新打开全局提醒。';
+        error = DshSettingsZh.reminderConnectionChanged;
       });
     } else if (revision != widget.controller.scheduleRevision ||
         selected != widget.controller.selectedId) {
@@ -134,7 +144,9 @@ class _SchedulePanelState extends State<SchedulePanel> {
         client!.rpc('pluginInventory.list', scope: scope),
       ]);
       final inventory = object(values[1]);
-      if (inventory['entries'] is! List) throw StateError('插件目录返回的数据不完整。');
+      if (inventory['entries'] is! List) {
+        throw StateError(DshSettingsZh.pluginCatalogInvalid);
+      }
       final matches = objects(inventory['entries'])
           .where(
             (entry) => [
@@ -143,7 +155,9 @@ class _SchedulePanelState extends State<SchedulePanel> {
             ].contains(entry['moduleName']),
           )
           .toList();
-      if (matches.length > 1) throw StateError('存在多个提醒插件，请先在插件设置中核对。');
+      if (matches.length > 1) {
+        throw StateError(DshSettingsZh.multipleReminderPlugins);
+      }
       if (current()) {
         setState(() {
           entries = values[0] as List<ScheduleEntry>;
@@ -198,9 +212,9 @@ class _SchedulePanelState extends State<SchedulePanel> {
     final original = selected, scope = mutationScope;
     final confirmed = await confirmAction(
       context,
-      '删除提醒？',
-      '删除“${entry.record.title}”及其发送回执，后续不再发送。会话中的消息保留。',
-      action: '删除',
+      DshSettingsZh.deleteReminderTitle,
+      DshSettingsZh.deleteReminderHint(title: entry.record.title),
+      action: DshSettingsZh.delete,
     );
     if (!confirmed ||
         !mounted ||
@@ -213,7 +227,7 @@ class _SchedulePanelState extends State<SchedulePanel> {
       await ScheduleApi(
         client!,
       ).delete(sessionId: entry.sessionId, id: entry.record.id, scope: scope);
-    }, '提醒已删除。');
+    }, DshSettingsZh.reminderDeletedNotice);
   }
 
   @override
@@ -231,21 +245,22 @@ class _SchedulePanelState extends State<SchedulePanel> {
     return ListView(
       children: [
         const Text(
-          '全局提醒',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          DshSettingsZh.reminders,
+          style: TextStyle(
+            fontSize: DshTypography.sizeSectionTitle,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 12),
-        const Text(
-          '提醒绑定会话，由 Host 到时发送；客户端可关闭，Host 服务需要保持运行。发送回执表示消息已送入会话，不代表模型已执行成功。',
-        ),
+        const Text(DshSettingsZh.remindersDescription),
         const SizedBox(height: 12),
         Row(
           children: [
             Expanded(
               child: Text(
                 enabled
-                    ? '提醒已启用'
-                    : '提醒默认关闭；启用后才会发送或允许新建、修改。停用期间仍可查看目录、回执和删除提醒。',
+                    ? DshSettingsZh.reminderEnabled
+                    : DshSettingsZh.reminderDisabledHint,
               ),
             ),
             const SizedBox(width: 12),
@@ -254,21 +269,27 @@ class _SchedulePanelState extends State<SchedulePanel> {
               value: enabled,
               onChanged: disabled || plugin == null
                   ? null
-                  : (value) => mutate((scope) async {
-                      await client!.rpc(
-                        'pluginInventory.setEnabled',
-                        mutation: true,
-                        scope: scope,
-                        payload: {
-                          'entryId': plugin!['entryId'],
-                          'enabled': value,
-                        },
-                      );
-                    }, value ? '提醒已启用。' : '提醒已停用。'),
+                  : (value) => mutate(
+                      (scope) async {
+                        await client!.rpc(
+                          'pluginInventory.setEnabled',
+                          mutation: true,
+                          scope: scope,
+                          payload: {
+                            'entryId': plugin!['entryId'],
+                            'enabled': value,
+                          },
+                        );
+                      },
+                      value
+                          ? DshSettingsZh.reminderEnabledNotice
+                          : DshSettingsZh.reminderDisabledNotice,
+                    ),
             ),
           ],
         ),
-        if (plugin == null && !loading) const Text('未找到提醒插件；请检查 Host 插件库存。'),
+        if (plugin == null && !loading)
+          const Text(DshSettingsZh.reminderPluginMissing),
         const SizedBox(height: 12),
         Wrap(
           spacing: 8,
@@ -277,14 +298,14 @@ class _SchedulePanelState extends State<SchedulePanel> {
             DshButton(
               key: const ValueKey('schedule-create'),
               primary: true,
-              icon: LucideIcons.plus,
+              icon: DshIcons.plus.data,
               onPressed: disabled || !enabled ? null : () => edit(),
-              child: const Text('新建提醒'),
+              child: const Text(DshSettingsZh.createReminder),
             ),
             DshButton(
               outline: true,
               onPressed: stale || busy ? null : load,
-              child: const Text('刷新'),
+              child: const Text(DshSettingsZh.refresh),
             ),
             DshButton(
               key: const ValueKey('schedule-retention'),
@@ -299,7 +320,7 @@ class _SchedulePanelState extends State<SchedulePanel> {
                         entryId: plugin!['entryId'] as String,
                       ),
                     ),
-              child: const Text('回执保留设置'),
+              child: const Text(DshSettingsZh.receiptRetention),
             ),
             DshButton(
               key: const ValueKey('schedule-retry'),
@@ -308,14 +329,18 @@ class _SchedulePanelState extends State<SchedulePanel> {
                   ? null
                   : () => mutate(
                       (scope) => ScheduleApi(client!).retry(scope: scope),
-                      '已请求重新检查待发送提醒，请查看发送回执。',
+                      DshSettingsZh.remindersRetryRequested,
                     ),
-              child: const Text('重试待发送提醒'),
+              child: const Text(DshSettingsZh.retryReminders),
             ),
             DshSelect<String>(
               key: const ValueKey('schedule-filter'),
               value: filter,
-              options: const {'all': '全部', 'active': '有效', 'inactive': '已结束'},
+              options: const {
+                'all': DshSettingsZh.all,
+                'active': DshSettingsZh.active,
+                'inactive': DshSettingsZh.ended,
+              },
               onChanged: (value) => setState(() => filter = value),
             ),
           ],
@@ -324,8 +349,8 @@ class _SchedulePanelState extends State<SchedulePanel> {
         DshField(
           key: const ValueKey('schedule-search'),
           controller: search,
-          hint: '搜索标题、提示或会话',
-          prefix: LucideIcons.search,
+          hint: DshSettingsZh.searchReminders,
+          prefix: DshIcons.search.data,
           onChanged: (_) => setState(() {}),
         ),
         if (loading)
@@ -335,7 +360,7 @@ class _SchedulePanelState extends State<SchedulePanel> {
           ),
         if (error != null) _message(error!, error: true),
         if (notice != null) _message(notice!),
-        if (!loading && rows.isEmpty) const DshEmpty('没有匹配的提醒'),
+        if (!loading && rows.isEmpty) const DshEmpty(DshSettingsZh.noReminders),
         for (final entry in rows)
           Container(
             key: ValueKey('schedule-entry-${entry.record.id}'),
@@ -349,17 +374,25 @@ class _SchedulePanelState extends State<SchedulePanel> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${entry.record.title} · ${entry.active ? '有效' : '已结束'}',
+                  '${entry.record.title} · ${entry.active ? DshSettingsZh.active : DshSettingsZh.ended}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 6),
-                Text('会话：${_sessionLabel(widget.controller, entry.sessionId)}'),
+                Text(
+                  DshSettingsZh.sessionLabel(
+                    title: _sessionLabel(widget.controller, entry.sessionId),
+                  ),
+                ),
                 Text(_ruleLabel(entry.record)),
                 Text(
-                  '${entry.active ? '下次计划时间' : '计划时间'}：${entry.record.scheduledAt}',
+                  '${entry.active ? DshSettingsZh.nextScheduledTime : DshSettingsZh.scheduledTime}：${entry.record.scheduledAt}',
                 ),
                 if (entry.lastDelivery != null)
-                  Text('最近发送到会话：${entry.lastDelivery!.deliveredAt}'),
+                  Text(
+                    DshSettingsZh.lastDelivery(
+                      time: entry.lastDelivery!.deliveredAt,
+                    ),
+                  ),
                 const SizedBox(height: 6),
                 Text(
                   entry.record.prompt,
@@ -377,7 +410,7 @@ class _SchedulePanelState extends State<SchedulePanel> {
                       onPressed: disabled || !enabled || !entry.active
                           ? null
                           : () => edit(entry),
-                      child: const Text('编辑'),
+                      child: const Text(DshSettingsZh.edit),
                     ),
                     DshButton(
                       key: ValueKey('schedule-history-${entry.record.id}'),
@@ -391,13 +424,13 @@ class _SchedulePanelState extends State<SchedulePanel> {
                                 entry: entry,
                               ),
                             ),
-                      child: const Text('发送回执'),
+                      child: const Text(DshSettingsZh.deliveryReceipts),
                     ),
                     DshButton(
                       key: ValueKey('schedule-delete-${entry.record.id}'),
                       destructive: true,
                       onPressed: disabled ? null : () => remove(entry),
-                      child: const Text('删除'),
+                      child: const Text(DshSettingsZh.delete),
                     ),
                   ],
                 ),
@@ -411,10 +444,12 @@ class _SchedulePanelState extends State<SchedulePanel> {
 
 Widget _message(String text, {bool error = false}) => Padding(
   padding: const EdgeInsets.symmetric(vertical: 10),
-  child: SelectableText(
-    text,
-    style: TextStyle(fontSize: 13, color: error ? Colors.red : null),
-  ),
+  child: error
+      ? DshErrorView(error: text)
+      : SelectableText(
+          text,
+          style: const TextStyle(fontSize: DshTypography.sizeAuxiliary),
+        ),
 );
 
 /// An editor owns its request scope and its original Host/selection identity.
@@ -513,7 +548,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
       scope.cancel();
       setState(() {
         busy = false;
-        error = '会话或连接已变化，此草稿已停止提交；可复制内容后重新打开。';
+        error = DshSettingsZh.reminderDraftStale;
       });
     } else {
       setState(() {});
@@ -525,7 +560,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
       final value = int.tryParse(seconds.text.trim());
       final minimum = kind == 'every' ? 60 : 1;
       if (value == null || value < minimum || value > 9007199254740991) {
-        throw FormatException('秒数必须为 $minimum 到 9007199254740991 的整数。');
+        throw FormatException(DshSettingsZh.secondsInvalid(minimum: minimum));
       }
       return {if (update) 'kind': kind, '${kind}_seconds': value};
     }
@@ -533,21 +568,19 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
       final value = instant.text.trim();
       if (!RegExp(r'(Z|[+-]\d{2}:\d{2})$').hasMatch(value) ||
           DateTime.tryParse(value) == null) {
-        throw const FormatException('指定时间须含时区偏移，例如 2030-01-01T09:00:00+08:00。');
+        throw const FormatException(DshSettingsZh.timestampOffsetRequired);
       }
       return {if (update) 'kind': kind, 'at': value};
     }
     final tz = zone.text.trim();
     if (tz != 'UTC' &&
         !RegExp(r'^[A-Za-z_+-]+(?:/[A-Za-z0-9_+.-]+)+$').hasMatch(tz)) {
-      throw const FormatException(
-        '请输入明确的 IANA 时区，例如 Asia/Shanghai、America/New_York 或 UTC；不使用 CST 等缩写。',
-      );
+      throw const FormatException(DshSettingsZh.timezoneRequired);
     }
     if (kind != 'cron' &&
         !RegExp(r'^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?$')
             .hasMatch(time.text.trim())) {
-      throw const FormatException('时间使用 24 小时制 HH:mm 或 HH:mm:ss，可带最多三位毫秒。');
+      throw const FormatException(DshSettingsZh.timeFormatInvalid);
     }
     final wallTime = time.text.trim().length == 5
         ? '${time.text.trim()}:00'
@@ -555,17 +588,17 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
     Object value;
     if (kind == 'at') {
       if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date.text.trim())) {
-        throw const FormatException('日期使用 YYYY-MM-DD。');
+        throw const FormatException(DshSettingsZh.dateFormatInvalid);
       }
       value = {'date': date.text.trim(), 'time': wallTime, 'time_zone': tz};
     } else if (kind == 'cron') {
       if (expression.text.trim().split(RegExp(r'\s+')).length != 5) {
-        throw const FormatException('Cron 需要五段：分 时 日 月 周。');
+        throw const FormatException(DshSettingsZh.cronInvalid);
       }
       value = {'expression': expression.text.trim(), 'time_zone': tz};
     } else {
       if (kind == 'weekly' && weekdays.isEmpty) {
-        throw const FormatException('至少选择一个星期。');
+        throw const FormatException(DshSettingsZh.weekdaysRequired);
       }
       value = {
         'time': wallTime,
@@ -586,7 +619,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
       if (sessionId == null ||
           title.text.trim().isEmpty ||
           prompt.text.trim().isEmpty) {
-        throw const FormatException('请选择绑定会话，并填写标题和发送给会话的提示。');
+        throw const FormatException(DshSettingsZh.reminderFieldsRequired);
       }
       final api = ScheduleApi(client!);
       if (expected == null) {
@@ -633,14 +666,21 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                 row.sessionId == sessionId && row.record.id == expected!.id,
           )
           .firstOrNull;
-      if (entry == null) throw DshException('schedule_not_found', '提醒不存在');
-      if (!entry.active) throw DshException('schedule_ended', '提醒已结束');
+      if (entry == null) {
+        throw DshException('schedule_not_found', DshSettingsZh.reminderMissing);
+      }
+      if (!entry.active) {
+        throw DshException('schedule_ended', DshSettingsZh.reminderEndedState);
+      }
       setState(() {
         expected = entry.record;
         conflict = false;
         error = null;
-        notice =
-            '已读取最新版本，草稿保留，请比较后保存。\n最新标题：${entry.record.title}\n最新提示：${entry.record.prompt}\n最新计划：${entry.record.scheduledAt}';
+        notice = DshSettingsZh.latestReminder(
+          title: entry.record.title,
+          prompt: entry.record.prompt,
+          scheduledAt: entry.record.scheduledAt,
+        );
       });
     } catch (e) {
       if (mounted && !stale) setState(() => error = scheduleFailure(e));
@@ -676,7 +716,11 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(expected == null ? '新建提醒' : '编辑提醒'),
+    title: Text(
+      expected == null
+          ? DshSettingsZh.createReminder
+          : DshSettingsZh.editReminder,
+    ),
     content: SizedBox(
       width: 600,
       child: SingleChildScrollView(
@@ -685,7 +729,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (expected == null) ...[
-              const Text('绑定会话'),
+              const Text(DshSettingsZh.boundSession),
               const SizedBox(height: 6),
               DshSelect<String>(
                 key: const ValueKey('schedule-session'),
@@ -696,25 +740,34 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                     ? null
                     : (value) => setState(() => sessionId = value),
               ),
-              if (sessions.isEmpty) const Text('请先创建会话，然后再设置提醒。'),
+              if (sessions.isEmpty)
+                const Text(DshSettingsZh.reminderSessionRequired),
             ] else
               SelectableText(
-                '绑定会话：${_sessionLabel(widget.controller, sessionId!)}\n$sessionId\n提醒始终绑定此会话。',
+                DshSettingsZh.boundSessionHint(
+                  title: _sessionLabel(widget.controller, sessionId!),
+                  id: sessionId,
+                ),
               ),
-            input('标题', title, 'schedule-title'),
-            input('发送给会话的提示', prompt, 'schedule-prompt', lines: 4),
+            input(DshSettingsZh.title, title, 'schedule-title'),
+            input(
+              DshSettingsZh.sessionPrompt,
+              prompt,
+              'schedule-prompt',
+              lines: 4,
+            ),
             if (expected != null)
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
                 key: const ValueKey('schedule-change-timing'),
-                title: const Text('修改触发规则'),
+                title: const Text(DshSettingsZh.editTrigger),
                 value: changeTiming,
                 onChanged: disabled
                     ? null
                     : (value) => setState(() => changeTiming = value == true),
               ),
             const SizedBox(height: 12),
-            const Text('触发规则'),
+            const Text(DshSettingsZh.trigger),
             const SizedBox(height: 6),
             DshSelect<String>(
               key: const ValueKey('schedule-kind'),
@@ -728,10 +781,13 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                   ? null
                   : (value) => setState(() => kind = value),
             ),
-            if (expected?.kind == 'after') const Text('延迟提醒若需改期，请指定新的发送时间。'),
+            if (expected?.kind == 'after')
+              const Text(DshSettingsZh.delayedRescheduleHint),
             if (kind == 'after' || kind == 'every')
               input(
-                kind == 'after' ? '延迟秒数（至少 1 秒）' : '间隔秒数（至少 60 秒）',
+                kind == 'after'
+                    ? DshSettingsZh.delaySeconds
+                    : DshSettingsZh.intervalSeconds,
                 seconds,
                 'schedule-seconds',
                 timingField: true,
@@ -742,8 +798,8 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                 key: const ValueKey('schedule-at-mode'),
                 value: atMode,
                 options: const {
-                  'local': '日期、时间和 IANA 时区',
-                  'instant': '含时区偏移的时间',
+                  'local': DshSettingsZh.dateTimeZone,
+                  'instant': DshSettingsZh.zonedTime,
                 },
                 onChanged: disabled || !timingEditable
                     ? null
@@ -751,7 +807,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
               ),
               if (atMode == 'instant')
                 input(
-                  '发送时间（RFC 3339）',
+                  DshSettingsZh.timestamp,
                   instant,
                   'schedule-instant',
                   hint: '2030-01-01T09:00:00+08:00',
@@ -759,7 +815,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                 )
               else
                 input(
-                  '日期',
+                  DshSettingsZh.date,
                   date,
                   'schedule-date',
                   hint: '2030-01-01',
@@ -769,7 +825,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
             if (['daily', 'weekly'].contains(kind) ||
                 (kind == 'at' && atMode == 'local'))
               input(
-                '时间（24 小时制）',
+                DshSettingsZh.time24,
                 time,
                 'schedule-time',
                 hint: '09:00',
@@ -782,9 +838,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                   for (var day = 1; day <= 7; day++)
                     FilterChip(
                       key: ValueKey('schedule-weekday-$day'),
-                      label: Text(
-                        '周${const ['一', '二', '三', '四', '五', '六', '日'][day - 1]}',
-                      ),
+                      label: Text(DshSettingsZh.weekdayLabel(day: day)),
                       selected: weekdays.contains(day),
                       onSelected: disabled || !timingEditable
                           ? null
@@ -796,29 +850,27 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
               ),
             if (kind == 'cron') ...[
               input(
-                'Cron 表达式（分 时 日 月 周）',
+                DshSettingsZh.cron,
                 expression,
                 'schedule-cron',
                 hint: '0 9 * * *',
                 timingField: true,
               ),
-              const Text('例如 0 9 * * 1-5 表示工作日 09:00；最小间隔为 1 分钟。'),
+              const Text(DshSettingsZh.cronHint),
             ],
             if (['daily', 'weekly', 'cron'].contains(kind) ||
                 (kind == 'at' && atMode == 'local')) ...[
               input(
-                'IANA 时区',
+                DshSettingsZh.ianaTimezone,
                 zone,
                 'schedule-zone',
                 hint: 'Asia/Shanghai',
                 timingField: true,
               ),
-              const Text(
-                '明确使用 Asia/Shanghai、America/New_York 或 UTC；不使用 CST 等歧义缩写。',
-              ),
+              const Text(DshSettingsZh.timezoneHint),
             ],
             if (widget.controller.scheduleEnabled == false)
-              _message('提醒已停用，草稿保留；请在目录中手动启用后再保存。'),
+              _message(DshSettingsZh.reminderDraftDisabled),
             if (error != null) _message(error!, error: true),
             if (notice != null) _message(notice!),
             if (conflict)
@@ -826,7 +878,7 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
                 key: const ValueKey('schedule-refresh-expected'),
                 outline: true,
                 onPressed: disabled ? null : refreshExpected,
-                child: const Text('读取最新版本，保留草稿'),
+                child: const Text(DshSettingsZh.refreshKeepDraft),
               ),
           ],
         ),
@@ -835,13 +887,13 @@ class _ScheduleEditorState extends State<ScheduleEditor> {
     actions: [
       DshButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('关闭'),
+        child: const Text(DshSettingsZh.close),
       ),
       DshButton(
         key: const ValueKey('schedule-save'),
         primary: true,
         onPressed: disabled ? null : save,
-        child: Text(busy ? '保存中…' : '保存提醒'),
+        child: Text(busy ? DshZh.saving : DshSettingsZh.saveReminder),
       ),
     ],
   );
@@ -899,7 +951,7 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
       if (mounted) {
         setState(() {
           busy = false;
-          error = '会话或连接已变化，草稿停止提交；请重新打开设置。';
+          error = DshSettingsZh.retentionDraftStale;
         });
       }
     }
@@ -909,7 +961,7 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
     if (value['entryId'] != widget.entryId ||
         value['revision'] is! String ||
         (value['config'] != null && value['config'] is! Map)) {
-      throw StateError('回执配置返回的数据不完整。');
+      throw StateError(DshSettingsZh.retentionResponseInvalid);
     }
     return value;
   }
@@ -936,8 +988,10 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
           days.text = '${config['deliveryHistoryDays'] ?? 30}';
           records.text = '${config['deliveryHistoryRecords'] ?? 200}';
         } else {
-          notice =
-              '已读取最新配置，草稿保留。最新值：${config['deliveryHistoryDays'] ?? 30} 天 / ${config['deliveryHistoryRecords'] ?? 200} 条；请比较后保存。';
+          notice = DshSettingsZh.latestRetention(
+            days: config['deliveryHistoryDays'] ?? 30,
+            records: config['deliveryHistoryRecords'] ?? 200,
+          );
         }
       });
     } catch (e) {
@@ -962,7 +1016,7 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
           recordCount == null ||
           recordCount < 1 ||
           recordCount > 10000) {
-        throw const FormatException('保留天数须为 1–3650，条数须为 1–10000，均为整数。');
+        throw const FormatException(DshSettingsZh.retentionInvalid);
       }
       final value = validate(
         await client!.rpc(
@@ -983,12 +1037,16 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
       if (mounted && !stale) {
         setState(() {
           snapshot = value;
-          notice = '保留设置已保存；新投递时应用，不会立即清理已有回执。';
+          notice = DshSettingsZh.retentionSaved;
         });
       }
     } catch (e) {
       if (mounted && !stale) {
-        setState(() => error = '${scheduleFailure(e)}\n草稿已保留，可读取最新配置后再保存。');
+        setState(
+          () => error = DshSettingsZh.retentionSaveFailed(
+            detail: scheduleFailure(e),
+          ),
+        );
       }
     } finally {
       if (mounted && !stale) setState(() => busy = false);
@@ -997,7 +1055,7 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('回执保留设置'),
+    title: const Text(DshSettingsZh.receiptRetention),
     content: SizedBox(
       width: 500,
       child: SingleChildScrollView(
@@ -1005,18 +1063,16 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              '默认保留 30 天、最多 200 条。新投递时应用保留策略；查看记录和保存设置不会立即清理回执，也不会启用提醒。',
-            ),
+            const Text(DshSettingsZh.retentionHint),
             const SizedBox(height: 12),
-            const Text('保留天数（1–3650）'),
+            const Text(DshSettingsZh.retentionDays),
             DshField(
               key: const ValueKey('schedule-retention-days'),
               controller: days,
               enabled: !busy && !stale,
             ),
             const SizedBox(height: 12),
-            const Text('最多条数（1–10000）'),
+            const Text(DshSettingsZh.retentionCount),
             DshField(
               key: const ValueKey('schedule-retention-records'),
               controller: records,
@@ -1032,20 +1088,20 @@ class _ScheduleRetentionDialogState extends State<ScheduleRetentionDialog> {
     actions: [
       DshButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('关闭'),
+        child: const Text(DshSettingsZh.close),
       ),
       DshButton(
         key: const ValueKey('schedule-retention-reload'),
         onPressed: busy || stale
             ? null
             : () => load(preserve: snapshot != null),
-        child: const Text('读取最新配置'),
+        child: const Text(DshSettingsZh.refreshConfiguration),
       ),
       DshButton(
         key: const ValueKey('schedule-retention-save'),
         primary: true,
         onPressed: busy || stale || snapshot == null ? null : save,
-        child: const Text('保存保留设置'),
+        child: const Text(DshSettingsZh.saveRetention),
       ),
     ],
   );
@@ -1103,7 +1159,7 @@ class _ScheduleHistoryDialogState extends State<ScheduleHistoryDialog> {
       if (mounted) {
         setState(() {
           loading = false;
-          error = '会话或连接已变化，请重新打开回执。';
+          error = DshSettingsZh.receiptsConnectionChanged;
         });
       }
     } else if (revision != widget.controller.scheduleRevision) {
@@ -1154,39 +1210,49 @@ class _ScheduleHistoryDialogState extends State<ScheduleHistoryDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text('发送回执 · ${widget.entry.record.title}'),
+    title: Text(DshSettingsZh.receiptsTitle(title: widget.entry.record.title)),
     content: SizedBox(
       width: 620,
       height: 460,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('按发送顺序从新到旧排列；仅表示消息已发送到绑定会话，不代表模型执行成功。'),
+          const Text(DshSettingsZh.receiptsMeaning),
           if (page?.retentionDays != null)
             Text(
-              '保留范围：${page!.retentionDays} 天，最多 ${page!.retentionRecords} 条。',
+              DshSettingsZh.retentionSummary(
+                days: page!.retentionDays,
+                records: page!.retentionRecords,
+              ),
             ),
-          if (page?.earlierRecordsPruned == true) const Text('更早回执已按保留策略清理。'),
-          if (page?.earlierRecordsUnavailable == true) const Text('部分更早回执不可用。'),
+          if (page?.earlierRecordsPruned == true)
+            const Text(DshSettingsZh.receiptsPruned),
+          if (page?.earlierRecordsUnavailable == true)
+            const Text(DshSettingsZh.receiptsUnavailable),
           if (error != null) _message(error!, error: true),
           if (loading) const LinearProgressIndicator(),
           Expanded(
             child: ListView(
               children: [
                 if (!loading && records.isEmpty && error == null)
-                  const DshEmpty('暂无发送回执'),
+                  const DshEmpty(DshSettingsZh.noReceipts),
                 for (final record in records)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     child: SelectableText(
-                      '已发送到会话：${record.deliveredAt}\n计划时间：${record.scheduledAt}\n消息：${record.messageId}${record.prompt == null ? '' : '\n${record.prompt}'}',
+                      DshSettingsZh.deliveryDetails(
+                        deliveredAt: record.deliveredAt,
+                        scheduledAt: record.scheduledAt,
+                        messageId: record.messageId,
+                        prompt: record.prompt,
+                      ),
                     ),
                   ),
                 if (page?.nextBefore != null)
                   DshButton(
                     key: const ValueKey('schedule-history-more'),
                     onPressed: loading || stale ? null : () => load(more: true),
-                    child: const Text('加载更早回执'),
+                    child: const Text(DshSettingsZh.earlierReceipts),
                   ),
               ],
             ),
@@ -1197,11 +1263,11 @@ class _ScheduleHistoryDialogState extends State<ScheduleHistoryDialog> {
     actions: [
       DshButton(
         onPressed: stale || loading ? null : () => load(),
-        child: const Text('刷新回执'),
+        child: const Text(DshSettingsZh.refreshReceipts),
       ),
       DshButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('关闭'),
+        child: const Text(DshSettingsZh.close),
       ),
     ],
   );

@@ -11,10 +11,13 @@ import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter_mermaid/flutter_mermaid.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:path/path.dart' as paths;
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import 'primitives.dart';
+import 'error.dart';
 import 'typography.dart';
+import 'bounded_image.dart';
+
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class DshMarkdown extends StatefulWidget {
   const DshMarkdown({
@@ -76,6 +79,15 @@ class _DshMarkdownState extends State<DshMarkdown> {
     final colors = DshColors(context);
     final fontSize = widget.fontSize;
     final full = widget.conversationStyle;
+    final scale =
+        fontSize /
+        (full ? DshTypography.sizeConversation : DshTypography.sizeBody);
+    TextStyle heading(TextStyle role, {FontWeight weight = FontWeight.w700}) =>
+        role.copyWith(
+          fontSize: role.fontSize! * scale,
+          fontWeight: weight,
+          color: colors.text,
+        );
     final style = MarkdownStyleSheet.fromTheme(Theme.of(context)).merge(
       MarkdownStyleSheet(
         blockSpacing: 16,
@@ -86,52 +98,18 @@ class _DshMarkdownState extends State<DshMarkdown> {
           height: 24 / fontSize,
           color: colors.text,
         ),
-        h1: TextStyle(
-          fontSize: fontSize * 1.5,
-          height: full ? 30 / 21 : 10 / 7,
-          fontWeight: FontWeight.w700,
-          color: colors.text,
+        h1: heading(full ? DshTypography.title : DshTypography.headline),
+        h2: heading(full ? DshTypography.sectionTitle : DshTypography.title),
+        h3: heading(full ? DshTypography.composer : DshTypography.sectionTitle),
+        h4: heading(
+          full ? DshTypography.conversation : DshTypography.composer,
+          weight: FontWeight.w600,
         ),
-        h2: TextStyle(
-          fontSize: 19,
-          height: full ? 28 / 19 : null,
-          fontWeight: full ? FontWeight.w700 : FontWeight.w600,
-          color: colors.text,
-        ),
-        h3: TextStyle(
-          fontSize: full ? 18 : 16,
-          height: full ? 26 / 18 : null,
-          fontWeight: full ? FontWeight.w700 : FontWeight.w600,
-          color: colors.text,
-        ),
-        h4: full
-            ? TextStyle(
-                fontSize: 14,
-                height: 24 / 14,
-                fontWeight: FontWeight.w600,
-                color: colors.text,
-              )
-            : null,
-        h5: full
-            ? TextStyle(
-                fontSize: 14,
-                height: 24 / 14,
-                fontWeight: FontWeight.w600,
-                color: colors.text,
-              )
-            : null,
-        h6: full
-            ? TextStyle(
-                fontSize: 14,
-                height: 24 / 14,
-                fontWeight: FontWeight.w600,
-                color: colors.text,
-              )
-            : null,
+        h5: heading(DshTypography.conversation, weight: FontWeight.w600),
+        h6: heading(DshTypography.conversation, weight: FontWeight.w600),
         strong: const TextStyle(fontWeight: FontWeight.w600),
-        code: TextStyle(
-          fontFamily: 'Consolas',
-          fontSize: full ? fontSize * .875 : 12,
+        code: DshTypography.code.copyWith(
+          fontSize: DshTypography.sizeAuxiliary * scale,
           color: colors.text,
           backgroundColor: colors.layer,
         ),
@@ -305,9 +283,11 @@ class _DshMarkdownBlockState extends State<DshMarkdownBlock>
       imageBuilder: (uri, title, alt) => MarkdownImage(
         uri: uri,
         baseDirectory: widget.imageBaseDirectory,
-        label: alt?.isNotEmpty == true ? alt! : title ?? '图片',
+        label: alt?.isNotEmpty == true
+            ? alt!
+            : title ?? DshConversationZh.image,
         onSecondaryTap: (position) => widget.onSecondaryTapLink?.call(
-          alt ?? title ?? '图片',
+          alt ?? title ?? DshConversationZh.image,
           '$uri',
           position,
         ),
@@ -415,12 +395,16 @@ class MarkdownImage extends StatelessWidget {
     return null;
   }
 
-  Widget image(ImageProvider provider, {bool preview = false}) => Image(
-    image: ResizeImage.resizeIfNeeded(preview ? 2400 : 1600, null, provider),
-    fit: BoxFit.contain,
-    semanticLabel: label,
-    errorBuilder: (_, _, _) => Text('$label（图片无法显示）'),
-  );
+  Widget image(ImageProvider provider, {bool preview = false}) =>
+      DshBoundedImage(
+        image: provider,
+        maxDimension: preview ? 2400 : 1600,
+        evictOnDispose: preview || provider is MemoryImage,
+        fit: BoxFit.contain,
+        semanticLabel: label,
+        errorBuilder: (_, _, _) =>
+            Text(DshConversationZh.imageUnavailable(label: label)),
+      );
 
   Future<void> preview(BuildContext context, ImageProvider provider) =>
       showDialog<void>(
@@ -443,8 +427,8 @@ class MarkdownImage extends StatelessWidget {
                         ),
                       ),
                       DshIcon(
-                        LucideIcons.x,
-                        label: '关闭图片预览',
+                        DshIcons.close.data,
+                        label: DshConversationZh.closeImagePreview,
                         onPressed: () => Navigator.pop(context),
                       ),
                     ],
@@ -466,7 +450,9 @@ class MarkdownImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final source = provider();
-    if (source == null) return Text('$label（图片无法显示）');
+    if (source == null) {
+      return Text(DshConversationZh.imageUnavailable(label: label));
+    }
     return GestureDetector(
       onSecondaryTapUp: (event) => onSecondaryTap?.call(event.globalPosition),
       child: Material(
@@ -519,7 +505,10 @@ class _MathBuilder extends MarkdownElementBuilder {
     scrollDirection: Axis.horizontal,
     child: Math.tex(
       element.textContent,
-      textStyle: TextStyle(fontSize: 15, color: DshColors(context).text),
+      textStyle: TextStyle(
+        fontSize: DshTypography.sizeConversation,
+        color: DshColors(context).text,
+      ),
       onErrorFallback: (error) => SelectableText(element.textContent),
     ),
   );
@@ -561,7 +550,7 @@ class NativeCodeBlock extends StatefulWidget {
 }
 
 class _NativeCodeBlockState extends State<NativeCodeBlock> {
-  bool source = false;
+  bool source = false, wrap = false;
   @override
   Widget build(BuildContext context) {
     final colors = DshColors(context);
@@ -582,8 +571,13 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
               children: [
                 Expanded(
                   child: Text(
-                    widget.language.isEmpty ? '代码' : widget.language,
-                    style: TextStyle(fontSize: 11, color: colors.muted),
+                    widget.language.isEmpty
+                        ? DshConversationZh.code
+                        : widget.language,
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: colors.muted,
+                    ),
                   ),
                 ),
                 if (mermaid)
@@ -591,13 +585,24 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                     height: 25,
                     onPressed: () => setState(() => source = !source),
                     child: Text(
-                      source ? '图表' : '源码',
-                      style: const TextStyle(fontSize: 11),
+                      source
+                          ? DshConversationZh.diagram
+                          : DshConversationZh.source,
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                      ),
                     ),
                   ),
+                if (!mermaid || source)
+                  DshIcon(
+                    DshIcons.wrapText.data,
+                    label: DshConversationZh.wrapLines,
+                    active: wrap,
+                    onPressed: () => setState(() => wrap = !wrap),
+                  ),
                 DshIcon(
-                  LucideIcons.copy,
-                  label: '复制代码',
+                  DshIcons.copy.data,
+                  label: DshConversationZh.copyCode,
                   size: 25,
                   onPressed: () =>
                       Clipboard.setData(ClipboardData(text: widget.code)),
@@ -615,36 +620,29 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                     style: colors.dark
                         ? MermaidStyle.dark()
                         : const MermaidStyle(),
-                    errorBuilder: (_, error) => Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '图表解析失败：$error',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Colors.orange,
+                    errorBuilder: (_, error) => SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          DshErrorView(
+                            error: error,
+                            operation: DshConversationZh.diagram,
                           ),
-                        ),
-                        Text(
-                          widget.code,
-                          style: const TextStyle(
-                            fontFamily: 'Consolas',
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
+                          Text(widget.code, style: DshTypography.code),
+                        ],
+                      ),
                     ),
+                  )
+                : wrap
+                ? Text(
+                    widget.code,
+                    style: DshTypography.code.copyWith(color: colors.text),
                   )
                 : SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Text(
                       widget.code,
-                      style: TextStyle(
-                        fontFamily: 'Consolas',
-                        fontSize: 12,
-                        height: 1.6,
-                        color: colors.text,
-                      ),
+                      style: DshTypography.code.copyWith(color: colors.text),
                     ),
                   ),
           ),

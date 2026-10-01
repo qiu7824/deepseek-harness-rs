@@ -8,16 +8,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../design/select.dart';
 import '../../src/controller.dart' show ComputerUseBinding;
+import '../../src/resource_diagnostics.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 const _route = '/__dsh-computer-use';
 const _desktopAdapters = {'native-desktop', 'uu-desktop'};
 const _readOnlyActions = {'capture', 'list_sessions', 'list_windows'};
 const _targetLabels = {
-  'local': '本机桌面',
-  'remote': '已绑定的 UU 远程设备',
-  'browser': '隔离浏览器',
+  'local': DshConversationZh.localDesktop,
+  'remote': DshConversationZh.boundRemoteDevice,
+  'browser': DshConversationZh.isolatedBrowser,
 };
 
 /// Why the agent may not act right now, as the Host reports it.
@@ -26,19 +31,20 @@ String computerUsePauseText(Json? control, Json? state) {
       control?['pauseReason'] ??
       object(state?['controlDiagnostics'])['pauseReason'];
   return const {
-        'local-physical-input': '检测到本机键鼠输入（包括其他窗口）',
-        'external-injected-input': '检测到其他程序注入键鼠输入',
-        'escape-hotkey': '已触发全局急停快捷键',
-        'gui-input': '控制画面收到人工输入',
-        'gui-takeover': '已在控制面板选择人工接管',
-        'start-human': '连接以人工控制模式启动',
-        'resume-pending': '控制权尚未交还',
-        'release-failed': '键鼠释放未完成',
-        'emergency-stop-unavailable': '全局急停快捷键不可用',
-        'reader-shutdown': '控制进程已断开',
-        'connection-closing': '控制连接正在关闭',
+        'local-physical-input': DshConversationZh.takeoverLocalInput,
+        'external-injected-input': DshConversationZh.takeoverInjectedInput,
+        'escape-hotkey': DshConversationZh.takeoverEmergencyShortcut,
+        'gui-input': DshConversationZh.takeoverControlInput,
+        'gui-takeover': DshConversationZh.takeoverPanel,
+        'start-human': DshConversationZh.takeoverInitialMode,
+        'resume-pending': DshConversationZh.takeoverNotReleased,
+        'release-failed': DshConversationZh.takeoverInputReleasePending,
+        'emergency-stop-unavailable':
+            DshConversationZh.takeoverShortcutUnavailable,
+        'reader-shutdown': DshConversationZh.controlProcessDisconnected,
+        'connection-closing': DshConversationZh.closingControlConnection,
       }['$reason'] ??
-      '暂停来源尚未确认';
+      DshConversationZh.takeoverReasonUnknown;
 }
 
 /// Human view of the shared Computer Use runtime. It drives the same control
@@ -64,7 +70,24 @@ class ComputerUsePanel extends StatefulWidget {
 }
 
 class ComputerUsePanelState extends State<ComputerUsePanel>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, ResourceDiagnosticScope {
+  @override
+  String get resourceScopeKind => 'computer-use-view';
+  @override
+  Map<String, int> get resourceDiagnostics => {
+    'computerUsePanels': mounted ? 1 : 0,
+    'computerUseFrameBytes': frame?.bytes.length ?? 0,
+    'computerUseDisplayedImageSlots': frame != null && frameDecoded ? 1 : 0,
+    'computerUseRetiringFrameBytes': retiringFrames.fold(
+      0,
+      (n, f) => n + f.bytes.length,
+    ),
+    'computerUsePendingEvictions': retiringFrames.length,
+    'computerUseRequests': pendingRequests,
+    'computerUsePollRequests': polling ? 1 : 0,
+    'computerUsePollTimers': poll?.isActive == true ? 1 : 0,
+    'computerUseRetentionTimers': frameRelease?.isActive == true ? 1 : 0,
+  };
   RequestScope scope = RequestScope();
   RequestScope pollScope = RequestScope();
   final url = TextEditingController(), typing = TextEditingController();
@@ -75,11 +98,14 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
   List<String> sessions = [];
   Json? meta, state, control, selectedWindow;
   MemoryImage? frame;
-  String? error;
+  bool frameDecoded = false;
+  final retiringFrames = <MemoryImage>{};
+  int pendingRequests = 0;
+  Object? error;
   int foreground = 0, requestSequence = 0, appliedSequence = 0, epoch = 0;
   bool privateInput = false, liveDesktop = true, autoRefresh = false;
   bool panelVisible = true, appVisible = true, polling = false;
-  Timer? poll;
+  Timer? poll, frameRelease;
   Offset? pressed;
   int? pressedButtons;
   ({Offset at, DateTime time})? lastClick;
@@ -109,6 +135,8 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
   @override
   void initState() {
     super.initState();
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    appVisible = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
     typingFocus.addListener(() {
       if (typingFocus.hasFocus) takeover();
@@ -145,9 +173,16 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     poll?.cancel();
+    frameRelease?.cancel();
     scope.cancel();
     pollScope.cancel();
-    frame?.evict();
+    unawaited(frame?.evict());
+    frame = null;
+    frameDecoded = false;
+    for (final image in retiringFrames) {
+      unawaited(image.evict());
+    }
+    retiringFrames.clear();
     for (final node in [urlFocus, typingFocus, frameFocus]) {
       node.dispose();
     }
@@ -162,12 +197,44 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
     panelVisible = panel ?? panelVisible;
     if (visible == was) return;
     if (visible) {
+      frameRelease?.cancel();
+      frameRelease = null;
+      if (frame == null && state != null && !closed && !busy && !polling) {
+        final generation = epoch;
+        polling = true;
+        unawaited(
+          _action('capture', const {}, quiet: true).whenComplete(() {
+            if (mounted && generation == epoch) {
+              polling = false;
+              schedulePoll();
+            }
+          }),
+        );
+      }
       schedulePoll();
     } else {
       poll?.cancel();
       pollScope.cancel();
       pollScope = RequestScope();
+      frameRelease?.cancel();
+      frameRelease = Timer(const Duration(minutes: 2), releaseHiddenFrame);
     }
+  }
+
+  void releaseHiddenFrame() {
+    frameRelease?.cancel();
+    frameRelease = null;
+    if (mounted && !visible && frame != null) {
+      setState(() => showFrame(null));
+      if (!WidgetsBinding.instance.framesEnabled) {
+        WidgetsBinding.instance.scheduleWarmUpFrame();
+      }
+    }
+  }
+
+  @override
+  void didHaveMemoryPressure() {
+    if (!visible) releaseHiddenFrame();
   }
 
   int resetRequests() {
@@ -196,20 +263,29 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
   }) async {
     final generation = epoch, api = widget.api, owner = widget.session;
     final requestScope = quiet ? pollScope : scope;
-    final value = await api.request(
-      '$_route/$operation',
-      body: {'ownerSessionId': owner, ...body},
-      scope: requestScope,
-      mutation:
-          operation == 'action' && !_readOnlyActions.contains(body['action']),
-      maxBytes: 24 * 1024 * 1024,
-    );
+    pendingRequests++;
+    late final Json value;
+    try {
+      value = await api.request(
+        '$_route/$operation',
+        body: {'ownerSessionId': owner, ...body},
+        scope: requestScope,
+        mutation:
+            operation == 'action' && !_readOnlyActions.contains(body['action']),
+        maxBytes: 24 * 1024 * 1024,
+      );
+    } finally {
+      pendingRequests--;
+    }
     if (!mounted ||
         generation != epoch ||
         requestScope.cancelled ||
         api != widget.api ||
         owner != widget.session) {
-      throw DshException('cancelled', '控制连接已切换');
+      throw DshException(
+        'cancelled',
+        DshConversationZh.controlConnectionChanged,
+      );
     }
     return value;
   }
@@ -297,14 +373,14 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
       if (value['enabled'] != true) {
         setState(() {
           disabled = true;
-          error = 'Computer Use 未启用：在“设置 → 目录与运行环境”中开启后重启本机服务。';
+          error = DshConversationZh.computerUseDisabled;
         });
         return;
       }
       if (value['available'] == false) {
         setState(
           () => error =
-              '${object(value['error'])['message'] ?? 'Computer Use 执行器当前不可用，请检查浏览器或外部命令设置'}',
+              '${object(value['error'])['message'] ?? DshConversationZh.computerUseAdapterUnavailable}',
         );
         return;
       }
@@ -318,16 +394,28 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
     }
   }
 
-  String describe(Object failure) => failure is DshException
-      ? failure.message.split('; controlDiagnostics=').first
-      : '$failure';
+  DshError describe(Object failure) {
+    final value = DshError.describe(failure);
+    return DshError(
+      title: value.title,
+      message: value.message.split('; controlDiagnostics=').first,
+      details: value.details,
+      code: value.code,
+      cancelled: value.cancelled,
+      outcomeUnknown: value.outcomeUnknown,
+    );
+  }
 
   void showFrame(Uint8List? bytes) {
     final previous = frame;
     frame = bytes == null ? null : MemoryImage(bytes);
+    if (bytes == null) frameDecoded = false;
     // Every capture is a new image; keep them out of the shared cache.
     if (previous != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => previous.evict());
+      retiringFrames.add(previous);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (retiringFrames.remove(previous)) unawaited(previous.evict());
+      });
     }
   }
 
@@ -415,7 +503,9 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
       if (address is String && !urlFocus.hasFocus) url.text = address;
     }
     final shot = object(value['screenshot'])['base64'];
-    if (shot is String) {
+    // Accepted foreground operations may finish while hidden. Keep their
+    // control state, without recreating a frame that was already reclaimed.
+    if (shot is String && visible) {
       try {
         showFrame(base64Decode(shot));
       } on FormatException {
@@ -429,8 +519,8 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
     }
   }
 
-  void fail(String name, String code, String message) {
-    error = message;
+  void fail(String name, String code, Object failure) {
+    error = failure;
     if (code == 'COMPUTER_USE_EMERGENCY_STOP_UNAVAILABLE') {
       control = {
         ...?control,
@@ -557,7 +647,7 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
     final text = typing.text;
     if (text.isEmpty || busy || !interactive) return;
     if (text.length > 8192) {
-      setState(() => error = '单次输入最多 8192 个字符');
+      setState(() => error = DshConversationZh.controlInputLimit);
       return;
     }
     final value = await action('type', {'text': text});
@@ -671,14 +761,18 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
       ),
       constraints: const BoxConstraints(minWidth: 240, maxWidth: 420),
       items: [
-        const PopupMenuItem(value: 'desktop', height: 34, child: Text('主显示器')),
+        const PopupMenuItem(
+          value: 'desktop',
+          height: 34,
+          child: Text(DshConversationZh.primaryMonitor),
+        ),
         for (final row in rows)
           PopupMenuItem(
             value: '${row['windowId']}',
             height: 34,
             child: Text(
               '${(row['title'] as String).characters.take(512)}'
-              '${row['windowId'] == current ? ' · 当前' : ''}',
+              '${row['windowId'] == current ? DshConversationZh.currentSuffix : ''}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -687,20 +781,20 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
           const PopupMenuItem(
             enabled: false,
             height: 34,
-            child: Text('没有可用窗口'),
+            child: Text(DshConversationZh.noAvailableWindows),
           ),
       ],
     );
     if (!mounted || generation != epoch || picked == null) return;
     setState(
       () => selectedWindow = picked == 'desktop'
-          ? {'windowId': null, 'title': '主显示器'}
+          ? {'windowId': null, 'title': DshConversationZh.primaryMonitor}
           : rows.firstWhere((row) => '${row['windowId']}' == picked),
     );
   }
 
-  /// Closing the tab ends a session this view started. A session attached
-  /// from model activity or an existing browser stays with its owner.
+  /// Explicitly closes a control session started by this view. Hiding or closing
+  /// the view never calls this action; attached sessions stay with their owner.
   void endSession() {
     if (attachOnly || closed || meta?['enabled'] != true) return;
     unawaited(
@@ -730,19 +824,19 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
     'windowId': state?['windowId'],
     'foreground': state?['foreground'],
     'frame': {'available': frame != null, 'polling': pollInterval != null},
-    'error': error,
+    'error': error == null ? null : DshError.describe(error!).details,
     'capabilities': actions,
   };
 
   String get statusText => !interactive
       ? (state?['connected']) == false
-            ? '连接已断开'
+            ? DshConversationZh.disconnected
             : state != null
-            ? '等待画面'
-            : '未连接'
+            ? DshConversationZh.awaitingFrame
+            : DshConversationZh.notConnected
       : manual
-      ? '人工接管中 · 智能体控制暂停'
-      : '智能体可操作';
+      ? DshConversationZh.humanControlStatus
+      : DshConversationZh.agentControlReady;
 
   Widget button(
     String label,
@@ -754,20 +848,20 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
     height: 28,
     outline: true,
     active: active,
-    fontSize: 12,
+    fontSize: DshTypography.sizeCaption,
     padding: const EdgeInsets.symmetric(horizontal: 10),
     onPressed: onPressed,
     child: Text(label),
   );
 
-  Widget banner(String text, {bool danger = false, Widget? action}) {
+  Widget banner(String text) {
     final colors = DshColors(context);
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: danger ? Colors.red.withValues(alpha: .08) : colors.layer,
+        color: colors.layer,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
@@ -776,12 +870,11 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
             child: Text(
               text,
               style: TextStyle(
-                fontSize: 12,
-                color: danger ? Colors.red.shade700 : colors.muted,
+                fontSize: DshTypography.sizeBody,
+                color: colors.muted,
               ),
             ),
           ),
-          ?action,
         ],
       ),
     );
@@ -798,11 +891,14 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
         child: Center(
           child: Text(
             closed
-                ? '连接已关闭。点击“连接”重新打开。'
+                ? DshConversationZh.controlConnectionClosedHint
                 : error != null
-                ? '暂时无法显示画面'
-                : '正在连接并获取画面…',
-            style: TextStyle(fontSize: 12, color: colors.muted),
+                ? DshConversationZh.frameUnavailable
+                : DshConversationZh.connectingAndFetchingFrame,
+            style: TextStyle(
+              fontSize: DshTypography.sizeCaption,
+              color: colors.muted,
+            ),
           ),
         ),
       );
@@ -826,7 +922,7 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
               return KeyEventResult.ignored;
             },
             child: Semantics(
-              label: '控制画面，操作即接管；画面聚焦时 Esc 暂停智能体',
+              label: DshConversationZh.controlFrameHint,
               child: MouseRegion(
                 cursor: interactive && !busy
                     ? SystemMouseCursors.precise
@@ -857,6 +953,10 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                       fit: BoxFit.fill,
                       gaplessPlayback: true,
                       filterQuality: FilterQuality.medium,
+                      frameBuilder: (_, child, number, _) {
+                        if (number != null) frameDecoded = true;
+                        return child;
+                      },
                     ),
                   ),
                 ),
@@ -871,37 +971,41 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
   Widget diagnostics() {
     final colors = DshColors(context);
     final entries = {
-      '连接': state?['connected'] == true
-          ? '已连接'
+      DshConversationZh.connect: state?['connected'] == true
+          ? DshConversationZh.connected
           : state != null
-          ? '连接中'
-          : '未连接',
-      '适配器': adapter ?? '未选择',
-      '控制权': manual
-          ? '人工接管'
+          ? DshConversationZh.connecting
+          : DshConversationZh.notConnected,
+      DshConversationZh.adapter: adapter ?? DshConversationZh.unselected,
+      DshConversationZh.controlOwnership: manual
+          ? DshConversationZh.humanTakeover
           : control?['mode'] == 'agent'
-          ? '智能体'
-          : '未建立',
-      '画面': viewport == null
-          ? '未收到'
+          ? DshConversationZh.agent
+          : DshConversationZh.notEstablished,
+      DshConversationZh.frame: viewport == null
+          ? DshConversationZh.notReceived
           : '${viewport!.width.round()}×${viewport!.height.round()}',
-      '连接阶段': '${state?['phase'] ?? (state == null ? 'idle' : 'unknown')}',
-      '交互状态': state?['interactive'] == false
-          ? '已暂停'
+      DshConversationZh.connectionPhase:
+          '${state?['phase'] ?? (state == null ? 'idle' : 'unknown')}',
+      DshConversationZh.interactionState: state?['interactive'] == false
+          ? DshConversationZh.paused
           : state?['connected'] == true
-          ? '可操作'
-          : '不可操作',
-      '窗口焦点': state?['foreground'] == true
-          ? '前台'
+          ? DshConversationZh.controllable
+          : DshConversationZh.notControllable,
+      DshConversationZh.windowFocus: state?['foreground'] == true
+          ? DshConversationZh.foreground
           : state?['foreground'] == false
-          ? '后台'
-          : '不适用',
-      '暂停原因': computerUsePauseText(control, state),
-      '控制代次': control?['generation'] is int
+          ? DshConversationZh.background
+          : DshConversationZh.notApplicable,
+      DshConversationZh.pauseReason: computerUsePauseText(control, state),
+      DshConversationZh.controlGeneration: control?['generation'] is int
           ? '${control!['generation']}'
-          : '未提供',
-      '急停快捷键': '${state?['emergencyStopShortcut'] ?? '未提供'}',
-      '能力': actions.isEmpty ? '未声明' : actions.join('、'),
+          : DshConversationZh.unavailable,
+      DshConversationZh.emergencyShortcut:
+          '${state?['emergencyStopShortcut'] ?? DshConversationZh.unavailable}',
+      DshConversationZh.capabilities: actions.isEmpty
+          ? DshConversationZh.undeclared
+          : actions.join('、'),
     };
     // The workbench paints an opaque ColoredBox; the tile needs its own
     // Material to show its ink.
@@ -915,14 +1019,16 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
           tilePadding: EdgeInsets.zero,
           childrenPadding: const EdgeInsets.only(bottom: 8),
           title: Text(
-            '运行诊断 · ${error != null
-                ? '错误'
-                : interactive
-                ? '正常'
-                : state != null
-                ? '等待'
-                : '未连接'}',
-            style: const TextStyle(fontSize: 12),
+            DshConversationZh.runtimeDiagnostics(
+              state: error != null
+                  ? DshConversationZh.error
+                  : interactive
+                  ? DshConversationZh.normal
+                  : state != null
+                  ? DshConversationZh.waiting
+                  : DshConversationZh.notConnected,
+            ),
+            style: const TextStyle(fontSize: DshTypography.sizeCaption),
           ),
           children: [
             for (final entry in entries.entries)
@@ -935,13 +1041,18 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                       width: 72,
                       child: Text(
                         entry.key,
-                        style: TextStyle(fontSize: 11, color: colors.muted),
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                          color: colors.muted,
+                        ),
                       ),
                     ),
                     Expanded(
                       child: SelectableText(
                         entry.value,
-                        style: const TextStyle(fontSize: 11),
+                        style: const TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                        ),
                       ),
                     ),
                   ],
@@ -950,11 +1061,12 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
             Align(
               alignment: Alignment.centerRight,
               child: button(
-                '复制诊断',
+                DshConversationZh.copyDiagnostics,
                 () => Clipboard.setData(
                   ClipboardData(
-                    text: const JsonEncoder.withIndent('  ')
-                        .convert(diagnostic),
+                    text: DshError.redact(
+                      const JsonEncoder.withIndent('  ').convert(diagnostic),
+                    ),
                   ),
                 ),
               ),
@@ -1005,7 +1117,7 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                       value: browserSessionId,
                       options: {
                         for (final name in {browserSessionId, ...sessions})
-                          name: '浏览器会话 $name',
+                          name: DshConversationZh.browserSession(name: name),
                       },
                       onChanged: busy
                           ? null
@@ -1013,7 +1125,10 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                                 bindExisting(value, 'browser', attach: true),
                     ),
                   if (sessions.isNotEmpty || target == 'browser')
-                    button('刷新浏览器会话', busy ? null : refreshSessions),
+                    button(
+                      DshConversationZh.refreshBrowserSessions,
+                      busy ? null : refreshSessions,
+                    ),
                 ],
               ),
             ),
@@ -1023,12 +1138,16 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               button(
-                state == null ? '连接' : '重新连接',
+                state == null
+                    ? DshConversationZh.connect
+                    : DshConversationZh.reconnect,
                 busy ? null : reconnect,
                 key: const ValueKey('computer-use-connect'),
               ),
               button(
-                manual ? '交还智能体' : '人工接管',
+                manual
+                    ? DshConversationZh.returnControlToAgent
+                    : DshConversationZh.humanTakeover,
                 busy || state == null
                     ? null
                     : () => action(manual ? 'resume_agent' : 'takeover', {
@@ -1041,7 +1160,7 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                 KeyedSubtree(
                   key: windowAnchor,
                   child: button(
-                    '选择窗口',
+                    DshConversationZh.selectWindow,
                     busy || state?['connected'] != true ? null : chooseWindow,
                   ),
                 ),
@@ -1049,14 +1168,14 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                   state?['windowId'] != null &&
                   actions.contains('focus_window'))
                 button(
-                  '激活窗口',
+                  DshConversationZh.activateWindow,
                   busy || state?['connected'] != true
                       ? null
                       : () => action('focus_window'),
                 ),
               if (desktop)
                 button(
-                  '自动刷新',
+                  DshConversationZh.autoRefresh,
                   state?['connected'] != true
                       ? null
                       : () {
@@ -1066,13 +1185,16 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                   active: liveDesktop,
                 )
               else
-                button('自动刷新', () {
+                button(DshConversationZh.autoRefresh, () {
                   setState(() => autoRefresh = !autoRefresh);
                   schedulePoll();
                 }, active: autoRefresh),
-              button('刷新画面', busy ? null : () => action('capture')),
               button(
-                '关闭会话',
+                DshConversationZh.refreshFrame,
+                busy ? null : () => action('capture'),
+              ),
+              button(
+                DshConversationZh.closeControlSession,
                 busy || state == null
                     ? null
                     : () => action('close', {'includeScreenshot': false}),
@@ -1081,21 +1203,24 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
               Text(
                 statusText,
                 key: const ValueKey('computer-use-status'),
-                style: TextStyle(fontSize: 12, color: colors.muted),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             ],
           ),
           if (nativeDesktop &&
               window != null &&
               window['windowId'] != state?['windowId'])
-            banner('已选择：${window['title']} · 重新连接后切换'),
+            banner(DshConversationZh.windowSelected(title: window['title'])),
           if (!desktop)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Row(
                 children: [
                   button(
-                    '后退',
+                    DshConversationZh.back,
                     busy || state == null
                         ? null
                         : () => action('click', {
@@ -1110,31 +1235,34 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                       key: const ValueKey('computer-use-url'),
                       controller: url,
                       focusNode: urlFocus,
-                      hint: '受控浏览器地址',
+                      hint: DshConversationZh.controlledBrowserAddress,
                       onSubmitted: (_) => navigate(),
                     ),
                   ),
                   const SizedBox(width: 6),
-                  button('转到', busy ? null : navigate),
+                  button(DshConversationZh.navigate, busy ? null : navigate),
                 ],
               ),
             ),
           if (desktop)
             banner(
               adapter == 'uu-desktop'
-                  ? 'UU 远程 · 全局急停 ${state?['emergencyStopShortcut'] ?? '尚未确认'}；画面聚焦时 Esc 暂停智能体。'
-                  : '本机桌面 · 与本机共用键鼠；操作其他窗口也会暂停智能体，避免争抢鼠标或将内容输入错误窗口。',
+                  ? DshConversationZh.remoteEmergencyHint(
+                      shortcut:
+                          state?['emergencyStopShortcut'] ??
+                          DshConversationZh.unconfirmed,
+                    )
+                  : DshConversationZh.localDesktopTakeoverHint,
             ),
           if (manual)
-            banner('智能体控制暂停 · ${computerUsePauseText(control, state)}'),
-          if (error != null)
             banner(
-              error!,
-              danger: true,
-              action: disabled && widget.onOpenSettings != null
-                  ? button('打开设置', widget.onOpenSettings)
-                  : null,
+              DshConversationZh.controlPaused(
+                reason: computerUsePauseText(control, state),
+              ),
             ),
+          if (error != null) DshErrorView(error: error!),
+          if (error != null && disabled && widget.onOpenSettings != null)
+            button(DshConversationZh.openSettings, widget.onOpenSettings),
           const SizedBox(height: 8),
           DecoratedBox(
             decoration: BoxDecoration(
@@ -1155,14 +1283,17 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                   controller: typing,
                   focusNode: typingFocus,
                   secret: privateInput,
-                  hint: '输入到当前焦点',
+                  hint: DshConversationZh.typeIntoFocusedTarget,
                   onSubmitted: (_) => sendText(),
                 ),
               ),
               const SizedBox(width: 6),
-              button('输入', busy || !interactive ? null : sendText),
+              button(
+                DshConversationZh.input,
+                busy || !interactive ? null : sendText,
+              ),
               const SizedBox(width: 6),
-              button('私密输入', () {
+              button(DshConversationZh.privateInput, () {
                 setState(() => privateInput = !privateInput);
                 takeover();
               }, active: privateInput),
@@ -1184,20 +1315,28 @@ class ComputerUsePanelState extends State<ComputerUsePanel>
                         }),
                 ),
               button(
-                '向上',
+                DshConversationZh.scrollUp,
                 busy || !interactive
                     ? null
                     : () => action('scroll', {'deltaY': -540}),
               ),
               button(
-                '向下',
+                DshConversationZh.scrollDown,
                 busy || !interactive
                     ? null
                     : () => action('scroll', {'deltaY': 540}),
               ),
               Text(
-                '${adapter ?? '未连接'} · ${state == null ? '会话 $browserSessionId' : '${state!['targetTitle'] ?? state!['title'] ?? state!['url'] ?? ''}${viewport == null ? '' : ' · ${viewport!.width.round()}×${viewport!.height.round()}'}'}',
-                style: TextStyle(fontSize: 11, color: colors.muted),
+                DshConversationZh.controlTargetSummary(
+                  adapter: adapter ?? DshConversationZh.notConnected,
+                  target: state == null
+                      ? DshConversationZh.namedSession(id: browserSessionId)
+                      : '${state!['targetTitle'] ?? state!['title'] ?? state!['url'] ?? ''}${viewport == null ? '' : ' · ${viewport!.width.round()}×${viewport!.height.round()}'}',
+                ),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             ],
           ),

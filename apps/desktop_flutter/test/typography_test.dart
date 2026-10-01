@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:dsh_desktop/design/primitives.dart';
 import 'package:dsh_desktop/design/typography.dart';
-import 'package:dsh_desktop/design/icon_assets.dart';
 import 'package:dsh_desktop/design/select.dart';
 
 void main() {
@@ -27,11 +27,17 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(tester.getSize(find.byType(DshSwitch)), const Size(36, 22));
+      expect(tester.getSize(find.byType(DshSwitch)), const Size(36, 36));
+      expect(tester.getSize(find.byType(ShadSwitch)), const Size(36, 22));
       await tester.sendKeyEvent(LogicalKeyboardKey.tab);
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pumpAndSettle();
       expect(value, isTrue);
+      await tester.tapAt(
+        tester.getTopLeft(find.byType(DshSwitch)) + const Offset(1, 1),
+      );
+      await tester.pumpAndSettle();
+      expect(value, isFalse);
       expect(tester.takeException(), isNull);
     },
   );
@@ -39,12 +45,12 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const ShadApp(
+      ShadApp(
         home: Scaffold(
           body: Center(
             child: SizedBox(
               width: 400,
-              child: DshField(prefix: LucideIcons.search, hint: '搜索会话'),
+              child: DshField(prefix: DshIcons.search.data, hint: '搜索会话'),
             ),
           ),
         ),
@@ -65,7 +71,7 @@ void main() {
             body: Center(
               child: StatefulBuilder(
                 builder: (context, setState) => DshSelect<String>(
-                  options: const {'queue': '排队发送', 'steer': '立即引导'},
+                  options: const {'queue': '加入队列', 'steer': '补充当前执行'},
                   value: value,
                   onChanged: (v) => setState(() => value = v),
                 ),
@@ -77,17 +83,17 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.getSize(find.byType(DshSelect<String>)).height, 36);
       expect(tester.getSize(find.byType(SvgPicture)), const Size(14, 14));
-      await tester.tap(find.text('排队发送'));
+      await tester.tap(find.text('加入队列'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('立即引导'));
+      await tester.tap(find.text('补充当前执行'));
       await tester.pumpAndSettle();
       expect(value, 'steer');
-      expect(find.text('立即引导'), findsOneWidget);
+      expect(find.text('补充当前执行'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
   testWidgets(
-    'compact archive buttons preserve requested control and vector sizes',
+    'archive buttons retain the primary minimum without enlarging vectors',
     (tester) async {
       await tester.pumpWidget(
         ShadApp(
@@ -98,7 +104,7 @@ void main() {
                 pill: true,
                 height: 32,
                 fontSize: 13,
-                icon: LucideIcons.archive,
+                icon: DshIcons.archive.data,
                 onPressed: () {},
                 child: const Text('恢复'),
               ),
@@ -107,12 +113,14 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(tester.getSize(find.byType(DshButton)).height, 32);
+      expect(tester.getSize(find.byType(DshButton)).height, 40);
       expect(tester.getSize(find.byType(SvgPicture)), const Size(16, 16));
       expect(tester.takeException(), isNull);
     },
   );
   test('web typography is explicit for Latin and Chinese glyphs', () {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     expect(DshTypography.body.fontSize, 14);
     expect(DshTypography.body.height, 22 / 14);
     expect(DshTypography.composer.fontSize, 16);
@@ -133,13 +141,13 @@ void main() {
     'core navigation uses shipped vectors rather than icon font glyphs',
     (tester) async {
       final icons = [
-        LucideIcons.settings,
-        LucideIcons.circlePlus,
-        LucideIcons.search,
-        LucideIcons.paperclip,
-        LucideIcons.brain,
-        LucideIcons.users,
-        LucideIcons.database,
+        DshIcons.settings.data,
+        DshIcons.newSession.data,
+        DshIcons.search.data,
+        DshIcons.attach.data,
+        DshIcons.brain.data,
+        DshIcons.users.data,
+        DshIcons.database.data,
       ];
       await tester.pumpWidget(
         ShadApp(
@@ -151,7 +159,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(SvgPicture), findsNWidgets(icons.length));
       for (final icon in icons) {
-        final svg = await rootBundle.loadString(dshIconAssets[icon.codePoint]!);
+        final svg = await rootBundle.loadString(DshIcons.assetFor(icon)!);
         expect(svg, contains('<svg'));
         expect(svg, contains('<path'));
         expect(svg, isNot(contains('data:image')));

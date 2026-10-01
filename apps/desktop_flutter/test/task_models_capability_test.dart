@@ -105,12 +105,12 @@ void main() {
     );
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.text('保存任务模型'),
+      find.text('保存辅助模型'),
       300,
       scrollable: find.byType(Scrollable).first,
     );
     final button = tester.widget<DshButton>(
-      find.ancestor(of: find.text('保存任务模型'), matching: find.byType(DshButton)),
+      find.ancestor(of: find.text('保存辅助模型'), matching: find.byType(DshButton)),
     );
     expect(button.onPressed, isNull);
     expect(api.saves, isEmpty);
@@ -126,33 +126,33 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('保存任务模型'),
+        find.text('保存辅助模型'),
         300,
         scrollable: find.byType(Scrollable).first,
       );
       await Scrollable.ensureVisible(
         tester.element(
           find.ancestor(
-            of: find.text('保存任务模型'),
+            of: find.text('保存辅助模型'),
             matching: find.byType(DshButton),
           ),
         ),
         alignment: 0.5,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('保存任务模型'));
+      await tester.tap(find.text('保存辅助模型'));
       await tester.pumpAndSettle();
       await Scrollable.ensureVisible(
         tester.element(
           find.ancestor(
-            of: find.text('保存任务模型'),
+            of: find.text('保存辅助模型'),
             matching: find.byType(DshButton),
           ),
         ),
         alignment: 0.5,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('保存任务模型'));
+      await tester.tap(find.text('保存辅助模型'));
       await tester.pumpAndSettle();
       expect(api.saves.map((s) => s['revision']), [4, 5]);
       expect(

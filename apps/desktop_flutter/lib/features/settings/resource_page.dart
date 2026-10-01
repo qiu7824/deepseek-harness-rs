@@ -1,16 +1,24 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+import '../../l10n/conversation_zh.dart';
+import '../../l10n/plugin_settings_zh.dart';
+
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:dsh_client/dsh_client.dart';
 
 import '../../design/primitives.dart';
+import '../../design/loading.dart';
 import '../../design/select.dart';
 import '../../src/controller.dart';
 import 'learning_panel.dart';
 import 'plugin_operations_panel.dart';
+import 'plugin_inventory_row.dart';
 import 'time_context_panel.dart';
 import 'skill_revisions_page.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class SettingsResourcePage extends StatefulWidget {
   const SettingsResourcePage({
@@ -19,21 +27,28 @@ class SettingsResourcePage extends StatefulWidget {
     required this.page,
     this.footer,
     this.onOpenPlugin,
+    this.workspace = false,
   });
   final DesktopController controller;
   final String page;
   final Widget? footer;
   final ValueChanged<Json>? onOpenPlugin;
+  final bool workspace;
   @override
   State<SettingsResourcePage> createState() => _SettingsResourcePageState();
 }
 
 class _SettingsResourcePageState extends State<SettingsResourcePage> {
+  late final DesktopController boundController;
   DshClient? boundApi;
+  HostInfo? boundHost;
   bool get staleConnection =>
-      boundApi == null || widget.controller.client != boundApi;
+      boundApi == null ||
+      !identical(widget.controller, boundController) ||
+      !identical(widget.controller.client, boundApi) ||
+      !identical(widget.controller.host, boundHost);
   DshClient get api {
-    if (staleConnection) throw StateError('连接已变化，请关闭后重新打开设置。');
+    if (staleConnection) throw StateError(DshSettingsZh.connectionChanged);
     return boundApi!;
   }
 
@@ -46,9 +61,17 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
   @override
   void initState() {
     super.initState();
+    boundController = widget.controller;
     boundApi = widget.controller.client;
+    boundHost = widget.controller.host;
     widget.controller.addListener(connectionChanged);
     load();
+  }
+
+  @override
+  void didUpdateWidget(SettingsResourcePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    connectionChanged();
   }
 
   void connectionChanged() {
@@ -57,14 +80,14 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
       loadGeneration++;
       setState(() {
         loading = false;
-        error = '连接已变化，请关闭后重新打开设置。';
+        error = DshSettingsZh.connectionChanged;
       });
     }
   }
 
   @override
   void dispose() {
-    widget.controller.removeListener(connectionChanged);
+    boundController.removeListener(connectionChanged);
     scope.cancel();
     search.dispose();
     super.dispose();
@@ -93,7 +116,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             _ => 'memory.list',
           }, scope: scope);
       }
-      if (mounted && generation == loadGeneration) {
+      if (mounted && !staleConnection && generation == loadGeneration) {
         setState(() {
           data = result;
           loading = false;
@@ -101,7 +124,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         });
       }
     } catch (e) {
-      if (mounted && generation == loadGeneration) {
+      if (mounted && !staleConnection && generation == loadGeneration) {
         setState(() {
           error = '$e';
           loading = false;
@@ -130,23 +153,37 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
   @override
   Widget build(BuildContext context) {
     final title = {
-      'plugins': '插件',
-      'presets': 'Agent 预设',
-      'skills': '技能与 MCP',
-      'archive': '归档会话',
-      'memory': '记忆与上下文',
-      'discovery': '工具发现',
+      'plugins': DshSettingsZh.plugins,
+      'presets': DshSettingsZh.agentPresets,
+      'skills': DshSettingsZh.skillsMcp,
+      'archive': DshSettingsZh.archivedSessions,
+      'memory': DshSettingsZh.memoryContext,
+      'discovery': DshSettingsZh.toolDiscovery,
     }[widget.page]!;
     final query = search.text.toLowerCase();
-    var entries = objects(data['entries'] ?? data['presets'] ?? data['skills']);
-    entries = entries
+    final inventory = objects(data['entries'] ?? data['presets'] ?? data['skills'])
         .where(
-          (e) =>
-              '${e['name']} ${e['title']} ${e['moduleName']} ${e['description']}'
-                  .toLowerCase()
-                  .contains(query),
+          (entry) =>
+              widget.page != 'plugins' ||
+              !DshPluginSettingsZh.retired(
+                '${entry['moduleName'] ?? entry['id'] ?? entry['entryId'] ?? ''}',
+              ),
         )
         .toList();
+    bool matches(Json entry) =>
+        '${entry['name']} ${entry['title']} ${entry['moduleName']} '
+                '${entry['entryId']} ${entry['id']} ${entry['description']} '
+                '${DshPluginSettingsZh.title('${entry['moduleName'] ?? ''}', '')}'
+            .toLowerCase()
+            .contains(query);
+    final entries = inventory.where(matches).toList();
+    if (widget.page == 'plugins' && widget.workspace) {
+      return pluginWorkspace(inventory, entries, matches);
+    }
+    final visibleRows = widget.page == 'plugins' ? inventory : entries;
+    Key pluginKey(Json entry) => ValueKey(
+      'plugin-${entry['entryId'] ?? entry['id'] ?? entry['moduleName']}',
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -156,24 +193,24 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
               child: Text(
                 title,
                 style: const TextStyle(
-                  fontSize: 16,
+                  fontSize: DshTypography.sizeComposer,
                   fontWeight: FontWeight.w500,
                 ),
               ),
             ),
             DshIcon(
-              LucideIcons.refreshCw,
-              label: '刷新',
-              onPressed: loading || busy ? null : load,
+              DshIcons.refreshCw.data,
+              label: DshSettingsZh.refresh,
+              onPressed: loading || busy || staleConnection ? null : load,
             ),
             if (widget.page == 'plugins')
               DshButton(
                 outline: true,
-                icon: LucideIcons.puzzle,
+                icon: DshIcons.puzzle.data,
                 onPressed: busy || pluginManagerOpen || staleConnection
                     ? null
                     : openPluginManager,
-                child: const Text('安装与维护'),
+                child: const Text(DshSettingsZh.installationMaintenance),
               ),
             if (widget.page == 'skills')
               DshButton(
@@ -197,23 +234,23 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                           ),
                         ),
                       ),
-                child: const Text('版本与验证'),
+                child: const Text(DshSettingsZh.revisionsValidation),
               ),
             if (widget.page == 'skills')
               DshButton(
                 outline: true,
-                icon: LucideIcons.plus,
+                icon: DshIcons.plus.data,
                 onPressed: loading || busy ? null : () => editSkill(),
-                child: const Text('添加技能'),
+                child: const Text(DshSettingsZh.addSkill),
               ),
           ],
         ),
         const SizedBox(height: 16),
         if (widget.page == 'archive')
           Text(
-            '归档只会隐藏会话，完整记录仍会保留。你可以恢复或永久删除记录。',
+            DshSettingsZh.archiveHint,
             style: TextStyle(
-              fontSize: 13,
+              fontSize: DshTypography.sizeAuxiliary,
               height: 1.6,
               color: DshColors(context).muted,
             ),
@@ -221,31 +258,55 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         else
           DshField(
             controller: search,
-            hint: '搜索$title',
-            prefix: LucideIcons.search,
+            hint: DshSettingsZh.searchItems(title: title),
+            prefix: DshIcons.search.data,
             onChanged: (_) => setState(() {}),
           ),
         const SizedBox(height: 12),
-        if (error != null)
-          Text(error!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+        if (error != null) DshErrorView(error: error!),
         if (notice != null)
           Text(
             notice!,
-            style: TextStyle(color: DshColors(context).blue, fontSize: 12),
+            style: TextStyle(
+              color: DshColors(context).blue,
+              fontSize: DshTypography.sizeCaption,
+            ),
           ),
-        if (busy) const LinearProgressIndicator(minHeight: 2),
+        if (busy || loading && data.isNotEmpty)
+          const LinearProgressIndicator(minHeight: 2),
         Expanded(
-          child: loading
-              ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          child: loading && data.isEmpty
+              ? DshListSkeleton(
+                  label: DshConversationZh.loadingList(name: title),
+                )
               : ListView.builder(
+                  padding: const EdgeInsets.only(right: 16, bottom: 16),
+                  findChildIndexCallback: widget.page != 'plugins'
+                      ? null
+                      : (key) {
+                          final index = inventory.indexWhere(
+                            (entry) => pluginKey(entry) == key,
+                          );
+                          return index < 0 ? null : index;
+                        },
                   itemCount:
-                      entries.length +
+                      visibleRows.length +
                       (widget.page == 'memory' ? 1 : 0) +
                       (widget.page == 'skills' ? 1 : 0) +
                       (widget.footer != null ? 1 : 0) +
                       (widget.page == 'discovery' ? 1 : 0),
                   itemBuilder: (context, i) {
-                    if (i < entries.length) return row(entries[i]);
+                    if (i < visibleRows.length) {
+                      final entry = visibleRows[i];
+                      if (widget.page != 'plugins') return row(entry);
+                      // Visited configuration editors retain their own state;
+                      // ordinary rows still use the list's lazy lifecycle.
+                      return Offstage(
+                        key: pluginKey(entry),
+                        offstage: !matches(entry),
+                        child: row(entry),
+                      );
+                    }
                     if (widget.page == 'memory' && i == entries.length) {
                       return LearningPanel(controller: widget.controller);
                     }
@@ -263,20 +324,221 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             widget.page != 'memory' &&
             widget.page != 'skills' &&
             widget.page != 'discovery')
-          const Padding(
-            padding: EdgeInsets.all(20),
-            child: Text('暂无记录', style: TextStyle(color: Colors.grey)),
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Text(
+              DshSettingsZh.noRecords,
+              style: TextStyle(color: DshTokens.of(context).muted),
+            ),
           ),
       ],
     );
   }
 
+  Widget pluginWorkspace(
+    List<Json> inventory,
+    List<Json> entries,
+    bool Function(Json) matches,
+  ) {
+    final colors = DshColors(context);
+    Key pluginKey(Json entry) => ValueKey(
+      'plugin-${entry['entryId'] ?? entry['id'] ?? entry['moduleName']}',
+    );
+    final heading = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(DshSettingsZh.plugins, style: DshTypography.headline),
+        const SizedBox(height: 6),
+        Text(
+          DshPluginSettingsZh.pageHint,
+          style: DshTypography.auxiliary.copyWith(color: colors.muted),
+        ),
+      ],
+    );
+    final actions = Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        DshIcon(
+          DshIcons.refreshCw.data,
+          label: DshSettingsZh.refresh,
+          onPressed: loading || busy || staleConnection ? null : load,
+        ),
+        FilledButton.icon(
+          key: const ValueKey('plugin-add'),
+          onPressed: busy || pluginManagerOpen || staleConnection
+              ? null
+              : openPluginManager,
+          style: FilledButton.styleFrom(
+            backgroundColor: colors.text,
+            foregroundColor: colors.base,
+            textStyle: DshTypography.body.copyWith(fontWeight: FontWeight.w500),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          icon: DshGlyph(DshIcons.plus.data, color: colors.base, size: 16),
+          label: const Text(DshPluginSettingsZh.addPlugin),
+        ),
+      ],
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final stacked =
+                constraints.maxWidth < 560 ||
+                MediaQuery.textScalerOf(context).scale(26) > 36;
+            if (stacked) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [heading, const SizedBox(height: 14), actions],
+              );
+            }
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: heading),
+                actions,
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 24),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: DshField(
+              controller: search,
+              hint: DshPluginSettingsZh.searchPlugins,
+              prefix: DshIcons.search.data,
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                DshPluginSettingsZh.currentHost,
+                style: DshTypography.body.copyWith(fontWeight: FontWeight.w500),
+              ),
+            ),
+            Text(
+              DshPluginSettingsZh.configuredCount(entries.length),
+              style: DshTypography.caption.copyWith(color: colors.muted),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (error != null) DshErrorView(error: error!),
+        if (busy || loading && data.isNotEmpty)
+          const LinearProgressIndicator(minHeight: 2),
+        Expanded(
+          child: loading && data.isEmpty
+              ? const DshListSkeleton(label: DshSettingsZh.plugins)
+              : ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  findChildIndexCallback: (key) {
+                    final index = inventory.indexWhere(
+                      (entry) => pluginKey(entry) == key,
+                    );
+                    return index < 0 ? null : index;
+                  },
+                  itemCount: inventory.length + (widget.footer == null ? 0 : 1),
+                  itemBuilder: (context, index) {
+                    if (index == inventory.length) return widget.footer!;
+                    final entry = inventory[index];
+                    return Offstage(
+                      key: pluginKey(entry),
+                      offstage: !matches(entry),
+                      child: pluginWorkspaceRow(entry),
+                    );
+                  },
+                ),
+        ),
+        if (!loading && entries.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Text(
+              DshSettingsZh.noRecords,
+              style: DshTypography.auxiliary.copyWith(color: colors.muted),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget pluginWorkspaceRow(Json entry) {
+    final moduleName = DshPluginSettingsZh.canonical(
+      '${entry['moduleName'] ?? entry['id'] ?? entry['entryId'] ?? ''}',
+    );
+    final canOpen =
+        widget.onOpenPlugin != null &&
+        entry['enabled'] == true &&
+        const {
+          'dsh-artifacts',
+          'dsh-context-jump',
+          'dsh-better-sidebar',
+          'dsh-sidebar-workbench-suite',
+          'dsh-voice-input',
+        }.contains(moduleName);
+    Widget inventoryRow({VoidCallback? configure, bool expanded = false}) =>
+        PluginInventoryRow(
+          key: ValueKey('plugin-row-${entry['entryId'] ?? moduleName}'),
+          entry: entry,
+          expanded: expanded,
+          onConfigure: configure,
+          onOpen: canOpen && !staleConnection
+              ? () {
+                  if (!staleConnection) widget.onOpenPlugin!(entry);
+                }
+              : null,
+          onEnabledChanged:
+              busy || staleConnection || entry['entryId'] is! String
+              ? null
+              : (value) => action(() async {
+                  await api.rpc(
+                    'pluginInventory.setEnabled',
+                    payload: {'entryId': entry['entryId'], 'enabled': value},
+                    mutation: true,
+                    scope: scope,
+                  );
+                  if (!staleConnection) await widget.controller.loadPlugins();
+                }),
+        );
+    if (moduleName == 'dsh-time-context' && entry['entryId'] is String) {
+      return _TimeContextPluginSection(
+        controller: widget.controller,
+        entryId: entry['entryId'] as String,
+        enabled: entry['enabled'] == true,
+        canConfigure: () => mounted && !staleConnection,
+        workspace: true,
+        entry: inventoryRow(),
+        entryBuilder: (configure, expanded) =>
+            inventoryRow(configure: configure, expanded: expanded),
+      );
+    }
+    return inventoryRow();
+  }
+
   Widget row(Json row) {
     if (widget.page == 'archive') return archiveRow(row);
-    final title =
+    final rawTitle =
         '${row['name'] ?? row['title'] ?? row['moduleName'] ?? row['id'] ?? row['sessionId']}';
+    final plugin = widget.page == 'plugins';
+    final moduleName =
+        '${row['moduleName'] ?? row['id'] ?? row['entryId'] ?? ''}';
+    final title = plugin
+        ? DshPluginSettingsZh.title(moduleName, rawTitle)
+        : rawTitle;
     final description = displayPathText(
-      '${row['description'] ?? row['content'] ?? row['cwd'] ?? row['fiberPhase'] ?? row['trust'] ?? ''}',
+      '${row['description'] ?? row['content'] ?? row['cwd'] ?? row['trust'] ?? ''}',
     );
     final entry = Container(
       padding: const EdgeInsets.symmetric(vertical: 12),
@@ -293,10 +555,39 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                 Text(
                   title,
                   style: const TextStyle(
-                    fontSize: 14,
+                    fontSize: DshTypography.sizeBody,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
+                if (plugin && moduleName.isNotEmpty && moduleName != title)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: SelectableText(
+                      moduleName,
+                      style: TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        color: DshColors(context).muted,
+                      ),
+                    ),
+                  ),
+                if (plugin)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 5),
+                    child: Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: [
+                        Text(
+                          DshPluginSettingsZh.configured(
+                            row['enabled'] == true,
+                          ),
+                        ),
+                        Text(
+                          DshPluginSettingsZh.runtimeStatus(row['fiberPhase']),
+                        ),
+                      ],
+                    ),
+                  ),
                 if (description.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 5),
@@ -305,7 +596,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                       maxLines: 3,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: DshTypography.sizeCaption,
                         height: 1.5,
                         color: DshColors(context).muted,
                       ),
@@ -330,25 +621,36 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                   outline: true,
                   height: 28,
                   padding: const EdgeInsets.symmetric(horizontal: 9),
-                  onPressed: () => widget.onOpenPlugin!(row),
+                  onPressed: staleConnection
+                      ? null
+                      : () {
+                          if (!staleConnection) widget.onOpenPlugin!(row);
+                        },
                   child: Text(
                     '${row['id'] ?? row['entryId'] ?? ''}'.contains('voice')
-                        ? '使用语音输入'
-                        : '打开插件',
-                    style: const TextStyle(fontSize: 12),
+                        ? DshSettingsZh.voiceInput
+                        : DshSettingsZh.openPlugin,
+                    style: const TextStyle(fontSize: DshTypography.sizeCaption),
                   ),
                 ),
-              DshSwitch(
-                value: row['enabled'] == true,
-                onChanged: busy
-                    ? null
-                    : (v) => action(() async {
-                        await api.call('pluginInventory.setEnabled', {
-                          'entryId': row['entryId'],
-                          'enabled': v,
-                        }, true);
-                        await widget.controller.loadPlugins();
-                      }),
+              Semantics(
+                label: DshPluginSettingsZh.toggle(title),
+                child: DshSwitch(
+                  value: row['enabled'] == true,
+                  onChanged: busy || staleConnection
+                      ? null
+                      : (v) => action(() async {
+                          await api.rpc(
+                            'pluginInventory.setEnabled',
+                            payload: {'entryId': row['entryId'], 'enabled': v},
+                            mutation: true,
+                            scope: scope,
+                          );
+                          if (!staleConnection) {
+                            await widget.controller.loadPlugins();
+                          }
+                        }),
+                ),
               ),
             ],
             'skills' => [
@@ -366,14 +668,14 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
               ),
               if (row['managed'] == true)
                 DshIcon(
-                  LucideIcons.pencil,
-                  label: '编辑技能',
+                  DshIcons.pencil.data,
+                  label: DshSettingsZh.editSkill,
                   onPressed: busy ? null : () => editSkill(row),
                 ),
               if (row['managed'] == true)
                 DshIcon(
-                  LucideIcons.trash2,
-                  label: '移除技能',
+                  DshIcons.trash2.data,
+                  label: DshSettingsZh.removeSkill,
                   onPressed: busy
                       ? null
                       : () => removeCapability(row, skill: true),
@@ -381,13 +683,13 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             ],
             'presets' => [
               DshIcon(
-                LucideIcons.fileText,
-                label: '查看预设',
+                DshIcons.fileText.data,
+                label: DshSettingsZh.viewPreset,
                 onPressed: () => viewPreset(row),
               ),
               DshIcon(
-                LucideIcons.copy,
-                label: '复制预设',
+                DshIcons.copy.data,
+                label: DshSettingsZh.copyPreset,
                 onPressed: () => copyPreset(row),
               ),
             ],
@@ -404,21 +706,21 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                       }),
               ),
               DshIcon(
-                LucideIcons.pencil,
-                label: '编辑记忆',
+                DshIcons.pencil.data,
+                label: DshSettingsZh.editMemory,
                 onPressed: busy ? null : () => editMemory(row),
               ),
               DshIcon(
-                LucideIcons.trash2,
-                label: '删除记忆',
+                DshIcons.trash2.data,
+                label: DshSettingsZh.deleteMemory,
                 onPressed: busy
                     ? null
                     : () async {
                         if (await confirmAction(
                           context,
-                          '删除记忆',
+                          DshSettingsZh.deleteMemory,
                           title,
-                          action: '删除',
+                          action: DshSettingsZh.delete,
                         )) {
                           await action(() async {
                             await api.call('memory.remove', {
@@ -441,16 +743,12 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
           '@deepseek-ai/dsh-time-context',
         }.contains(row['moduleName']) &&
         row['entryId'] is String) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          entry,
-          TimeContextPanel(
-            key: ValueKey('time-context-${row['entryId']}'),
-            controller: widget.controller,
-            entryId: row['entryId'] as String,
-          ),
-        ],
+      return _TimeContextPluginSection(
+        controller: widget.controller,
+        entryId: row['entryId'] as String,
+        enabled: row['enabled'] == true,
+        canConfigure: () => mounted && !staleConnection,
+        entry: entry,
       );
     }
     return entry;
@@ -474,16 +772,16 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                     children: [
                       const Expanded(
                         child: Text(
-                          '插件安装与维护',
+                          DshSettingsZh.pluginMaintenance,
                           style: TextStyle(
-                            fontSize: 18,
+                            fontSize: DshTypography.sizeSectionTitle,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                       DshIcon(
-                        LucideIcons.x,
-                        label: '关闭插件管理',
+                        DshIcons.close.data,
+                        label: DshSettingsZh.closePluginManagement,
                         onPressed: () => Navigator.of(dialogContext).pop(),
                       ),
                     ],
@@ -515,7 +813,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         .where((w) => w['path'] == row['cwd'])
         .firstOrNull;
     final label =
-        '${workspace?['title'] ?? cwd.split('/').where((s) => s.isNotEmpty).lastOrNull ?? '未分组'}';
+        '${workspace?['title'] ?? cwd.split('/').where((s) => s.isNotEmpty).lastOrNull ?? DshSettingsZh.ungrouped}';
     final updated = (row['updatedAt'] as num?)?.toInt() ?? 0;
     final time = updated > 0
         ? DateTime.fromMillisecondsSinceEpoch(updated)
@@ -538,14 +836,17 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${row['title'] ?? '未命名会话'}',
-                  style: const TextStyle(fontSize: 14, height: 22 / 14),
+                  '${row['title'] ?? DshSettingsZh.unnamedSession}',
+                  style: const TextStyle(
+                    fontSize: DshTypography.sizeBody,
+                    height: 22 / 14,
+                  ),
                 ),
                 const SizedBox(height: 5),
                 Text(
-                  '$label${time.isEmpty ? '' : '   更新于 $time'}',
+                  '$label${time.isEmpty ? '' : DshSettingsZh.updatedAtSuffix(time: time)}',
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: DshTypography.sizeCaption,
                     height: 1.5,
                     color: colors.muted,
                   ),
@@ -558,7 +859,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             primary: true,
             pill: true,
             height: 32,
-            fontSize: 13,
+            fontSize: DshTypography.sizeAuxiliary,
             onPressed: busy
                 ? null
                 : () => action(
@@ -567,7 +868,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                       restore: true,
                     ),
                   ),
-            child: const Text('恢复'),
+            child: const Text(DshSettingsZh.restore),
           ),
           const SizedBox(width: 8),
           DshButton(
@@ -575,15 +876,17 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             destructive: true,
             pill: true,
             height: 32,
-            fontSize: 13,
+            fontSize: DshTypography.sizeAuxiliary,
             onPressed: busy
                 ? null
                 : () async {
                     if (await confirmAction(
                       context,
-                      '永久删除“${row['title'] ?? '未命名会话'}”？',
-                      '此操作会永久删除此会话及其所有子智能体的历史记录，并移除对应列表引用；独立分支会话和工作区文件保留，无法恢复。',
-                      action: '永久删除',
+                      DshSettingsZh.permanentDeleteTitle(
+                        title: row['title'] ?? DshSettingsZh.unnamedSession,
+                      ),
+                      DshSettingsZh.permanentDeleteHint,
+                      action: DshSettingsZh.permanentDelete,
                     )) {
                       await action(() async {
                         await api.call('workspace.deleteArchivedSession', {
@@ -592,7 +895,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                       });
                     }
                   },
-            child: const Text('删除'),
+            child: const Text(DshSettingsZh.delete),
           ),
         ],
       ),
@@ -607,15 +910,15 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         children: [
           const Expanded(
             child: Text(
-              'MCP 服务器',
+              DshSettingsZh.mcpServers,
               style: TextStyle(fontWeight: FontWeight.w600),
             ),
           ),
           DshButton(
             outline: true,
             onPressed: loading || busy ? null : () => editServer(),
-            icon: LucideIcons.plus,
-            child: const Text('添加服务器'),
+            icon: DshIcons.plus.data,
+            child: const Text(DshSettingsZh.addServer),
           ),
         ],
       ),
@@ -629,11 +932,23 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
           contentPadding: EdgeInsets.zero,
           title: Text(
             '${server['name']}',
-            style: const TextStyle(fontSize: 14),
+            style: const TextStyle(fontSize: DshTypography.sizeBody),
           ),
           subtitle: Text(
-            '${server['error'] ?? const {'connected': '已连接', 'disabled': '已停用', 'error': '连接失败', 'pending': '等待连接'}[server['status']] ?? server['transport']} · ${server['toolCount'] ?? 0} 个工具${server['hasSecrets'] == true ? ' · 已配置凭证' : ''}',
-            style: const TextStyle(fontSize: 12),
+            DshSettingsZh.serverStatus(
+              status:
+                  server['error'] ??
+                  const {
+                    'connected': DshSettingsZh.connected,
+                    'disabled': DshSettingsZh.disabled,
+                    'error': DshSettingsZh.connectionFailed,
+                    'pending': DshSettingsZh.awaitingConnection,
+                  }[server['status']] ??
+                  server['transport'],
+              tools: server['toolCount'] ?? 0,
+              hasSecrets: server['hasSecrets'] == true,
+            ),
+            style: const TextStyle(fontSize: DshTypography.sizeCaption),
           ),
           trailing: Wrap(
             children: [
@@ -650,26 +965,28 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                             result['error'] != null) {
                           throw DshException(
                             'mcp-connection',
-                            '${result['error'] ?? '连接失败'}',
+                            '${result['error'] ?? DshSettingsZh.connectionFailed}',
                           );
                         }
                         if (mounted) {
                           setState(
-                            () => notice =
-                                '${server['name']} 连接成功，可用工具 ${result['toolCount'] ?? 0} 个',
+                            () => notice = DshSettingsZh.mcpTestSucceeded(
+                              name: server['name'],
+                              count: result['toolCount'] ?? 0,
+                            ),
                           );
                         }
                       }),
-                child: const Text('测试'),
+                child: const Text(DshSettingsZh.testConnection),
               ),
               DshIcon(
-                LucideIcons.pencil,
-                label: '编辑 MCP 服务器',
+                DshIcons.pencil.data,
+                label: DshSettingsZh.editMcpServer,
                 onPressed: busy ? null : () => editServer(server),
               ),
               DshIcon(
-                LucideIcons.trash2,
-                label: '移除 MCP 服务器',
+                DshIcons.trash2.data,
+                label: DshSettingsZh.removeMcpServer,
                 onPressed: busy ? null : () => removeCapability(server),
               ),
               DshSwitch(
@@ -697,7 +1014,10 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
       children: [
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('按需发现工具', style: TextStyle(fontSize: 14)),
+          title: const Text(
+            DshSettingsZh.discoverToolsOnDemand,
+            style: TextStyle(fontSize: DshTypography.sizeBody),
+          ),
           value: config['enabled'] == true,
           onChanged: busy
               ? null
@@ -713,9 +1033,12 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                 }),
         ),
         if (data['restartRequired'] == true)
-          const Text(
-            '重启服务后生效',
-            style: TextStyle(fontSize: 12, color: Colors.orange),
+          Text(
+            DshSettingsZh.restartRequired,
+            style: TextStyle(
+              fontSize: DshTypography.sizeCaption,
+              color: DshTokens.of(context).warning.foreground,
+            ),
           ),
         const SizedBox(height: 12),
         for (final entry in runtime.entries)
@@ -726,7 +1049,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Text(
                 '${entry.key}：${entry.value}',
-                style: const TextStyle(fontSize: 12),
+                style: const TextStyle(fontSize: DshTypography.sizeCaption),
               ),
             ),
       ],
@@ -749,7 +1072,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
       context: context,
       barrierDismissible: false,
       builder: (_) => TextResourceEditor(
-        title: skill == null ? '添加技能' : '编辑技能',
+        title: skill == null ? DshSettingsZh.addSkill : DshSettingsZh.editSkill,
         name: skill?['name'] as String? ?? '',
         content: content,
         nameReadOnly: skill != null,
@@ -775,7 +1098,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
       await showDialog<void>(
         context: context,
         builder: (_) => TextResourceEditor(
-          title: 'Agent 预设',
+          title: DshSettingsZh.agentPresets,
           name: '${preset['id']}',
           content: '${result['content']}',
           readOnly: true,
@@ -785,7 +1108,11 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
   }
 
   Future<void> copyPreset(Json preset) async {
-    final name = await editTextDialog(context, '复制预设', '${preset['id']}-copy');
+    final name = await editTextDialog(
+      context,
+      DshSettingsZh.copyPreset,
+      '${preset['id']}-copy',
+    );
     if (name == null) return;
     await action(() async {
       await api.call('agentPreset.copy', {
@@ -801,7 +1128,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
       context: context,
       barrierDismissible: false,
       builder: (_) => TextResourceEditor(
-        title: '编辑记忆',
+        title: DshSettingsZh.editMemory,
         name: '${row['title']}',
         content: '${row['content']}',
         onSave: (value) async {
@@ -831,7 +1158,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
           if (server == null &&
               objects(data['servers'])
                   .any((entry) => entry['name'] == value['name'])) {
-            throw DshException('duplicate', '同名 MCP 服务器已存在，请使用编辑。');
+            throw DshException('duplicate', DshSettingsZh.duplicateMcpServer);
           }
           return api.call('capabilities.serverSave', {
             'server': value,
@@ -843,7 +1170,11 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
     if (result != null && mounted) {
       await load();
       if (mounted && (result['status'] == 'error' || result['error'] != null)) {
-        setState(() => error = '配置已保存，连接失败：${result['error'] ?? '连接失败'}');
+        setState(
+          () => error = DshSettingsZh.mcpSavedConnectionFailed(
+            detail: result['error'] ?? DshSettingsZh.connectionFailed,
+          ),
+        );
       }
     }
   }
@@ -853,9 +1184,12 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
     final revision = data['revision'];
     if (!await confirmAction(
           context,
-          '移除${skill ? '技能' : 'MCP 服务器'}“${entry['name']}”？',
-          skill ? '技能文件将移入本机回收目录。' : '移除服务器配置并断开连接，其工具将不再可用。',
-          action: '移除',
+          DshSettingsZh.removeResourceTitle(
+            kind: skill ? DshSettingsZh.skill : DshSettingsZh.mcpServers,
+            name: entry['name'],
+          ),
+          skill ? DshSettingsZh.removeSkillHint : DshSettingsZh.removeMcpHint,
+          action: DshSettingsZh.remove,
         ) ||
         !mounted) {
       return;
@@ -932,11 +1266,16 @@ class _TextResourceEditorState extends State<TextResourceEditor> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(widget.title, style: const TextStyle(fontSize: 17)),
+              Text(
+                widget.title,
+                style: const TextStyle(
+                  fontSize: DshTypography.sizeSectionTitle,
+                ),
+              ),
               const SizedBox(height: 18),
               DshField(
                 controller: name,
-                hint: '名称',
+                hint: DshSettingsZh.name,
                 enabled: !busy && !widget.readOnly && !widget.nameReadOnly,
               ),
               const SizedBox(height: 12),
@@ -947,24 +1286,22 @@ class _TextResourceEditorState extends State<TextResourceEditor> {
                   expands: true,
                   maxLines: null,
                   minLines: null,
-                  style: const TextStyle(
-                    fontFamily: 'Consolas',
-                    fontSize: 12,
+                  style: TextStyle(
+                    fontFamily: DshTypography.monospaceFamily,
+                    fontFamilyFallback: DshTypography.monospaceFallback,
+                    fontSize: DshTypography.sizeCaption,
                     height: 1.5,
                   ),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
-                    hintText: '内容',
+                    hintText: DshSettingsZh.content,
                   ),
                 ),
               ),
               if (error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
-                  child: Text(
-                    error!,
-                    style: const TextStyle(color: Colors.red, fontSize: 12),
-                  ),
+                  child: DshErrorView(error: error!),
                 ),
               const SizedBox(height: 16),
               Row(
@@ -972,13 +1309,13 @@ class _TextResourceEditorState extends State<TextResourceEditor> {
                 children: [
                   DshButton(
                     onPressed: busy ? null : () => Navigator.pop(context),
-                    child: const Text('关闭'),
+                    child: const Text(DshSettingsZh.close),
                   ),
                   if (!widget.readOnly)
                     DshButton(
                       primary: true,
                       onPressed: busy ? null : save,
-                      child: Text(busy ? '保存中…' : '保存'),
+                      child: Text(busy ? DshZh.saving : DshZh.save),
                     ),
                 ],
               ),
@@ -988,6 +1325,138 @@ class _TextResourceEditorState extends State<TextResourceEditor> {
       ),
     ),
   );
+}
+
+class _TimeContextPluginSection extends StatefulWidget {
+  const _TimeContextPluginSection({
+    required this.controller,
+    required this.entryId,
+    required this.enabled,
+    required this.canConfigure,
+    required this.entry,
+    this.workspace = false,
+    this.entryBuilder,
+  });
+
+  final DesktopController controller;
+  final String entryId;
+  final bool enabled;
+  final bool Function() canConfigure;
+  final Widget entry;
+  final bool workspace;
+  final Widget Function(VoidCallback? onConfigure, bool expanded)? entryBuilder;
+
+  @override
+  State<_TimeContextPluginSection> createState() =>
+      _TimeContextPluginSectionState();
+}
+
+class _TimeContextPluginSectionState extends State<_TimeContextPluginSection>
+    with AutomaticKeepAliveClientMixin {
+  bool expanded = false;
+  bool visited = false;
+
+  @override
+  bool get wantKeepAlive => visited;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    void toggle() {
+      // A queued invocation must stay on the Host that owns this draft.
+      if (!widget.canConfigure()) return;
+      setState(() {
+        expanded = !expanded;
+        visited = true;
+        updateKeepAlive();
+      });
+    }
+
+    final configuration = visited
+        ? Visibility(
+            visible: expanded,
+            maintainState: true,
+            child: Padding(
+              padding: EdgeInsets.all(widget.workspace ? 20 : 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.enabled
+                        ? DshPluginSettingsZh.enabledHint
+                        : DshPluginSettingsZh.inactiveHint,
+                    style: TextStyle(color: DshColors(context).muted),
+                  ),
+                  const SizedBox(height: 12),
+                  TimeContextPanel(
+                    key: ValueKey('time-context-${widget.entryId}'),
+                    controller: widget.controller,
+                    entryId: widget.entryId,
+                  ),
+                ],
+              ),
+            ),
+          )
+        : const SizedBox.shrink();
+    if (widget.workspace) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          widget.entryBuilder!(widget.canConfigure() ? toggle : null, expanded),
+          if (visited)
+            Container(
+              margin: EdgeInsets.only(bottom: expanded ? 12 : 0),
+              decoration: BoxDecoration(
+                color: expanded ? DshColors(context).layer : null,
+                border: expanded
+                    ? Border.all(color: DshColors(context).border)
+                    : null,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: configuration,
+            ),
+        ],
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      decoration: BoxDecoration(
+        color: DshColors(context).layer,
+        border: Border.all(color: DshColors(context).border),
+        borderRadius: BorderRadius.circular(
+          DshTokens.of(context).radiusControl,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          widget.entry,
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: DshButton(
+              key: ValueKey('plugin-config-toggle-${widget.entryId}'),
+              icon: expanded
+                  ? DshIcons.chevronUp.data
+                  : DshIcons.chevronDown.data,
+              onPressed: !widget.canConfigure() ? null : toggle,
+              child: Text(
+                expanded
+                    ? DshPluginSettingsZh.collapseConfiguration
+                    : DshPluginSettingsZh.expandConfiguration,
+              ),
+            ),
+          ),
+          if (visited)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: configuration,
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class McpServerDialog extends StatefulWidget {
@@ -1036,7 +1505,7 @@ class _McpServerDialogState extends State<McpServerDialog> {
     if (field.text.trim().isEmpty) return null;
     final value = jsonDecode(field.text);
     if (value is! Map || value.values.any((entry) => entry is! String)) {
-      throw FormatException('$label必须为字符串键值组成的 JSON 对象');
+      throw FormatException(DshSettingsZh.stringMapRequired(label: label));
     }
     return Map<String, String>.from(value);
   }
@@ -1049,27 +1518,27 @@ class _McpServerDialogState extends State<McpServerDialog> {
     });
     try {
       if (!RegExp(r'^[a-zA-Z0-9_-]{1,32}$').hasMatch(name.text.trim())) {
-        throw const FormatException('名称须为 1–32 个字母、数字、下划线或连字符');
+        throw const FormatException(DshSettingsZh.mcpNameInvalid);
       }
       final parsedArgs = args.text.trim().isEmpty
           ? <String>[]
           : jsonDecode(args.text);
       if (parsedArgs is! List || parsedArgs.any((entry) => entry is! String)) {
-        throw const FormatException('参数必须为字符串组成的 JSON 数组');
+        throw const FormatException(DshSettingsZh.mcpArgumentsInvalid);
       }
       if (transport == 'stdio' && command.text.trim().isEmpty) {
-        throw const FormatException('请填写可执行程序');
+        throw const FormatException(DshSettingsZh.executableRequired);
       }
       if (transport == 'http') {
         final uri = Uri.tryParse(endpoint.text.trim());
         if (uri == null ||
             !['http', 'https'].contains(uri.scheme) ||
             uri.host.isEmpty) {
-          throw const FormatException('请填写有效的 HTTP 或 HTTPS 服务器地址');
+          throw const FormatException(DshSettingsZh.serverUrlInvalid);
         }
       }
-      final envValue = parseSecrets(env, '环境变量'),
-          headerValue = parseSecrets(headers, '请求头');
+      final envValue = parseSecrets(env, DshSettingsZh.environmentVariables),
+          headerValue = parseSecrets(headers, DshSettingsZh.requestHeaders);
       final value = <String, dynamic>{
         'name': name.text.trim(),
         'transport': transport,
@@ -1104,7 +1573,10 @@ class _McpServerDialogState extends State<McpServerDialog> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontSize: 13)),
+        Text(
+          label,
+          style: const TextStyle(fontSize: DshTypography.sizeAuxiliary),
+        ),
         const SizedBox(height: 6),
         DshField(
           key: ValueKey('mcp-$label'),
@@ -1123,8 +1595,10 @@ class _McpServerDialogState extends State<McpServerDialog> {
     canPop: !busy,
     child: AlertDialog(
       title: Text(
-        widget.initial == null ? '添加 MCP 服务器' : '编辑 MCP 服务器',
-        style: const TextStyle(fontSize: 17),
+        widget.initial == null
+            ? DshSettingsZh.addMcpServer
+            : DshSettingsZh.editMcpServer,
+        style: const TextStyle(fontSize: DshTypography.sizeSectionTitle),
       ),
       content: SizedBox(
         width: 520,
@@ -1133,9 +1607,12 @@ class _McpServerDialogState extends State<McpServerDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              field(name, '名称', locked: widget.initial != null),
+              field(name, DshSettingsZh.name, locked: widget.initial != null),
               DshSelect<String>(
-                options: const {'stdio': '本地命令（stdio）', 'http': 'HTTP / HTTPS'},
+                options: const {
+                  'stdio': DshSettingsZh.localCommand,
+                  'http': 'HTTP / HTTPS',
+                },
                 value: transport,
                 onChanged: busy
                     ? null
@@ -1143,47 +1620,67 @@ class _McpServerDialogState extends State<McpServerDialog> {
               ),
               const SizedBox(height: 16),
               if (transport == 'stdio') ...[
-                field(command, '可执行程序', hint: 'npx / python / 可执行文件路径'),
-                field(args, '参数（JSON 数组）', hint: '["server.js"]', lines: 2),
-                field(cwd, '工作目录', hint: '留空使用运行目录'),
+                field(
+                  command,
+                  DshSettingsZh.executable,
+                  hint: DshSettingsZh.executableHint,
+                ),
+                field(
+                  args,
+                  DshSettingsZh.argumentsJson,
+                  hint: '["server.js"]',
+                  lines: 2,
+                ),
+                field(
+                  cwd,
+                  DshSettingsZh.workingDirectory,
+                  hint: DshSettingsZh.defaultWorkingDirectory,
+                ),
                 field(
                   env,
-                  '环境变量（JSON 对象）',
+                  DshSettingsZh.environmentJson,
                   hint: widget.initial == null
                       ? '{"API_KEY":"..."}'
-                      : '留空保留已有值；{} 清空',
+                      : DshSettingsZh.retainSecretHint,
                   secret: true,
                 ),
               ] else ...[
-                field(endpoint, '服务器地址', hint: 'https://example.com/mcp'),
+                field(
+                  endpoint,
+                  DshSettingsZh.serverUrl,
+                  hint: 'https://example.com/mcp',
+                ),
                 field(
                   headers,
-                  '请求头（JSON 对象）',
+                  DshSettingsZh.headersJson,
                   hint: widget.initial == null
                       ? '{"Authorization":"Bearer ..."}'
-                      : '留空保留已有值；{} 清空',
+                      : DshSettingsZh.retainSecretHint,
                   secret: true,
                 ),
               ],
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('启用服务器', style: TextStyle(fontSize: 13)),
+                title: const Text(
+                  DshSettingsZh.enableServer,
+                  style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
+                ),
                 value: enabled,
                 onChanged: busy
                     ? null
                     : (value) => setState(() => enabled = value),
               ),
               Text(
-                '保存并启用将启动本地命令或连接服务器；凭证保存在本机。',
-                style: TextStyle(fontSize: 12, color: DshColors(context).muted),
+                DshSettingsZh.serverSaveHint,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: DshColors(context).muted,
+                ),
               ),
               if (error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
-                  child: Text(
-                    error!,
-                    style: const TextStyle(color: Colors.red, fontSize: 12),
-                  ),
+                  child: DshErrorView(error: error!),
                 ),
             ],
           ),
@@ -1192,12 +1689,12 @@ class _McpServerDialogState extends State<McpServerDialog> {
       actions: [
         DshButton(
           onPressed: busy ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshZh.cancel),
         ),
         DshButton(
           primary: true,
           onPressed: busy ? null : save,
-          child: Text(busy ? '保存中…' : '保存'),
+          child: Text(busy ? DshZh.saving : DshZh.save),
         ),
       ],
     ),

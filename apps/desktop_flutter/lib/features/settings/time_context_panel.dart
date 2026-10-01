@@ -1,3 +1,6 @@
+import '../../l10n/zh.dart';
+import '../../l10n/plugin_settings_zh.dart';
+
 import 'dart:convert';
 
 import 'package:dsh_client/dsh_client.dart';
@@ -5,7 +8,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../design/primitives.dart';
+import '../../design/select.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class TimeContextPanel extends StatefulWidget {
   const TimeContextPanel({
@@ -30,6 +36,7 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
   final zone = TextEditingController();
   final scope = RequestScope();
   Json? snapshot;
+  int intervalUnit = 60000;
   bool busy = false, invalidated = false, needsRefresh = false;
   String? error, notice;
 
@@ -74,20 +81,67 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
     scope.cancel();
     setState(() {
       busy = false;
-      error = '连接或插件已变化，草稿已保留；请重新打开时间上下文设置。';
+      error = DshSettingsZh.timeContextStale;
       notice = null;
     });
   }
 
-  String? get intervalError {
+  BigInt? get intervalMilliseconds {
     final text = interval.text.trim();
     if (text.isEmpty) return null;
-    final value = int.tryParse(text);
-    return !RegExp(r'^\d+$').hasMatch(text) ||
-            value == null ||
-            value > 9007199254740991
-        ? '刷新间隔须为 0–9007199254740991 的整数（毫秒）。'
-        : null;
+    if (!RegExp(r'^\d+(?:\.\d+)?$').hasMatch(text)) return null;
+    final parts = text.split('.');
+    final fraction = parts.length == 2 ? parts[1] : '';
+    // Bound parsing work as well as the eventual cross-platform integer value.
+    if (parts[0].length + fraction.length > 32) return null;
+    final numerator =
+        BigInt.parse('${parts[0]}$fraction') * BigInt.from(intervalUnit);
+    final denominator = BigInt.from(10).pow(fraction.length);
+    if (numerator % denominator != BigInt.zero) return null;
+    return numerator ~/ denominator;
+  }
+
+  String? get intervalError => interval.text.trim().isEmpty
+      ? null
+      : intervalMilliseconds == null ||
+            intervalMilliseconds! > BigInt.from(9007199254740991)
+      ? DshPluginSettingsZh.intervalInvalid
+      : null;
+
+  void changeIntervalUnit(int value) {
+    if (interval.text.trim().isEmpty) {
+      setState(() => intervalUnit = value);
+      return;
+    }
+    final milliseconds = intervalMilliseconds;
+    final formatted = milliseconds == null
+        ? null
+        : formatInUnit(milliseconds, value);
+    if (formatted == null) {
+      setState(() => notice = DshPluginSettingsZh.unitPrecisionHint);
+      return;
+    }
+    setState(() {
+      intervalUnit = value;
+      interval.text = formatted;
+      notice = null;
+    });
+  }
+
+  String? formatInUnit(BigInt milliseconds, int unit) {
+    final divisor = BigInt.from(unit);
+    final whole = milliseconds ~/ divisor;
+    var remainder = milliseconds % divisor;
+    if (remainder == BigInt.zero) return '$whole';
+    final fraction = StringBuffer();
+    // Milliseconds have at most three decimal places in seconds and five
+    // finite decimal places in minutes. A recurring fraction stays unchanged.
+    for (var digit = 0; digit < 5 && remainder != BigInt.zero; digit++) {
+      remainder *= BigInt.from(10);
+      fraction.write(remainder ~/ divisor);
+      remainder %= divisor;
+    }
+    return remainder == BigInt.zero ? '$whole.$fraction' : null;
   }
 
   Json draftConfig() {
@@ -95,7 +149,9 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
       ..remove('refreshIntervalMs')
       ..remove('timeZone');
     final value = interval.text.trim(), timeZone = zone.text.trim();
-    if (value.isNotEmpty) config['refreshIntervalMs'] = int.parse(value);
+    if (value.isNotEmpty) {
+      config['refreshIntervalMs'] = intervalMilliseconds!.toInt();
+    }
     if (timeZone.isNotEmpty) config['timeZone'] = timeZone;
     return config;
   }
@@ -113,7 +169,7 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
           '@deepseek-ai/dsh-time-context',
         ].contains(value['moduleName']) ||
         (value['config'] != null && value['config'] is! Map)) {
-      throw const FormatException('时间上下文配置返回的数据不完整，请重新读取。');
+      throw const FormatException(DshSettingsZh.timeContextResponseInvalid);
     }
     final config = object(value['config']);
     final refresh = config['refreshIntervalMs'];
@@ -124,24 +180,30 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
                 refresh > 9007199254740991 ||
                 refresh != refresh.truncateToDouble())) ||
         (config.containsKey('timeZone') && config['timeZone'] is! String)) {
-      throw const FormatException('时间上下文配置格式无效，请检查插件配置。');
+      throw const FormatException(DshSettingsZh.timeContextInvalid);
     }
     return object(jsonDecode(jsonEncode(value)));
   }
 
   void useSnapshot() {
     final config = object(snapshot?['config']);
-    interval.text = config['refreshIntervalMs'] == null
+    final milliseconds = (config['refreshIntervalMs'] as num?)?.toInt();
+    intervalUnit = milliseconds == null || milliseconds % 60000 == 0
+        ? 60000
+        : milliseconds % 1000 == 0
+        ? 1000
+        : 1;
+    interval.text = milliseconds == null
         ? ''
-        : '${(config['refreshIntervalMs'] as num).toInt()}';
+        : '${milliseconds ~/ intervalUnit}';
     zone.text = config['timeZone'] as String? ?? '';
   }
 
   String describe(Json value) {
     final config = object(value['config']);
     final ms = (config['refreshIntervalMs'] as num?)?.toInt() ?? 600000;
-    return '${ms == 0 ? '每个适用步骤更新' : '每 $ms 毫秒更新'}，'
-        '${config['timeZone'] ?? '系统时区'}';
+    return '${ms == 0 ? DshSettingsZh.everyApplicableStep : DshPluginSettingsZh.every(ms)}，'
+        '${config['timeZone'] ?? DshSettingsZh.systemTimezone}';
   }
 
   String failure(Object value) {
@@ -149,14 +211,14 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
     if (value is DshException) {
       if (value.code == 'plugin-config-conflict' ||
           value.code == 'plugin-config-runtime-conflict') {
-        return '配置已在其他位置更改，草稿已保留；请读取最新配置并核对后再保存。';
+        return DshSettingsZh.timeContextConflict;
       }
       if (value.outcomeUnknown) {
-        return '保存结果尚未确认，草稿已保留；请读取最新配置后核对。';
+        return DshSettingsZh.timeContextOutcomeUnknown;
       }
-      return '${value.message}；草稿已保留。';
+      return DshSettingsZh.errorDraftRetained(message: value.message);
     }
-    return '配置操作失败，草稿已保留；请重新读取后重试。';
+    return DshSettingsZh.timeContextFailure;
   }
 
   Future<void> load() async {
@@ -182,7 +244,9 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
         snapshot = value;
         needsRefresh = false;
         if (preserve) {
-          notice = '已读取最新配置：${describe(value)}。草稿已保留，请核对后保存。';
+          notice = DshSettingsZh.latestConfiguration(
+            description: describe(value),
+          );
         } else {
           useSnapshot();
         }
@@ -219,7 +283,7 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
       setState(() {
         snapshot = value;
         useSnapshot();
-        notice = '时间上下文配置已保存，启停状态保持不变。';
+        notice = DshSettingsZh.timeContextSaved;
       });
     } catch (value) {
       if (mounted && !stale) {
@@ -241,31 +305,58 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
       mainAxisSize: MainAxisSize.min,
       children: [
         const Text(
-          '时间上下文',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          DshSettingsZh.timeContext,
+          style: TextStyle(
+            fontSize: DshTypography.sizeComposer,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 8),
-        const Text('默认每十分钟更新时间；间隔为 0 时在每个适用步骤更新。'),
+        const Text(DshPluginSettingsZh.intervalHint),
         const SizedBox(height: 12),
-        const Text('刷新间隔（毫秒）'),
-        DshField(
-          key: const ValueKey('time-context-interval'),
-          controller: interval,
-          enabled: !disabled,
-          hint: '600000',
-          onChanged: (_) => setState(() => notice = null),
+        const Text(DshPluginSettingsZh.interval),
+        const SizedBox(height: 6),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final field = DshField(
+              key: const ValueKey('time-context-interval'),
+              controller: interval,
+              enabled: !disabled,
+              hint: '${600000 ~/ intervalUnit}',
+              onChanged: (_) => setState(() => notice = null),
+            );
+            final unit = DshSelect<int>(
+              key: const ValueKey('time-context-unit'),
+              options: DshPluginSettingsZh.units,
+              value: intervalUnit,
+              onChanged: disabled ? null : changeIntervalUnit,
+            );
+            if (constraints.maxWidth < 360) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [field, const SizedBox(height: 8), unit],
+              );
+            }
+            return Row(
+              children: [
+                Expanded(child: field),
+                const SizedBox(width: 8),
+                unit,
+              ],
+            );
+          },
         ),
         const SizedBox(height: 12),
-        const Text('备用时区（IANA）'),
+        const Text(DshSettingsZh.fallbackTimezone),
         DshField(
           key: const ValueKey('time-context-zone'),
           controller: zone,
           enabled: !disabled,
-          hint: '留空使用系统时区',
+          hint: DshSettingsZh.systemTimezoneHint,
           onChanged: (_) => setState(() => notice = null),
         ),
         const SizedBox(height: 8),
-        const Text('留空使用默认值，保存配置保持当前启停状态。'),
+        const Text(DshSettingsZh.timeContextDefaultsHint),
         if (busy)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 8),
@@ -276,7 +367,7 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: SelectableText(
               intervalError ?? error!,
-              style: const TextStyle(color: Colors.red),
+              style: TextStyle(color: DshTokens.of(context).error.foreground),
             ),
           ),
         if (notice != null)
@@ -296,7 +387,7 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
                   disabled || needsRefresh || !dirty || intervalError != null
                   ? null
                   : save,
-              child: const Text('保存配置'),
+              child: const Text(DshSettingsZh.saveConfiguration),
             ),
             DshButton(
               key: const ValueKey('time-context-discard'),
@@ -307,13 +398,13 @@ class _TimeContextPanelState extends State<TimeContextPanel> {
                       notice = null;
                       if (!needsRefresh) error = null;
                     }),
-              child: const Text('取消修改'),
+              child: const Text(DshSettingsZh.cancelChanges),
             ),
             DshButton(
               key: const ValueKey('time-context-reload'),
               outline: true,
               onPressed: busy || stale ? null : load,
-              child: const Text('重新读取（保留草稿）'),
+              child: const Text(DshSettingsZh.reloadKeepDraft),
             ),
           ],
         ),

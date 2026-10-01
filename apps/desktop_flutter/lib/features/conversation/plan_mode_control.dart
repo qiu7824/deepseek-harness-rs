@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class PlanModeControl extends StatelessWidget {
   PlanModeControl({super.key, required this.controller})
@@ -26,17 +27,17 @@ class PlanModeControl extends StatelessWidget {
         padding: const EdgeInsets.only(left: 6),
         child: Tooltip(
           message: plan!.pending
-              ? 'plan mode 已请求开启，将在下一步生效 — 点击取消'
-              : 'plan mode 已开启 — 点击关闭（/plan off）',
+              ? DshConversationZh.planRequestedHint
+              : DshConversationZh.planEnabledHint,
           child: Semantics(
-            label: 'plan mode 已开启，按下关闭',
+            label: DshConversationZh.planEnabledAction,
             button: true,
             toggled: true,
             child: DshIcon(
-              LucideIcons.listChecks,
+              DshIcons.listChecks.data,
               asset: 'assets/icons/task-list.svg',
               size: 28,
-              label: '关闭计划模式',
+              label: DshConversationZh.closePlanMode,
               active: true,
               onPressed: enabled
                   ? () {

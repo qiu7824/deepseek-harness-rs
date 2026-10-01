@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:dsh_client/dsh_client.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 String sessionLogFilename(String sessionId) =>
     'dsh-session-${sessionId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_')}.zip';
@@ -58,8 +60,8 @@ class SessionLogExportAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DshIcon(
-    LucideIcons.download,
-    label: '下载会话日志',
+    DshIcons.download.data,
+    label: DshConversationZh.downloadSessionLog,
     size: 28,
     onPressed: controller.client == null
         ? null
@@ -97,9 +99,9 @@ class SessionLogExportDialog extends StatefulWidget {
 }
 
 class _SessionLogExportDialogState extends State<SessionLogExportDialog> {
-  final scope = RequestScope();
-  bool downloading = false, complete = false;
-  String? error;
+  RequestScope scope = RequestScope();
+  bool downloading = false, complete = false, choosing = false;
+  Object? error;
   int bytes = 0;
   int lastPaintedAt = 0;
 
@@ -124,11 +126,20 @@ class _SessionLogExportDialogState extends State<SessionLogExportDialog> {
   }
 
   Future<void> start() async {
+    if (choosing || downloading) return;
+    scope.cancel();
+    final requestScope = scope = RequestScope();
+    setState(() {
+      choosing = true;
+      error = null;
+      complete = false;
+      bytes = 0;
+    });
     try {
       final path = await widget.pickLocation(
         sessionLogFilename(widget.sessionId),
       );
-      if (!mounted || scope.cancelled) return;
+      if (!mounted || requestScope.cancelled) return;
       if (path == null) {
         Navigator.of(context).pop();
         return;
@@ -138,24 +149,29 @@ class _SessionLogExportDialogState extends State<SessionLogExportDialog> {
         widget.api,
         widget.sessionId,
         File(path),
-        scope: scope,
+        scope: requestScope,
         onProgress: (count) {
           final now = DateTime.now().millisecondsSinceEpoch;
-          if (!mounted || now - lastPaintedAt < 150) return;
+          if (!mounted || requestScope.cancelled || now - lastPaintedAt < 150) {
+            return;
+          }
           lastPaintedAt = now;
           setState(() => bytes = count);
         },
       );
-      if (mounted && !scope.cancelled) {
+      if (mounted && !requestScope.cancelled) {
         setState(() => complete = true);
       }
     } catch (failure) {
-      if (mounted && !scope.cancelled) {
-        setState(() => error = '$failure');
+      if (mounted && !requestScope.cancelled) {
+        setState(() => error = failure);
       }
     } finally {
-      if (mounted && !scope.cancelled) {
-        setState(() => downloading = false);
+      if (mounted && !requestScope.cancelled) {
+        setState(() {
+          downloading = false;
+          choosing = false;
+        });
       }
     }
   }
@@ -171,23 +187,32 @@ class _SessionLogExportDialogState extends State<SessionLogExportDialog> {
   Widget build(BuildContext context) => AlertDialog(
     title: Text(
       error != null
-          ? 'Session 导出失败'
+          ? DshConversationZh.sessionExportFailed
           : complete
-          ? 'Session 导出完成'
-          : '正在导出 Session',
+          ? DshConversationZh.sessionExportComplete
+          : DshConversationZh.exportingSession,
     ),
-    content: Text(
-      error ??
-          (complete
-              ? '会话、子会话和附件已保存到所选 ZIP 文件。'
-              : downloading
-              ? '正在保存会话、子会话和附件…${bytes > 0 ? ' 已写入 ${(bytes / 1048576).toStringAsFixed(1)} MiB' : ''}'
-              : '请选择 ZIP 文件的保存位置。'),
-    ),
+    content: error != null
+        ? SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: DshErrorView(
+                error: error!,
+                onRetry: choosing || downloading ? null : start,
+              ),
+            ),
+          )
+        : Text(
+            complete
+                ? DshConversationZh.sessionExportedHint
+                : downloading
+                ? DshConversationZh.exportProgress(bytes: bytes)
+                : DshConversationZh.chooseExportLocation,
+          ),
     actions: [
       TextButton(
         onPressed: () => Navigator.of(context).pop(),
-        child: const Text('关闭'),
+        child: const Text(DshConversationZh.close),
       ),
     ],
   );

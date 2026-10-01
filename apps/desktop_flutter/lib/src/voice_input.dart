@@ -1,10 +1,11 @@
+import '../l10n/runtime_zh.dart';
+
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../design/primitives.dart';
 
@@ -43,10 +44,10 @@ class VoiceInputController extends ChangeNotifier {
     } catch (e) {
       if (_disposed || _generation != token) return;
       error = e is MissingPluginException
-          ? '此客户端未加载语音组件，请重新启动最新版本。'
+          ? DshRuntimeZh.voicePluginUnavailable
           : e is PlatformException && e.code == 'voice-busy'
-          ? '语音识别正在释放资源，请稍后重试。'
-          : '无法启动语音识别：$e';
+          ? DshRuntimeZh.voiceReleasing
+          : DshRuntimeZh.voiceStartFailed(error: e);
       phase = 'idle';
       _generation = null;
       _emit();
@@ -84,7 +85,7 @@ class VoiceInputController extends ChangeNotifier {
             final next =
                 '${_committed.trimRight()}${_committed.trim().isEmpty ? '' : ' '}$text';
             if (next.length > 65536) {
-              error = '语音文本已达到长度上限，请结束后分段输入。';
+              error = DshRuntimeZh.voiceTextLimit;
               unawaited(stop());
               continue;
             }
@@ -93,7 +94,9 @@ class VoiceInputController extends ChangeNotifier {
             if (value['kind'] == 'result') _committed = next;
             changed = true;
           case 'error':
-            error = 'Windows 语音识别不可用，请检查麦克风和语音语言包（${value['text']}）。';
+            error = DshRuntimeZh.voiceRecognizerUnavailable(
+              detail: value['text'],
+            );
             phase = 'stopping';
             changed = true;
           case 'stopped':
@@ -107,7 +110,7 @@ class VoiceInputController extends ChangeNotifier {
       _schedule(token);
     } catch (e) {
       if (_disposed || _generation != token) return;
-      error = '读取语音识别状态失败：$e';
+      error = DshRuntimeZh.voicePollFailed(error: e);
       cancel();
     }
   }
@@ -122,7 +125,7 @@ class VoiceInputController extends ChangeNotifier {
       await _channel.invokeMethod<void>('stop');
     } catch (e) {
       if (!_disposed && _generation == token) {
-        error = '停止语音识别失败：$e';
+        error = DshRuntimeZh.voiceStopFailed(error: e);
         cancel();
       }
     }
@@ -196,15 +199,15 @@ class _VoiceInputButtonState extends State<VoiceInputButton> {
   @override
   Widget build(BuildContext context) {
     final label = !widget.supported
-        ? '当前系统不支持语音识别'
+        ? DshRuntimeZh.voiceUnsupported
         : widget.error ??
               (widget.starting
-                  ? '正在启动语音识别'
+                  ? DshRuntimeZh.voiceStarting
                   : widget.stopping
-                  ? '正在停止语音识别'
+                  ? DshRuntimeZh.voiceStopping
                   : widget.listening
-                  ? '松开结束，识别文字实时写入'
-                  : '按住说话；空格键也可按住输入');
+                  ? DshRuntimeZh.voiceListeningHint
+                  : DshRuntimeZh.voiceIdleHint);
     return Tooltip(
       message: label,
       child: Focus(
@@ -276,7 +279,7 @@ class _VoiceInputButtonState extends State<VoiceInputButton> {
                       : null,
                 ),
                 child: DshGlyph(
-                  LucideIcons.mic,
+                  DshIcons.mic.data,
                   asset: 'assets/icons/voice-mic.svg',
                   size: 16,
                   color: widget.listening

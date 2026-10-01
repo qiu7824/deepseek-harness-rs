@@ -3,15 +3,26 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../src/controller.dart';
+import '../l10n/zh.dart';
+import 'error.dart';
 import 'primitives.dart';
 
-const shortcutNames = {
-  'sidebar': '展开／收起侧边栏',
-  'new': '新建会话',
-  'search': '搜索会话',
-  'settings': '设置',
-  'composer': '聚焦消息输入框',
-  'workbench': '展开／收起工作台',
+import 'package:dsh_desktop/design/typography.dart';
+
+final shortcutNames = {
+  'sidebar': DshShortcutZh.toggleSidebar,
+  'new': DshZh.newSession,
+  'search': DshZh.searchCommands,
+  'settings': DshShellZh.settings,
+  'composer': DshShortcutZh.focusComposer,
+  'workbench': DshShortcutZh.toggleWorkbench,
+  'stop': DshZh.stopExecution,
+  'focus-next': DshShortcutZh.focusNext,
+  'focus-previous': DshShortcutZh.focusPrevious,
+  'cycle-next': DshShortcutZh.cycleNext,
+  'cycle-previous': DshShortcutZh.cyclePrevious,
+  for (var index = 1; index <= 9; index++)
+    'session-$index': DshZh.visibleSession(index),
 };
 bool get commandShortcuts => defaultTargetPlatform == TargetPlatform.macOS;
 String get primaryShortcutLabel => commandShortcuts ? 'Cmd' : 'Ctrl';
@@ -34,6 +45,27 @@ Map<String, SingleActivator> get defaultShortcuts {
     'settings': primary(LogicalKeyboardKey.comma),
     'composer': primary(LogicalKeyboardKey.keyL),
     'workbench': primary(LogicalKeyboardKey.keyJ, shift: true),
+    'stop': primary(LogicalKeyboardKey.period),
+    'focus-next': const SingleActivator(LogicalKeyboardKey.f6),
+    'focus-previous': const SingleActivator(LogicalKeyboardKey.f6, shift: true),
+    'cycle-next': const SingleActivator(LogicalKeyboardKey.tab, control: true),
+    'cycle-previous': const SingleActivator(
+      LogicalKeyboardKey.tab,
+      control: true,
+      shift: true,
+    ),
+    for (final (index, key) in [
+      LogicalKeyboardKey.digit1,
+      LogicalKeyboardKey.digit2,
+      LogicalKeyboardKey.digit3,
+      LogicalKeyboardKey.digit4,
+      LogicalKeyboardKey.digit5,
+      LogicalKeyboardKey.digit6,
+      LogicalKeyboardKey.digit7,
+      LogicalKeyboardKey.digit8,
+      LogicalKeyboardKey.digit9,
+    ].indexed)
+      'session-${index + 1}': primary(key),
   };
 }
 
@@ -57,12 +89,40 @@ SingleActivator decodeShortcut(dynamic value, SingleActivator fallback) =>
 Map<String, SingleActivator> configuredShortcuts(DesktopController c) {
   final stored = c.preferences.layout['shortcuts'];
   return {
+    // Explicit bindings precede new defaults so upgrades never steal a saved key.
+    if (stored is Map)
+      for (final entry in defaultShortcuts.entries)
+        if (stored.containsKey(entry.key))
+          entry.key: decodeShortcut(stored[entry.key], entry.value),
     for (final entry in defaultShortcuts.entries)
-      entry.key: decodeShortcut(
-        stored is Map ? stored[entry.key] : null,
-        entry.value,
-      ),
+      if (stored is! Map || !stored.containsKey(entry.key))
+        entry.key: decodeShortcut(
+          stored is Map ? stored[entry.key] : null,
+          entry.value,
+        ),
   };
+}
+
+bool sameShortcut(SingleActivator a, SingleActivator b) =>
+    a.trigger == b.trigger &&
+    a.control == b.control &&
+    a.alt == b.alt &&
+    a.shift == b.shift &&
+    a.meta == b.meta;
+
+String? shortcutConflict(Map<String, SingleActivator> bindings) {
+  final entries = bindings.entries.toList();
+  for (var i = 0; i < entries.length; i++) {
+    for (var j = i + 1; j < entries.length; j++) {
+      if (sameShortcut(entries[i].value, entries[j].value)) {
+        return DshShortcutZh.conflict(
+          first: shortcutNames[entries[i].key]!,
+          second: shortcutNames[entries[j].key]!,
+        );
+      }
+    }
+  }
+  return null;
 }
 
 String shortcutLabel(SingleActivator value) => [
@@ -82,9 +142,16 @@ class ShortcutEditor extends StatefulWidget {
 
 class _ShortcutEditorState extends State<ShortcutEditor> {
   late final bindings = configuredShortcuts(widget.controller);
+  final bindingsScroll = ScrollController();
   String? capturing, error;
   bool saving = false;
   String query = '';
+
+  @override
+  void dispose() {
+    bindingsScroll.dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(ShortcutEditor oldWidget) {
@@ -134,15 +201,31 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
     final keyboard = HardwareKeyboard.instance;
     if (!keyboard.isControlPressed &&
         !keyboard.isAltPressed &&
-        !(commandShortcuts && keyboard.isMetaPressed)) {
+        !(commandShortcuts && keyboard.isMetaPressed) &&
+        key != LogicalKeyboardKey.f6) {
       setState(
         () => error = commandShortcuts
-            ? '请使用 Cmd、Ctrl 或 Option 组合键，避免影响文字输入。'
-            : '请使用 Ctrl 或 Alt 组合键，避免影响文字输入。',
+            ? DshShortcutZh.macModifierRequired
+            : DshShortcutZh.modifierRequired,
       );
       return KeyEventResult.handled;
     }
     if ((!commandShortcuts && keyboard.isMetaPressed) ||
+        (keyboard.isAltPressed &&
+            [
+              LogicalKeyboardKey.tab,
+              LogicalKeyboardKey.f4,
+              LogicalKeyboardKey.escape,
+            ].contains(key)) ||
+        (commandShortcuts &&
+            keyboard.isMetaPressed &&
+            [
+              LogicalKeyboardKey.tab,
+              LogicalKeyboardKey.space,
+              LogicalKeyboardKey.keyQ,
+              LogicalKeyboardKey.keyH,
+              LogicalKeyboardKey.keyM,
+            ].contains(key)) ||
         ((keyboard.isControlPressed || keyboard.isMetaPressed) &&
             !keyboard.isAltPressed &&
             [
@@ -153,14 +236,14 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
               LogicalKeyboardKey.keyY,
               LogicalKeyboardKey.keyA,
             ].contains(key))) {
-      setState(() => error = '此组合键用于系统或文字编辑，请选择其他组合。');
+      setState(() => error = DshShortcutZh.reservedKey);
       return KeyEventResult.handled;
     }
     if ((key == LogicalKeyboardKey.enter ||
             key == LogicalKeyboardKey.numpadEnter) &&
         (keyboard.isControlPressed || keyboard.isMetaPressed) &&
         !keyboard.isAltPressed) {
-      setState(() => error = '此组合键用于消息发送或换行，请选择其他组合。');
+      setState(() => error = DshShortcutZh.sendKeyReserved);
       return KeyEventResult.handled;
     }
     final binding = SingleActivator(
@@ -179,7 +262,7 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
           e.value.shift == binding.shift &&
           e.value.meta == binding.meta,
     )) {
-      setState(() => error = '此快捷键已绑定其他操作。');
+      setState(() => error = DshShortcutZh.duplicateKey);
       return KeyEventResult.handled;
     }
     setState(() {
@@ -192,6 +275,11 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
 
   Future<void> save() async {
     if (saving || capturing != null) return;
+    final conflict = shortcutConflict(bindings);
+    if (conflict != null) {
+      setState(() => error = conflict);
+      return;
+    }
     final controller = widget.controller;
     final next = {
       for (final entry in bindings.entries)
@@ -209,7 +297,11 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
       }
     } catch (exception) {
       if (mounted && widget.controller == controller) {
-        setState(() => error = '保存失败，原快捷键仍然有效：$exception');
+        setState(
+          () => error = DshShortcutZh.saveFailure(
+            detail: DshError.describe(exception).message,
+          ),
+        );
       }
     } finally {
       if (mounted && widget.controller == controller) {
@@ -224,7 +316,10 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
     autofocus: true,
     child: AlertDialog(
       scrollable: true,
-      title: const Text('快捷键', style: TextStyle(fontSize: 17)),
+      title: const Text(
+        DshShortcutZh.title,
+        style: TextStyle(fontSize: DshTypography.sizeSectionTitle),
+      ),
       content: SizedBox(
         width: 470,
         child: Column(
@@ -233,69 +328,133 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
           children: [
             DshField(
               key: const Key('shortcut-search'),
-              hint: '搜索操作或组合键',
+              hint: DshShortcutZh.search,
               onChanged: (value) => setState(() {
                 query = value;
                 capturing = null;
                 error = null;
+                if (bindingsScroll.hasClients) bindingsScroll.jumpTo(0);
               }),
             ),
             const SizedBox(height: 12),
             const Text(
-              '点击组合键后按下新组合；Esc 取消绑定。终端内优先使用终端快捷键。',
-              style: TextStyle(fontSize: 12, height: 1.6),
+              DshShortcutZh.captureHint,
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                height: 1.6,
+              ),
             ),
             const SizedBox(height: 12),
-            if (visibleShortcuts.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 16),
-                child: Text('未找到匹配的快捷键'),
+            if (error != null) DshErrorView(error: error!),
+            SizedBox(
+              height: (MediaQuery.sizeOf(context).height * .4).clamp(
+                160.0,
+                340.0,
               ),
-            for (final entry in visibleShortcuts)
-              Padding(
-                key: ValueKey('shortcut-row-${entry.key}'),
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        entry.value,
-                        style: const TextStyle(fontSize: 14),
-                      ),
-                    ),
-                    DshButton(
-                      outline: true,
-                      width: 150,
-                      onPressed: saving
-                          ? null
-                          : () => setState(() {
-                              capturing = entry.key;
-                              error = null;
-                            }),
-                      child: SizedBox(
-                        width: 126,
-                        child: Text(
-                          capturing == entry.key
-                              ? '按下组合键…'
-                              : shortcutLabel(bindings[entry.key]!),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+              child: Scrollbar(
+                controller: bindingsScroll,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  controller: bindingsScroll,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (visibleShortcuts.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Text(DshShortcutZh.noResults),
                         ),
-                      ),
-                    ),
-                  ],
+                      for (final entry in visibleShortcuts)
+                        Padding(
+                          key: ValueKey('shortcut-row-${entry.key}'),
+                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final stacked =
+                                  constraints.maxWidth < 360 ||
+                                  MediaQuery.textScalerOf(context).scale(1) >
+                                      1.5;
+                              final label = Text(
+                                entry.value,
+                                style: const TextStyle(
+                                  fontSize: DshTypography.sizeBody,
+                                ),
+                              );
+                              final bindingText = capturing == entry.key
+                                  ? DshShortcutZh.capturing
+                                  : shortcutLabel(bindings[entry.key]!);
+                              final bindingWidth =
+                                  // Horizontal padding plus the outline border.
+                                  (stacked ? constraints.maxWidth : 150.0) - 26;
+                              var bindingHeight = 36.0;
+                              if (stacked) {
+                                final painter = TextPainter(
+                                  text: TextSpan(
+                                    text: bindingText,
+                                    style: DshTypography.body,
+                                  ),
+                                  textDirection: Directionality.of(context),
+                                  textScaler: MediaQuery.textScalerOf(context),
+                                )..layout(maxWidth: bindingWidth);
+                                bindingHeight = painter.height + 14;
+                                painter.dispose();
+                              }
+                              final button = Tooltip(
+                                message: shortcutLabel(bindings[entry.key]!),
+                                child: DshButton(
+                                  outline: true,
+                                  width: stacked ? constraints.maxWidth : 150,
+                                  height: bindingHeight,
+                                  onPressed: saving
+                                      ? null
+                                      : () => setState(() {
+                                          capturing = entry.key;
+                                          error = null;
+                                        }),
+                                  child: SizedBox(
+                                    width: bindingWidth,
+                                    child: Text(
+                                      bindingText,
+                                      maxLines: stacked ? null : 1,
+                                      overflow: stacked
+                                          ? TextOverflow.visible
+                                          : TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ),
+                              );
+                              return stacked
+                                  ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        label,
+                                        const SizedBox(height: 8),
+                                        button,
+                                      ],
+                                    )
+                                  : Row(
+                                      children: [
+                                        Expanded(child: label),
+                                        button,
+                                      ],
+                                    );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
+            ),
             const SizedBox(height: 10),
             Text(
-              'Enter 发送 · Shift+Enter 换行\n忙碌时 $primaryShortcutLabel+Enter 使用另一发送行为；空闲时可续写编号列表。',
-              style: const TextStyle(fontSize: 12, height: 1.6),
-            ),
-            if (error != null)
-              Text(
-                error!,
-                style: const TextStyle(color: Colors.red, fontSize: 12),
+              DshShortcutZh.sendHint(modifier: primaryShortcutLabel),
+              style: const TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                height: 1.6,
               ),
+            ),
           ],
         ),
       ),
@@ -310,16 +469,16 @@ class _ShortcutEditorState extends State<ShortcutEditor> {
                   capturing = null;
                   error = null;
                 }),
-          child: const Text('恢复默认'),
+          child: const Text(DshShortcutZh.restoreDefaults),
         ),
         DshButton(
           onPressed: saving ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshZh.cancel),
         ),
         DshButton(
           primary: true,
           onPressed: capturing != null || saving ? null : save,
-          child: Text(saving ? '保存中…' : '保存'),
+          child: Text(saving ? DshZh.saving : DshZh.save),
         ),
       ],
     ),

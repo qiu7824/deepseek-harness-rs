@@ -6,23 +6,28 @@ import 'package:flutter/material.dart';
 import '../../src/controller.dart';
 import '../../design/primitives.dart';
 
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
+
 String turnActivityLabel(DesktopController c) {
-  if (!c.connected) return '连接中断，正在恢复状态';
-  if (c.interactions.any((f) => f.type == 'approval/requested')) return '等待审批';
-  if (c.interactions.any((f) => f.type == 'question/requested')) {
-    return '等待你的回答';
+  if (!c.connected) return DshConversationZh.restoringConnection;
+  if (c.interactions.any((f) => f.type == 'approval/requested')) {
+    return DshConversationZh.awaitingApproval;
   }
-  if (c.sending) return '正在发送';
-  if (c.compacting) return '正在压缩上下文';
-  if (c.commandRunning) return '正在执行命令';
+  if (c.interactions.any((f) => f.type == 'question/requested')) {
+    return DshConversationZh.awaitingUserAnswer;
+  }
+  if (c.sending) return DshConversationZh.sending;
+  if (c.compacting) return DshConversationZh.compactingContext;
+  if (c.commandRunning) return DshConversationZh.executingCommand;
   if (!c.running) return '';
   final tool = c.transcript
       .where((m) => m.kind == 'tool' && m.status == 'pending')
       .lastOrNull;
-  if (tool != null) return '正在执行工具 · ${tool.title}';
+  if (tool != null) return DshConversationZh.executingTool(title: tool.title);
   final tail = c.transcript.where((m) => m.streaming).lastOrNull;
-  if (tail?.kind == 'reasoning') return '正在思考';
-  if (tail?.kind == 'assistant') return '正在生成回复';
+  if (tail?.kind == 'reasoning') return DshConversationZh.thinkingProgress;
+  if (tail?.kind == 'assistant') return DshConversationZh.generatingAnswer;
   final chunk = c.window.events
       .where((event) => event.type == 'assistant/chunk')
       .lastOrNull;
@@ -30,19 +35,19 @@ String turnActivityLabel(DesktopController c) {
     'tool-call-start',
     'tool-call-delta',
   ].contains(object(chunk?.data['chunk'])['type'])) {
-    return '正在生成工具参数';
+    return DshConversationZh.generatingToolArguments;
   }
   final phase = object(
     object(c.projections['sessionStats'])['requestPhase'],
   )['phase'];
   return const {
-        'credentials': '正在准备模型认证',
-        'request_sent': '正在等待模型响应',
-        'response_headers': '正在接收模型响应',
-        'attachment_prepare': '正在准备附件',
-        'attachment_upload': '正在上传附件',
+        'credentials': DshConversationZh.preparingModelAuthentication,
+        'request_sent': DshConversationZh.awaitingModelResponse,
+        'response_headers': DshConversationZh.receivingModelResponse,
+        'attachment_prepare': DshConversationZh.preparingAttachments,
+        'attachment_upload': DshConversationZh.uploadingAttachments,
       }[phase] ??
-      '正在继续处理';
+      DshConversationZh.continuingWork;
 }
 
 class TurnActivity extends StatefulWidget {
@@ -116,7 +121,7 @@ class _TurnActivityState extends State<TurnActivity>
     ]),
     builder: (_, _) {
       final label = widget.readingHistory
-              ? '正在查看历史消息'
+              ? DshConversationZh.readingHistory
               : turnActivityLabel(widget.controller),
           color = DshColors(context).muted;
       if (label.isEmpty) return const SizedBox.shrink();
@@ -140,7 +145,7 @@ class _TurnActivityState extends State<TurnActivity>
             children: [
               DshGlyph(
                 null,
-                asset: label == '正在思考'
+                asset: label == DshConversationZh.thinkingProgress
                     ? 'assets/icons/web-IconThinkOutline14.svg'
                     : 'assets/icons/web-IconApiOutline14.svg',
                 size: 14,
@@ -150,7 +155,10 @@ class _TurnActivityState extends State<TurnActivity>
               Flexible(
                 child: Text(
                   label,
-                  style: TextStyle(fontSize: 14, color: color),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeBody,
+                    color: color,
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -168,7 +176,10 @@ class _TurnActivityState extends State<TurnActivity>
               if (seconds >= 5 && !widget.readingHistory)
                 Text(
                   '  ${seconds}s',
-                  style: TextStyle(fontSize: 12, color: color),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: color,
+                  ),
                 ),
             ],
           ),

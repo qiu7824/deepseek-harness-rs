@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/design/primitives.dart';
+import 'package:dsh_desktop/design/select.dart';
 import 'package:dsh_desktop/features/settings/time_context_panel.dart';
 import 'package:dsh_desktop/src/controller.dart';
 import 'package:flutter/material.dart';
@@ -124,6 +125,7 @@ Future<void> mount(
   TimeContextController controller, {
   bool settle = true,
   String entryId = 'clock',
+  bool milliseconds = true,
 }) async {
   await tester.binding.setSurfaceSize(const Size(900, 900));
   await tester.pumpWidget(
@@ -141,6 +143,10 @@ Future<void> mount(
   } else {
     await tester.pump();
   }
+  if (milliseconds) {
+    tester.widget<DshSelect<int>>(keyed('unit')).onChanged?.call(1);
+    await tester.pump();
+  }
 }
 
 void main() {
@@ -152,9 +158,10 @@ void main() {
   testWidgets('omitted settings display defaults without writing or enabling', (
     tester,
   ) async {
-    await mount(tester, controller);
+    await mount(tester, controller, milliseconds: false);
     expect(text(tester, 'interval'), '');
-    expect(tester.widget<DshField>(keyed('interval')).hint, '600000');
+    expect(tester.widget<DshField>(keyed('interval')).hint, '10');
+    expect(tester.widget<DshSelect<int>>(keyed('unit')).value, 60000);
     expect(find.textContaining('默认每十分钟'), findsOneWidget);
     expect(text(tester, 'zone'), '');
     expect(enabled(tester, 'save'), isFalse);
@@ -261,6 +268,62 @@ void main() {
     await tester.binding.setSurfaceSize(null);
   });
 
+  testWidgets(
+    'friendly units convert exactly and never round stored milliseconds',
+    (tester) async {
+      controller.original.config = {'refreshIntervalMs': 600001};
+      await mount(tester, controller, milliseconds: false);
+      expect(text(tester, 'interval'), '600001');
+      expect(tester.widget<DshSelect<int>>(keyed('unit')).value, 1);
+      tester.widget<DshSelect<int>>(keyed('unit')).onChanged!(60000);
+      await tester.pump();
+      expect(text(tester, 'interval'), '600001');
+      expect(tester.widget<DshSelect<int>>(keyed('unit')).value, 1);
+      expect(find.textContaining('已保留原单位'), findsOneWidget);
+      await fill(tester, 'zone', 'UTC');
+      await tap(tester, 'save');
+      expect(controller.original.config['refreshIntervalMs'], 600001);
+
+      await fill(tester, 'interval', '');
+      tester.widget<DshSelect<int>>(keyed('unit')).onChanged!(60000);
+      await tester.pump();
+      await fill(tester, 'interval', '1.25');
+      tester.widget<DshSelect<int>>(keyed('unit')).onChanged!(1000);
+      await tester.pump();
+      expect(text(tester, 'interval'), '75');
+      await tap(tester, 'save');
+      expect(controller.original.config['refreshIntervalMs'], 75000);
+      expect(tester.widget<DshSelect<int>>(keyed('unit')).value, 1000);
+
+      tester.widget<DshSelect<int>>(keyed('unit')).onChanged!(1);
+      await tester.pump();
+      await fill(tester, 'interval', '1234');
+      tester.widget<DshSelect<int>>(keyed('unit')).onChanged!(1000);
+      await tester.pump();
+      expect(text(tester, 'interval'), '1.234');
+      await tap(tester, 'save');
+      expect(controller.original.config['refreshIntervalMs'], 1234);
+      await tester.pumpWidget(const SizedBox());
+      await tester.binding.setSurfaceSize(null);
+    },
+  );
+
+  testWidgets('minute input validates exact millisecond precision and limit', (
+    tester,
+  ) async {
+    await mount(tester, controller, milliseconds: false);
+    for (final invalid in ['0.000001', '150119987579.016533333', '1e3']) {
+      await fill(tester, 'interval', invalid);
+      expect(enabled(tester, 'save'), isFalse, reason: invalid);
+    }
+    await fill(tester, 'interval', '0.00005');
+    await tap(tester, 'save');
+    expect(controller.original.config['refreshIntervalMs'], 3);
+    expect(tester.widget<DshSelect<int>>(keyed('unit')).value, 1);
+    await tester.pumpWidget(const SizedBox());
+    await tester.binding.setSurfaceSize(null);
+  });
+
   testWidgets('conflict preserves draft until explicit refresh and compare', (
     tester,
   ) async {
@@ -278,7 +341,7 @@ void main() {
     await tap(tester, 'reload');
     expect(text(tester, 'interval'), '0');
     expect(text(tester, 'zone'), 'Asia/Shanghai');
-    expect(find.textContaining('每 90000 毫秒更新，UTC'), findsOneWidget);
+    expect(find.textContaining('每 90 秒更新，UTC'), findsOneWidget);
     expect(controller.original.writes.length, 1);
     await tap(tester, 'save');
     expect(

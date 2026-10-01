@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsh_desktop/features/conversation/reasoning_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -70,4 +72,75 @@ void main() {
       'max',
     ], reason: 'reselecting the current level is a no-op');
   });
+
+  testWidgets('unknown and default efforts do not appear as the lowest level', (
+    tester,
+  ) async {
+    Future<void> show(String? value) => tester.pumpWidget(
+      ShadApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            child: ReasoningSlider(
+              levels: const [
+                {'id': 'low', 'name': 'Low'},
+                {'id': 'high', 'name': 'High'},
+              ],
+              value: value,
+              onChanged: (_) async {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await show(null);
+    expect(find.text('模型默认'), findsOneWidget);
+    expect(find.byType(Slider), findsNothing);
+    await show('custom');
+    expect(find.text('custom（未列出）'), findsOneWidget);
+    expect(find.byType(Slider), findsNothing);
+  });
+
+  testWidgets(
+    'pending effort retains the confirmed value and admits one request',
+    (tester) async {
+      final reply = Completer<void>();
+      var calls = 0;
+      await tester.pumpWidget(
+        ShadApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 360,
+              child: ReasoningSlider(
+                levels: const [
+                  {'id': 'low', 'name': 'Low'},
+                  {'id': 'high', 'name': 'High'},
+                ],
+                value: 'high',
+                onChanged: (_) {
+                  calls++;
+                  return reply.future;
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('reasoning-level-low')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('reasoning-level-low')));
+      await tester.pump();
+      expect(calls, 1);
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 1);
+      expect(tester.widget<Slider>(find.byType(Slider)).onChanged, isNull);
+      reply.completeError(StateError('rejected'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 1);
+      expect(
+        find.byKey(const ValueKey('reasoning-update-error')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

@@ -3,13 +3,16 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:dsh_client/dsh_client.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../design/typography.dart';
+import '../../design/bounded_image.dart';
 import '../../design/context_menu.dart';
 import '../../src/composer_attachments.dart';
+
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class UploadedFileCard extends StatelessWidget {
   const UploadedFileCard({super.key, required this.file, this.onPressed});
@@ -25,7 +28,7 @@ class UploadedFileCard extends StatelessWidget {
       child: Semantics(
         button: true,
         enabled: onPressed != null,
-        label: '打开文件：${file.name}',
+        label: DshConversationZh.openNamedFile(name: file.name),
         child: Material(
           color: colors.layer,
           shape: RoundedRectangleBorder(
@@ -39,12 +42,12 @@ class UploadedFileCard extends StatelessWidget {
                 context,
                 event.globalPosition,
                 {
-                  if (onPressed != null) 'open': '打开文件',
+                  if (onPressed != null) 'open': DshConversationZh.openFile,
                   if (!file.path.startsWith(
                     UploadedFileReceipt.referencePrefix,
                   ))
-                    'copy': '复制文件路径',
-                  'name': '复制文件名',
+                    'copy': DshConversationZh.copyFilePath,
+                  'name': DshConversationZh.copyFilename,
                 },
               );
               if (!context.mounted) return;
@@ -69,7 +72,7 @@ class UploadedFileCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: DshTypography.body.copyWith(
-                        fontSize: 13,
+                        fontSize: DshTypography.sizeAuxiliary,
                         height: 18 / 13,
                         color: colors.text,
                       ),
@@ -108,7 +111,7 @@ class _AttachmentViewState extends State<AttachmentView> {
   RequestScope scope = RequestScope();
   int generation = 0;
   Uint8List? data;
-  String? error;
+  Object? error;
   @override
   void initState() {
     super.initState();
@@ -138,37 +141,52 @@ class _AttachmentViewState extends State<AttachmentView> {
   }
 
   Future<void> load() async {
+    scope.cancel();
+    final requestScope = scope = RequestScope();
     final revision = ++generation;
     final client = widget.client, sessionId = widget.sessionId;
     final attachmentId = widget.attachment['attachmentId'];
     bool current() =>
         mounted &&
+        !requestScope.cancelled &&
         revision == generation &&
         client == widget.client &&
         sessionId == widget.sessionId;
+    setState(() => error = null);
     try {
       final result = await client.rpc(
         'session.attachment',
         payload: {'sessionId': sessionId, 'attachmentId': attachmentId},
-        scope: scope,
+        scope: requestScope,
       );
       if (!current()) return;
       final encoded = result['data'] as String;
-      if (encoded.length > 24 * 1024 * 1024) throw StateError('图片超过显示上限');
+      if (encoded.length > 24 * 1024 * 1024) {
+        throw StateError(DshConversationZh.imageDisplayLimit);
+      }
       final decoded = base64Decode(encoded);
       if (current()) setState(() => data = decoded);
     } catch (e) {
-      if (current()) setState(() => error = '$e');
+      if (current()) setState(() => error = e);
     }
   }
 
   Future<void> save() async {
     final revision = generation, bytes = data;
-    final target = await getSaveLocation(
-      suggestedName: widget.attachment['name'] as String? ?? 'image.png',
-    );
-    if (mounted && revision == generation && target != null && bytes != null) {
-      await XFile.fromData(bytes).saveTo(target.path);
+    try {
+      final target = await getSaveLocation(
+        suggestedName: widget.attachment['name'] as String? ?? 'image.png',
+      );
+      if (mounted &&
+          revision == generation &&
+          target != null &&
+          bytes != null) {
+        await XFile.fromData(bytes).saveTo(target.path);
+      }
+    } catch (failure) {
+      if (mounted && revision == generation) {
+        showDshError(context, failure, operation: DshConversationZh.saveImage);
+      }
     }
   }
 
@@ -186,14 +204,19 @@ class _AttachmentViewState extends State<AttachmentView> {
                 children: [
                   Expanded(
                     child: Text(
-                      widget.attachment['name'] as String? ?? '图片',
-                      style: const TextStyle(fontSize: 14),
+                      widget.attachment['name'] as String? ??
+                          DshConversationZh.image,
+                      style: const TextStyle(fontSize: DshTypography.sizeBody),
                     ),
                   ),
-                  DshIcon(LucideIcons.download, label: '保存图片', onPressed: save),
                   DshIcon(
-                    LucideIcons.x,
-                    label: '关闭',
+                    DshIcons.download.data,
+                    label: DshConversationZh.saveImage,
+                    onPressed: save,
+                  ),
+                  DshIcon(
+                    DshIcons.close.data,
+                    label: DshConversationZh.close,
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
@@ -203,9 +226,9 @@ class _AttachmentViewState extends State<AttachmentView> {
               child: InteractiveViewer(
                 minScale: .1,
                 maxScale: 5,
-                child: Image.memory(
-                  data!,
-                  cacheWidth: 2000,
+                child: DshBoundedImage(
+                  image: MemoryImage(data!),
+                  evictOnDispose: true,
                   fit: BoxFit.contain,
                 ),
               ),
@@ -223,7 +246,9 @@ class _AttachmentViewState extends State<AttachmentView> {
       width: 220,
       height: 160,
       child: error != null
-          ? DshEmpty(error!, icon: LucideIcons.circleAlert)
+          ? SingleChildScrollView(
+              child: DshErrorView(error: error!, onRetry: load),
+            )
           : data == null
           ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
           : InkWell(
@@ -232,14 +257,21 @@ class _AttachmentViewState extends State<AttachmentView> {
                 final action = await nativeContextMenu(
                   context,
                   event.globalPosition,
-                  {'preview': '查看原图', 'save': '保存图片', 'name': '复制图片名称'},
+                  {
+                    'preview': DshConversationZh.viewOriginalImage,
+                    'save': DshConversationZh.saveImage,
+                    'name': DshConversationZh.copyImageName,
+                  },
                 );
                 if (!mounted) return;
                 if (action == 'preview') await preview();
                 if (action == 'save') await save();
                 if (action == 'name') {
                   await Clipboard.setData(
-                    ClipboardData(text: '${widget.attachment['name'] ?? '图片'}'),
+                    ClipboardData(
+                      text:
+                          '${widget.attachment['name'] ?? DshConversationZh.image}',
+                    ),
                   );
                 }
               },
@@ -280,7 +312,7 @@ class PendingAttachmentTile extends StatelessWidget {
     ).displaySize;
     final remove = Semantics(
       button: true,
-      label: '移除附件：${file.name}',
+      label: DshConversationZh.removeNamedAttachment(name: file.name),
       child: Material(
         color: colors.base,
         shape: CircleBorder(side: BorderSide(color: colors.border)),
@@ -289,7 +321,7 @@ class PendingAttachmentTile extends StatelessWidget {
           onTap: onRemove,
           child: Padding(
             padding: const EdgeInsets.all(3),
-            child: DshGlyph(LucideIcons.x, size: 12, color: colors.muted),
+            child: DshGlyph(DshIcons.close.data, size: 12, color: colors.muted),
           ),
         ),
       ),
@@ -306,7 +338,7 @@ class PendingAttachmentTile extends StatelessWidget {
               Positioned.fill(
                 child: Semantics(
                   button: onPreview != null,
-                  label: '预览图片：${file.name}',
+                  label: DshConversationZh.previewNamedImage(name: file.name),
                   child: InkWell(
                     onTap: onPreview,
                     borderRadius: BorderRadius.circular(10),
@@ -327,7 +359,7 @@ class PendingAttachmentTile extends StatelessWidget {
                             color: colors.layer,
                             child: Center(
                               child: DshGlyph(
-                                LucideIcons.image,
+                                DshIcons.image.data,
                                 size: 18,
                                 color: colors.muted,
                               ),
@@ -356,7 +388,7 @@ class PendingAttachmentTile extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          DshGlyph(LucideIcons.paperclip, size: 14, color: colors.muted),
+          DshGlyph(DshIcons.attach.data, size: 14, color: colors.muted),
           const SizedBox(width: 6),
           Flexible(
             child: Text(

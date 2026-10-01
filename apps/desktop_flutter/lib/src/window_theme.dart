@@ -13,7 +13,7 @@ class WindowThemeBinding {
   bool disposed = false, applying = false;
 
   Future<void> start() async {
-    controller.addListener(changed);
+    controller.themeChanges.addListener(changed);
     await apply();
   }
 
@@ -43,6 +43,6 @@ class WindowThemeBinding {
 
   void dispose() {
     disposed = true;
-    controller.removeListener(changed);
+    controller.themeChanges.removeListener(changed);
   }
 }

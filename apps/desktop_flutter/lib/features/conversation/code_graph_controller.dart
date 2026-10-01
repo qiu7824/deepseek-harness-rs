@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/foundation.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class CodeGraphController extends ChangeNotifier {
   CodeGraphController(this.api, this.session);
@@ -15,7 +16,8 @@ class CodeGraphController extends ChangeNotifier {
       rootSymbol = '',
       direction = 'chain',
       snippet = '';
-  String? error;
+  Object? error, sourceError;
+  bool mutationFailed = false;
   RequestScope? reader, source;
   final mutations = RequestScope();
   Timer? timer;
@@ -112,6 +114,7 @@ class CodeGraphController extends ChangeNotifier {
     final scope = RequestScope(), generation = epoch;
     reader = scope;
     loading = true;
+    if (!mutationFailed) error = null;
     emit();
     final resumeNow = resumePending;
     resumePending = false;
@@ -136,10 +139,10 @@ class CodeGraphController extends ChangeNotifier {
       );
       if (disposed || generation != epoch || !active) return;
       graph = result;
-      error = null;
+      if (!mutationFailed) error = null;
       rebuild();
     } catch (e) {
-      if (!disposed && generation == epoch) error = '$e';
+      if (!disposed && generation == epoch && !mutationFailed) error = e;
     } finally {
       if (!disposed && generation == epoch) {
         reader = null;
@@ -154,6 +157,8 @@ class CodeGraphController extends ChangeNotifier {
 
   Future<void> pause() async {
     cancelRead();
+    error = null;
+    mutationFailed = false;
     try {
       await api.request(
         '/__dsh-preview/code-graph-cancel',
@@ -165,7 +170,8 @@ class CodeGraphController extends ChangeNotifier {
       if (!disposed) await refresh();
     } catch (e) {
       if (!disposed) {
-        error = '$e';
+        error = e;
+        mutationFailed = true;
         emit();
       }
     }
@@ -176,6 +182,7 @@ class CodeGraphController extends ChangeNotifier {
     source = null;
     final generation = ++sourceEpoch;
     snippet = '';
+    sourceError = null;
     emit();
     if (path == null || path.isEmpty || !active || disposed) return;
     final scope = RequestScope();
@@ -191,12 +198,12 @@ class CodeGraphController extends ChangeNotifier {
       );
       if (!disposed && generation == sourceEpoch) {
         snippet = codeExcerpt('${value['text'] ?? ''}', line);
-        if (snippet.isEmpty) snippet = '该位置暂无源码';
+        if (snippet.isEmpty) snippet = DshConversationZh.noSourceAtLocation;
         emit();
       }
     } catch (e) {
       if (!disposed && generation == sourceEpoch) {
-        snippet = '$e';
+        sourceError = e;
         emit();
       }
     }

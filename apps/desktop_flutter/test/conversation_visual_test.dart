@@ -10,7 +10,7 @@ import 'controller_test.dart' show MemoryPreferences;
 
 void main() {
   testWidgets(
-    'active composer matches measured Web card geometry and user bubble bounds',
+    'desktop composer preserves reading width and usable action targets',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1144, 862));
       final c = DesktopController(MemoryPreferences())..selectedId = 's';
@@ -25,18 +25,64 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final card = tester.getSize(find.byKey(const ValueKey('composer-card')));
-      expect(card.height, closeTo(94, 1));
+      final card = tester.getRect(find.byKey(const ValueKey('composer-card')));
+      final input = tester.getRect(find.byKey(const Key('prompt-input')));
+      final send = tester.getRect(find.byKey(const Key('send-message')));
+      expect(send.width, greaterThanOrEqualTo(40));
+      expect(send.height, greaterThanOrEqualTo(40));
+      expect(input.top - card.top, greaterThanOrEqualTo(8));
+      expect(send.top - input.bottom, greaterThanOrEqualTo(8));
+      expect(card.bottom - send.bottom, greaterThanOrEqualTo(4));
+      expect(
+        card.height - input.height - send.height,
+        inInclusiveRange(24, 48),
+      );
       expect(card.width, closeTo(1144 * .64 + 32, 1));
       expect(find.byType(ComposerAction), findsNWidgets(3));
-      expect(
-        tester.getSize(find.byType(ComposerAction).first),
-        const Size(34, 34),
-      );
+      for (final action in find.byType(ComposerAction).evaluate()) {
+        final target = tester.getSize(find.byWidget(action.widget));
+        expect(target.width, greaterThanOrEqualTo(36));
+        expect(target.height, greaterThanOrEqualTo(36));
+      }
       expect(
         tester.getSize(find.byKey(const ValueKey('bubble-user'))).width,
         lessThanOrEqualTo(525),
       );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+      await tester.binding.setSurfaceSize(null);
+    },
+  );
+  testWidgets(
+    'composer grows with system text scale without clipping actions',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1144, 862));
+      final c = DesktopController(MemoryPreferences())..selectedId = 's';
+      Future<Rect> atScale(double scale) async {
+        await tester.pumpWidget(
+          ShadApp(
+            home: MediaQuery(
+              data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+              child: Scaffold(body: Conversation(controller: c)),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        return tester.getRect(find.byKey(const ValueKey('composer-card')));
+      }
+
+      final normal = await atScale(1);
+      final card = await atScale(2);
+      expect(card.height, greaterThan(normal.height));
+      for (final action in find.byType(ComposerAction).evaluate()) {
+        final rect = tester.getRect(find.byWidget(action.widget));
+        expect(card.contains(rect.topLeft), isTrue);
+        expect(
+          card.contains(rect.bottomRight - const Offset(.01, .01)),
+          isTrue,
+        );
+      }
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();

@@ -14,6 +14,11 @@ import 'package:url_launcher/url_launcher.dart';
 import '../design/primitives.dart';
 import '../design/shortcuts.dart';
 import '../design/typography.dart';
+import '../design/bounded_image.dart';
+import '../design/error.dart';
+import '../design/motion.dart';
+import '../l10n/zh.dart';
+import 'reading_position.dart';
 import '../design/rich_content.dart';
 import '../design/text_document.dart';
 import '../design/context_menu.dart';
@@ -23,7 +28,6 @@ import '../features/conversation/session_views.dart';
 import '../features/conversation/artifacts_view.dart';
 import '../features/workbench/workbench_panel.dart' show previewUrl;
 import '../features/conversation/code_graph_view.dart';
-import '../features/workbench/project_tasks.dart';
 import 'composer_attachments.dart';
 import 'controller.dart';
 import 'composer_clipboard.dart';
@@ -43,6 +47,8 @@ import '../features/conversation/context_quick_settings.dart';
 import '../features/conversation/turn_stats.dart';
 import 'resource_diagnostics.dart';
 import '../features/conversation/retry_message.dart';
+
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 TextEditingValue? continueNumberedDraft(TextEditingValue value) {
   if (!value.selection.isValid) return null;
@@ -66,7 +72,7 @@ const _messageRenderLimit = 96 * 1024;
 String boundedMessageText(String value) {
   if (value.length <= _messageRenderLimit) return value;
   final end = TextDocument.boundary(value, _messageRenderLimit);
-  return '${value.substring(0, end)}\n\n…正文过长，已截取显示；打开消息详情查看完整内容。';
+  return DshConversationZh.truncatedMessage(prefix: value.substring(0, end));
 }
 
 class Conversation extends StatefulWidget {
@@ -107,6 +113,8 @@ class _ConversationState extends State<Conversation>
   final messageViewport = GlobalKey();
   final railViewport = GlobalKey();
   final userAnchors = <int, GlobalKey>{};
+  final readingAnchors = <String, GlobalKey>{};
+  bool _readingFramePending = false;
   int navigation = 0;
   bool navigating = false, railFramePending = false;
   String? navigationError;
@@ -132,15 +140,80 @@ class _ConversationState extends State<Conversation>
   };
   String? _session;
   DshClient? _composerClient;
+  String? _composerDraftScope;
   int _composerSelection = -1;
   bool follow = true, dropping = false;
   int revision = 0, voiceRevision = 0;
   String view = 'conversation';
+  bool _modelMenuOpen = false;
+  bool _readingModels = false;
+  Widget? _cachedLayout;
+  ConversationReadingPosition? _pendingReadingPosition;
+  bool _restoringScroll = false;
+
+  void _selectWorkspace() => widget.onSelectWorkspace?.call();
+  void _openPath(String path) => widget.onOpenPath?.call(path);
+  void _openPlan(TranscriptItem item) => widget.onOpenPlan?.call(item);
+
+  @override
+  void setState(VoidCallback fn) {
+    _cachedLayout = null;
+    super.setState(fn);
+  }
+
+  void conversationChanged() {
+    changed();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _cachedLayout = null;
+  }
+
+  @override
+  void didUpdateWidget(Conversation oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != c) {
+      oldWidget.controller.conversationChanges.removeListener(
+        conversationChanged,
+      );
+      oldWidget.controller.messageChanges.removeListener(changed);
+      oldWidget.controller.composerFocus.removeListener(requestFocus);
+      c.conversationChanges.addListener(conversationChanged);
+      c.messageChanges.addListener(changed);
+      c.composerFocus.addListener(requestFocus);
+      _session = null;
+      _composerClient = null;
+      _composerDraftScope = null;
+      _composerSelection = -1;
+      changed();
+      _cachedLayout = null;
+    }
+    if (oldWidget.viewRequest != widget.viewRequest) {
+      oldWidget.viewRequest?.removeListener(applyViewRequest);
+      widget.viewRequest?.addListener(applyViewRequest);
+      _cachedLayout = null;
+    }
+    if (oldWidget.maxContentWidth != widget.maxContentWidth ||
+        oldWidget.headerInset != widget.headerInset ||
+        oldWidget.workspaceAnchor != widget.workspaceAnchor ||
+        (oldWidget.onSelectWorkspace == null) !=
+            (widget.onSelectWorkspace == null) ||
+        (oldWidget.onOpenPath == null) != (widget.onOpenPath == null) ||
+        (oldWidget.onOpenPlan == null) != (widget.onOpenPlan == null) ||
+        (oldWidget.onOpenWorkbench == null) !=
+            (widget.onOpenWorkbench == null)) {
+      _cachedLayout = null;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    c.addListener(changed);
+    c.conversationChanges.addListener(conversationChanged);
     c.messageChanges.addListener(changed);
     c.composerFocus.addListener(requestFocus);
     widget.viewRequest?.addListener(applyViewRequest);
@@ -164,7 +237,7 @@ class _ConversationState extends State<Conversation>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    c.removeListener(changed);
+    c.conversationChanges.removeListener(conversationChanged);
     c.messageChanges.removeListener(changed);
     c.composerFocus.removeListener(requestFocus);
     widget.viewRequest?.removeListener(applyViewRequest);
@@ -244,11 +317,12 @@ class _ConversationState extends State<Conversation>
       unawaited(feedback!.ensure(refresh: true));
     }
     feedbackConnected = c.connected;
-    if (c.menuSettings[view == 'project-tasks' ? 'tasks' : view] == false) {
+    if (view == 'project-tasks' || c.menuSettings[view] == false) {
       view = 'conversation';
     }
     if (_session != c.selectedId ||
         _composerClient != c.client ||
+        (_session == null && _composerDraftScope != c.draftScopeKey) ||
         (_session == null && _composerSelection != c.selectionRevision)) {
       final adoptDraft =
           _session == null &&
@@ -262,6 +336,7 @@ class _ConversationState extends State<Conversation>
       navigating = false;
       navigationError = null;
       userAnchors.clear();
+      readingAnchors.clear();
       railEntriesCache = [];
       railIndexRevision = -1;
       railUserSignature = '';
@@ -271,11 +346,31 @@ class _ConversationState extends State<Conversation>
       view = 'conversation';
       _session = c.selectedId;
       _composerClient = c.client;
+      _composerDraftScope = c.draftScopeKey;
       if (!adoptDraft || input.text.isEmpty) input.text = c.draft;
       if (!adoptDraft) attachments.clear();
-      follow = true;
+      _pendingReadingPosition = c.readingPositions[_session];
+      _restoringScroll = _pendingReadingPosition != null;
+      follow = _pendingReadingPosition == null;
+    }
+    if (_composerSelection != c.selectionRevision) {
+      navigation++;
+      _pendingReadingPosition = c.readingPositions[_session];
+      _restoringScroll = _pendingReadingPosition != null;
+      follow = _pendingReadingPosition == null;
     }
     _composerSelection = c.selectionRevision;
+    if (_restoringScroll && !c.readingPositions.containsKey(_session)) {
+      _pendingReadingPosition = null;
+      _restoringScroll = false;
+      follow = true;
+      navigation++;
+    }
+    final readingPosition = _pendingReadingPosition;
+    if (readingPosition != null && !c.loading && c.transcript.isNotEmpty) {
+      _pendingReadingPosition = null;
+      unawaited(restoreReadingPosition(readingPosition));
+    }
     final next = c.window.lastSeq ?? -1;
     if (follow && revision != next) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -288,7 +383,111 @@ class _ConversationState extends State<Conversation>
         .map((m) => m.seq)
         .toSet();
     userAnchors.removeWhere((seq, _) => !userSeqs.contains(seq));
+    final ids = c.transcript.map((item) => item.id).toSet();
+    readingAnchors.removeWhere((id, _) => !ids.contains(id));
     updateRailHighlight();
+  }
+
+  Future<void> restoreReadingPosition(
+    ConversationReadingPosition position,
+  ) async {
+    final owner = c, api = c.client, session = c.selectedId;
+    final selection = c.selectionRevision, token = ++navigation;
+    _restoringScroll = true;
+    bool valid() =>
+        mounted &&
+        identical(c, owner) &&
+        c.client == api &&
+        c.selectedId == session &&
+        c.selectionRevision == selection &&
+        token == navigation;
+    try {
+      // The requested page starts at the anchor. Its reverse-list offset is
+      // deliberately not reused: page length and following messages may change.
+      for (var frame = 0; frame < 16; frame++) {
+        await WidgetsBinding.instance.endOfFrame;
+        if (!valid() || c.loading || !scroll.hasClients) return;
+        final matching =
+            c.transcript
+                .where((item) => item.id == position.itemId)
+                .firstOrNull ??
+            c.transcript.where((item) => item.seq == position.seq).firstOrNull;
+        final row = readingAnchors[matching?.id]?.currentContext
+            ?.findRenderObject();
+        final port = messageViewport.currentContext?.findRenderObject();
+        if (row is RenderBox &&
+            row.hasSize &&
+            port is RenderBox &&
+            port.hasSize) {
+          final top =
+              row.localToGlobal(Offset.zero).dy -
+              port.localToGlobal(Offset.zero).dy;
+          final desiredTop = position.viewportOffset.clamp(
+            row.size.height > 24 ? -row.size.height + 24 : 0,
+            port.size.height > 24 ? port.size.height - 24 : 0,
+          );
+          final offset = (scroll.offset + desiredTop - top).clamp(
+            scroll.position.minScrollExtent,
+            scroll.position.maxScrollExtent,
+          );
+          if ((offset - scroll.offset).abs() < .5) return;
+          scroll.jumpTo(offset);
+        } else {
+          scroll.jumpTo(scroll.position.maxScrollExtent);
+        }
+      }
+    } finally {
+      if (valid()) _restoringScroll = false;
+    }
+  }
+
+  void rememberVisibleReadingPosition() {
+    if (_readingFramePending || !mounted) return;
+    _readingFramePending = true;
+    final owner = c, api = c.client, session = c.selectedId;
+    final selection = c.selectionRevision;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _readingFramePending = false;
+      if (!mounted ||
+          !identical(owner, c) ||
+          api != c.client ||
+          session != c.selectedId ||
+          selection != c.selectionRevision ||
+          session == null ||
+          follow ||
+          navigating ||
+          _restoringScroll ||
+          c.loading) {
+        return;
+      }
+      final port = messageViewport.currentContext?.findRenderObject();
+      if (port is! RenderBox || !port.hasSize) return;
+      final origin = port.localToGlobal(Offset.zero).dy;
+      TranscriptItem? chosen;
+      int? chosenSeq, precedingSeq = c.window.firstSeq;
+      double? chosenTop;
+      for (final item in c.transcript) {
+        precedingSeq = item.seq ?? precedingSeq;
+        if (precedingSeq == null) continue;
+        final row = readingAnchors[item.id]?.currentContext?.findRenderObject();
+        if (row is! RenderBox || !row.hasSize) continue;
+        final top = row.localToGlobal(Offset.zero).dy - origin;
+        if (top >= port.size.height || top + row.size.height < 24) continue;
+        if (chosenTop == null || top < chosenTop) {
+          chosen = item;
+          chosenSeq = precedingSeq;
+          chosenTop = top;
+        }
+      }
+      if (chosen == null) return;
+      c.rememberReadingPosition(
+        session,
+        seq: chosenSeq,
+        itemId: chosen.id,
+        viewportOffset: chosenTop!,
+        follow: false,
+      );
+    });
   }
 
   List<MessageRailEntry> get railEntries {
@@ -337,6 +536,8 @@ class _ConversationState extends State<Conversation>
   }
 
   Future<void> jumpMessage(MessageRailEntry entry) async {
+    _pendingReadingPosition = null;
+    _restoringScroll = false;
     final token = ++navigation, session = c.selectedId, api = c.client;
     bool valid() =>
         mounted &&
@@ -389,8 +590,8 @@ class _ConversationState extends State<Conversation>
           } else {
             await scroll.animateTo(
               offset,
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOut,
+              duration: DshMotion.duration(context, DshMotion.panel),
+              curve: DshMotion.curve,
             );
           }
           if (valid()) railCurrent.value = entry.seq;
@@ -398,15 +599,20 @@ class _ConversationState extends State<Conversation>
         }
         if (scroll.hasClients) scroll.jumpTo(scroll.position.maxScrollExtent);
       }
-      throw StateError('无法定位该消息，请重试。');
+      throw StateError(DshConversationZh.messageNotFound);
     } catch (e) {
       if (valid()) setState(() => navigationError = '$e');
     } finally {
-      if (valid()) setState(() => navigating = false);
+      if (valid()) {
+        setState(() => navigating = false);
+        rememberVisibleReadingPosition();
+      }
     }
   }
 
   Future<void> returnToLatest() async {
+    _pendingReadingPosition = null;
+    _restoringScroll = false;
     railFocus.unfocus();
     final token = ++navigation, session = c.selectedId;
     setState(() {
@@ -421,8 +627,19 @@ class _ConversationState extends State<Conversation>
       if (!mounted || token != navigation || session != c.selectedId) return;
       if (scroll.hasClients) scroll.jumpTo(0);
       follow = true;
+      if (session != null) {
+        c.rememberReadingPosition(
+          session,
+          seq: null,
+          itemId: null,
+          viewportOffset: 0,
+          follow: true,
+        );
+      }
     } catch (e) {
-      if (mounted && token == navigation) navigationError = '无法返回最新：$e';
+      if (mounted && token == navigation) {
+        navigationError = DshConversationZh.latestHistoryFailed(error: e);
+      }
     } finally {
       if (mounted && token == navigation) setState(() => navigating = false);
     }
@@ -430,6 +647,7 @@ class _ConversationState extends State<Conversation>
 
   void onScroll() {
     if (!scroll.hasClients) return;
+    if (_restoringScroll || _session != c.selectedId || c.loading) return;
     updateRailHighlight();
     if (navigating) return;
     if (scroll.offset < 60 &&
@@ -440,7 +658,17 @@ class _ConversationState extends State<Conversation>
       return;
     }
     final nextFollow = scroll.offset < 60 && !c.readingHistory;
+    if (nextFollow && c.selectedId != null) {
+      c.rememberReadingPosition(
+        c.selectedId!,
+        seq: null,
+        itemId: null,
+        viewportOffset: 0,
+        follow: true,
+      );
+    }
     if (follow != nextFollow) setState(() => follow = nextFollow);
+    if (!nextFollow) rememberVisibleReadingPosition();
     if (!nextFollow && !c.readingHistory && !c.window.hasAfter) {
       c.holdLiveHistory();
     }
@@ -485,7 +713,7 @@ class _ConversationState extends State<Conversation>
           'data': base64Encode(file.data),
         },
     ];
-    if (c.selectedId != null) c.setDraft(text);
+    c.setDraft(text);
     follow = true;
     String? acceptedSession;
     await c.run(() async {
@@ -516,16 +744,18 @@ class _ConversationState extends State<Conversation>
         if (!valid()) return;
         if (FileSystemEntity.typeSync(file.path) ==
             FileSystemEntityType.directory) {
-          throw StateError('不能添加文件夹：${file.name}');
+          throw StateError(
+            DshConversationZh.folderAttachmentRejected(name: file.name),
+          );
         }
         if (attachments.length + pending.length >= 8) {
-          throw StateError('单条消息最多添加 8 个附件');
+          throw StateError(DshConversationZh.attachmentCountLimit);
         }
         final length = await file.length();
         if (!valid()) return;
         final total = attachments.fold<int>(0, (n, f) => n + f.data.length);
         if (length + pendingBytes + total > 16 * 1024 * 1024) {
-          throw StateError('附件总大小不能超过 16 MiB');
+          throw StateError(DshConversationZh.attachmentBytesLimit);
         }
         final data = await file.readAsBytes();
         if (!valid()) return;
@@ -533,7 +763,7 @@ class _ConversationState extends State<Conversation>
                 pendingBytes +
                 attachments.fold<int>(0, (n, f) => n + f.data.length) >
             16 * 1024 * 1024) {
-          throw StateError('附件总大小不能超过 16 MiB');
+          throw StateError(DshConversationZh.attachmentBytesLimit);
         }
         final type = attachmentMediaType(file.name, data);
         pending.add((name: file.name, data: data, type: type));
@@ -541,13 +771,13 @@ class _ConversationState extends State<Conversation>
       }
       if (!valid()) return;
       if (attachments.length + pending.length > 8) {
-        throw StateError('单条消息最多添加 8 个附件');
+        throw StateError(DshConversationZh.attachmentCountLimit);
       }
       // Recheck after every asynchronous read: a concurrent drop/paste may
       // have filled the same composer while this batch was loading.
       if (pendingBytes + attachments.fold<int>(0, (n, f) => n + f.data.length) >
           16 * 1024 * 1024) {
-        throw StateError('附件总大小不能超过 16 MiB');
+        throw StateError(DshConversationZh.attachmentBytesLimit);
       }
       setState(() => attachments.addAll(pending));
     } catch (e) {
@@ -632,12 +862,12 @@ class _ConversationState extends State<Conversation>
                       file.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 14),
+                      style: const TextStyle(fontSize: DshTypography.sizeBody),
                     ),
                   ),
                   DshIcon(
-                    LucideIcons.x,
-                    label: '关闭',
+                    DshIcons.close.data,
+                    label: DshConversationZh.close,
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
@@ -647,9 +877,9 @@ class _ConversationState extends State<Conversation>
               child: InteractiveViewer(
                 minScale: .1,
                 maxScale: 5,
-                child: Image.memory(
-                  file.data,
-                  cacheWidth: 2000,
+                child: DshBoundedImage(
+                  image: MemoryImage(file.data),
+                  evictOnDispose: true,
                   fit: BoxFit.contain,
                 ),
               ),
@@ -661,7 +891,7 @@ class _ConversationState extends State<Conversation>
   );
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
+  Widget build(BuildContext context) => _cachedLayout ??= LayoutBuilder(
     builder: (context, box) => buildConversation(
       context,
       widget.maxContentWidth > 0
@@ -714,7 +944,9 @@ class _ConversationState extends State<Conversation>
                   children: [
                     if (c.selectedId != null && !c.blankConversation)
                       Container(
-                        height: 44,
+                        height:
+                            (MediaQuery.textScalerOf(context).scale(24) + 12)
+                                .clamp(44.0, double.infinity),
                         padding: EdgeInsets.fromLTRB(
                           widget.headerInset - 8,
                           12,
@@ -734,11 +966,12 @@ class _ConversationState extends State<Conversation>
                                     horizontal: 8,
                                   ),
                                   child: Text(
-                                    c.selected?.displayTitle ?? '新会话',
+                                    c.selected?.displayTitle ??
+                                        DshConversationZh.newSession,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
-                                      fontSize: 14,
+                                      fontSize: DshTypography.sizeBody,
                                       fontWeight: FontWeight.w500,
                                     ),
                                   ),
@@ -747,16 +980,20 @@ class _ConversationState extends State<Conversation>
                             ),
                             const SizedBox(width: 10),
                             DshGlyph(
-                              LucideIcons.workflow,
+                              DshIcons.workflow.data,
                               size: 14,
                               color: colors.muted,
                             ),
                             const SizedBox(width: 5),
-                            Text(
-                              c.presetName,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: colors.muted,
+                            Flexible(
+                              child: Text(
+                                c.presetName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: DshTypography.sizeCaption,
+                                  color: colors.muted,
+                                ),
                               ),
                             ),
                           ],
@@ -764,7 +1001,8 @@ class _ConversationState extends State<Conversation>
                       ),
                     if (c.selectedId != null && !c.blankConversation)
                       Container(
-                        height: 32,
+                        height: (MediaQuery.textScalerOf(context).scale(16) + 8)
+                            .clamp(32.0, double.infinity),
                         width: double.infinity,
                         decoration: BoxDecoration(
                           border: Border(
@@ -780,17 +1018,15 @@ class _ConversationState extends State<Conversation>
                           child: Row(
                             children: [
                               for (final tab in {
-                                'conversation': '对话',
+                                'conversation': DshConversationZh.conversation,
                                 if (c.menuSettings['trajectory'] != false)
-                                  'trajectory': '轨迹',
+                                  'trajectory': DshConversationZh.trajectory,
                                 if (c.menuSettings['artifacts'] != false)
-                                  'artifacts': '产物',
-                                if (c.menuSettings['tasks'] != false)
-                                  'project-tasks': '项目任务',
+                                  'artifacts': DshConversationZh.artifacts,
                                 if (c.menuSettings['code-graph'] != false)
-                                  'code-graph': '代码图谱',
+                                  'code-graph': DshConversationZh.codeGraph,
                                 if (c.menuSettings['context'] != false)
-                                  'context': '上下文',
+                                  'context': DshConversationZh.context,
                               }.entries)
                                 Padding(
                                   padding: const EdgeInsets.only(right: 36),
@@ -806,6 +1042,9 @@ class _ConversationState extends State<Conversation>
                                       ),
                                     ),
                                     child: Semantics(
+                                      key: ValueKey(
+                                        'conversation-view-${tab.key}',
+                                      ),
                                       button: true,
                                       selected: view == tab.key,
                                       child: InkWell(
@@ -817,7 +1056,8 @@ class _ConversationState extends State<Conversation>
                                           child: Text(
                                             tab.value,
                                             style: TextStyle(
-                                              fontSize: 13,
+                                              fontSize:
+                                                  DshTypography.sizeAuxiliary,
                                               height: 16 / 13,
                                               fontWeight: FontWeight.w500,
                                               color: view == tab.key
@@ -841,8 +1081,11 @@ class _ConversationState extends State<Conversation>
                           vertical: 8,
                         ),
                         child: Text(
-                          '部分记录超过当前窗口的展示上限，完整内容仍保存在会话日志中。',
-                          style: TextStyle(fontSize: 12, color: colors.muted),
+                          DshConversationZh.historyWindowLimit,
+                          style: TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                            color: colors.muted,
+                          ),
                         ),
                       ),
                     Expanded(
@@ -866,14 +1109,6 @@ class _ConversationState extends State<Conversation>
                             )
                           : view == 'trajectory'
                           ? TraceView(controller: c)
-                          : view == 'project-tasks' &&
-                                c.client != null &&
-                                c.selectedId != null
-                          ? ProjectTasks(
-                              key: ValueKey(c.selectedId),
-                              api: c.client!,
-                              session: c.selectedId!,
-                            )
                           : hero
                           ? Center(
                               child: Padding(
@@ -890,17 +1125,18 @@ class _ConversationState extends State<Conversation>
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
+                                      Wrap(
+                                        alignment: WrapAlignment.center,
+                                        crossAxisAlignment:
+                                            WrapCrossAlignment.center,
+                                        spacing: 10,
+                                        runSpacing: 8,
                                         children: [
-                                          if (contentWidth >= 300)
-                                            const SizedBox(width: 34),
-                                          const Text(
-                                            '探索未至之境',
+                                          Text(
+                                            DshConversationZh.welcomeTitle,
                                             style: DshTypography.headline,
+                                            textAlign: TextAlign.center,
                                           ),
-                                          const SizedBox(width: 10),
                                           Container(
                                             padding: const EdgeInsets.symmetric(
                                               horizontal: 7,
@@ -913,16 +1149,35 @@ class _ConversationState extends State<Conversation>
                                               borderRadius:
                                                   BorderRadius.circular(6),
                                             ),
-                                            child: const Text(
-                                              'Rust 版',
-                                              style: TextStyle(fontSize: 12),
+                                            child: Text(
+                                              DshConversationZh.rustEdition,
+                                              style: TextStyle(
+                                                fontSize:
+                                                    DshTypography.sizeCaption,
+                                                color: DshTokens.of(context)
+                                                    .info
+                                                    .foreground,
+                                              ),
                                             ),
                                           ),
                                         ],
                                       ),
                                       const SizedBox(height: 25),
                                       composer(true),
-                                      const SizedBox(height: 55),
+                                      if (widget.onOpenWorkbench != null) ...[
+                                        const SizedBox(height: 12),
+                                        DshButton(
+                                          key: const Key('hero-open-workbench'),
+                                          icon: DshIcons.panelRight.data,
+                                          onPressed: () => widget
+                                              .onOpenWorkbench
+                                              ?.call('start'),
+                                          child: const Text(
+                                            DshShellZh.showWorkbench,
+                                          ),
+                                        ),
+                                      ],
+                                      const SizedBox(height: 12),
                                     ],
                                   ),
                                 ),
@@ -1004,7 +1259,11 @@ class _ConversationState extends State<Conversation>
                                                       ),
                                                     ),
                                               child: Text(
-                                                c.loading ? '正在读取…' : '加载更早记录',
+                                                c.loading
+                                                    ? DshConversationZh
+                                                          .loadingHistory
+                                                    : DshConversationZh
+                                                          .loadEarlier,
                                               ),
                                             ),
                                           );
@@ -1013,22 +1272,26 @@ class _ConversationState extends State<Conversation>
                                             c.transcript[c.transcript.length -
                                                 1 -
                                                 index];
+                                        final readingAnchor = readingAnchors
+                                            .putIfAbsent(
+                                              item.id,
+                                              GlobalKey.new,
+                                            );
+                                        if (item.kind == 'user' &&
+                                            item.seq != null) {
+                                          userAnchors[item.seq!] =
+                                              readingAnchor;
+                                        }
                                         return Align(
                                           key: ValueKey(item.id),
                                           alignment: Alignment.topCenter,
                                           child: ConstrainedBox(
-                                            key:
-                                                item.kind == 'user' &&
-                                                    item.seq != null
-                                                ? userAnchors.putIfAbsent(
-                                                    item.seq!,
-                                                    () => GlobalKey(),
-                                                  )
-                                                : null,
+                                            key: readingAnchor,
                                             constraints: BoxConstraints(
                                               maxWidth: contentWidth,
                                             ),
                                             child: MessageCard(
+                                              fontSize: c.bodyFontSize,
                                               key: ValueKey(item.id),
                                               item: item,
                                               bottomSpacing: rawIndex == 0
@@ -1037,8 +1300,14 @@ class _ConversationState extends State<Conversation>
                                               animateUpdates:
                                                   follow && !c.readingHistory,
                                               cwd: c.selected?.cwd,
-                                              onOpenPath: widget.onOpenPath,
-                                              onOpenPlan: widget.onOpenPlan,
+                                              onOpenPath:
+                                                  widget.onOpenPath == null
+                                                  ? null
+                                                  : _openPath,
+                                              onOpenPlan:
+                                                  widget.onOpenPlan == null
+                                                  ? null
+                                                  : _openPlan,
                                               feedback: feedback,
                                               readAloud:
                                                   item.kind == 'turn-tail'
@@ -1081,9 +1350,13 @@ class _ConversationState extends State<Conversation>
                                             .clamp(12.0, double.infinity),
                                     bottom: 16,
                                     child: Tooltip(
-                                      message: '回到底部',
+                                      message: c.unreadHistoryEvents > 0
+                                          ? DshConversationZh.unreadActivity(
+                                              count: c.unreadHistoryEvents,
+                                            )
+                                          : DshConversationZh.jumpToBottom,
                                       child: Semantics(
-                                        label: '回到底部',
+                                        label: DshConversationZh.jumpToBottom,
                                         button: true,
                                         child: DecoratedBox(
                                           decoration: BoxDecoration(
@@ -1113,7 +1386,7 @@ class _ConversationState extends State<Conversation>
                                               child: SizedBox.square(
                                                 dimension: 34,
                                                 child: DshGlyph(
-                                                  LucideIcons.chevronDown,
+                                                  DshIcons.chevronDown.data,
                                                   size: 14,
                                                   color: colors.text,
                                                 ),
@@ -1161,7 +1434,7 @@ class _ConversationState extends State<Conversation>
                                 child: Row(
                                   children: [
                                     DshGlyph(
-                                      LucideIcons.clock3,
+                                      DshIcons.clock3.data,
                                       size: 14,
                                       color: colors.muted,
                                     ),
@@ -1173,12 +1446,15 @@ class _ConversationState extends State<Conversation>
                                         ),
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 12),
+                                        style: const TextStyle(
+                                          fontSize: DshTypography.sizeCaption,
+                                        ),
                                       ),
                                     ),
                                     DshIcon(
-                                      LucideIcons.x,
-                                      label: '移除排队消息',
+                                      DshIcons.close.data,
+                                      label:
+                                          DshConversationZh.removeQueuedMessage,
                                       onPressed: () => c.run(() async {
                                         await c.client!.call(
                                           'session.updateQueue',
@@ -1234,7 +1510,12 @@ class _ConversationState extends State<Conversation>
                     view == 'conversation' &&
                     c.pluginEnabled('dsh-context-jump'))
                   Positioned(
-                    top: c.selectedId == null ? 0 : 76,
+                    top: c.selectedId == null
+                        ? 0
+                        : (MediaQuery.textScalerOf(context).scale(24) + 12)
+                                  .clamp(44.0, double.infinity) +
+                              (MediaQuery.textScalerOf(context).scale(16) + 8)
+                                  .clamp(32.0, double.infinity),
                     left: 0,
                     right: 0,
                     bottom: 0,
@@ -1284,18 +1565,20 @@ class _ConversationState extends State<Conversation>
                   key: widget.workspaceAnchor,
                   height: 26,
                   padding: const EdgeInsets.symmetric(horizontal: 8),
-                  icon: LucideIcons.folder,
-                  trailing: const DshGlyph(LucideIcons.chevronDown, size: 12),
-                  onPressed: widget.onSelectWorkspace,
+                  icon: DshIcons.folder.data,
+                  trailing: DshGlyph(DshIcons.chevronDown.data, size: 12),
+                  onPressed: widget.onSelectWorkspace == null
+                      ? null
+                      : _selectWorkspace,
                   // A selected session keeps its own folder even after the
                   // sidebar retargets 新会话 to another Workspace.
                   child: Text(
-                    '${(c.selected == null ? c.currentWorkspace : c.workspaceOf(c.selected!))?['title'] ?? (c.selected?.cwd.isNotEmpty == true ? displayPath(c.selected!.cwd).split(RegExp(r'[/\\]')).last : '选择工作区')}',
-                    style: const TextStyle(fontSize: 12),
+                    '${(c.selected == null ? c.currentWorkspace : c.workspaceOf(c.selected!))?['title'] ?? (c.selected?.cwd.isNotEmpty == true ? displayPath(c.selected!.cwd).split(RegExp(r'[/\\]')).last : DshConversationZh.chooseWorkspace)}',
+                    style: const TextStyle(fontSize: DshTypography.sizeCaption),
                   ),
                 ),
                 PopupMenuButton<String>(
-                  tooltip: 'Agent 预设',
+                  tooltip: DshConversationZh.agentPreset,
                   onSelected: (v) {
                     c.preset = v;
                     if (c.selectedId != null) {
@@ -1329,17 +1612,19 @@ class _ConversationState extends State<Conversation>
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         DshGlyph(
-                          LucideIcons.workflow,
+                          DshIcons.workflow.data,
                           size: 14,
                           color: colors.text,
                         ),
                         const SizedBox(width: 5),
                         Text(
                           c.presetName,
-                          style: const TextStyle(fontSize: 12),
+                          style: const TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                          ),
                         ),
                         const SizedBox(width: 4),
-                        const DshGlyph(LucideIcons.chevronDown, size: 12),
+                        DshGlyph(DshIcons.chevronDown.data, size: 12),
                       ],
                     ),
                   ),
@@ -1471,12 +1756,12 @@ class _ConversationState extends State<Conversation>
                       decoration: InputDecoration(
                         hintText:
                             c.currentWorkspace == null && c.selectedId == null
-                            ? '选择一个工作区开始'
+                            ? DshConversationZh.chooseWorkspaceHint
                             : c.planMode?.requestedActive == true
-                            ? '描述你的任务以生成计划'
+                            ? DshConversationZh.planPromptHint
                             : hero
-                            ? '描述你想要构建的内容'
-                            : '给智能体发消息',
+                            ? DshConversationZh.buildPromptHint
+                            : DshConversationZh.messagePromptHint,
                         hintStyle: DshTypography.composer.copyWith(
                           color: colors.muted,
                         ),
@@ -1506,28 +1791,28 @@ class _ConversationState extends State<Conversation>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             ComposerAction(
-                              LucideIcons.plus,
+                              DshIcons.plus.data,
                               asset: 'assets/icons/composer-command.svg',
                               glyphSize: 14,
-                              label: '命令',
+                              label: DshConversationZh.commands,
                               onPressed: c.selectedId == null
                                   ? null
                                   : commandMenu,
                             ),
                             const SizedBox(width: 6),
                             ComposerAction(
-                              LucideIcons.link,
+                              DshIcons.link.data,
                               asset: 'assets/icons/composer-reference.svg',
                               glyphSize: 14,
-                              label: '插入对话',
+                              label: DshConversationZh.insertSession,
                               onPressed: referenceMenu,
                             ),
                             const SizedBox(width: 6),
                             ComposerAction(
-                              LucideIcons.paperclip,
+                              DshIcons.attach.data,
                               asset: 'assets/icons/composer-attachment.svg',
                               glyphSize: 18,
-                              label: '上传文件',
+                              label: DshConversationZh.uploadFiles,
                               onPressed: pickFiles,
                             ),
                             const SizedBox(width: 6),
@@ -1553,21 +1838,35 @@ class _ConversationState extends State<Conversation>
                                       maxWidth: 180,
                                     ),
                                     child: DshButton(
+                                      key: const ValueKey(
+                                        'composer-model-menu',
+                                      ),
                                       height: 30,
+                                      tooltip:
+                                          '${DshConversationZh.modelAndReasoning}：${composerModelLabel(c.catalog)}',
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 8,
                                       ),
-                                      onPressed: c.connected ? modelMenu : null,
-                                      trailing: const DshGlyph(
-                                        LucideIcons.chevronDown,
+                                      onPressed:
+                                          c.connected &&
+                                              !c.sending &&
+                                              !_modelMenuOpen
+                                          ? modelMenu
+                                          : null,
+                                      trailing: DshGlyph(
+                                        DshIcons.chevronDown.data,
                                         size: 12,
                                       ),
                                       child: Flexible(
                                         child: Text(
-                                          '${c.catalog?.currentName ?? '选择模型'}${c.catalog?.current['reasoningEffort'] == null ? '' : ' · ${c.catalog!.current['reasoningEffort']}'}',
+                                          _readingModels
+                                              ? '正在读取模型…'
+                                              : composerModelLabel(c.catalog),
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(fontSize: 12),
+                                          style: const TextStyle(
+                                            fontSize: DshTypography.sizeCaption,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -1589,25 +1888,22 @@ class _ConversationState extends State<Conversation>
                                 ],
                                 if (c.interruptible || c.compacting)
                                   DshIcon(
-                                    LucideIcons.square,
-                                    label: '停止任务',
+                                    DshIcons.stop.data,
+                                    label: DshZh.stopExecution,
                                     key: const Key('stop-task'),
                                     onPressed: c.connected
                                         ? () => c.run(c.stop)
                                         : null,
                                   ),
-                                const SizedBox(width: 8),
-                                ContextMeter(
-                                  key: ValueKey('meter-${c.selectedId}'),
-                                  controller: c,
-                                ),
                                 const SizedBox(width: 6),
                                 Tooltip(
                                   message: c.running
-                                      ? '加入队列；$primaryShortcutLabel+Enter ${c.conversationSettings['busyEnter'] == 'steer' ? '加入队列' : '转向'}'
-                                      : '发送消息',
+                                      ? '${DshZh.queueMessage}；$primaryShortcutLabel+Enter ${c.conversationSettings['busyEnter'] == 'steer' ? DshZh.queueMessage : DshZh.steerExecution}'
+                                      : DshZh.send,
                                   child: Semantics(
-                                    label: '发送消息',
+                                    label: c.running
+                                        ? DshZh.queueMessage
+                                        : DshZh.send,
                                     button: true,
                                     child: ValueListenableBuilder(
                                       valueListenable: input,
@@ -1617,6 +1913,7 @@ class _ConversationState extends State<Conversation>
                                             !c.sending &&
                                             importingAttachments == 0 &&
                                             !c.changingPlanMode &&
+                                            !c.changingModel &&
                                             (value.text.trim().isNotEmpty ||
                                                 attachments.isNotEmpty);
                                         return ShadButton(
@@ -1625,21 +1922,21 @@ class _ConversationState extends State<Conversation>
                                               ? () => send()
                                               : null,
                                           enabled: canSend,
-                                          width: 34,
-                                          height: 34,
+                                          width: 40,
+                                          height: 40,
                                           padding: EdgeInsets.zero,
                                           backgroundColor: colors.blue,
                                           decoration: ShadDecoration(
                                             border: ShadBorder.all(
-                                              radius: BorderRadius.circular(17),
+                                              radius: BorderRadius.circular(20),
                                             ),
                                           ),
                                           child: DshGlyph(
                                             c.sending
-                                                ? LucideIcons.loaderCircle
-                                                : LucideIcons.arrowUp,
+                                                ? DshIcons.loaderCircle.data
+                                                : DshIcons.send.data,
                                             size: 18,
-                                            color: Colors.white,
+                                            color: colors.onAccent,
                                           ),
                                         );
                                       },
@@ -1667,13 +1964,13 @@ class _ConversationState extends State<Conversation>
               child: Text(
                 voice.error ??
                     (voice.phase == 'starting'
-                        ? '正在启动语音识别…'
+                        ? DshConversationZh.startingSpeech
                         : voice.phase == 'stopping'
-                        ? '正在结束语音识别…'
-                        : '正在聆听，松开结束'),
+                        ? DshConversationZh.finishingSpeech
+                        : DshConversationZh.listening),
                 key: const ValueKey('voice-status'),
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: DshTypography.sizeCaption,
                   color: voice.error != null
                       ? const Color(0xffd92d20)
                       : colors.muted,
@@ -1686,24 +1983,69 @@ class _ConversationState extends State<Conversation>
   }
 
   Future<void> modelMenu() async {
-    if (c.selectedId == null) {
-      final path = c.currentWorkspace?['path'] as String?;
-      if (path == null) {
-        widget.onSelectWorkspace?.call();
-        return;
+    if (_modelMenuOpen) return;
+    setState(() {
+      _modelMenuOpen = true;
+      _readingModels = true;
+    });
+    final owner = c, api = c.client, host = c.host;
+    var selection = c.selectionRevision;
+    bool current() =>
+        mounted &&
+        identical(owner, c) &&
+        identical(api, c.client) &&
+        identical(host, c.host) &&
+        selection == c.selectionRevision;
+    try {
+      if (c.selectedId == null) {
+        final path = c.currentWorkspace?['path'] as String?;
+        if (path == null) {
+          widget.onSelectWorkspace?.call();
+          return;
+        }
+        String? created;
+        await c.run(() async {
+          created = await owner.create(path);
+        });
+        if (!mounted ||
+            !identical(owner, c) ||
+            !identical(api, c.client) ||
+            !identical(host, c.host) ||
+            created == null ||
+            c.selectedId != created ||
+            c.selectionRevision != selection + 1) {
+          return;
+        }
+        selection = c.selectionRevision;
       }
-      String? created;
+      if (!current()) return;
+      Object? loadError;
       await c.run(() async {
-        created = await c.create(path);
+        try {
+          await c.refreshModels();
+        } catch (failure) {
+          loadError = failure;
+          rethrow;
+        }
       });
-      if (created == null || c.selectedId != created) return;
+      if (!mounted || !current() || c.catalog == null) return;
+      setState(() => _readingModels = false);
+      await showDialog<void>(
+        context: context,
+        builder: (_) => ModelPicker(
+          controller: owner,
+          onManage: widget.onOpenSettings,
+          initialError: loadError,
+        ),
+      );
+    } finally {
+      _modelMenuOpen = false;
+      _readingModels = false;
+      if (mounted) setState(() {});
+      if (mounted && current() && ModalRoute.of(context)?.isCurrent == true) {
+        focus.requestFocus();
+      }
     }
-    if (!mounted || c.catalog == null) return;
-    await showDialog<void>(
-      context: context,
-      builder: (_) =>
-          ModelPicker(controller: c, onManage: widget.onOpenSettings),
-    );
   }
 
   Future<void> commandMenu() async {
@@ -1717,7 +2059,7 @@ class _ConversationState extends State<Conversation>
     final selected = await showDialog<String>(
       context: context,
       builder: (context) => SimpleDialog(
-        title: const Text('命令'),
+        title: const Text(DshConversationZh.commands),
         children: [
           for (final cmd in c.commands)
             SimpleDialogOption(
@@ -1737,7 +2079,7 @@ class _ConversationState extends State<Conversation>
     final id = await showDialog<String>(
       context: context,
       builder: (context) => SimpleDialog(
-        title: const Text('插入对话'),
+        title: const Text(DshConversationZh.insertSession),
         children: [
           for (final s in c.sessions.take(100))
             SimpleDialogOption(
@@ -1790,25 +2132,31 @@ class _ConversationState extends State<Conversation>
               child: Row(
                 children: [
                   Expanded(
-                    child: Text(item.title.isEmpty ? '执行详情' : item.title),
+                    child: Text(
+                      item.title.isEmpty
+                          ? DshConversationZh.executionDetails
+                          : item.title,
+                    ),
                   ),
                   if (item.output.isNotEmpty)
                     DshIcon(
-                      LucideIcons.copy,
-                      label: '复制结果',
+                      DshIcons.copy.data,
+                      label: DshConversationZh.copyResult,
                       onPressed: () =>
                           Clipboard.setData(ClipboardData(text: item.output)),
                     ),
                   DshIcon(
-                    LucideIcons.copy,
-                    label: item.output.isNotEmpty ? '复制输入' : '复制',
+                    DshIcons.copy.data,
+                    label: item.output.isNotEmpty
+                        ? DshConversationZh.copyInput
+                        : DshConversationZh.copy,
                     onPressed: () => Clipboard.setData(
                       ClipboardData(text: item.clipboardText),
                     ),
                   ),
                   DshIcon(
-                    LucideIcons.x,
-                    label: '关闭',
+                    DshIcons.close.data,
+                    label: DshConversationZh.close,
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
@@ -1819,10 +2167,13 @@ class _ConversationState extends State<Conversation>
               child: TextDocument(
                 sections: [
                   (
-                    title: item.output.isNotEmpty ? '输入' : '',
+                    title: item.output.isNotEmpty
+                        ? DshConversationZh.input
+                        : '',
                     text: item.clipboardText,
                   ),
-                  if (item.output.isNotEmpty) (title: '结果', text: item.output),
+                  if (item.output.isNotEmpty)
+                    (title: DshConversationZh.result, text: item.output),
                 ],
               ),
             ),
@@ -1857,8 +2208,8 @@ class ComposerAction extends StatelessWidget {
       label: label,
       button: true,
       child: ShadButton.ghost(
-        width: 34,
-        height: 34,
+        width: DshTokens.of(context).controlMinimum,
+        height: DshTokens.of(context).controlMinimum,
         padding: EdgeInsets.zero,
         onPressed: onPressed,
         enabled: onPressed != null,
@@ -1877,10 +2228,29 @@ class ComposerAction extends StatelessWidget {
   );
 }
 
+String composerModelLabel(ModelCatalog? catalog) {
+  if (catalog == null) return DshConversationZh.chooseModel;
+  final effort = catalog.current['reasoningEffort'];
+  if (effort == null) return catalog.currentName;
+  final choice = catalog.choices
+      .where((model) => model.key == catalog.currentKey)
+      .firstOrNull;
+  final level = choice?.reasoning
+      .where((level) => level['id'] == effort)
+      .firstOrNull;
+  return '${catalog.currentName} · ${reasoningLevelLabel(level ?? {'id': effort, 'name': effort})}';
+}
+
 class ModelPicker extends StatefulWidget {
-  const ModelPicker({super.key, required this.controller, this.onManage});
+  const ModelPicker({
+    super.key,
+    required this.controller,
+    this.onManage,
+    this.initialError,
+  });
   final DesktopController controller;
   final VoidCallback? onManage;
+  final Object? initialError;
   @override
   State<ModelPicker> createState() => _ModelPickerState();
 }
@@ -1888,9 +2258,84 @@ class ModelPicker extends StatefulWidget {
 class _ModelPickerState extends State<ModelPicker> {
   final search = TextEditingController();
   bool busy = false;
-  String? error;
+  Object? error;
+  String? notice;
+  late Object ownerScope;
+  bool _closeScheduled = false;
+
+  Object get scope => (
+    widget.controller,
+    widget.controller.client,
+    widget.controller.host,
+    widget.controller.selectedId,
+    widget.controller.selectionRevision,
+  );
+
+  bool get current => mounted && ownerScope == scope;
+
+  @override
+  void initState() {
+    super.initState();
+    ownerScope = scope;
+    error = widget.initialError;
+    widget.controller.addListener(changed);
+  }
+
+  @override
+  void didUpdateWidget(ModelPicker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      oldWidget.controller.removeListener(changed);
+      widget.controller.addListener(changed);
+      changed();
+    }
+  }
+
+  void changed() {
+    if (!mounted) return;
+    if (!current || widget.controller.catalog == null) {
+      if (_closeScheduled) return;
+      _closeScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final route = ModalRoute.of(context);
+        if (route == null) return;
+        final navigator = Navigator.of(context);
+        if (route.isCurrent) {
+          navigator.pop();
+        } else {
+          navigator.removeRoute(route);
+        }
+      });
+    }
+    setState(() {});
+  }
+
+  Future<void> select(Future<void> Function() action) async {
+    if (!current || busy || widget.controller.changingModel) return;
+    setState(() {
+      busy = true;
+      error = null;
+      notice = null;
+    });
+    try {
+      await action();
+      if (current) {
+        setState(() {
+          notice = '已更新：${composerModelLabel(widget.controller.catalog)}';
+          error = widget.controller.error;
+        });
+      }
+    } catch (failure) {
+      if (current) setState(() => error = failure);
+    } finally {
+      if (current) setState(() => busy = false);
+    }
+  }
+
   @override
   void dispose() {
+    widget.controller.removeListener(changed);
     search.dispose();
     super.dispose();
   }
@@ -1898,14 +2343,25 @@ class _ModelPickerState extends State<ModelPicker> {
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
-    final choices = c.catalog!.choices
+    final catalog = c.catalog;
+    if (!current || catalog == null) return const SizedBox.shrink();
+    final pending = busy || c.changingModel || c.sending;
+    final colors = DshColors(context);
+    final choices = catalog.choices
         .where(
           (m) => '${m.name} ${m.id} ${m.provider}'.toLowerCase().contains(
-            search.text.toLowerCase(),
+            search.text.trim().toLowerCase(),
           ),
         )
         .toList();
+    final levels =
+        catalog.choices
+            .where((model) => model.key == catalog.currentKey)
+            .firstOrNull
+            ?.reasoning ??
+        const <Json>[];
     return Dialog(
+      key: const ValueKey('model-picker'),
       child: SizedBox(
         width: 500,
         height: 660,
@@ -1917,101 +2373,164 @@ class _ModelPickerState extends State<ModelPicker> {
                 children: [
                   const Expanded(
                     child: Text(
-                      '模型与推理等级',
+                      DshConversationZh.modelAndReasoning,
                       style: TextStyle(
-                        fontSize: 16,
+                        fontSize: DshTypography.sizeComposer,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
                   DshIcon(
-                    LucideIcons.x,
-                    label: '关闭',
+                    DshIcons.close.data,
+                    label: DshConversationZh.close,
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
               const SizedBox(height: 12),
               DshField(
+                key: const ValueKey('model-picker-search'),
                 controller: search,
-                prefix: LucideIcons.search,
-                hint: '搜索模型名称、ID 或连接',
+                prefix: DshIcons.search.data,
+                hint: DshConversationZh.searchModelsHint,
                 autofocus: true,
                 onChanged: (_) => setState(() {}),
               ),
               const SizedBox(height: 8),
-              if (error != null)
-                Text(error!, style: const TextStyle(color: Colors.red)),
+              if (error != null) DshErrorView(error: error!),
+              if (pending)
+                Semantics(
+                  liveRegion: true,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      c.sending ? '正在提交消息，请稍候再调整模型或推理等级' : '正在更新模型或推理等级…',
+                      key: const ValueKey('model-selection-pending'),
+                      style: DshTypography.caption,
+                    ),
+                  ),
+                ),
+              if (notice != null)
+                Semantics(
+                  liveRegion: true,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      notice!,
+                      key: const ValueKey('model-selection-notice'),
+                      style: DshTypography.caption,
+                    ),
+                  ),
+                ),
               Expanded(
-                child: ListView.builder(
-                  itemCount: choices.length,
-                  itemBuilder: (context, i) {
-                    final m = choices[i];
-                    return ListTile(
-                      dense: true,
-                      selected: m.key == c.catalog!.currentKey,
-                      title: Text(m.name, style: DshTypography.body),
-                      subtitle: Text(
-                        '${m.provider} · ${m.id}',
-                        style: const TextStyle(fontSize: 12),
+                child: CustomScrollView(
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(0, 8, 12, 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              '当前模型：${catalog.currentName}',
+                              style: DshTypography.body,
+                            ),
+                            const SizedBox(height: 8),
+                            ReasoningSlider(
+                              key: ValueKey(catalog.currentKey),
+                              levels: levels,
+                              value:
+                                  catalog.current['reasoningEffort'] as String?,
+                              enabled: !pending,
+                              onChanged: (id) =>
+                                  select(() => c.setReasoning(id)),
+                            ),
+                            if (levels.isEmpty)
+                              Text(
+                                '当前模型未提供可调推理等级',
+                                style: DshTypography.caption.copyWith(
+                                  color: colors.muted,
+                                ),
+                              ),
+                            const Divider(),
+                          ],
+                        ),
                       ),
-                      trailing: m.key == c.catalog!.currentKey
-                          ? const DshGlyph(LucideIcons.check, size: 16)
-                          : null,
-                      onTap: busy
-                          ? null
-                          : () async {
-                              setState(() => busy = true);
-                              try {
-                                await c.chooseModel(m);
-                                if (context.mounted) Navigator.pop(context);
-                              } catch (e) {
-                                if (mounted) setState(() => error = '$e');
-                              } finally {
-                                if (mounted) setState(() => busy = false);
-                              }
-                            },
-                    );
-                  },
+                    ),
+                    if (choices.isEmpty)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          child: Text(
+                            search.text.trim().isEmpty
+                                ? '暂无可选模型，请在管理模型中配置连接'
+                                : '没有找到匹配的模型',
+                            style: DshTypography.body.copyWith(
+                              color: colors.muted,
+                            ),
+                          ),
+                        ),
+                      ),
+                    SliverList.builder(
+                      itemCount: choices.length,
+                      itemBuilder: (context, i) {
+                        final m = choices[i];
+                        final selected = m.key == catalog.currentKey;
+                        return ListTile(
+                          key: ValueKey('model-choice-${m.key}'),
+                          dense: true,
+                          selected: selected,
+                          title: Text(m.name, style: DshTypography.body),
+                          subtitle: Text(
+                            '${catalog.providerNames[m.provider] ?? m.provider} · ${m.id}',
+                            style: DshTypography.caption,
+                          ),
+                          trailing: selected
+                              ? DshGlyph(DshIcons.check.data, size: 16)
+                              : null,
+                          onTap: pending || selected
+                              ? null
+                              : () => select(() => c.chooseModel(m)),
+                        );
+                      },
+                    ),
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 12, right: 12),
+                        child: IgnorePointer(
+                          ignoring: pending,
+                          child: ExcludeFocus(
+                            excluding: pending,
+                            child: ContextQuickSettings(controller: c),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: ReasoningSlider(
-                  levels:
-                      c.catalog!.choices
-                          .where((m) => m.key == c.catalog!.currentKey)
-                          .firstOrNull
-                          ?.reasoning ??
-                      const <Json>[],
-                  value: c.catalog!.current['reasoningEffort'] as String?,
-                  enabled: !busy,
-                  onChanged: (id) async {
-                    setState(() {
-                      busy = true;
-                      error = null;
-                    });
-                    try {
-                      await c.setReasoning(id);
-                    } catch (e) {
-                      if (mounted) setState(() => error = '$e');
-                    } finally {
-                      if (mounted) setState(() => busy = false);
-                    }
-                  },
-                ),
-              ),
-              ContextQuickSettings(controller: c),
               const Divider(),
-              Align(
-                alignment: Alignment.centerRight,
-                child: DshButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    widget.onManage?.call();
-                  },
-                  child: const Text('管理模型'),
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  DshButton(
+                    onPressed: pending || widget.onManage == null
+                        ? null
+                        : () {
+                            if (!current) return;
+                            Navigator.pop(context);
+                            widget.onManage?.call();
+                          },
+                    child: const Text(DshConversationZh.manageModels),
+                  ),
+                  const SizedBox(width: 8),
+                  DshButton(
+                    key: const ValueKey('model-picker-done'),
+                    outline: true,
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('完成'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -2025,6 +2544,7 @@ class MessageCard extends StatelessWidget {
   const MessageCard({
     super.key,
     required this.item,
+    this.fontSize = 15,
     this.onDetails,
     this.onOpenFile,
     this.onBranch,
@@ -2040,6 +2560,7 @@ class MessageCard extends StatelessWidget {
     this.bottomSpacing = 16,
   });
   final TranscriptItem item;
+  final double fontSize;
   final VoidCallback? onDetails, onOpenFile, onBranch;
   final ValueChanged<String>? onOpenPath;
   final ValueChanged<TranscriptItem>? onOpenPlan;
@@ -2094,13 +2615,17 @@ class MessageCard extends StatelessWidget {
     if (href == null) return;
     final path = localLinkPath(href);
     final action = await nativeContextMenu(context, point, {
-      'open': path == null ? '在浏览器中打开链接' : '打开文件',
-      'copy': path == null ? '复制链接地址' : '复制文件路径',
-      'text': '复制链接文字',
+      'open': path == null
+          ? DshConversationZh.openLinkInBrowser
+          : DshConversationZh.openFile,
+      'copy': path == null
+          ? DshConversationZh.copyLinkAddress
+          : DshConversationZh.copyFilePath,
+      'text': DshConversationZh.copyLinkText,
       if (path != null && client != null && sessionId != null) ...{
-        'reveal': '在资源管理器中显示',
-        'external': '使用本地工具打开',
-        'save': '保存原文件副本',
+        'reveal': DshConversationZh.revealInFileManager,
+        'external': DshConversationZh.openWithLocalTool,
+        'save': DshConversationZh.saveOriginalCopy,
       },
     });
     if (!context.mounted) return;
@@ -2144,8 +2669,7 @@ class MessageCard extends StatelessWidget {
         }
       } catch (failure) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('文件操作失败：$failure')));
+          showDshError(context, failure, operation: DshConversationZh.openFile);
         }
       }
     }
@@ -2163,11 +2687,11 @@ class MessageCard extends StatelessWidget {
     if (item.kind == 'compaction') {
       return ExpansionTile(
         tilePadding: EdgeInsets.zero,
-        leading: DshGlyph(LucideIcons.archive, size: 16, color: colors.muted),
+        leading: DshGlyph(DshIcons.archive.data, size: 16, color: colors.muted),
         title: Text(
           item.title,
           style: TextStyle(
-            fontSize: 13,
+            fontSize: DshTypography.sizeAuxiliary,
             color: item.status == 'failed' ? Colors.red : colors.muted,
           ),
         ),
@@ -2190,12 +2714,12 @@ class MessageCard extends StatelessWidget {
     if (['tool', 'result', 'context'].contains(item.kind)) {
       final failed = item.status == 'failed' || item.status == 'interrupted';
       final icon = item.iconKind == 'todo'
-          ? LucideIcons.listChecks
+          ? DshIcons.listChecks.data
           : ['read', 'edit', 'system', 'context'].contains(item.iconKind)
-          ? LucideIcons.fileText
+          ? DshIcons.fileText.data
           : item.iconKind == 'command'
-          ? LucideIcons.squareTerminal
-          : LucideIcons.terminal;
+          ? DshIcons.squareTerminal.data
+          : DshIcons.terminal.data;
       return Padding(
         padding: EdgeInsets.zero,
         child: SizedBox(
@@ -2207,7 +2731,7 @@ class MessageCard extends StatelessWidget {
               children: [
                 if (hintDisplay != 'text') ...[
                   DshGlyph(
-                    failed ? LucideIcons.circleAlert : icon,
+                    failed ? DshIcons.circleAlert.data : icon,
                     asset: item.iconKind == 'todo' && !failed
                         ? 'assets/icons/task-list.svg'
                         : null,
@@ -2220,11 +2744,13 @@ class MessageCard extends StatelessWidget {
                   Flexible(
                     flex: 0,
                     child: Text(
-                      item.title.isEmpty ? '工具结果' : item.title,
+                      item.title.isEmpty
+                          ? DshConversationZh.toolResult
+                          : item.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: DshTypography.sizeBody,
                         height: 24 / 14,
                         color: failed ? Colors.red : colors.muted,
                       ),
@@ -2241,7 +2767,7 @@ class MessageCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: DshTypography.sizeBody,
                         height: 24 / 14,
                         color: colors.muted,
                       ),
@@ -2289,7 +2815,7 @@ class MessageCard extends StatelessWidget {
               constraints: const BoxConstraints(minHeight: 24),
               child: DshMarkdown(
                 data: visible,
-                fontSize: 14,
+                fontSize: fontSize,
                 conversationStyle: item.kind == 'assistant',
                 imageBaseDirectory: cwd,
                 onTapLink: (_, url, _) {
@@ -2311,13 +2837,21 @@ class MessageCard extends StatelessWidget {
               '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
       return d.year == now.year && d.month == now.month && d.day == now.day
           ? clock
-          : '${d.month}月${d.day}日 $clock';
+          : DshConversationZh.monthDayTime(
+              month: d.month,
+              day: d.day,
+              time: clock,
+            );
     }
 
     String clockWithMetrics() => [
       clock(),
-      if (item.runMs != null) '用时 ${turnDuration(item.runMs!)}',
-      if (item.ttftMs != null) '首 token ${turnRate(item.ttftMs! / 1000)}秒',
+      if (item.runMs != null)
+        DshConversationZh.elapsedTime(duration: turnDuration(item.runMs!)),
+      if (item.ttftMs != null)
+        DshConversationZh.firstTokenTime(
+          seconds: turnRate(item.ttftMs! / 1000),
+        ),
       if (item.tokensPerSecond != null)
         '${turnRate(item.tokensPerSecond!)} tok/s',
     ].where((text) => text.isNotEmpty).join(' · ');
@@ -2327,8 +2861,8 @@ class MessageCard extends StatelessWidget {
       user: user,
       children: [
         DshIcon(
-          LucideIcons.copy,
-          label: '复制',
+          DshIcons.copy.data,
+          label: DshConversationZh.copy,
           size: 28,
           onPressed: () =>
               Clipboard.setData(ClipboardData(text: item.clipboardText)),
@@ -2343,19 +2877,24 @@ class MessageCard extends StatelessWidget {
             builder: (context, _) {
               final speaking = readAloud!.isSpeaking(item.id);
               return DshIcon(
-                speaking ? LucideIcons.square : LucideIcons.volume2,
+                speaking ? DshIcons.stop.data : DshIcons.volume2.data,
                 asset: speaking
                     ? 'assets/icons/web-stop-read-aloud.svg'
                     : 'assets/icons/web-read-aloud.svg',
-                label: speaking ? '停止朗读' : '朗读',
+                label: speaking
+                    ? DshConversationZh.stopReadAloud
+                    : DshConversationZh.readAloud,
                 size: 28,
                 onPressed: () async {
                   try {
                     await readAloud!.toggle(item.id, item.clipboardText);
                   } catch (e) {
                     if (context.mounted) {
-                      ScaffoldMessenger.maybeOf(context)
-                          ?.showSnackBar(SnackBar(content: Text('语音播放不可用：$e')));
+                      showDshError(
+                        context,
+                        e,
+                        operation: DshConversationZh.readAloud,
+                      );
                     }
                   }
                 },
@@ -2365,8 +2904,8 @@ class MessageCard extends StatelessWidget {
         ],
         if (user && item.text.length > _messageRenderLimit)
           DshIcon(
-            LucideIcons.fileText,
-            label: '查看完整消息',
+            DshIcons.fileText.data,
+            label: DshConversationZh.viewFullMessage,
             size: 28,
             onPressed: onDetails,
           ),
@@ -2392,8 +2931,8 @@ class MessageCard extends StatelessWidget {
         if (!user && item.kind == 'turn-tail') ...[
           const SizedBox(width: 10),
           DshIcon(
-            LucideIcons.gitBranch,
-            label: '在新对话中分支',
+            DshIcons.gitBranch.data,
+            label: DshConversationZh.branchConversation,
             size: 28,
             onPressed: item.status == 'branch-unavailable' ? null : onBranch,
           ),
@@ -2487,7 +3026,10 @@ class MessageCard extends StatelessWidget {
               ] else if (item.kind == 'notice')
                 Text(
                   displayText,
-                  style: TextStyle(fontSize: 12, color: colors.muted),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 )
               else if (item.kind == 'error')
                 Container(
@@ -2534,7 +3076,7 @@ class _MessageActionRowState extends State<MessageActionRow> {
         child: Text(
           widget.time,
           style: TextStyle(
-            fontSize: 14,
+            fontSize: DshTypography.sizeBody,
             height: 24 / 14,
             color: DshColors(context).muted,
           ),
@@ -2642,7 +3184,9 @@ class _ReasoningMessageState extends State<ReasoningMessage> {
                   children: [
                     if (widget.hintDisplay != 'text') ...[
                       DshGlyph(
-                        expanded ? LucideIcons.chevronDown : LucideIcons.brain,
+                        expanded
+                            ? DshIcons.chevronDown.data
+                            : DshIcons.brain.data,
                         asset: expanded
                             ? null
                             : 'assets/icons/web-IconThinkOutline14.svg',
@@ -2653,8 +3197,11 @@ class _ReasoningMessageState extends State<ReasoningMessage> {
                     ],
                     if (widget.hintDisplay != 'icons')
                       Text(
-                        '思考',
-                        style: TextStyle(fontSize: 14, color: colors.muted),
+                        DshConversationZh.thinking,
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeBody,
+                          color: colors.muted,
+                        ),
                       ),
                     if (!expanded) ...[
                       Padding(
@@ -2669,7 +3216,7 @@ class _ReasoningMessageState extends State<ReasoningMessage> {
                                 child: Text(
                                   summary,
                                   style: TextStyle(
-                                    fontSize: 14,
+                                    fontSize: DshTypography.sizeBody,
                                     color: colors.muted,
                                   ),
                                 ),
@@ -2679,7 +3226,7 @@ class _ReasoningMessageState extends State<ReasoningMessage> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  fontSize: 14,
+                                  fontSize: DshTypography.sizeBody,
                                   color: colors.muted,
                                 ),
                               ),
@@ -2696,7 +3243,7 @@ class _ReasoningMessageState extends State<ReasoningMessage> {
               child: SelectableText(
                 text.substring(a, b),
                 style: TextStyle(
-                  fontSize: 14,
+                  fontSize: DshTypography.sizeBody,
                   height: 24 / 14,
                   color: colors.muted,
                 ),
@@ -2708,18 +3255,21 @@ class _ReasoningMessageState extends State<ReasoningMessage> {
                 DshButton(
                   height: 26,
                   onPressed: page == 0 ? null : () => setState(() => page--),
-                  child: const Text('上一段'),
+                  child: const Text(DshConversationZh.previousSection),
                 ),
                 Text(
                   '${page + 1} / $pages',
-                  style: TextStyle(fontSize: 12, color: colors.muted),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
                 DshButton(
                   height: 26,
                   onPressed: page + 1 >= pages
                       ? null
                       : () => setState(() => page++),
-                  child: const Text('下一段'),
+                  child: const Text(DshConversationZh.nextSection),
                 ),
               ],
             ),

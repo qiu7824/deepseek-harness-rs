@@ -457,6 +457,12 @@ void main() {
         await tester.pumpAndSettle();
         expect(old.mounted, isFalse);
         expect(find.byKey(const ValueKey('workbench-tab-git')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('workbench-tab-start')),
+          findsOneWidget,
+        );
+        expect(find.byType(FilePanel), findsNothing);
+        await openTab(tester, 'files');
         expect(tester.widget<FilePanel>(find.byType(FilePanel)).session, 'b');
         await openTab(tester, 'git');
         final oldHost = tester.state(find.byType(GitPanel));
@@ -464,6 +470,12 @@ void main() {
         c.emit();
         await tester.pumpAndSettle();
         expect(oldHost.mounted, isFalse);
+        expect(
+          find.byKey(const ValueKey('workbench-tab-start')),
+          findsOneWidget,
+        );
+        expect(find.byType(FilePanel), findsNothing);
+        await openTab(tester, 'files');
         expect(
           tester.widget<FilePanel>(find.byType(FilePanel)).api,
           same(second),

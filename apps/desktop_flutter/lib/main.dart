@@ -1,3 +1,6 @@
+import 'l10n/runtime_zh.dart';
+
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,6 +11,7 @@ import 'src/preferences.dart';
 import 'src/app.dart';
 import 'src/desktop_diagnostics.dart';
 import 'src/window_theme.dart';
+import 'src/window_lifecycle.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,9 +25,20 @@ Future<void> main() async {
     preferences = await DesktopPreferences.load();
   } catch (e) {
     preferences = DesktopPreferences();
-    startupError = '无法读取桌面设置：$e';
+    startupError = DshRuntimeZh.preferencesReadFailed(error: e);
   }
   final controller = DesktopController(preferences);
+  unawaited(
+    installWindowLifecycle(
+      controller,
+      onError: (message) {
+        startupError = [
+          if (startupError != null) startupError!,
+          message,
+        ].join('\n');
+      },
+    ),
+  );
   await WindowThemeBinding(controller).start();
   runApp(DesktopApp(controller: controller));
   await controller.initialize();

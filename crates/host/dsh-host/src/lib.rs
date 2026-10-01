@@ -57,7 +57,6 @@ mod office_render;
 mod open_in_app;
 mod plugin_manager;
 mod productivity;
-mod project_tasks;
 mod provider_auth;
 mod provider_auth_catalog;
 mod provider_compatibility;
@@ -5130,7 +5129,6 @@ fn compose_host_in_fiber(
         workspace_registry.clone(),
         &web_server,
         allow_remote_host,
-        &system_prompt,
     )?;
     open_in_app::register(&web_server, ctx, allow_remote_host);
     let _knowledge_route = knowledge_base::attach(knowledge_store, &web_server, allow_remote_host);

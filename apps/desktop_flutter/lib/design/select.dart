@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import 'primitives.dart';
@@ -28,17 +29,26 @@ class _DshSelectState<T extends Object> extends State<DshSelect<T>> {
   late final controller = ShadSelectController<T>(
     initialValue: widget.value == null ? {} : {widget.value!},
   );
+  final popover = ShadPopoverController();
   @override
   void didUpdateWidget(covariant DshSelect<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.value != widget.value) {
+    if (!setEquals(
+      controller.value,
+      widget.value == null ? <T>{} : {widget.value!},
+    )) {
       controller.value = widget.value == null ? {} : {widget.value!};
+    }
+    if (widget.onChanged == null ||
+        !mapEquals(oldWidget.options, widget.options)) {
+      popover.hide();
     }
   }
 
   @override
   void dispose() {
     controller.dispose();
+    popover.dispose();
     super.dispose();
   }
 
@@ -48,35 +58,33 @@ class _DshSelectState<T extends Object> extends State<DshSelect<T>> {
     final painter = TextPainter(
       text: TextSpan(text: text, style: DshTypography.body),
       textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
       maxLines: 1,
     )..layout();
     final width = (painter.width + 54).clamp(76.0, widget.maxWidth).toDouble();
     painter.dispose();
     final colors = DshColors(context);
     return SizedBox(
-      height: 36,
+      height: DshTokens.of(context).controlHeight(context),
       width: width,
       child: ShadSelect<T>(
         controller: controller,
+        popoverController: popover,
         enabled: widget.onChanged != null,
         minWidth: width,
-        maxWidth: width,
+        maxWidth: widget.maxWidth,
         maxHeight: 320,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
         decoration: ShadDecoration(
-          color: widget.outline
-              ? colors.base
-              : colors.dark
-              ? colors.layer
-              : const Color(0xfff5f6f7),
+          color: widget.outline ? colors.base : colors.layer,
           border: ShadBorder.all(
             color: colors.border,
             width: widget.outline ? 1 : 0,
-            radius: BorderRadius.circular(widget.outline ? 8 : 18),
+            radius: BorderRadius.circular(DshTokens.of(context).radiusControl),
           ),
         ),
         trailing: DshGlyph(
-          LucideIcons.chevronDown,
+          DshIcons.chevronDown.data,
           size: 14,
           color: colors.muted,
         ),
@@ -85,7 +93,12 @@ class _DshSelectState<T extends Object> extends State<DshSelect<T>> {
           for (final item in widget.options.entries)
             ShadOption(
               value: item.key,
-              child: Text(item.value, style: DshTypography.body),
+              child: Text(
+                item.value,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: DshTypography.body,
+              ),
             ),
         ],
         selectedOptionBuilder: (_, value) => Text(
@@ -95,7 +108,11 @@ class _DshSelectState<T extends Object> extends State<DshSelect<T>> {
           style: DshTypography.body,
         ),
         onChanged: (value) {
-          if (value != null) widget.onChanged?.call(value);
+          if (value == null || !widget.options.containsKey(value)) return;
+          widget.onChanged?.call(value);
+          // This is a controlled input. The owner may reject or asynchronously
+          // confirm the change, so retain its value until it rebuilds.
+          controller.value = widget.value == null ? {} : {widget.value!};
         },
       ),
     );

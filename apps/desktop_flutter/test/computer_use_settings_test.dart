@@ -79,7 +79,7 @@ void main() {
     // Option and field names that other namespaces share keep their
     // Computer Use meaning here.
     expect(find.text('内置浏览器'), findsWidgets);
-    expect(find.text('外部控制命令'), findsOneWidget);
+    expect(find.text('外部控制命令'), findsNothing);
     expect(find.text('这些设置需要重启服务后生效'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:dsh_desktop/design/typography.dart';
 
 Future<String?> nativeContextMenu(
   BuildContext context,
@@ -18,7 +19,10 @@ Future<String?> nativeContextMenu(
         PopupMenuItem(
           value: action.key,
           height: 34,
-          child: Text(action.value, style: const TextStyle(fontSize: 14)),
+          child: Text(
+            action.value,
+            style: const TextStyle(fontSize: DshTypography.sizeBody),
+          ),
         ),
     ],
   );

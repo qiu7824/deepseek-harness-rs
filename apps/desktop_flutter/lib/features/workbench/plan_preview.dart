@@ -1,11 +1,14 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
 import '../../design/rich_content.dart';
 import '../../src/resource_diagnostics.dart';
+import 'reclaimable_preview.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class PlanSnapshot {
   const PlanSnapshot(this.id, this.sourceId, this.text, this.title);
@@ -33,8 +36,10 @@ class PlanPreviewStore extends ChangeNotifier {
 
   void open(TranscriptItem item) {
     final text = item.planText;
-    if (text == null) throw StateError('计划内容不可用');
-    if (text.length > maxTextUnits) throw StateError('计划超过预览上限，请在原计划卡中查看。');
+    if (text == null) throw StateError(DshConversationZh.planUnavailable);
+    if (text.length > maxTextUnits) {
+      throw StateError(DshConversationZh.planPreviewLimit);
+    }
     final title = planHeading(text);
     final entry = PlanSnapshot(++_next, item.id, text, title);
     _items.add(entry);
@@ -84,8 +89,10 @@ class PlanPreviewPanel extends StatefulWidget {
 }
 
 class _PlanPreviewPanelState extends State<PlanPreviewPanel>
-    implements ResourceDiagnostics {
+    with ResourceDiagnosticScope {
   String? notice;
+  @override
+  String get resourceScopeKind => 'plan-preview';
   @override
   Map<String, int> get resourceDiagnostics => {'planPreviewPanels': 1};
   @override
@@ -97,7 +104,7 @@ class _PlanPreviewPanelState extends State<PlanPreviewPanel>
         children: [
           if (widget.store.items.isNotEmpty)
             SizedBox(
-              height: 36,
+              height: 44 + (MediaQuery.textScalerOf(context).scale(14) - 14),
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
@@ -121,8 +128,10 @@ class _PlanPreviewPanelState extends State<PlanPreviewPanel>
                             ),
                           ),
                           DshIcon(
-                            LucideIcons.x,
-                            label: '关闭计划 ${plan.title}',
+                            DshIcons.close.data,
+                            label: DshConversationZh.closeNamedPlan(
+                              title: plan.title,
+                            ),
                             size: 24,
                             onPressed: () => widget.store.close(plan.id),
                           ),
@@ -138,10 +147,10 @@ class _PlanPreviewPanelState extends State<PlanPreviewPanel>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('此计划预览已失效，请从原计划卡重新打开。'),
+                    const Text(DshConversationZh.planPreviewExpired),
                     DshButton(
                       onPressed: widget.onSource,
-                      child: const Text('返回来源'),
+                      child: const Text(DshConversationZh.backToSource),
                     ),
                   ],
                 ),
@@ -173,7 +182,9 @@ class _PlanPreviewPanelState extends State<PlanPreviewPanel>
                               );
                               if (mounted &&
                                   widget.store.active?.id == active.id) {
-                                setState(() => notice = '已复制');
+                                setState(
+                                  () => notice = DshConversationZh.copied,
+                                );
                               }
                             } catch (e) {
                               if (mounted &&
@@ -182,13 +193,13 @@ class _PlanPreviewPanelState extends State<PlanPreviewPanel>
                               }
                             }
                           },
-                          child: const Text('复制'),
+                          child: const Text(DshConversationZh.copy),
                         ),
                         DshButton(
                           outline: true,
                           height: 32,
                           onPressed: widget.onSource,
-                          child: const Text('返回来源'),
+                          child: const Text(DshConversationZh.backToSource),
                         ),
                       ],
                     ),
@@ -196,15 +207,20 @@ class _PlanPreviewPanelState extends State<PlanPreviewPanel>
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Text(
-                      notice ?? '计划内容快照；审批状态以原计划卡为准。',
-                      style: TextStyle(fontSize: 12, color: colors.muted),
+                      notice ?? DshConversationZh.planSnapshotHint,
+                      style: TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        color: colors.muted,
+                      ),
                     ),
                   ),
                   Expanded(
-                    child: SingleChildScrollView(
-                      key: ValueKey(active.id),
-                      padding: const EdgeInsets.all(16),
-                      child: DshMarkdown(data: active.text),
+                    child: ReclaimablePreview(
+                      builder: (_) => SingleChildScrollView(
+                        key: PageStorageKey(active.id),
+                        padding: const EdgeInsets.all(16),
+                        child: DshMarkdown(data: active.text),
+                      ),
                     ),
                   ),
                 ],

@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../design/select.dart';
 import 'feedback_controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class MessageFeedbackActions extends StatefulWidget {
   const MessageFeedbackActions({
@@ -60,12 +63,12 @@ class _MessageFeedbackActionsState extends State<MessageFeedbackActions> {
           for (final positive in [true, false]) ...[
             if (!positive) const SizedBox(width: 10),
             DshIcon(
-              positive ? LucideIcons.thumbsUp : LucideIcons.thumbsDown,
+              positive ? DshIcons.thumbsUp.data : DshIcons.thumbsDown.data,
               label: row?['rating'] == (positive ? 'positive' : 'negative')
-                  ? '取消标记'
+                  ? DshConversationZh.clearFeedback
                   : positive
-                  ? '好的回答'
-                  : '有问题的回答',
+                  ? DshConversationZh.goodAnswer
+                  : DshConversationZh.problematicAnswer,
               size: 28,
               active: row?['rating'] == (positive ? 'positive' : 'negative'),
               onPressed: c.busy
@@ -75,8 +78,8 @@ class _MessageFeedbackActionsState extends State<MessageFeedbackActions> {
           ],
           if (row != null)
             DshIcon(
-              LucideIcons.pencil,
-              label: '补充说明',
+              DshIcons.pencil.data,
+              label: DshConversationZh.addFeedbackNote,
               size: 28,
               onPressed: c.busy
                   ? null
@@ -84,11 +87,18 @@ class _MessageFeedbackActionsState extends State<MessageFeedbackActions> {
             ),
           if (c.error != null)
             DshIcon(
-              LucideIcons.circleAlert,
-              label: '${c.error}\n点击重新读取反馈',
+              DshIcons.circleAlert.data,
+              label: DshConversationZh.feedbackReloadHint(
+                error: DshError.describe(c.error!).message,
+              ),
               size: 28,
               color: Theme.of(context).colorScheme.error,
-              onPressed: c.busy ? null : () => c.ensure(refresh: true),
+              onPressed: c.busy
+                  ? null
+                  : () {
+                      showDshError(context, c.error!);
+                      c.ensure(refresh: true);
+                    },
             ),
         ],
       );
@@ -117,7 +127,7 @@ class _RatingDialogState extends State<_RatingDialog> {
   late String category = widget.category;
   late String? version = widget.version;
   bool busy = false;
-  String? error;
+  Object? error;
   @override
   void dispose() {
     note.dispose();
@@ -145,7 +155,7 @@ class _RatingDialogState extends State<_RatingDialog> {
     }
     setState(() {
       busy = false;
-      error = c.error ?? '反馈未保存，请重新读取状态后重试。';
+      error = c.error ?? DshConversationZh.feedbackNotSaved;
       version = c.item(widget.messageId)?['version'] as String?;
     });
   }
@@ -154,7 +164,11 @@ class _RatingDialogState extends State<_RatingDialog> {
   Widget build(BuildContext context) => PopScope(
     canPop: !busy,
     child: AlertDialog(
-      title: Text(widget.rating == 'positive' ? '确认正面评价' : '确认负面评价'),
+      title: Text(
+        widget.rating == 'positive'
+            ? DshConversationZh.confirmPositiveFeedback
+            : DshConversationZh.confirmNegativeFeedback,
+      ),
       content: SizedBox(
         width: 500,
         child: SingleChildScrollView(
@@ -162,10 +176,16 @@ class _RatingDialogState extends State<_RatingDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('记录对这条回复的评价，分类和说明可选。', style: TextStyle(fontSize: 13)),
+              const Text(
+                DshConversationZh.feedbackHint,
+                style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
+              ),
               const SizedBox(height: 14),
               DshSelect<String>(
-                options: const {'': '选择分类（可选）', ...feedbackCategories},
+                options: const {
+                  '': DshConversationZh.optionalFeedbackCategory,
+                  ...feedbackCategories,
+                },
                 value: category,
                 onChanged: busy ? null : (v) => setState(() => category = v),
               ),
@@ -176,15 +196,11 @@ class _RatingDialogState extends State<_RatingDialog> {
                 minLines: 4,
                 maxLines: 8,
                 decoration: const InputDecoration(
-                  labelText: '反馈说明',
-                  hintText: '这条回答哪里好，或哪里有问题？（可选）',
+                  labelText: DshConversationZh.feedbackNote,
+                  hintText: DshConversationZh.feedbackNoteHint,
                 ),
               ),
-              if (error != null)
-                Text(
-                  error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
+              if (error != null) DshErrorView(error: error!),
             ],
           ),
         ),
@@ -192,12 +208,16 @@ class _RatingDialogState extends State<_RatingDialog> {
       actions: [
         DshButton(
           onPressed: busy ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshConversationZh.cancel),
         ),
         DshButton(
           primary: true,
           onPressed: busy ? null : save,
-          child: Text(busy ? '正在保存…' : '确认评价'),
+          child: Text(
+            busy
+                ? DshConversationZh.savingFeedback
+                : DshConversationZh.confirmFeedback,
+          ),
         ),
       ],
     ),

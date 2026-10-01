@@ -1,8 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
+import '../l10n/zh.dart';
+import 'error.dart';
 import 'icon_assets.dart';
+import 'icons.dart';
+import 'motion.dart';
+import 'tokens.dart';
 import 'typography.dart';
+
+export 'icons.dart';
+export 'tokens.dart';
 
 class DshGlyph extends StatelessWidget {
   const DshGlyph(
@@ -23,6 +31,7 @@ class DshGlyph extends StatelessWidget {
     final dimension = size ?? IconTheme.of(context).size ?? 16;
     final path =
         asset ??
+        DshIcons.assetFor(data) ??
         (data?.fontPackage == 'lucide_icons_flutter'
             ? dshIconAssets[data!.codePoint]
             : null);
@@ -44,6 +53,7 @@ class DshGlyph extends StatelessWidget {
           path,
           fit: BoxFit.contain,
           semanticsLabel: semanticLabel,
+          excludeFromSemantics: semanticLabel == null,
           theme: SvgTheme(
             currentColor:
                 color ?? IconTheme.of(context).color ?? DshColors(context).text,
@@ -55,18 +65,62 @@ class DshGlyph extends StatelessWidget {
 }
 
 class DshColors {
-  DshColors(BuildContext context)
-    : dark = Theme.of(context).brightness == Brightness.dark;
-  final bool dark;
-  Color get base => dark ? const Color(0xff151517) : Colors.white;
-  Color get sidebar => dark ? const Color(0xff1b1b1c) : const Color(0xfff9fafb);
-  Color get layer => dark ? const Color(0xff353638) : const Color(0xfff5f6f7);
-  Color get hover => dark ? const Color(0xff43454a) : const Color(0xffebeef2);
-  Color get border => dark ? const Color(0x1fffffff) : const Color(0x1a000000);
-  Color get text => dark ? const Color(0xfff9fafb) : const Color(0xff0f1115);
-  Color get muted => dark ? const Color(0xffadb2b8) : const Color(0xff81858c);
-  Color get blue => dark ? const Color(0xff679efe) : const Color(0xff4176e6);
-  Color get bubble => dark ? const Color(0xff2c2c2e) : const Color(0xffedf3fe);
+  DshColors(BuildContext context) : tokens = DshTokens.of(context);
+  final DshTokens tokens;
+  bool get dark => tokens.isDark;
+  Color get base => tokens.base;
+  Color get sidebar => tokens.sidebar;
+  Color get layer => tokens.layer;
+  Color get hover => tokens.hover;
+  Color get selected => tokens.selected;
+  Color get border => tokens.border;
+  Color get text => tokens.text;
+  Color get muted => tokens.muted;
+  Color get blue => tokens.accent;
+  Color get bubble => tokens.bubble;
+  Color get success => tokens.success.foreground;
+  Color get warning => tokens.warning.foreground;
+  Color get error => tokens.error.foreground;
+  Color get info => tokens.info.foreground;
+  Color get onAccent => tokens.onAccent;
+  Color get focus => tokens.focus;
+}
+
+/// Desktop hover hints use the same reading style on every control.
+class DshTooltip extends StatelessWidget {
+  const DshTooltip({
+    super.key,
+    required this.message,
+    required this.child,
+    this.excludeFromSemantics = false,
+  });
+
+  final String message;
+  final Widget child;
+  final bool excludeFromSemantics;
+
+  static TooltipThemeData theme(DshTokens tokens) => TooltipThemeData(
+    waitDuration: const Duration(milliseconds: 500),
+    exitDuration: const Duration(milliseconds: 100),
+    showDuration: const Duration(seconds: 4),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    margin: const EdgeInsets.all(12),
+    textStyle: DshTypography.auxiliary.copyWith(color: tokens.base),
+    decoration: BoxDecoration(
+      color: tokens.text,
+      borderRadius: BorderRadius.circular(tokens.radiusControl),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: message,
+    excludeFromSemantics: excludeFromSemantics,
+    ignorePointer: true,
+    waitDuration: const Duration(milliseconds: 500),
+    exitDuration: const Duration(milliseconds: 100),
+    child: child,
+  );
 }
 
 class DshButton extends StatelessWidget {
@@ -87,6 +141,9 @@ class DshButton extends StatelessWidget {
     this.active = false,
     this.activeBorderColor,
     this.activeBackgroundColor,
+    this.focusNode,
+    this.loading = false,
+    this.tooltip,
   });
   final Widget child;
   final VoidCallback? onPressed;
@@ -99,56 +156,105 @@ class DshButton extends StatelessWidget {
   final Widget? trailing;
   final bool pill, destructive;
   final double fontSize;
+  final FocusNode? focusNode;
+  final bool loading;
+  final String? tooltip;
   @override
-  Widget build(BuildContext context) => ShadButton.raw(
-    variant: primary
-        ? ShadButtonVariant.primary
-        : outline
-        ? ShadButtonVariant.outline
-        : ShadButtonVariant.ghost,
-    onPressed: onPressed,
-    enabled: onPressed != null,
-    backgroundColor: active
-        ? activeBackgroundColor ?? DshColors(context).hover
-        : null,
-    foregroundColor: destructive ? Theme.of(context).colorScheme.error : null,
-    height: height,
-    width: width,
-    padding: padding ?? const EdgeInsets.symmetric(horizontal: 12),
-    decoration: active
-        ? ShadDecoration(
-            border: ShadBorder.all(
-              color: activeBorderColor ?? DshColors(context).blue,
-              width: outline ? 1 : 0,
-              radius: BorderRadius.circular(8),
-            ),
-          )
-        : pill
-        ? ShadDecoration(
-            border: ShadBorder.all(
-              radius: BorderRadius.circular(height / 2),
-              color: destructive
-                  ? Theme.of(context).colorScheme.error
-                  : DshColors(context).border,
-              width: outline ? 1 : 0,
-            ),
-          )
-        : null,
-    leading: icon == null ? null : DshGlyph(icon, size: 16),
-    trailing: trailing,
-    textStyle: TextStyle(
+  Widget build(BuildContext context) {
+    final tokens = DshTokens.of(context);
+    final enabled = onPressed != null && !loading;
+    final actualHeight = tokens.controlHeight(
+      context,
+      minimum: height,
+      primary: primary,
       fontSize: fontSize,
-      fontFamily: DshTypography.family,
-      fontFamilyFallback: DshTypography.fallback,
-      height: 22 / fontSize,
-      color: destructive
-          ? Theme.of(context).colorScheme.error
+    );
+    final foreground = destructive
+        ? tokens.error.foreground
+        : primary
+        ? tokens.onAccent
+        : tokens.text;
+    final button = ShadButton.raw(
+      variant: primary
+          ? ShadButtonVariant.primary
+          : outline
+          ? ShadButtonVariant.outline
+          : ShadButtonVariant.ghost,
+      onPressed: enabled
+          ? () {
+              Tooltip.dismissAllToolTips();
+              onPressed!();
+            }
+          : null,
+      enabled: enabled,
+      focusNode: focusNode,
+      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      backgroundColor: active
+          ? activeBackgroundColor ?? tokens.selected
           : primary
-          ? DshColors(context).base
-          : DshColors(context).text,
-    ),
-    child: child,
-  );
+          ? tokens.accent
+          : null,
+      foregroundColor: foreground,
+      hoverBackgroundColor: active
+          ? activeBackgroundColor ?? tokens.selected
+          : primary
+          ? tokens.accent.withValues(alpha: .9)
+          : tokens.hover,
+      hoverForegroundColor: foreground,
+      height: actualHeight,
+      width: width,
+      padding: padding ?? const EdgeInsets.symmetric(horizontal: 12),
+      decoration: active
+          ? ShadDecoration(
+              border: ShadBorder.all(
+                color: activeBorderColor ?? DshColors(context).blue,
+                width: outline ? 1 : 0,
+                radius: BorderRadius.circular(tokens.radiusControl),
+              ),
+            )
+          : pill
+          ? ShadDecoration(
+              border: ShadBorder.all(
+                radius: BorderRadius.circular(actualHeight / 2),
+                color: destructive
+                    ? Theme.of(context).colorScheme.error
+                    : DshColors(context).border,
+                width: outline ? 1 : 0,
+              ),
+            )
+          : null,
+      leading: loading
+          ? DshMotion.disabled(context)
+                ? DshGlyph(
+                    DshIcons.loaderCircle.data,
+                    size: tokens.iconSize,
+                    color: foreground,
+                  )
+                : SizedBox(
+                    width: tokens.iconSize,
+                    height: tokens.iconSize,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: foreground,
+                    ),
+                  )
+          : icon == null
+          ? null
+          : DshGlyph(icon, size: tokens.iconSize),
+      trailing: trailing,
+      textStyle: DshTypography.body.copyWith(
+        fontSize: fontSize,
+        fontFamily: DshTypography.family,
+        fontFamilyFallback: DshTypography.fallback,
+        height: 22 / fontSize,
+        color: foreground,
+      ),
+      child: child,
+    );
+    return tooltip == null
+        ? button
+        : DshTooltip(message: tooltip!, child: button);
+  }
 }
 
 class DshIcon extends StatelessWidget {
@@ -158,10 +264,12 @@ class DshIcon extends StatelessWidget {
     required this.label,
     this.onPressed,
     this.active = false,
-    this.size = 30,
+    this.size = 36,
     this.color,
     this.asset,
     this.glyphSize = 16,
+    this.focusNode,
+    this.shortcut,
   });
   final IconData icon;
   final String label;
@@ -171,20 +279,36 @@ class DshIcon extends StatelessWidget {
   final double glyphSize;
   final String? asset;
   final Color? color;
+  final FocusNode? focusNode;
+  final String? shortcut;
   @override
-  Widget build(BuildContext context) => Tooltip(
-    message: label,
-    waitDuration: const Duration(milliseconds: 500),
+  Widget build(BuildContext context) => DshTooltip(
+    message: shortcut == null ? label : '$label ($shortcut)',
+    excludeFromSemantics: true,
     child: Semantics(
       label: label,
       button: true,
+      enabled: onPressed != null,
       child: ShadButton.ghost(
-        onPressed: onPressed,
+        onPressed: onPressed == null
+            ? null
+            : () {
+                Tooltip.dismissAllToolTips();
+                onPressed!();
+              },
         enabled: onPressed != null,
-        width: size,
-        height: size,
+        focusNode: focusNode,
+        width: size < DshTokens.of(context).controlMinimum
+            ? DshTokens.of(context).controlMinimum
+            : size,
+        height: size < DshTokens.of(context).controlMinimum
+            ? DshTokens.of(context).controlMinimum
+            : size,
         padding: EdgeInsets.zero,
-        backgroundColor: active ? DshColors(context).hover : null,
+        backgroundColor: active ? DshColors(context).selected : null,
+        hoverBackgroundColor: active
+            ? DshColors(context).selected
+            : DshColors(context).hover,
         child: DshGlyph(
           icon,
           asset: asset,
@@ -233,29 +357,38 @@ class DshField extends StatelessWidget {
     textAlignVertical: TextAlignVertical.center,
     decoration: InputDecoration(
       hintText: hint,
+      hintStyle: DshTypography.body.copyWith(color: DshColors(context).muted),
       prefixIcon: prefix == null ? null : DshGlyph(prefix, size: 16),
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       constraints: maxLines == 1
-          ? const BoxConstraints.tightFor(height: 36)
+          ? BoxConstraints(
+              minHeight: DshTokens.of(context).controlHeight(context),
+            )
           : null,
-      prefixIconConstraints: const BoxConstraints.tightFor(
-        width: 36,
-        height: 36,
+      prefixIconConstraints: BoxConstraints.tightFor(
+        width: DshTokens.of(context).controlMinimum,
+        height: DshTokens.of(context).controlHeight(context),
       ),
       isDense: true,
       filled: true,
       fillColor: DshColors(context).base,
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(
+          DshTokens.of(context).radiusControl,
+        ),
         borderSide: BorderSide(color: DshColors(context).border),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(
+          DshTokens.of(context).radiusControl,
+        ),
         borderSide: BorderSide(color: DshColors(context).border),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: BorderSide(color: DshColors(context).blue),
+        borderRadius: BorderRadius.circular(
+          DshTokens.of(context).radiusControl,
+        ),
+        borderSide: BorderSide(color: DshColors(context).focus, width: 2),
       ),
     ),
   );
@@ -266,26 +399,41 @@ class DshSwitch extends StatelessWidget {
   final bool value;
   final ValueChanged<bool>? onChanged;
   @override
-  Widget build(BuildContext context) => ShadSwitch(
-    value: value,
-    enabled: onChanged != null,
-    onChanged: onChanged,
-    width: 36,
-    height: 22,
-    margin: 3,
-    padding: EdgeInsets.zero,
-    thumbColor: Colors.white,
-    checkedTrackColor: DshColors(context).blue,
-    uncheckedTrackColor: DshColors(context).dark
-        ? const Color(0xff55575d)
-        : const Color(0xffc9cdd4),
+  Widget build(BuildContext context) => MergeSemantics(
+    child: MouseRegion(
+      cursor: onChanged == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onChanged == null ? null : () => onChanged!(!value),
+        child: SizedBox.square(
+          dimension: DshTokens.of(context).controlMinimum,
+          child: Center(
+            child: ShadSwitch(
+              value: value,
+              enabled: onChanged != null,
+              onChanged: onChanged,
+              width: 36,
+              height: 22,
+              duration: DshMotion.duration(context, DshMotion.quick),
+              margin: 3,
+              padding: EdgeInsets.zero,
+              thumbColor: Colors.white,
+              checkedTrackColor: DshColors(context).blue,
+              uncheckedTrackColor: DshTokens.of(context).switchTrack,
+            ),
+          ),
+        ),
+      ),
+    ),
   );
 }
 
 class DshEmpty extends StatelessWidget {
-  const DshEmpty(this.text, {super.key, this.icon = LucideIcons.inbox});
+  const DshEmpty(this.text, {super.key, this.icon});
   final String text;
-  final IconData icon;
+  final IconData? icon;
   @override
   Widget build(BuildContext context) => Center(
     child: Padding(
@@ -293,12 +441,16 @@ class DshEmpty extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          DshGlyph(icon, size: 28, color: DshColors(context).muted),
+          DshGlyph(
+            icon ?? DshIcons.inbox.data,
+            size: 28,
+            color: DshColors(context).muted,
+          ),
           const SizedBox(height: 12),
           Text(
             text,
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 14, color: DshColors(context).muted),
+            style: DshTypography.body.copyWith(color: DshColors(context).muted),
           ),
         ],
       ),
@@ -315,12 +467,12 @@ Future<bool> confirmAction(
     await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(title, style: const TextStyle(fontSize: 17)),
+        title: Text(title, style: DshTypography.sectionTitle),
         content: Text(message),
         actions: [
           DshButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+            child: const Text(DshZh.cancel),
           ),
           DshButton(
             primary: true,
@@ -369,7 +521,8 @@ class _EditDialog extends StatefulWidget {
 class _EditDialogState extends State<_EditDialog> {
   late final input = TextEditingController(text: widget.value);
   bool saving = false, mustRecover = false;
-  String? error, notice;
+  Object? error;
+  String? notice;
 
   Future<void> save() async {
     if (saving || mustRecover) return;
@@ -383,7 +536,7 @@ class _EditDialogState extends State<_EditDialog> {
     } catch (failure) {
       if (mounted) {
         setState(() {
-          error = failure.toString();
+          error = failure;
           mustRecover =
               widget.onRecover != null &&
               (widget.recoveryRequired?.call(failure) ?? true);
@@ -407,7 +560,7 @@ class _EditDialogState extends State<_EditDialog> {
         });
       }
     } catch (failure) {
-      if (mounted) setState(() => error = failure.toString());
+      if (mounted) setState(() => error = failure);
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -423,7 +576,7 @@ class _EditDialogState extends State<_EditDialog> {
   Widget build(BuildContext context) => PopScope(
     canPop: !saving,
     child: AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontSize: 17)),
+      title: Text(widget.title, style: DshTypography.sectionTitle),
       content: SizedBox(
         width: 420,
         child: Column(
@@ -434,9 +587,10 @@ class _EditDialogState extends State<_EditDialog> {
             if (error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                child: DshErrorView(
+                  error: error!,
+                  operation: DshZh.save,
+                  onRetry: saving || mustRecover ? null : save,
                 ),
               ),
             if (notice != null)
@@ -450,7 +604,7 @@ class _EditDialogState extends State<_EditDialog> {
       actions: [
         DshButton(
           onPressed: saving ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshZh.cancel),
         ),
         if (mustRecover)
           DshButton(
@@ -459,8 +613,9 @@ class _EditDialogState extends State<_EditDialog> {
           ),
         DshButton(
           primary: true,
+          loading: saving,
           onPressed: saving || mustRecover ? null : save,
-          child: const Text('保存'),
+          child: Text(saving ? DshZh.saving : DshZh.save),
         ),
       ],
     ),

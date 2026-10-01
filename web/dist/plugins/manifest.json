@@ -164,7 +164,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-conversation",
       "url": "/plugins/ui-conversation.js",
-      "rev": "beb4aff44b915215",
+      "rev": "b968f5f91419f514",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
@@ -471,7 +471,7 @@
     {
       "id": "@deepseek-ai/dsh-client-ui-productivity",
       "url": "/plugins/ui-productivity.js",
-      "rev": "17d21b1f66b0f8d6",
+      "rev": "7d46a3fb8f15b510",
       "inject": [
         "slots",
         "settingsScope",
