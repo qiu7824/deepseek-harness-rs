@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/host-regressions.yml
       - tools/run_release_regression.py
+      - crates/code-runtime/code-runtime-node/src/approval_tests.rs
   workflow_dispatch:
 
 permissions:

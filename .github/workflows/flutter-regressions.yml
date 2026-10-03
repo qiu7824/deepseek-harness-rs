@@ -1,0 +1,112 @@
+name: ARM Flutter 回归诊断
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/flutter-regressions.yml
+      - tools/run_flutter_test_diagnostics.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 隔离并规范测试临时目录
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
+          root.mkdir(parents=True, exist_ok=True)
+          root = root.resolve(strict=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
+                  stream.write(f'{key}={root}\n')
+          PY
+      - name: 固定测试 Node 运行时
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python tools/stage_node_runtime.py --stage "$RUNNER_TEMP/dsh-test-runtime" --platform macos --arch aarch64 --cache "$RUNNER_TEMP/dsh-node-cache"
+          echo "$RUNNER_TEMP/dsh-test-runtime/runtime/node" >> "$GITHUB_PATH"
+      - name: 准备固定 Flutter SDK
+        id: flutter_sdk
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          SDK="$RUNNER_TEMP/flutter-sdk"
+          git init "$SDK"
+          git -C "$SDK" remote add origin https://github.com/flutter/flutter.git
+          git -C "$SDK" fetch --depth 1 origin refs/tags/3.47.5:refs/tags/3.47.5
+          test "$(git -C "$SDK" rev-parse '3.47.5^{commit}')" = 6a19cca56475dbfba1478ee68d7bd0c2ef891da1
+          git -C "$SDK" checkout --detach 3.47.5
+          python tools/prepare_flutter_sdk.py --sdk "$SDK" --backup-dir "$RUNNER_TEMP/flutter-sdk-backup"
+          echo "$SDK/bin" >> "$GITHUB_PATH"
+          echo "PUB_CACHE=$RUNNER_TEMP/flutter-pub-cache" >> "$GITHUB_ENV"
+      - name: Flutter 运行配置
+        id: flutter_config
+        shell: bash
+        run: |
+          flutter config --no-analytics
+          flutter --version
+      - name: 锁定 Dart 客户端依赖
+        id: dart_pub
+        shell: bash
+        run: |
+          cd packages/dsh_client_dart
+          dart pub get --enforce-lockfile
+      - name: Dart 客户端测试
+        if: ${{ !cancelled() && steps.dart_pub.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          cd packages/dsh_client_dart
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- dart test
+      - name: 锁定 Flutter 客户端依赖
+        id: flutter_pub
+        if: ${{ !cancelled() && steps.flutter_config.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
+          flutter pub get --enforce-lockfile
+      - name: Flutter 测试与失败用例诊断
+        if: ${{ !cancelled() && steps.flutter_pub.outcome == 'success' }}
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test-machine.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- flutter test --machine
+      - name: Flutter 静态检查
+        if: ${{ !cancelled() && steps.flutter_pub.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- flutter analyze
+      - name: macOS 正式客户端构建
+        if: ${{ !cancelled() && steps.flutter_pub.outcome == 'success' }}
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          VERSION="$(python tools/verify_release_version.py --print-version)"
+          cd apps/desktop_flutter
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- flutter build macos --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
+      - name: 保存 Flutter 诊断日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: flutter-regression-logs-macos-aarch64
+          path: |
+            ${{ runner.temp }}/dart-client-test.log
+            ${{ runner.temp }}/flutter-test-machine.log
+            ${{ runner.temp }}/flutter-analyze.log
+            ${{ runner.temp }}/flutter-build.log
+          if-no-files-found: warn
