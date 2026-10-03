@@ -1,9 +1,14 @@
+import 'dart:ffi' show Abi;
+
 import 'package:dsh_desktop/design/primitives.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  final goldenDirectory = Abi.current() == Abi.macosArm64
+      ? 'goldens/macos-arm64'
+      : 'goldens';
   for (final tokens in [DshTokens.light, DshTokens.dark]) {
     for (final ratio in [1.0, 1.5]) {
       testWidgets('semantic icon matrix ${tokens.brightness.name} at $ratio', (
@@ -63,7 +68,7 @@ void main() {
           await expectLater(
             image,
             matchesGoldenFile(
-              'goldens/icons_${tokens.brightness.name}_${ratio}x.png',
+              '$goldenDirectory/icons_${tokens.brightness.name}_${ratio}x.png',
             ),
           );
         } finally {

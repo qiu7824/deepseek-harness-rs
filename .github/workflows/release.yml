@@ -337,13 +337,13 @@ jobs:
         run: |
           flutter config --no-analytics
           flutter --version
-          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- dart test)
+          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/dart" test)
           cd apps/desktop_flutter
           flutter pub get --enforce-lockfile
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- flutter analyze
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- flutter test --machine
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" analyze
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" test --machine
           VERSION="${{ steps.release.outputs.version }}"
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- flutter build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
       - name: 组装并核验 Flutter 完整包
         if: ${{ !cancelled() && steps.flutter_build.outcome == 'success' }}
         timeout-minutes: 10

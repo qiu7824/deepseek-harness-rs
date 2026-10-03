@@ -43,7 +43,13 @@ def read_png(repo: Path, source: Path) -> bytes:
     return data
 
 
-def collect(repo: Path) -> dict[str, bytes]:
+def baseline_root(repo: Path, platform: str, arch: str) -> Path:
+    root = repo / "apps/desktop_flutter/test/goldens"
+    arm = root / "macos-arm64"
+    return arm if (platform, arch) == ("macos", "aarch64") and arm.is_dir() else root
+
+
+def collect(repo: Path, platform: str, arch: str) -> dict[str, bytes]:
     test_root = repo / "apps/desktop_flutter/test"
     files: dict[str, bytes] = {}
     for name in GOLDENS:
@@ -55,7 +61,7 @@ def collect(repo: Path) -> dict[str, bytes]:
     if not files:
         return {}
     for name in GOLDENS:
-        files[f"baselines/{name}"] = read_png(repo, test_root / "goldens" / name)
+        files[f"baselines/{name}"] = read_png(repo, baseline_root(repo, platform, arch) / name)
     return files
 
 
@@ -68,7 +74,7 @@ def create_commit(repo: Path, *, platform: str, arch: str, run_id: str, run_atte
     if not re.fullmatch(r"[0-9a-f]{40}", source) or git(repo, ["rev-parse", "HEAD"]) != source:
         raise ValueError("golden evidence source does not match the checked-out commit")
     branch = f"diagnostics/flutter-goldens-{run_id}-{platform}-{arch}"
-    files = collect(repo)
+    files = collect(repo, platform, arch)
     if not files:
         return branch, None
     manifest = {
@@ -80,6 +86,7 @@ def create_commit(repo: Path, *, platform: str, arch: str, run_id: str, run_atte
         "runId": run_id,
         "runAttempt": run_attempt,
         "test": "apps/desktop_flutter/test/design_icon_golden_test.dart",
+        "baselineRoot": baseline_root(repo, platform, arch).relative_to(repo).as_posix(),
         "files": {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in sorted(files.items())},
     }
     files["manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")

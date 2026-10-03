@@ -136,8 +136,10 @@ class FlutterReleaseTests(unittest.TestCase):
     def test_workflow_uses_one_source_commit_and_all_native_platforms(self):
         workflow = (package.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn(package.FLUTTER_REVISION, workflow)
+        # The pinned SDK's Bash entry also dispatches to flutter.bat on Windows.
+        commands = workflow.replace('bash "$RUNNER_TEMP/flutter-sdk/bin/flutter"', 'flutter')
         for marker in ["flutter test", "flutter analyze", "flutter build ${{ matrix.platform }}", "tools/package_flutter_release.py", "tools/verify_flutter_installer.py", "--enforce-lockfile"]:
-            self.assertIn(marker, workflow)
+            self.assertIn(marker, commands)
 
 
 if __name__ == "__main__":
