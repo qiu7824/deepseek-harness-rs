@@ -828,6 +828,80 @@ mod image_stream_tests;
 #[path = "request_projection_ownership_tests.rs"]
 mod request_projection_ownership_tests;
 
+fn project_text_only_images(
+    mut options: GenerateOptions,
+    connection: &ResolvedDeepSeekOptions,
+) -> GenerateOptions {
+    if connection
+        .models
+        .iter()
+        .find(|model| model.id == options.model)
+        .and_then(|model| model.image_input)
+        != Some(false)
+    {
+        return options;
+    }
+    // Native computer results have their own screenshot and safety-receipt
+    // protocol. Other historical images remain owned by their session without
+    // forcing pixels into a request for an explicitly text-only model.
+    let native_calls = options
+        .messages
+        .iter()
+        .filter(|message| message.role == dsh_llm::Role::Assistant)
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            dsh_llm::ContentBlock::ToolCall { id, name, .. }
+                if name == dsh_llm::computer_protocol::TOOL_NAME =>
+            {
+                Some(id.as_str().to_string())
+            }
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    fn project(
+        content: &mut [dsh_llm::ContentBlock],
+        model: &str,
+        native_calls: &std::collections::HashSet<String>,
+    ) {
+        for block in content {
+            match block {
+                dsh_llm::ContentBlock::Image {
+                    attachment,
+                    offloaded,
+                } if *offloaded != Some(true) => {
+                    *block = dsh_llm::ContentBlock::Text {
+                        text: format!(
+                            "[image {} is unavailable to text-only model {}; use its attachment ID for image editing or a vision consultation]",
+                            attachment.attachment_id, model
+                        ),
+                    };
+                }
+                dsh_llm::ContentBlock::ToolResult {
+                    tool_call_id,
+                    content,
+                    ..
+                } if !native_calls.contains(tool_call_id.as_str()) => {
+                    project(content, model, native_calls);
+                }
+                _ => {}
+            }
+        }
+    }
+    for message in &mut options.messages {
+        if !matches!(message.role, dsh_llm::Role::User | dsh_llm::Role::Tool)
+            || message
+                .as_tool_result()
+                .is_some_and(|(id, _, _)| native_calls.contains(id.as_str()))
+        {
+            continue;
+        }
+        // This changes only the owned request. New user-image admission and the
+        // immutable session events retain their existing validation and pixels.
+        project(&mut message.content, &options.model, &native_calls);
+    }
+    options
+}
+
 fn project_estimated_request(options: GenerateOptions) -> Result<GenerateOptions, LlmFailure> {
     if !options
         .messages
@@ -1829,6 +1903,7 @@ async fn request_chunks(
     cancelled: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
     cleanup: Arc<files_cleanup::CleanupWorker>,
 ) -> Result<(), LlmFailure> {
+    let options = project_text_only_images(options, &connection);
     let mut options = project_estimated_request(options)?;
     if let Some(model) = connection
         .models

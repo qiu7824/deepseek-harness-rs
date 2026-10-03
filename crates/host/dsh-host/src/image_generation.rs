@@ -140,6 +140,24 @@ pub(crate) struct ImageGeneration {
     auth: Arc<AccountAuth>,
     gate: tokio::sync::Semaphore,
 }
+
+fn render_generated_images(value: &Value) -> Result<Vec<dsh_llm::ContentBlock>, String> {
+    let mut content = vec![dsh_llm::ContentBlock::Text {
+        text: value.to_string(),
+    }];
+    for image in value["images"].as_array().into_iter().flatten() {
+        let block: dsh_llm::ContentBlock =
+            serde_json::from_value(image.clone()).map_err(|error| error.to_string())?;
+        if !matches!(block, dsh_llm::ContentBlock::Image { .. }) {
+            return Err("生成图片结果缺少有效图片附件".into());
+        }
+        // Only the images saved by this operation become admitted tool content.
+        // Text, presentation metadata and sourceImages grant no attachment access.
+        content.push(block);
+    }
+    Ok(content)
+}
+
 impl ImageGeneration {
     pub fn install(
         ctx: &Context,
@@ -159,7 +177,7 @@ impl ImageGeneration {
         tools.register(ctx,ToolDefinition{
             name:"generate_image".into(),description:"Generate an actual image or edit existing images using the current conversation connection and existing credentials, or an optional dedicated task model when configured. Task assignments are not required. Use this for image requests instead of drawing substitutes with code. For edits, pass reference_images as image attachment IDs from this conversation or workspace image paths; optionally pass a PNG mask. Results are displayed as images in this conversation with preview and download. Return image IDs may be reused for further edits. Use consult_model task=vision to review images if a vision route is configured.".into(),
             parameters:json!({"type":"object","additionalProperties":false,"properties":{"prompt":{"type":"string","minLength":1,"maxLength":32000},"reference_images":{"type":"array","maxItems":16,"items":{"type":"string"}},"mask":{"type":"string"},"size":{"type":"string"},"quality":{"type":"string","enum":["auto","low","medium","high","xhigh","max"]},"n":{"type":"integer","minimum":1,"maximum":4}},"required":["prompt"]}),
-            output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text{text:value.to_string()}])),presentation_meta:Some(Arc::new(|_,value|{let mut meta=value.clone();meta["kind"]=json!("image-generation");Ok(meta)}))},
+            output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,value|render_generated_images(value)),presentation_meta:Some(Arc::new(|_,value|{let mut meta=value.clone();meta["kind"]=json!("image-generation");Ok(meta)}))},
             timeout_ms:Some(600000),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:Some(Arc::new(|args|Some(dsh_tools::ToolCallView::Generic{title:if args["reference_images"].as_array().is_some_and(|v|!v.is_empty()){"编辑图片"}else{"生成图片"}.into(),kind:None,raw_input:None,content:None,locations:None}))),present_result:None,
             execute:Arc::new(move|args,run|{let service=tool_service.clone();let args=args.clone();let execution=run.execution.clone();let mark_effects=run.track_cancellable_effects();Box::pin(async move{service.run(&args,&execution,mark_effects.as_ref()).await.map_err(failure)})})
         })?;
@@ -685,6 +703,62 @@ fn public_ip(ip: std::net::IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_images_are_admitted_content_without_authorizing_opaque_metadata() {
+        let image = |digest: &str, name: &str| {
+            json!({
+                "type":"image",
+                "attachment":{
+                    "attachmentId":format!("sha256:{}", digest.repeat(64)),
+                    "mediaType":"image/png","bytes":80,"width":1,"height":1,"name":name,
+                }
+            })
+        };
+        let first = image("a", "generated-first.png");
+        let second = image("b", "generated-second.png");
+        let foreign = image("c", "generated-foreign.png");
+        let value = json!({"images":[first.clone(),second.clone()],"sourceImages":[foreign.clone()],"metadata":foreign,"edited":false});
+        let content = render_generated_images(&value).unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(
+            content[0],
+            dsh_llm::ContentBlock::Text {
+                text: value.to_string()
+            }
+        );
+        assert_eq!(serde_json::to_value(&content[1]).unwrap(), first);
+        assert_eq!(serde_json::to_value(&content[2]).unwrap(), second);
+        let event = json!({"message":{"role":"tool","source":{"kind":"tool"},"content":content}});
+        for name in ["generated-first.png", "generated-second.png"] {
+            assert!(dsh_attachment::find_image_reference("tool/result", &event, name).is_some());
+        }
+        assert!(
+            dsh_attachment::find_image_reference("tool/result", &event, "generated-foreign.png")
+                .is_none()
+        );
+        assert!(
+            dsh_attachment::find_image_reference("tool/call", &event, "generated-first.png")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn error_and_invalid_generation_outputs_do_not_admit_image_content() {
+        let error = json!({"error":{"message":"generation failed"},"sourceImages":[{"type":"image","attachment":{"attachmentId":format!("sha256:{}", "a".repeat(64)),"mediaType":"image/png","bytes":80,"width":1,"height":1}}]});
+        assert!(matches!(
+            render_generated_images(&error).unwrap().as_slice(),
+            [dsh_llm::ContentBlock::Text { .. }]
+        ));
+        assert!(
+            render_generated_images(&json!({"images":[{"type":"image","attachment":{}}]})).is_err()
+        );
+        assert!(
+            render_generated_images(&json!({"images":[{"type":"text","text":"not an image"}]}))
+                .is_err()
+        );
+    }
+
     #[test]
     fn image_stream_is_incremental_deduplicated_and_stops_at_completion() {
         let item = json!({"type":"image_generation_call","id":"ig-1","status":"completed","result":"aW1hZ2U="});

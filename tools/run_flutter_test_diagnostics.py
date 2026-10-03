@@ -10,6 +10,7 @@ import sys
 
 ANNOTATION_CHARS = 4000
 MAX_FAILURE_ANNOTATIONS = 20
+PRINT_CONTEXT_CHARS = 8000
 
 
 def escape_annotation(value: str) -> str:
@@ -20,6 +21,7 @@ class Failures:
     def __init__(self) -> None:
         self.names: dict[int, str] = {}
         self.errors: dict[int | None, list[str]] = {}
+        self.prints: dict[int | None, str] = {}
         self.failed: dict[int | None, None] = {}
 
     def consume(self, line: str) -> None:
@@ -34,6 +36,13 @@ class Failures:
             test = event.get("test")
             if isinstance(test, dict) and isinstance(test.get("id"), int):
                 self.names[test["id"]] = str(test.get("name", "unnamed Flutter test"))
+        elif kind == "print":
+            test_id = event.get("testID")
+            if not isinstance(test_id, int):
+                test_id = None
+            message = str(event.get("message", ""))
+            if message:
+                self.prints[test_id] = (self.prints.get(test_id, "") + message + "\n")[-PRINT_CONTEXT_CHARS:]
         elif kind == "error":
             test_id = event.get("testID")
             if not isinstance(test_id, int):
@@ -64,7 +73,13 @@ class Failures:
         for test_id in list(self.failed)[:MAX_FAILURE_ANNOTATIONS]:
             name = self.names.get(test_id, f"Flutter test ID {test_id}" if test_id is not None else "Flutter test runner")
             detail = "\n".join(self.errors.get(test_id, ["The machine reporter marked this test as failed."]))
-            message = (name + "\n" + detail)[:ANNOTATION_CHARS]
+            context = self.prints.get(test_id, "")
+            # Flutter puts the real assertion, including golden pixel differences,
+            # in print events; its error event often only says to read those logs.
+            marker = context.rfind("EXCEPTION CAUGHT BY")
+            if marker >= 0:
+                context = context[marker:]
+            message = (name + "\n" + (context + "\n" if context else "") + detail)[:ANNOTATION_CHARS]
             print("::error title=Flutter test failure::" + escape_annotation(message), flush=True)
         remaining = len(self.failed) - MAX_FAILURE_ANNOTATIONS
         if remaining > 0:

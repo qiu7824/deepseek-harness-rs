@@ -12,6 +12,27 @@ import run_flutter_test_diagnostics as diagnostics
 
 
 class FlutterTestDiagnosticsTests(unittest.TestCase):
+    def test_flutter_assertion_prints_are_attached_only_to_their_failed_test(self):
+        failures = diagnostics.Failures()
+        failures.consume(json.dumps({"type": "testStart", "test": {"id": 7, "name": "semantic icon matrix light at 1.0"}}))
+        failures.consume(json.dumps({"type": "print", "testID": 7, "message": "x" * 10000}))
+        failures.consume(json.dumps({"type": "print", "testID": 7, "message": "══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞══\nGolden failed: 0.01% of pixels differ\nActual image: icons_light_1.0x.png"}))
+        failures.consume(json.dumps({"type": "error", "testID": 7, "error": "Test failed. See exception logs above."}))
+        failures.consume(json.dumps({"type": "testDone", "testID": 7, "result": "failure"}))
+        for test_id in range(8, 1008):
+            failures.consume(json.dumps({"type": "print", "testID": test_id, "message": "unrelated later passing output"}))
+            failures.consume(json.dumps({"type": "testDone", "testID": test_id, "result": "success"}))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            failures.annotate(1)
+        self.assertIn("semantic icon matrix light at 1.0%0AEXCEPTION CAUGHT BY", output.getvalue())
+        self.assertIn("Golden failed: 0.01%25 of pixels differ", output.getvalue())
+        self.assertIn("Actual image: icons_light_1.0x.png", output.getvalue())
+        self.assertIn("Test failed. See exception logs above.", output.getvalue())
+        self.assertNotIn("unrelated later passing output", output.getvalue())
+        self.assertNotIn("x" * 100, output.getvalue())
+        self.assertLessEqual(len(failures.prints[7]), diagnostics.PRINT_CONTEXT_CHARS)
+
     def test_early_errors_survive_many_later_passing_events_and_escape_annotations(self):
         failures = diagnostics.Failures()
         failures.consume(json.dumps({"type": "testStart", "test": {"id": 4, "name": "图片 100%\r\n失败"}}))

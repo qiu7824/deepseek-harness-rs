@@ -258,53 +258,60 @@ jobs:
           DSH_E2E_FAILED=0
           trap 'DSH_E2E_FAILED=1' ERR
           set +e
+          DSH_E2E_INDEX=0
+          e2e() {
+            DSH_E2E_INDEX=$((DSH_E2E_INDEX + 1))
+            local script="${1##*/}"
+            script="${script%.py}"
+            python tools/run_release_regression.py --log "$RUNNER_TEMP/dsh-e2e-logs/$DSH_E2E_INDEX-$script.log" -- python "$@"
+          }
           STAGE="dist/${{ steps.release.outputs.prefix }}-core"
           HOST="$STAGE/deepseek-harness-rs"
           [[ "${{ matrix.platform }}" == "windows" ]] && HOST="$HOST.exe"
-          python tools/e2e_computer_js.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-computer-js"
+          e2e tools/e2e_computer_js.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-computer-js"
           if [[ "${{ matrix.platform }}" == "windows" ]]; then
-            python tools/e2e_portable_windows.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-portable-windows"
+            e2e tools/e2e_portable_windows.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-portable-windows"
           fi
-          python tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE" --relocate --migrate-home
-          python tools/e2e_model_management.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-model-management"
-          python tools/e2e_queue_references.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-queue-references"
-          python tools/e2e_headless_tools.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-headless-tools"
-          python tools/e2e_devin.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-devin-native"
-          python tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-generation"
-          python tools/e2e_productivity.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-productivity" --check-auto
+          e2e tools/e2e_settings_model_preserves_data.py --binary "$HOST" --repo "$STAGE" --relocate --migrate-home
+          e2e tools/e2e_model_management.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-model-management"
+          e2e tools/e2e_queue_references.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-queue-references"
+          e2e tools/e2e_headless_tools.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-headless-tools"
+          e2e tools/e2e_devin.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-devin-native"
+          e2e tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-generation"
+          e2e tools/e2e_productivity.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-productivity" --check-auto
           for assignment in none provider model; do
-            python tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-$assignment" --assignment "$assignment"
+            e2e tools/e2e_image_generation.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-image-$assignment" --assignment "$assignment"
           done
-          python tools/e2e_learning_loop.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-learning-loop"
-          python tools/e2e_approval_interactions.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-approval-interactions"
-          python tools/e2e_skill_injection.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-skill-injection"
-          python tools/e2e_subagent_progress.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-subagent-progress" --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules"
-          python tools/e2e_file_upload.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-file-upload"
-          python tools/e2e_agent_team.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-agent-team"
-          python tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights"
-          python tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights-no-node" --without-node
-          python tools/e2e_sidebar_git_terminal.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-sidebar-git-terminal" --without-node
-          python tools/e2e_workspace_resources.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-resources"
-          python tools/e2e_workspace_device_settings.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-device-settings"
-          python tools/e2e_workspace_sources.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-sources"
+          e2e tools/e2e_learning_loop.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-learning-loop"
+          e2e tools/e2e_approval_interactions.py --binary "$HOST" --repo . --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules" --workdir "$RUNNER_TEMP/dsh-approval-interactions"
+          e2e tools/e2e_skill_injection.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-skill-injection"
+          e2e tools/e2e_subagent_progress.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-subagent-progress" --node-modules "$RUNNER_TEMP/dsh-dom-tests/node_modules"
+          e2e tools/e2e_file_upload.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-file-upload"
+          e2e tools/e2e_agent_team.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-agent-team"
+          e2e tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights"
+          e2e tools/e2e_workspace_insights.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-insights-no-node" --without-node
+          e2e tools/e2e_sidebar_git_terminal.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-sidebar-git-terminal" --without-node
+          e2e tools/e2e_workspace_resources.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-resources"
+          e2e tools/e2e_workspace_device_settings.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-device-settings"
+          e2e tools/e2e_workspace_sources.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-sources"
           python -m pip install --target "$RUNNER_TEMP/dsh-ssh-deps" paramiko==4.0.0
-          PYTHONPATH="$RUNNER_TEMP/dsh-ssh-deps" python tools/e2e_workspace_ssh.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-ssh"
-          python tools/e2e_package_variant.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-package-variant" --variant core
+          PYTHONPATH="$RUNNER_TEMP/dsh-ssh-deps" e2e tools/e2e_workspace_ssh.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-workspace-ssh"
+          e2e tools/e2e_package_variant.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-package-variant" --variant core
           if [[ "${{ matrix.platform }}" == "windows" ]]; then
-            python tools/e2e_computer_use.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-computer-use"
-            python tools/e2e_scratch_context.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-scratch-context"
+            e2e tools/e2e_computer_use.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-computer-use"
+            e2e tools/e2e_scratch_context.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-scratch-context"
           fi
-          python tools/e2e_session_resume.py --binary "$HOST" --repo "$STAGE"
-          python tools/e2e_session_workspace_resume.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-session-workspace-resume"
-          python tools/e2e_schedule.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-schedule"
-          python tools/e2e_knowledge.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-knowledge"
-          python tools/e2e_credentials_compat.py --binary "$HOST"
-          python tools/e2e_all_interfaces.py --binary "$HOST"
+          e2e tools/e2e_session_resume.py --binary "$HOST" --repo "$STAGE"
+          e2e tools/e2e_session_workspace_resume.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-session-workspace-resume"
+          e2e tools/e2e_schedule.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-schedule"
+          e2e tools/e2e_knowledge.py --binary "$HOST" --workdir "$RUNNER_TEMP/dsh-knowledge"
+          e2e tools/e2e_credentials_compat.py --binary "$HOST"
+          e2e tools/e2e_all_interfaces.py --binary "$HOST"
           for capability in explicit unknown text-only; do
-            python tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --model-capability "$capability"
+            e2e tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --model-capability "$capability"
           done
           for image in animated-png animated-gif animated-webp; do
-            python tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --image-kind "$image"
+            e2e tools/e2e_image_capability.py --binary "$HOST" --repo "$STAGE" --image-kind "$image"
           done
           exit "$DSH_E2E_FAILED"
       - name: 准备固定 Flutter SDK
@@ -330,13 +337,13 @@ jobs:
         run: |
           flutter config --no-analytics
           flutter --version
-          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && dart test)
+          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- dart test)
           cd apps/desktop_flutter
           flutter pub get --enforce-lockfile
-          flutter analyze
-          flutter test
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- flutter analyze
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- flutter test --machine
           VERSION="${{ steps.release.outputs.version }}"
-          flutter build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- flutter build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
       - name: 组装并核验 Flutter 完整包
         if: ${{ !cancelled() && steps.flutter_build.outcome == 'success' }}
         timeout-minutes: 10

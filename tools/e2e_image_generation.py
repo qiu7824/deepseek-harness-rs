@@ -25,6 +25,36 @@ def fixture_user_index(messages):
             return index
     raise AssertionError('missing explicit image fixture user request')
 
+def image_tool_results(messages):
+    """Only image-operation results complete a round; discovery loads schemas."""
+    return [message for message in messages if message.get('role') == 'tool'
+            and message.get('tool_call_id', '').startswith('image-call-')]
+
+def previous_generated_images(messages):
+    """The provider wire may append image descriptions after the result JSON."""
+    images = []
+    decoder = json.JSONDecoder()
+    for message in image_tool_results(messages):
+        content = message.get('content')
+        if not isinstance(content, str):
+            continue
+        try:
+            value, _ = decoder.raw_decode(content.lstrip())
+        except ValueError:
+            continue
+        if not isinstance(value, dict) or 'images' not in value:
+            continue
+        previous = value['images']
+        assert isinstance(previous, list), 'image result must contain an images array'
+        for image in previous:
+            assert isinstance(image, dict) and image.get('type') == 'image', 'image result must contain image blocks'
+            attachment = image.get('attachment')
+            assert isinstance(attachment, dict), 'image result must contain an attachment'
+            assert isinstance(attachment.get('attachmentId'), str) and attachment['attachmentId'], 'image result must contain an attachment ID'
+            assert isinstance(attachment.get('name'), str) and attachment['name'], 'image result must contain an attachment name'
+        images.extend(previous)
+    return images
+
 class Provider(BaseHTTPRequestHandler):
     calls=[]
     image_delay=0
@@ -62,20 +92,21 @@ class Provider(BaseHTTPRequestHandler):
             # Image rendering metadata must not send unsupported images to a text-only main model.
             assert not any(isinstance(m.get('content'),list) and any(c.get('type')=='image_url' for c in m['content']) for m in messages)
             user=fixture_user_index(messages) if body.get('tools') else max(i for i,m in enumerate(messages) if m['role']=='user')
-            prompt=str(messages[user]['content']);results=[m for m in messages[user+1:] if m['role']=='tool']
+            prompt=str(messages[user]['content']);results=image_tool_results(messages[user+1:])
             if not body.get('tools'):delta={'content':'Fixture title'};finish='stop'
             elif results:delta={'content':'IMAGE_FIXTURE_DONE'};finish='stop'
             else:
-                previous=[]
-                for m in messages:
-                    if m['role']=='tool':
-                        try:
-                            v=json.loads(m['content']);previous.extend(v.get('images',[]))
-                        except (ValueError,TypeError):pass
+                previous=previous_generated_images(messages)
                 name='generate_image';args={'prompt':'fixture scene','n':2}
                 if 'vision-fixture' in prompt:name='consult_model';args={'task':'vision','prompt':'inspect the generated image','reference_images':[previous[-1]['attachment']['attachmentId']]}
                 elif previous:args={'prompt':prompt,'reference_images':[v['attachment']['name'] for v in previous[-2:]],'mask':previous[0]['attachment']['attachmentId']}
-                delta={'tool_calls':[{'index':0,'id':'image-'+uuid.uuid4().hex,'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]};finish='tool_calls'
+                tools={tool.get('function',{}).get('name') for tool in body.get('tools',[])}
+                prefix='image-call-'
+                if name not in tools:
+                    assert 'tool_describe' in tools, 'image tools must be reachable through discovery'
+                    assert not any(message.get('role')=='tool' and message.get('tool_call_id','').startswith('image-discovery-') for message in messages[user+1:]), f'discovery did not expose the requested {name} tool'
+                    name,args,prefix='tool_describe',{'names':[name]},'image-discovery-'
+                delta={'tool_calls':[{'index':0,'id':prefix+uuid.uuid4().hex,'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]};finish='tool_calls'
         events=[{'choices':[{'index':0,'delta':delta,'finish_reason':None}]},{'choices':[{'index':0,'delta':{},'finish_reason':finish}],'usage':{'prompt_tokens':10,'completion_tokens':5}}]
         self.reply((''.join('data: '+json.dumps(v)+'\n\n' for v in events)+'data: [DONE]\n\n').encode(),'text/event-stream')
 
@@ -86,7 +117,7 @@ def main():
     home=work/'home';env=isolated_environment(work,home);env['IMAGE_FIXTURE_KEY']='fixture-image-key'
     server=ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=server.serve_forever,daemon=True).start()
     base=f'http://127.0.0.1:{server.server_port}/v1'
-    settings={'llm-pi-ai':{'providers':{'text-fixture':{'keyless':True,'api':'openai-completions','baseURL':base,'models':[{'id':'text-fixture','contextWindow':131072,'maxTokens':4096}]},'image-fixture':{'api':'openai-completions','apiKeyEnv':'IMAGE_FIXTURE_KEY','baseURL':base,'models':[{'id':'gpt-image-2.5-sunburst'}]},'vision-fixture':{'keyless':True,'api':'openai-completions','baseURL':base,'models':[{'id':'vision-fixture','imageInput':True,'contextWindow':131072,'maxTokens':8192}]}}},'agent-default-model':{'provider':'text-fixture','model':'text-fixture'},'task-models':{'image':{'provider':'image-fixture','model':'gpt-image-2.5-sunburst'},'vision':{'provider':'vision-fixture','model':'vision-fixture'}}}
+    settings={'llm-pi-ai':{'providers':{'text-fixture':{'keyless':True,'api':'openai-completions','baseURL':base,'models':[{'id':'text-fixture','input':['text'],'contextWindow':131072,'maxTokens':4096}]},'image-fixture':{'api':'openai-completions','apiKeyEnv':'IMAGE_FIXTURE_KEY','baseURL':base,'models':[{'id':'gpt-image-2.5-sunburst'}]},'vision-fixture':{'keyless':True,'api':'openai-completions','baseURL':base,'models':[{'id':'vision-fixture','input':['text','image'],'contextWindow':131072,'maxTokens':8192}]}}},'agent-default-model':{'provider':'text-fixture','model':'text-fixture'},'task-models':{'image':{'provider':'image-fixture','model':'gpt-image-2.5-sunburst'},'vision':{'provider':'vision-fixture','model':'vision-fixture'}}}
     if args.assignment in ['none','model']:
         settings['llm-pi-ai']['providers']['text-fixture'].pop('keyless')
         settings['llm-pi-ai']['providers']['text-fixture']['apiKeyEnv']='IMAGE_FIXTURE_KEY'

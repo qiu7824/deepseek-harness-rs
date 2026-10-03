@@ -27,6 +27,7 @@ class ModelFixture(BaseHTTPRequestHandler):
     """OpenAI-compatible fixture: answers a chat scheduling request with scheduled_task_create."""
 
     requests: list[dict[str, object]] = []
+    discovery_calls = 0
 
     def log_message(self, *_args):
         pass
@@ -48,10 +49,20 @@ class ModelFixture(BaseHTTPRequestHandler):
         tools = [tool.get("function", {}).get("name") for tool in request.get("tools", [])]
         ModelFixture.requests.append({"tools": tools})
         asked = next((index for index, message in enumerate(messages) if message.get("role") == "user" and CHAT_REQUEST in json.dumps(message, ensure_ascii=False)), None)
-        answered = asked is not None and any(message.get("role") == "tool" for message in messages[asked + 1:])
-        if asked is not None and not answered and "scheduled_task_create" in tools:
-            arguments = {"title": "对话创建的待办任务", "prompt": "整理今天的待办并生成清单", "daily": {"time": "08:15", "time_zone": "Asia/Shanghai"}}
-            delta = {"role": "assistant", "tool_calls": [{"index": 0, "id": "call-" + uuid.uuid4().hex, "type": "function", "function": {"name": "scheduled_task_create", "arguments": json.dumps(arguments, ensure_ascii=False)}}]}
+        replies = messages[asked + 1:] if asked is not None else []
+        answered = any(message.get("role") == "tool" and message.get("tool_call_id", "").startswith("schedule-create-") for message in replies)
+        # Tool-free summary requests may contain the chat text without its tool replies.
+        if asked is not None and not answered and tools:
+            if "scheduled_task_create" in tools:
+                name, prefix = "scheduled_task_create", "schedule-create-"
+                arguments = {"title": "对话创建的待办任务", "prompt": "整理今天的待办并生成清单", "daily": {"time": "08:15", "time_zone": "Asia/Shanghai"}}
+            else:
+                assert "tool_describe" in tools, "scheduled tasks must be reachable through discovery"
+                assert not any(message.get("role") == "tool" and message.get("tool_call_id", "").startswith("schedule-discovery-") for message in replies), "discovery did not expose the scheduled task tools"
+                name, prefix = "tool_describe", "schedule-discovery-"
+                arguments = {"names": ["scheduled_task_create", "scheduled_task_list", "scheduled_task_delete"]}
+                ModelFixture.discovery_calls += 1
+            delta = {"role": "assistant", "tool_calls": [{"index": 0, "id": prefix + uuid.uuid4().hex, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}]}
             finish = "tool_calls"
         else:
             delta = {"role": "assistant", "content": "已安排。"}
@@ -164,7 +175,7 @@ def main() -> int:
                     task = created[0]
                     assert task["title"] == "对话创建的待办任务" and task["rule"] == {"kind": "daily", "time": "08:15", "timeZone": "Asia/Shanghai"}, task
                     state["chatTask"] = task["id"]
-                    evidence["chat"] = {"taskId": task["id"], "toolsOffered": sorted(name for name in offered if name.startswith("scheduled_task_"))}
+                    evidence["chat"] = {"taskId": task["id"], "toolsOffered": sorted(name for name in offered if name.startswith("scheduled_task_")), "discoveryCalls": ModelFixture.discovery_calls}
                     evidence["delivery"] = {"messageId": receipt["messageId"], "occurrenceAt": receipt["occurrenceAt"]}
                 else:
                     stored = json.loads((home / "schedule.json").read_text(encoding="utf-8"))

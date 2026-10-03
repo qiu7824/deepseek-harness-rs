@@ -1,4 +1,4 @@
-name: ARM Flutter 回归诊断
+name: Flutter 回归诊断
 
 on:
   push:
@@ -6,12 +6,93 @@ on:
     paths:
       - .github/workflows/flutter-regressions.yml
       - tools/run_flutter_test_diagnostics.py
+      - tools/publish_flutter_golden_evidence.py
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  golden:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows
+            arch: x86_64
+          - os: macos-15-intel
+            platform: macos
+            arch: x86_64
+          - os: macos-14
+            platform: macos
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 隔离并规范测试临时目录
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
+          root.mkdir(parents=True, exist_ok=True)
+          root = root.resolve(strict=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
+                  stream.write(f'{key}={root}\n')
+          PY
+      - name: 固定测试 Node 运行时
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python tools/stage_node_runtime.py --stage "$RUNNER_TEMP/dsh-test-runtime" --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --cache "$RUNNER_TEMP/dsh-node-cache"
+          echo "$RUNNER_TEMP/dsh-test-runtime/runtime/node" >> "$GITHUB_PATH"
+      - name: 准备固定 Flutter SDK
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          SDK="$RUNNER_TEMP/flutter-sdk"
+          git init "$SDK"
+          git -C "$SDK" remote add origin https://github.com/flutter/flutter.git
+          git -C "$SDK" fetch --depth 1 origin refs/tags/3.47.5:refs/tags/3.47.5
+          test "$(git -C "$SDK" rev-parse '3.47.5^{commit}')" = 6a19cca56475dbfba1478ee68d7bd0c2ef891da1
+          git -C "$SDK" checkout --detach 3.47.5
+          python tools/prepare_flutter_sdk.py --sdk "$SDK" --backup-dir "$RUNNER_TEMP/flutter-sdk-backup"
+          echo "$SDK/bin" >> "$GITHUB_PATH"
+          echo "PUB_CACHE=$RUNNER_TEMP/flutter-pub-cache" >> "$GITHUB_ENV"
+      - name: 锁定客户端测试依赖
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          flutter config --no-analytics
+          flutter --version
+          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile)
+          cd apps/desktop_flutter
+          flutter pub get --enforce-lockfile
+      - name: 四个严格图标金图与失败诊断
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-golden-machine.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- flutter test test/design_icon_golden_test.dart --machine
+      - name: 发布独立的合成图标差异证据
+        if: always()
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python tools/publish_flutter_golden_evidence.py --repo "$GITHUB_WORKSPACE" --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --source "$GITHUB_SHA" --publish
+      - name: 保存图标金图诊断日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: flutter-golden-logs-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/flutter-golden-machine.log
+          if-no-files-found: warn
   build:
     runs-on: macos-14
     timeout-minutes: 75

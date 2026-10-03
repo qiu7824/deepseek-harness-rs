@@ -90,6 +90,171 @@ fn image(index: usize, bytes: u64) -> dsh_llm::ContentBlock {
     }
 }
 
+fn image_connection(image_input: Option<bool>) -> ResolvedDeepSeekOptions {
+    resolve_adapter_options(&DeepSeekConfig {
+        models: Some(vec![
+            serde_json::from_value(serde_json::json!({
+                "id":"fixture","imageInput":image_input
+            }))
+            .unwrap(),
+        ]),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+fn tool_result(id: &str, content: Vec<dsh_llm::ContentBlock>) -> dsh_llm::Message {
+    dsh_llm::create_tool_result_message(dsh_llm::ToolResultMessageInput {
+        call_id: dsh_llm::call_id(id),
+        content,
+        is_error: false,
+    })
+}
+
+#[test]
+fn text_only_tool_projection_preserves_owned_text_and_original_image_authority() {
+    let original = tool_result(
+        "generated",
+        vec![
+            dsh_llm::ContentBlock::Text {
+                text: "x".repeat(1024 * 1024),
+            },
+            image(0, 80),
+        ],
+    );
+    let mut options = request(vec![]);
+    options.messages = vec![original.clone()];
+    let address = text_address(&options);
+    let projected = project_text_only_images(options, &image_connection(Some(false)));
+    assert_eq!(
+        text_address(&projected),
+        address,
+        "projection copied the tool's owned text"
+    );
+    assert_eq!(projected.messages[0].id, original.id);
+    assert_eq!(projected.messages[0].source, original.source);
+    assert_eq!(projected.messages[0].tool_call_id, original.tool_call_id);
+    assert_eq!(projected.messages[0].is_error, original.is_error);
+    assert!(matches!(
+        &original.content[1],
+        dsh_llm::ContentBlock::Image {
+            offloaded: None,
+            ..
+        }
+    ));
+    let wire = serialize::serialize_request_with_prepared_images(
+        &projected,
+        &RequestDefaults::default(),
+        ReasoningWireFormat::OpenAi,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(
+        wire["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("image-0 is unavailable to text-only model fixture")
+    );
+    assert_eq!(wire["messages"][0]["tool_call_id"], "generated");
+    assert!(request_image_attachments(&projected).is_empty());
+    project_estimated_request(projected).unwrap();
+}
+
+#[test]
+fn image_projection_respects_capability_without_mutating_original_user_content() {
+    let mut options = request(vec![image(0, 80)]);
+    options
+        .messages
+        .push(tool_result("generated", vec![image(1, 80)]));
+    for capability in [None, Some(true)] {
+        let projected = project_text_only_images(options.clone(), &image_connection(capability));
+        assert_eq!(projected.messages, options.messages);
+        assert_eq!(request_image_attachments(&projected).len(), 2);
+    }
+    let projected = project_text_only_images(options.clone(), &image_connection(Some(false)));
+    assert!(matches!(
+        options.messages[0].content[0],
+        dsh_llm::ContentBlock::Image {
+            offloaded: None,
+            ..
+        }
+    ));
+    assert!(matches!(
+        projected.messages[0].content[0],
+        dsh_llm::ContentBlock::Text { .. }
+    ));
+    assert_eq!(request_image_attachments(&projected).len(), 0);
+    assert!(matches!(
+        projected.messages[1].content[0],
+        dsh_llm::ContentBlock::Text { .. }
+    ));
+    let mut unrelated = image_connection(Some(false));
+    unrelated.models[0].id = "different-model".into();
+    assert_eq!(
+        project_text_only_images(options.clone(), &unrelated).messages,
+        options.messages
+    );
+}
+
+#[test]
+fn tool_projection_preserves_native_screenshots_and_durable_omissions() {
+    let native_call = dsh_llm::ContentBlock::ToolCall {
+        id: dsh_llm::call_id("native"),
+        name: dsh_llm::computer_protocol::TOOL_NAME.into(),
+        arguments: "{}".into(),
+    };
+    let mut omitted = image(2, 80);
+    if let dsh_llm::ContentBlock::Image { offloaded, .. } = &mut omitted {
+        *offloaded = Some(true);
+    }
+    let mut options = request(vec![]);
+    options.messages = vec![
+        dsh_llm::create_assistant_message(
+            vec![native_call],
+            dsh_llm::ModelMessageSource {
+                provider: "fixture".into(),
+                model: "fixture".into(),
+                replay_state: None,
+            },
+        ),
+        tool_result("native", vec![image(0, 80)]),
+        tool_result("ordinary", vec![omitted]),
+        dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::ToolResult {
+                tool_call_id: dsh_llm::call_id("native"),
+                content: vec![image(3, 80)],
+                is_error: Some(false),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
+        ),
+        dsh_llm::create_user_message(
+            vec![dsh_llm::ContentBlock::ToolResult {
+                tool_call_id: dsh_llm::call_id("legacy"),
+                content: vec![image(1, 80)],
+                is_error: Some(false),
+            }],
+            dsh_llm::MessageSource::User {
+                rpc_id: None,
+                client_time_zone: None,
+            },
+        ),
+    ];
+    let original = options.messages.clone();
+    let projected = project_text_only_images(options, &image_connection(Some(false)));
+    assert_eq!(projected.messages[..4], original[..4]);
+    assert_eq!(projected.messages[4].id, original[4].id);
+    let (id, content, error) = projected.messages[4].as_tool_result().unwrap();
+    assert_eq!(id.as_str(), "legacy");
+    assert_eq!(error, Some(false));
+    assert!(matches!(content[0], dsh_llm::ContentBlock::Text { .. }));
+    assert_eq!(request_image_attachments(&projected).len(), 2);
+}
+
 #[test]
 fn owned_estimation_still_requires_durable_offload_before_a_session_request() {
     let options = request(

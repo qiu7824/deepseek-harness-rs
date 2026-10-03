@@ -46,7 +46,20 @@ class _ToolMessageState extends State<ToolMessage> {
     try {
       return const JsonEncoder.withIndent('  ').convert(jsonDecode(text));
     } on FormatException {
-      return text;
+      final newline = text.indexOf('\n');
+      if (newline < 0) return text;
+      final suffix = text.substring(newline);
+      final captions = suffix.split('\n').where((line) => line.isNotEmpty);
+      final imageCaption = RegExp(r'^\[图片：[^\r\n]*\]$');
+      if (captions.isEmpty || !captions.every(imageCaption.hasMatch)) {
+        return text;
+      }
+      try {
+        final value = jsonDecode(text.substring(0, newline));
+        return '${const JsonEncoder.withIndent('  ').convert(value)}$suffix';
+      } on FormatException {
+        return text;
+      }
     }
   }
 
