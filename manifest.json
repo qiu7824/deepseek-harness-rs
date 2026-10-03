@@ -1,0 +1,92 @@
+{
+  "sourceRevision": "833f9ce8030ea55d154e8aac60d3794aefb53c8d",
+  "flutterVersion": "3.47.5",
+  "flutterRevision": "6a19cca56475dbfba1478ee68d7bd0c2ef891da1",
+  "platform": "macos",
+  "arch": "aarch64",
+  "runId": "37154602872",
+  "runAttempt": "1",
+  "test": "apps/desktop_flutter/test/design_icon_golden_test.dart",
+  "files": {
+    "baselines/icons_dark_1.0x.png": {
+      "bytes": 142377,
+      "sha256": "319ebb7a7a823e0d1767242f18e0ee417a90ac0fc61da12f76887a8a43e5c5a6"
+    },
+    "baselines/icons_dark_1.5x.png": {
+      "bytes": 225140,
+      "sha256": "8a82dbece5a398322147fcb7f8cef93520d136f875e8c4d22c7aa878f5640164"
+    },
+    "baselines/icons_light_1.0x.png": {
+      "bytes": 138707,
+      "sha256": "3b1a7f1c33ca25087320079d64f318f921a113dc8ed45274f98967c37fae5b4b"
+    },
+    "baselines/icons_light_1.5x.png": {
+      "bytes": 222054,
+      "sha256": "4cc58df03bffdd3fab956bc2db4287a99d419d88957747fe202844e0242007ec"
+    },
+    "failures/icons_dark_1.0x_isolatedDiff.png": {
+      "bytes": 3184,
+      "sha256": "6123193c0e8b62c3b851519bae8629954fece48a656c68ccdf8113ea8dd8ffe0"
+    },
+    "failures/icons_dark_1.0x_maskedDiff.png": {
+      "bytes": 142434,
+      "sha256": "56f31e8dd203a67a2d19239f5f5c3ec4358858588d1506504a8f5766c7f69170"
+    },
+    "failures/icons_dark_1.0x_masterImage.png": {
+      "bytes": 142377,
+      "sha256": "319ebb7a7a823e0d1767242f18e0ee417a90ac0fc61da12f76887a8a43e5c5a6"
+    },
+    "failures/icons_dark_1.0x_testImage.png": {
+      "bytes": 142387,
+      "sha256": "8da701d91d3ca65e90a76729b3df8f3510c8df51edb3fc3f919a64c116d9bb39"
+    },
+    "failures/icons_dark_1.5x_isolatedDiff.png": {
+      "bytes": 6276,
+      "sha256": "368db60126ac0befe8c9f1883d3cbede2e76053b9b76ebf066b976687673aa52"
+    },
+    "failures/icons_dark_1.5x_maskedDiff.png": {
+      "bytes": 225468,
+      "sha256": "d98b3d2f951734022f8cf40b9c21e6f3609f101699dcead9fd635eaf60b20111"
+    },
+    "failures/icons_dark_1.5x_masterImage.png": {
+      "bytes": 225140,
+      "sha256": "8a82dbece5a398322147fcb7f8cef93520d136f875e8c4d22c7aa878f5640164"
+    },
+    "failures/icons_dark_1.5x_testImage.png": {
+      "bytes": 225135,
+      "sha256": "49bff9baf7b88a06999ea56d59d6c6d1142ed115fb2c9e9a793e0ec5956884e4"
+    },
+    "failures/icons_light_1.0x_isolatedDiff.png": {
+      "bytes": 2430,
+      "sha256": "c4d90b8b7f1c5b826b5d3363820f15c675cbdbd850c80eee9d457e4f63587b30"
+    },
+    "failures/icons_light_1.0x_maskedDiff.png": {
+      "bytes": 138749,
+      "sha256": "1d204dbfbed2b63c1becb01b01654c87290110f0705c1ba04a0b6b5b8dc8436e"
+    },
+    "failures/icons_light_1.0x_masterImage.png": {
+      "bytes": 138707,
+      "sha256": "3b1a7f1c33ca25087320079d64f318f921a113dc8ed45274f98967c37fae5b4b"
+    },
+    "failures/icons_light_1.0x_testImage.png": {
+      "bytes": 138703,
+      "sha256": "8bcd440b31259042f9ead78ccb677c13307223e8d97766ba93da031e2eae4920"
+    },
+    "failures/icons_light_1.5x_isolatedDiff.png": {
+      "bytes": 5271,
+      "sha256": "a329e4fed801c2926181181b5a71ee09aca6df902834132f289fdc86f87dffcd"
+    },
+    "failures/icons_light_1.5x_maskedDiff.png": {
+      "bytes": 222167,
+      "sha256": "b06c18300f38af4a2a8a17ad2fa07f401411c0c4281cb0476d04d8decd94c10b"
+    },
+    "failures/icons_light_1.5x_masterImage.png": {
+      "bytes": 222054,
+      "sha256": "4cc58df03bffdd3fab956bc2db4287a99d419d88957747fe202844e0242007ec"
+    },
+    "failures/icons_light_1.5x_testImage.png": {
+      "bytes": 222066,
+      "sha256": "c996b3f71c757b0aac9a0076fcd7deff98d8334c035130d363ad9700c078fff1"
+    }
+  }
+}
