@@ -10,6 +10,10 @@ abstract final class DshConversationZh {
   static const conversation = '会话';
   static const trajectory = '轨迹';
   static const artifacts = '产物';
+  static const sessionArtifacts = '本会话产物';
+  static const viewInArtifacts = '在产物中查看';
+  static const collapseArtifacts = '收起';
+  static String moreArtifacts({required int count}) => '展开其余 $count 个';
   static const projectTasks = '项目任务';
   static const codeGraph = '代码图谱';
   static const context = '上下文';

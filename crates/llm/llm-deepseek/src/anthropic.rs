@@ -189,7 +189,7 @@ pub(crate) fn request_from_chat(chat: &Value) -> Result<Value, LlmFailure> {
         .and_then(Value::as_array)
         .filter(|t| !t.is_empty())
     {
-        body["tools"]=Value::Array(tools.iter().map(|tool|{let f=&tool["function"];json!({"name":f["name"],"description":f["description"],"input_schema":f["parameters"]})}).collect());
+        body["tools"]=Value::Array(tools.iter().map(|tool|{let f=&tool["function"];json!({"name":f["name"],"description":f["description"],"input_schema":crate::tool_schema::object_root(&f["parameters"])})}).collect());
     }
     if let Some(stop) = chat.get("stop") {
         body["stop_sequences"] = if stop.is_string() {

@@ -379,7 +379,12 @@ pub(crate) fn chat_request(
                 .ok_or("Devin tool name missing")?,
         );
         tool.text(2, definition["description"].as_str().unwrap_or(""));
-        tool.text(3, &definition["parameters"].to_string());
+        // Devin forwards tools to Claude and other providers that reject a
+        // combinator at the schema root; local validation keeps the original.
+        tool.text(
+            3,
+            &super::tool_schema::object_root(&definition["parameters"]).to_string(),
+        );
         request.bytes(10, &tool.0);
     }
     if request.0.len() > 64 * 1024 * 1024 {

@@ -133,7 +133,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     await tester.tap(
-      find.text(r'C:\产物\报告.pdf'),
+      find.byKey(ValueKey('artifact-row-${r'\\?\C:\产物\报告.pdf'}')),
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();

@@ -352,7 +352,7 @@ pub(crate) fn serialize(
         body["stop_sequences"] = json!(value);
     }
     if let Some(tools) = &options.tools {
-        body["tools"] = json!(tools.iter().map(|tool| json!({"name":tool.name,"description":tool.description,"input_schema":tool.parameters})).collect::<Vec<_>>());
+        body["tools"] = json!(tools.iter().map(|tool| json!({"name":tool.name,"description":tool.description,"input_schema":crate::tool_schema::object_root(&tool.parameters)})).collect::<Vec<_>>());
     }
     Ok(body)
 }

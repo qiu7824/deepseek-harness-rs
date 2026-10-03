@@ -309,15 +309,29 @@ pub(crate) async fn request(
                 let trailer: Value = serde_json::from_slice(&payload)
                     .map_err(|_| failure("Invalid Devin stream trailer", "MALFORMED_RESPONSE"))?;
                 if let Some(error) = trailer.get("error").filter(|e| !e.is_null()) {
-                    let status = match error["code"].as_str() {
+                    let code = error["code"].as_str();
+                    let status = match code {
                         Some("unauthenticated") => 401,
                         Some("permission_denied") => 403,
                         Some("resource_exhausted") => 429,
                         _ => 400,
                     };
+                    // Devin describes rejected arguments with the same text as
+                    // an unavailable model; the Connect code tells them apart.
+                    let annotated = match code {
+                        Some(code @ ("invalid_argument" | "failed_precondition")) => {
+                            let message = error["message"]
+                                .as_str()
+                                .unwrap_or("Devin service request failed");
+                            json!({"error":{"message":format!("{message} [{code}]")}})
+                                .to_string()
+                                .into_bytes()
+                        }
+                        _ => payload.to_vec(),
+                    };
                     return Err(safe_error(
                         reqwest::StatusCode::from_u16(status).unwrap(),
-                        &payload,
+                        &annotated,
                         &[token, jwt],
                     ));
                 }

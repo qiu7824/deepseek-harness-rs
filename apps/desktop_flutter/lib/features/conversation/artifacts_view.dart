@@ -230,29 +230,15 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
   );
 }
 
-class ArtifactsView extends StatefulWidget {
-  const ArtifactsView({super.key, required this.api, required this.session});
-  final DshClient api;
-  final String session;
-  @override
-  State<ArtifactsView> createState() => _ArtifactsViewState();
-}
+/// Preview, save and file actions for a session's changed files.
+mixin _ArtifactActions<T extends StatefulWidget> on _PollingState<T> {
+  String get session;
 
-class _ArtifactsViewState extends _PollingState<ArtifactsView> {
-  bool garbage = false;
-  @override
-  DshClient get api => widget.api;
-  @override
-  String get operation => 'list';
-  @override
-  Json get arguments => {'sessionId': widget.session};
-  @override
-  bool get enabled => !garbage;
   Future<void> change(Json row, String action, {String? path}) async {
     await api.request(
       '/__dsh-artifacts/file-action',
       body: {
-        'sessionId': widget.session,
+        'sessionId': session,
         'path': row['path'],
         'etag': row['etag'],
         'action': action,
@@ -305,7 +291,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
           await showDialog<void>(
             context: context,
             builder: (_) =>
-                ArtifactPreview(api: api, session: widget.session, path: path),
+                ArtifactPreview(api: api, session: session, path: path),
           );
           return;
         }
@@ -315,7 +301,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
           );
           if (target == null || !mounted) return;
           await api.downloadTo(
-            previewUrl('file', widget.session, {'path': path}),
+            previewUrl('file', session, {'path': path}),
             File(target.path),
             scope: actions,
           );
@@ -328,7 +314,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
         await api.request(
           '/__dsh-preview/file-action',
           body: {
-            'sessionId': widget.session,
+            'sessionId': session,
             'path': path,
             'intent': intent == 'open' && office ? 'office' : intent,
           },
@@ -341,7 +327,29 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
       indicate: intent != 'preview' && intent != 'copy',
     );
   }
+}
 
+class ArtifactsView extends StatefulWidget {
+  const ArtifactsView({super.key, required this.api, required this.session});
+  final DshClient api;
+  final String session;
+  @override
+  State<ArtifactsView> createState() => _ArtifactsViewState();
+}
+
+class _ArtifactsViewState extends _PollingState<ArtifactsView>
+    with _ArtifactActions<ArtifactsView> {
+  bool garbage = false;
+  @override
+  DshClient get api => widget.api;
+  @override
+  String get session => widget.session;
+  @override
+  String get operation => 'list';
+  @override
+  Json get arguments => {'sessionId': widget.session};
+  @override
+  bool get enabled => !garbage;
   @override
   Widget build(BuildContext context) {
     if (garbage) {
@@ -386,12 +394,11 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                       DshConversationZh.fileCount(count: rows.length),
                       style: const TextStyle(fontSize: DshTypography.sizeBody),
                     ),
-                    const SizedBox(width: 12),
-                    DshButton(
-                      outline: true,
-                      height: 33,
+                    const SizedBox(width: 4),
+                    DshIcon(
+                      DshIcons.refreshCw.data,
+                      label: DshConversationZh.refresh,
                       onPressed: busy ? null : load,
-                      child: const Text(DshConversationZh.refresh),
                     ),
                   ],
                 ),
@@ -421,175 +428,11 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                         : ListView.builder(
                             itemExtent: 51,
                             itemCount: rows.length,
-                            itemBuilder: (context, index) {
-                              final row = rows[index],
-                                  deleted = row['change'] == 'deleted',
-                                  path = '${row['path']}';
-                              return Container(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 8,
-                                ),
-                                decoration: BoxDecoration(
-                                  border: Border(
-                                    bottom: BorderSide(color: colors.border),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: InkWell(
-                                        onSecondaryTapDown: (event) async {
-                                          if (deleted || busy) return;
-                                          final action =
-                                              await nativeContextMenu(
-                                                context,
-                                                event.globalPosition,
-                                                {
-                                                  'preview':
-                                                      DshConversationZh.preview,
-                                                  'copy': DshConversationZh
-                                                      .copyPath,
-                                                  'reveal': DshConversationZh
-                                                      .revealInFileManager,
-                                                  'open': DshConversationZh
-                                                      .openWithLocalTool,
-                                                  'save': DshConversationZh
-                                                      .saveOriginalCopy,
-                                                  'rename':
-                                                      DshConversationZh.rename,
-                                                  'trash': DshConversationZh
-                                                      .moveToTrash,
-                                                },
-                                              );
-                                          if (mounted && action != null) {
-                                            await manage(row, action);
-                                          }
-                                        },
-                                        onTap: deleted || busy
-                                            ? null
-                                            : () => manage(row, 'preview'),
-                                        child: Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 10,
-                                            vertical: 6,
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Text(
-                                                artifactLabels[row['change']] ??
-                                                    '${row['change']}',
-                                                style: TextStyle(
-                                                  fontSize:
-                                                      DshTypography.sizeCaption,
-                                                  color:
-                                                      row['change'] == 'created'
-                                                      ? const Color(0xff22c55e)
-                                                      : row['change'] ==
-                                                            'modified'
-                                                      ? colors.blue
-                                                      : colors.muted,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              Expanded(
-                                                child: Text(
-                                                  displayPath(path),
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    fontSize:
-                                                        DshTypography.sizeBody,
-                                                    color: deleted
-                                                        ? colors.muted
-                                                        : colors.text,
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              Text(
-                                                artifactBytes(row['size']),
-                                                style: TextStyle(
-                                                  fontSize:
-                                                      DshTypography.sizeCaption,
-                                                  color: colors.muted,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    PopupMenuButton<String>(
-                                      tooltip: DshConversationZh.managePath(
-                                        path: path,
-                                      ),
-                                      enabled: !busy,
-                                      onSelected: (intent) =>
-                                          manage(row, intent),
-                                      padding: EdgeInsets.zero,
-                                      constraints: const BoxConstraints(
-                                        minWidth: 200,
-                                        maxWidth: 200,
-                                      ),
-                                      menuPadding: const EdgeInsets.all(6),
-                                      color: colors.base,
-                                      surfaceTintColor: Colors.transparent,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(9),
-                                        side: BorderSide(color: colors.border),
-                                      ),
-                                      itemBuilder: (_) => [
-                                        for (final item in const {
-                                          'preview': DshConversationZh.preview,
-                                          'copy': DshConversationZh.copyPath,
-                                          'reveal': DshConversationZh
-                                              .revealInFileManager,
-                                          'open': DshConversationZh
-                                              .openWithLocalTool,
-                                          'editor':
-                                              DshConversationZh.openInEditor,
-                                          'save': DshConversationZh
-                                              .saveOriginalCopy,
-                                          'rename': DshConversationZh.rename,
-                                          'trash':
-                                              DshConversationZh.moveToTrash,
-                                        }.entries)
-                                          PopupMenuItem(
-                                            height: 34,
-                                            value: item.key,
-                                            enabled: !deleted,
-                                            child: Text(
-                                              item.value,
-                                              style: const TextStyle(
-                                                fontSize:
-                                                    DshTypography.sizeBody,
-                                              ),
-                                            ),
-                                          ),
-                                      ],
-                                      child: Container(
-                                        width: 36,
-                                        height: 34,
-                                        decoration: BoxDecoration(
-                                          border: Border.all(
-                                            color: colors.border,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            7,
-                                          ),
-                                        ),
-                                        child: DshGlyph(
-                                          DshIcons.ellipsis.data,
-                                          size: 16,
-                                          color: colors.muted,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
+                            itemBuilder: (context, index) => ArtifactRow(
+                              row: rows[index],
+                              busy: busy,
+                              onAction: (intent) => manage(rows[index], intent),
+                            ),
                           ),
                   ),
                 ),
@@ -613,6 +456,301 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One changed file: what happened to it, where it lives, and its actions.
+class ArtifactRow extends StatelessWidget {
+  const ArtifactRow({
+    super.key,
+    required this.row,
+    required this.busy,
+    required this.onAction,
+  });
+  final Json row;
+  final bool busy;
+  final ValueChanged<String> onAction;
+
+  static const intents = {
+    'preview': DshConversationZh.preview,
+    'copy': DshConversationZh.copyPath,
+    'reveal': DshConversationZh.revealInFileManager,
+    'open': DshConversationZh.openWithLocalTool,
+    'editor': DshConversationZh.openInEditor,
+    'save': DshConversationZh.saveOriginalCopy,
+    'rename': DshConversationZh.rename,
+    'trash': DshConversationZh.moveToTrash,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = DshColors(context);
+    final tokens = DshTokens.of(context);
+    final change = '${row['change']}';
+    final deleted = change == 'deleted';
+    final path = '${row['path']}';
+    final shown = displayPath(path);
+    final cut = shown.replaceAll('\\', '/').lastIndexOf('/');
+    final folder = cut > 0 ? shown.substring(0, cut) : '';
+    final tone = switch (change) {
+      'created' => tokens.success,
+      'modified' || 'presented' => tokens.info,
+      _ => null,
+    };
+    final usable = !deleted && !busy;
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        key: ValueKey('artifact-row-$path'),
+        borderRadius: BorderRadius.circular(8),
+        hoverColor: colors.hover,
+        onTap: usable ? () => onAction('preview') : null,
+        onSecondaryTapDown: usable
+            ? (event) async {
+                final action = await nativeContextMenu(
+                  context,
+                  event.globalPosition,
+                  Map.of(intents)..remove('editor'),
+                );
+                if (action != null) onAction(action);
+              }
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 7, 4, 7),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: tone?.background ?? colors.layer,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  artifactLabels[change] ?? change,
+                  style: DshTypography.caption.copyWith(
+                    color: tone?.foreground ?? colors.muted,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              // Name and folder share one line so sizes and actions align
+              // at the right edge; long folders are cut first.
+              Expanded(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: artifactName(path),
+                        style: DshTypography.body.copyWith(
+                          fontWeight: FontWeight.w500,
+                          color: deleted ? colors.muted : colors.text,
+                          decoration: deleted
+                              ? TextDecoration.lineThrough
+                              : null,
+                        ),
+                      ),
+                      if (folder.isNotEmpty)
+                        TextSpan(
+                          text: '  $folder',
+                          style: DshTypography.caption.copyWith(
+                            color: colors.muted,
+                          ),
+                        ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                artifactBytes(row['size']),
+                style: DshTypography.caption.copyWith(
+                  color: colors.muted,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+              PopupMenuButton<String>(
+                tooltip: DshConversationZh.managePath(path: path),
+                enabled: !busy,
+                onSelected: onAction,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 200, maxWidth: 220),
+                color: colors.base,
+                surfaceTintColor: Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  side: BorderSide(color: colors.border.withValues(alpha: .6)),
+                ),
+                itemBuilder: (_) => [
+                  for (final item in intents.entries)
+                    PopupMenuItem(
+                      height: 34,
+                      value: item.key,
+                      enabled: !deleted,
+                      child: Text(item.value),
+                    ),
+                ],
+                child: SizedBox(
+                  width: 30,
+                  height: 30,
+                  child: Center(
+                    child: DshGlyph(
+                      DshIcons.ellipsis.data,
+                      size: 16,
+                      color: colors.muted,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The files a session changed, shown below its latest reply as other agent
+/// tools do. The card loads when a turn settles; the 产物 tab keeps full
+/// management and the generated-trash view.
+class ArtifactSummary extends StatefulWidget {
+  const ArtifactSummary({
+    super.key,
+    required this.api,
+    required this.session,
+    this.onOpenAll,
+  });
+  final DshClient api;
+  final String session;
+  final VoidCallback? onOpenAll;
+  @override
+  State<ArtifactSummary> createState() => _ArtifactSummaryState();
+}
+
+class _ArtifactSummaryState extends _PollingState<ArtifactSummary>
+    with _ArtifactActions<ArtifactSummary> {
+  static const collapsedRows = 4;
+  bool expanded = false;
+  @override
+  DshClient get api => widget.api;
+  @override
+  String get session => widget.session;
+  @override
+  String get operation => 'list';
+  @override
+  Json get arguments => {'sessionId': widget.session};
+
+  // The conversation rebuilds this card for each settled turn, so it reads
+  // once instead of polling beside the transcript.
+  @override
+  void schedule() {}
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = objects(data['entries']);
+    if (rows.isEmpty) return const SizedBox.shrink();
+    final colors = DshColors(context);
+    final shown = expanded ? rows : rows.take(collapsedRows).toList();
+    final hidden = rows.length - shown.length;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 8),
+      child: Container(
+        key: const ValueKey('artifact-summary-card'),
+        decoration: BoxDecoration(
+          color: colors.base,
+          border: Border.all(color: colors.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+              child: Row(
+                children: [
+                  DshGlyph(DshIcons.files.data, size: 16, color: colors.muted),
+                  const SizedBox(width: 8),
+                  Text(
+                    DshConversationZh.sessionArtifacts,
+                    style: DshTypography.body.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: colors.text,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    DshConversationZh.fileCount(count: rows.length),
+                    style: DshTypography.caption.copyWith(color: colors.muted),
+                  ),
+                  const Spacer(),
+                  if (widget.onOpenAll != null)
+                    DshButton(
+                      key: const ValueKey('artifact-summary-open-all'),
+                      height: 28,
+                      fontSize: DshTypography.sizeCaption,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      onPressed: widget.onOpenAll,
+                      child: const Text(DshConversationZh.viewInArtifacts),
+                    ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: colors.border.withValues(alpha: .6)),
+            Padding(
+              padding: const EdgeInsets.all(4),
+              child: Column(
+                children: [
+                  for (final row in shown)
+                    ArtifactRow(
+                      row: row,
+                      busy: busy,
+                      onAction: (intent) => manage(row, intent),
+                    ),
+                ],
+              ),
+            ),
+            if (rows.length > collapsedRows)
+              InkWell(
+                key: const ValueKey('artifact-summary-toggle'),
+                onTap: () => setState(() => expanded = !expanded),
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(12),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+                  child: Row(
+                    children: [
+                      Text(
+                        expanded
+                            ? DshConversationZh.collapseArtifacts
+                            : DshConversationZh.moreArtifacts(count: hidden),
+                        style: DshTypography.caption.copyWith(
+                          color: colors.blue,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      DshGlyph(
+                        expanded
+                            ? DshIcons.chevronUp.data
+                            : DshIcons.chevronDown.data,
+                        size: 12,
+                        color: colors.blue,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            if (error != null || working)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: notices(),
+              ),
+          ],
         ),
       ),
     );

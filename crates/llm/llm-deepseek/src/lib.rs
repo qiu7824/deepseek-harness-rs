@@ -12,6 +12,7 @@ mod messages;
 mod responses;
 mod serialize;
 mod sse;
+mod tool_schema;
 mod translate;
 
 #[cfg(test)]

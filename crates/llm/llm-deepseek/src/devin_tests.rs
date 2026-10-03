@@ -106,7 +106,7 @@ fn native_request_preserves_system_tools_results_and_inline_images() {
 }
 
 #[test]
-fn native_and_responses_transports_preserve_object_root_action_requirements() {
+fn native_transport_folds_root_branches_and_responses_keep_them() {
     let parameters = json!({
         "type":"object","properties":{"action":{"type":"string"},"id":{"type":"string"}},
         "required":["action"],"additionalProperties":false,
@@ -123,9 +123,21 @@ fn native_and_responses_transports_preserve_object_root_action_requirements() {
     let tools = message.repeated(10).unwrap();
     assert_eq!(tools.len(), 1);
     let tool = Message::parse(tools[0]).unwrap();
+    // Claude behind Devin rejects a root oneOf; the request carries one object
+    // that still names every action and the combinations it allows.
+    let sent = serde_json::from_str::<Value>(tool.text(3).unwrap()).unwrap();
+    assert!(sent.get("oneOf").is_none());
+    assert_eq!(sent["type"], "object");
+    assert_eq!(sent["required"], json!(["action"]));
     assert_eq!(
-        serde_json::from_str::<Value>(tool.text(3).unwrap()).unwrap(),
-        parameters
+        sent["properties"]["action"]["enum"],
+        json!(["list", "read"])
+    );
+    assert!(
+        sent["description"]
+            .as_str()
+            .unwrap()
+            .contains("action=read requires id")
     );
     let responses = crate::responses::request_from_chat(&chat).unwrap();
     assert_eq!(responses["tools"][0]["parameters"], parameters);

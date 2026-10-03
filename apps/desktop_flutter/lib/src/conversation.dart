@@ -932,10 +932,24 @@ class _ConversationState extends State<Conversation>
                     (!c.readingHistory && (c.interruptible || c.compacting))
                 ? 1
                 : 0;
+            // Changed files sit below the latest reply once a turn settles,
+            // where the activity row was while it ran.
+            final summaryCount =
+                activityCount == 0 &&
+                    !c.readingHistory &&
+                    !c.window.hasAfter &&
+                    c.transcript.isNotEmpty &&
+                    c.client != null &&
+                    c.selectedId != null &&
+                    c.pluginEnabled('dsh-artifacts')
+                ? 1
+                : 0;
+            final lead = activityCount + summaryCount;
             final messageIndices = {
               for (var i = 0; i < c.transcript.length; i++)
-                c.transcript[i].id: c.transcript.length - 1 - i + activityCount,
+                c.transcript[i].id: c.transcript.length - 1 - i + lead,
               if (activityCount == 1) 'turn-activity': 0,
+              if (summaryCount == 1) 'artifact-summary': 0,
             };
             return Stack(
               children: [
@@ -1221,10 +1235,36 @@ class _ConversationState extends State<Conversation>
                                         16,
                                       ),
                                       itemCount:
-                                          activityCount +
+                                          lead +
                                           c.transcript.length +
                                           (c.window.hasBefore ? 1 : 0),
                                       itemBuilder: (context, rawIndex) {
+                                        if (summaryCount == 1 &&
+                                            rawIndex == 0) {
+                                          return Align(
+                                            key: const ValueKey(
+                                              'artifact-summary',
+                                            ),
+                                            alignment: Alignment.topCenter,
+                                            child: ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                maxWidth: contentWidth,
+                                              ),
+                                              child: ArtifactSummary(
+                                                key: ValueKey((
+                                                  c.client,
+                                                  c.selectedId,
+                                                  c.transcript.length,
+                                                )),
+                                                api: c.client!,
+                                                session: c.selectedId!,
+                                                onOpenAll: () => setState(
+                                                  () => view = 'artifacts',
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        }
                                         if (activityCount == 1 &&
                                             rawIndex == 0) {
                                           return Align(
@@ -1244,7 +1284,7 @@ class _ConversationState extends State<Conversation>
                                             ),
                                           );
                                         }
-                                        final index = rawIndex - activityCount;
+                                        final index = rawIndex - lead;
                                         if (index == c.transcript.length) {
                                           return Center(
                                             child: DshButton(
