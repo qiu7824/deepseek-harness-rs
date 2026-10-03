@@ -1,10 +1,13 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+import '../../l10n/settings_form_zh.dart';
+
 import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:dsh_client/dsh_client.dart';
 
 import '../../design/primitives.dart';
@@ -15,21 +18,55 @@ import 'models_page.dart';
 import 'resource_page.dart';
 import 'schedule_panel.dart';
 
-const settingsPages = <({String id, String title, IconData icon})>[
-  (id: 'general', title: '通用设置', icon: LucideIcons.settings),
-  (id: 'models', title: '模型', icon: LucideIcons.database),
-  (id: 'plugins', title: '插件', icon: LucideIcons.slidersHorizontal),
-  (id: 'environment', title: '目录与运行环境', icon: LucideIcons.folderCog),
-  (id: 'memory', title: '记忆与上下文', icon: LucideIcons.brain),
-  (id: 'presets', title: 'Agent 预设', icon: LucideIcons.workflow),
-  (id: 'collaboration', title: '协作', icon: LucideIcons.users),
-  (id: 'security', title: '安全盾', icon: LucideIcons.shieldCheck),
-  (id: 'skills', title: '技能与 MCP', icon: LucideIcons.briefcase),
-  (id: 'discovery', title: '工具发现', icon: LucideIcons.wrench),
-  (id: 'archive', title: '归档管理', icon: LucideIcons.archive),
-  (id: 'schedule', title: '全局提醒', icon: LucideIcons.clock),
-  (id: 'menu', title: '小菜单设置', icon: LucideIcons.listFilter),
-  (id: 'trash', title: '垃圾槽', icon: LucideIcons.trash2),
+import 'package:dsh_desktop/design/typography.dart';
+
+final settingsPages = <({String id, String title, IconData icon})>[
+  (id: 'general', title: DshSettingsZh.general, icon: DshIcons.settings.data),
+  (id: 'models', title: DshSettingsZh.models, icon: DshIcons.database.data),
+  (
+    id: 'plugins',
+    title: DshSettingsZh.plugins,
+    icon: DshIcons.slidersHorizontal.data,
+  ),
+  (
+    id: 'environment',
+    title: DshSettingsZh.runtimeEnvironment,
+    icon: DshIcons.folderCog.data,
+  ),
+  (id: 'memory', title: DshSettingsZh.memoryContext, icon: DshIcons.brain.data),
+  (
+    id: 'presets',
+    title: DshSettingsZh.agentPresets,
+    icon: DshIcons.workflow.data,
+  ),
+  (
+    id: 'collaboration',
+    title: DshSettingsZh.collaboration,
+    icon: DshIcons.users.data,
+  ),
+  (
+    id: 'security',
+    title: DshSettingsZh.security,
+    icon: DshIcons.shieldCheck.data,
+  ),
+  (id: 'skills', title: DshSettingsZh.skillsMcp, icon: DshIcons.briefcase.data),
+  (
+    id: 'discovery',
+    title: DshSettingsZh.toolDiscovery,
+    icon: DshIcons.wrench.data,
+  ),
+  (
+    id: 'archive',
+    title: DshSettingsZh.archiveManagement,
+    icon: DshIcons.archive.data,
+  ),
+  (id: 'schedule', title: DshSettingsZh.reminders, icon: DshIcons.clock.data),
+  (
+    id: 'menu',
+    title: DshSettingsZh.menuSettings,
+    icon: DshIcons.listFilter.data,
+  ),
+  (id: 'trash', title: DshSettingsZh.trash, icon: DshIcons.trash2.data),
 ];
 
 class SettingsShell extends StatefulWidget {
@@ -55,21 +92,37 @@ class _SettingsShellState extends State<SettingsShell> {
       : 'general';
   final namespaces = <String, Json>{}, edits = <String, List<Json>>{};
   final scope = RequestScope();
+  DshClient? boundApi;
+  bool staleConnection = false;
+  void connectionChanged() {
+    if (!mounted || identical(boundApi, c.client)) return;
+    scope.cancel();
+    setState(() {
+      staleConnection = true;
+      loading = false;
+      error = DshSettingsZh.settingsConnectionChanged;
+    });
+  }
+
   final keyboardFocus = FocusNode();
   bool loading = true, saving = false;
   bool modelDirty = false;
+  double? bodyFontDraft;
+  String pageQuery = '';
   String? error;
   String? saved;
-  bool get formDirty => edits.values.any((e) => e.isNotEmpty);
+  bool get formDirty =>
+      edits.values.any((e) => e.isNotEmpty) ||
+      (bodyFontDraft != null && bodyFontDraft != c.bodyFontSize);
   bool get dirty => formDirty || modelDirty;
   Future<void> selectPage(String next) async {
     if (next == page) return;
     if (modelDirty &&
         !await confirmAction(
           context,
-          '未保存的模型修改',
-          '切换页面将放弃模型和连接草稿。',
-          action: '放弃并切换',
+          DshSettingsZh.unsavedModels,
+          DshSettingsZh.discardModelConnectionHint,
+          action: DshSettingsZh.discardAndSwitch,
         )) {
       return;
     }
@@ -84,6 +137,8 @@ class _SettingsShellState extends State<SettingsShell> {
   @override
   void initState() {
     super.initState();
+    boundApi = c.client;
+    c.addListener(connectionChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) keyboardFocus.requestFocus();
     });
@@ -91,18 +146,30 @@ class _SettingsShellState extends State<SettingsShell> {
   }
 
   @override
+  void didUpdateWidget(SettingsShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != c) {
+      oldWidget.controller.removeListener(connectionChanged);
+      c.addListener(connectionChanged);
+      connectionChanged();
+    }
+  }
+
+  @override
   void dispose() {
+    c.removeListener(connectionChanged);
     scope.cancel();
     keyboardFocus.dispose();
     super.dispose();
   }
 
   Future<void> load() async {
+    if (staleConnection) return;
+    final api = boundApi;
     try {
-      final api = c.client;
-      if (api == null) throw StateError('请先连接服务');
+      if (api == null) throw StateError(DshSettingsZh.connectFirst);
       final value = await api.rpc('settings.describe', scope: scope);
-      if (!mounted) return;
+      if (!mounted || !identical(api, c.client)) return;
       setState(() {
         for (final row in objects(value['namespaces'])) {
           namespaces[row['ns'] as String] = row;
@@ -111,7 +178,7 @@ class _SettingsShellState extends State<SettingsShell> {
         error = null;
       });
     } catch (e) {
-      if (mounted) {
+      if (mounted && !staleConnection) {
         setState(() {
           error = '$e';
           loading = false;
@@ -130,6 +197,8 @@ class _SettingsShellState extends State<SettingsShell> {
   }
 
   Future<void> save() async {
+    if (saving || staleConnection) return;
+    final owner = boundApi;
     setState(() {
       saving = true;
       error = null;
@@ -137,23 +206,33 @@ class _SettingsShellState extends State<SettingsShell> {
     });
     try {
       for (final ns in edits.keys.toList()) {
-        final ops = edits[ns]!;
+        final ops = List<Json>.of(edits[ns]!);
         if (ops.isEmpty) continue;
-        final updated = await c.client!.call('settings.mutate', {
+        if (owner == null || !identical(owner, c.client)) {
+          throw StateError(DshSettingsZh.settingsConnectionChanged);
+        }
+        final updated = await owner.call('settings.mutate', {
           'ns': ns,
           'expectedRevision': namespaces[ns]?['revision'],
           'ops': ops,
         }, true);
-        if (!mounted) return;
+        if (!mounted || !identical(owner, c.client)) return;
         setState(() {
           namespaces[ns] = updated;
-          edits.remove(ns);
+          edits[ns]?.removeWhere(ops.contains);
+          if (edits[ns]?.isEmpty == true) edits.remove(ns);
         });
       }
+      if (bodyFontDraft != null && bodyFontDraft != c.bodyFontSize) {
+        await c.setBodyFontSize(bodyFontDraft!);
+      }
+      if (!mounted || staleConnection || !identical(owner, c.client)) return;
       await c.loadCatalogs();
-      if (mounted) setState(() => saved = '设置已保存');
+      if (mounted && !staleConnection && identical(owner, c.client)) {
+        setState(() => saved = formDirty ? null : DshSettingsZh.settingsSaved);
+      }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && !staleConnection) setState(() => error = '$e');
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -163,9 +242,9 @@ class _SettingsShellState extends State<SettingsShell> {
     if (dirty &&
         !await confirmAction(
           context,
-          '保留未保存的修改？',
-          '当前设置尚未保存，关闭将放弃这些修改。',
-          action: '放弃修改',
+          DshSettingsZh.discardTitle,
+          DshSettingsZh.discardHint,
+          action: DshSettingsZh.discardChanges,
         )) {
       return;
     }
@@ -195,7 +274,7 @@ class _SettingsShellState extends State<SettingsShell> {
                     ? EdgeInsets.zero
                     : const EdgeInsets.all(24),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(small ? 0 : 24),
+                  borderRadius: BorderRadius.circular(small ? 0 : 16),
                 ),
                 child: SizedBox(
                   key: const ValueKey('settings-panel'),
@@ -210,9 +289,9 @@ class _SettingsShellState extends State<SettingsShell> {
                         child: Row(
                           children: [
                             const Text(
-                              '设置',
+                              DshSettingsZh.settings,
                               style: TextStyle(
-                                fontSize: 16,
+                                fontSize: DshTypography.sizeComposer,
                                 height: 24 / 16,
                                 fontWeight: FontWeight.w500,
                               ),
@@ -222,7 +301,7 @@ class _SettingsShellState extends State<SettingsShell> {
                               outline: true,
                               height: 28,
                               pill: true,
-                              fontSize: 12,
+                              fontSize: DshTypography.sizeCaption,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 10,
                               ),
@@ -234,26 +313,48 @@ class _SettingsShellState extends State<SettingsShell> {
                                 );
                               }),
                               child: const Text(
-                                '打开配置文件',
-                                style: TextStyle(fontSize: 12),
+                                DshSettingsZh.openConfig,
+                                style: TextStyle(
+                                  fontSize: DshTypography.sizeCaption,
+                                ),
                               ),
                             ),
                             const SizedBox(width: 12),
                             DshIcon(
-                              LucideIcons.x,
-                              label: '关闭',
+                              DshIcons.close.data,
+                              label: DshSettingsZh.close,
                               onPressed: saving ? null : close,
                             ),
                           ],
                         ),
                       ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 8,
+                        ),
+                        child: DshField(
+                          key: const Key('settings-page-search'),
+                          hint: DshSettingsZh.searchSettings,
+                          prefix: DshIcons.search.data,
+                          onChanged: (value) =>
+                              setState(() => pageQuery = value),
+                        ),
+                      ),
                       if (small)
                         SizedBox(
-                          height: 42,
+                          height: max(
+                            42,
+                            MediaQuery.textScalerOf(context).scale(42),
+                          ),
                           child: ListView(
                             scrollDirection: Axis.horizontal,
                             children: [
-                              for (final item in settingsPages)
+                              for (final item in settingsPages.where(
+                                (item) => '${item.title} ${item.id}'
+                                    .toLowerCase()
+                                    .contains(pageQuery.toLowerCase()),
+                              ))
                                 DshButton(
                                   onPressed: () => selectPage(item.id),
                                   child: Text(item.title),
@@ -276,7 +377,11 @@ class _SettingsShellState extends State<SettingsShell> {
                                     12,
                                   ),
                                   children: [
-                                    for (final item in settingsPages)
+                                    for (final item in settingsPages.where(
+                                      (item) => '${item.title} ${item.id}'
+                                          .toLowerCase()
+                                          .contains(pageQuery.toLowerCase()),
+                                    ))
                                       Padding(
                                         padding: const EdgeInsets.only(
                                           bottom: 4,
@@ -333,7 +438,8 @@ class _SettingsShellState extends State<SettingsShell> {
                                                     child: Text(
                                                       item.title,
                                                       style: const TextStyle(
-                                                        fontSize: 14,
+                                                        fontSize: DshTypography
+                                                            .sizeBody,
                                                         height: 22 / 14,
                                                       ),
                                                     ),
@@ -359,35 +465,20 @@ class _SettingsShellState extends State<SettingsShell> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     if (error != null)
-                                      Container(
-                                        padding: const EdgeInsets.all(10),
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .errorContainer,
-                                        child: Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                error!,
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                ),
-                                              ),
-                                            ),
-                                            DshIcon(
-                                              LucideIcons.rotateCw,
-                                              label: '重试',
-                                              onPressed: load,
-                                            ),
-                                          ],
-                                        ),
+                                      DshErrorView(
+                                        error: error!,
+                                        onRetry: saving || staleConnection
+                                            ? null
+                                            : load,
                                       ),
                                     if (saved != null)
                                       Text(
                                         saved!,
-                                        style: const TextStyle(
-                                          color: Colors.green,
-                                          fontSize: 12,
+                                        style: TextStyle(
+                                          color: DshTokens.of(context)
+                                              .success
+                                              .foreground,
+                                          fontSize: DshTypography.sizeCaption,
                                         ),
                                       ),
                                     Expanded(
@@ -412,8 +503,11 @@ class _SettingsShellState extends State<SettingsShell> {
                                         child: Row(
                                           children: [
                                             const Text(
-                                              '有未保存的修改',
-                                              style: TextStyle(fontSize: 12),
+                                              DshSettingsZh.unsaved,
+                                              style: TextStyle(
+                                                fontSize:
+                                                    DshTypography.sizeCaption,
+                                              ),
                                             ),
                                             const Spacer(),
                                             DshButton(
@@ -423,14 +517,19 @@ class _SettingsShellState extends State<SettingsShell> {
                                                       setState(edits.clear);
                                                       load();
                                                     },
-                                              child: const Text('取消'),
+                                              child: const Text(DshZh.cancel),
                                             ),
                                             const SizedBox(width: 8),
                                             DshButton(
                                               primary: true,
-                                              onPressed: saving ? null : save,
+                                              onPressed:
+                                                  saving || staleConnection
+                                                  ? null
+                                                  : save,
                                               child: Text(
-                                                saving ? '保存中…' : '保存',
+                                                saving
+                                                    ? DshZh.saving
+                                                    : DshZh.save,
                                               ),
                                             ),
                                           ],
@@ -501,12 +600,17 @@ class _SettingsShellState extends State<SettingsShell> {
       _ => <String>[],
     };
     return SingleChildScrollView(
+      key: const ValueKey('settings-form-scroll'),
+      padding: const EdgeInsets.only(right: 20, bottom: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             settingsPages.firstWhere((p) => p.id == page).title,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+            style: const TextStyle(
+              fontSize: DshTypography.sizeComposer,
+              fontWeight: FontWeight.w500,
+            ),
           ),
           const SizedBox(height: 20),
           forms(selection),
@@ -543,33 +647,46 @@ class _SettingsShellState extends State<SettingsShell> {
       border: Border(bottom: BorderSide(color: DshColors(context).border)),
     ),
     padding: const EdgeInsets.symmetric(vertical: 16),
-    child: Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(fontSize: 14, height: 22 / 14),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final label = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: DshTypography.sizeBody,
+                height: 22 / 14,
               ),
-              if (hint.isNotEmpty) ...[
-                const SizedBox(height: 5),
-                Text(
-                  hint,
-                  style: TextStyle(
-                    fontSize: 12,
-                    height: 1.5,
-                    color: DshColors(context).muted,
-                  ),
+            ),
+            if (hint.isNotEmpty) ...[
+              const SizedBox(height: 5),
+              Text(
+                hint,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  height: 1.5,
+                  color: DshColors(context).muted,
                 ),
-              ],
+              ),
             ],
-          ),
-        ),
-        const SizedBox(width: 20),
-        control,
-      ],
+          ],
+        );
+        if (constraints.maxWidth < 480 ||
+            MediaQuery.textScalerOf(context).scale(1) > 1.5) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [label, const SizedBox(height: 12), control],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: label),
+            const SizedBox(width: 20),
+            control,
+          ],
+        );
+      },
     ),
   );
 
@@ -578,16 +695,37 @@ class _SettingsShellState extends State<SettingsShell> {
     return ListView(
       children: [
         generalRow(
-          'Agent 预设',
-          '对此后新建的会话生效。运行中的会话保持它开始时的预设。',
+          DshSettingsZh.conversationFontSize,
+          DshSettingsZh.conversationFontHint,
+          DshSelect<double>(
+            key: const Key('conversation-font-size'),
+            value: bodyFontDraft ?? c.bodyFontSize,
+            options: {
+              14: '14',
+              15: DshSettingsZh.defaultFontSize,
+              16: '16',
+              17: '17',
+              18: '18',
+            },
+            onChanged: saving
+                ? null
+                : (value) => setState(() {
+                    bodyFontDraft = value;
+                    saved = null;
+                  }),
+          ),
+        ),
+        generalRow(
+          DshSettingsZh.agentPresets,
+          DshSettingsZh.defaultPresetHint,
           generalSelect('agent-presets', 'default', c.preset, {
             for (final p in c.presets)
               if (p['broken'] == null) '${p['id']}': '${p['name'] ?? p['id']}',
           }),
         ),
         generalRow(
-          '权限',
-          '选择新会话的默认权限模式',
+          DshSettingsZh.permission,
+          DshSettingsZh.defaultPermissionHint,
           generalSelect(
             'permission',
             'defaultPreset',
@@ -596,10 +734,10 @@ class _SettingsShellState extends State<SettingsShell> {
           ),
         ),
         generalRow(
-          '语言',
+          DshSettingsZh.language,
           '',
           generalSelect('locale', 'preference', 'zh', const {
-            'zh': '中文',
+            'zh': DshSettingsZh.chinese,
             'en': 'English',
           }),
         ),
@@ -611,7 +749,13 @@ class _SettingsShellState extends State<SettingsShell> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('外观', style: TextStyle(fontSize: 14, height: 22 / 14)),
+              const Text(
+                DshSettingsZh.appearance,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeBody,
+                  height: 22 / 14,
+                ),
+              ),
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -620,12 +764,12 @@ class _SettingsShellState extends State<SettingsShell> {
                     Expanded(
                       child: Semantics(
                         checked: c.preferences.dark == dark,
-                        label: dark ? '深色' : '浅色',
+                        label: dark ? DshSettingsZh.dark : DshSettingsZh.light,
                         child: Material(
                           color: c.preferences.dark == dark
                               ? colors.layer
                               : colors.dark
-                              ? const Color(0xff2c2c2e)
+                              ? DshTokens.of(context).layer
                               : colors.base,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(18),
@@ -648,13 +792,19 @@ class _SettingsShellState extends State<SettingsShell> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   DshGlyph(
-                                    dark ? LucideIcons.moon : LucideIcons.sun,
+                                    dark
+                                        ? DshIcons.moon.data
+                                        : DshIcons.sun.data,
                                     size: 18,
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    dark ? '深色' : '浅色',
-                                    style: const TextStyle(fontSize: 14),
+                                    dark
+                                        ? DshSettingsZh.dark
+                                        : DshSettingsZh.light,
+                                    style: const TextStyle(
+                                      fontSize: DshTypography.sizeBody,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -670,38 +820,41 @@ class _SettingsShellState extends State<SettingsShell> {
           ),
         ),
         generalRow(
-          '繁忙时 Enter 键行为',
-          '仅在智能体运行时生效；Cmd/Ctrl+Enter 使用另一行为',
+          DshSettingsZh.busyEnter,
+          DshSettingsZh.busyEnterHint,
           generalSelect('ui-conversation', 'busyEnter', 'queue', const {
-            'queue': '排队发送',
-            'steer': '立即引导',
+            'queue': DshZh.queueMessage,
+            'steer': DshZh.steerExecution,
           }),
         ),
         generalRow(
-          '回复提示显示',
-          '工具、思考、任务和运行提示的显示方式。',
+          DshSettingsZh.replyHints,
+          DshSettingsZh.replyHintsDescription,
           generalSelect('ui-conversation', 'hintDisplay', 'both', const {
-            'both': '图标＋文字',
-            'icons': '仅图标',
-            'text': '仅文字',
+            'both': DshSettingsZh.iconAndText,
+            'icons': DshSettingsZh.iconsOnly,
+            'text': DshSettingsZh.textOnly,
           }),
         ),
         generalRow(
-          '输入提示',
-          '输入框获得焦点时显示一条随机使用提示，可随时关闭。',
+          DshSettingsZh.composerTips,
+          DshSettingsZh.composerTipsHint,
           generalSelect('ui-conversation', 'composerTips', 'on', const {
-            'on': '开启',
-            'off': '关闭',
+            'on': DshSettingsZh.on,
+            'off': DshSettingsZh.close,
           }),
         ),
         generalRow(
-          '目录选择器',
-          '选择工作区、垃圾槽等目录时使用 Windows 目录选择器。',
-          const Text('系统目录选择器', style: TextStyle(fontSize: 14)),
+          DshSettingsZh.directoryPicker,
+          DshSettingsZh.directoryPickerHint,
+          const Text(
+            DshSettingsZh.systemDirectoryPicker,
+            style: TextStyle(fontSize: DshTypography.sizeBody),
+          ),
         ),
         generalRow(
-          '快捷键',
-          '设置侧边栏、搜索、新会话及工作台的组合键。',
+          DshSettingsZh.shortcuts,
+          DshSettingsZh.shortcutsHint,
           DshButton(
             outline: true,
             pill: true,
@@ -709,7 +862,7 @@ class _SettingsShellState extends State<SettingsShell> {
               context: context,
               builder: (_) => ShortcutEditor(controller: c),
             ),
-            child: const Text('快捷键绑定'),
+            child: const Text(DshSettingsZh.shortcutBindings),
           ),
         ),
       ],
@@ -742,12 +895,18 @@ class _SettingsShellState extends State<SettingsShell> {
             const SizedBox(height: 12),
             Text(
               title,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+              style: const TextStyle(
+                fontSize: DshTypography.sizeConversation,
+                fontWeight: FontWeight.w500,
+              ),
             ),
             const SizedBox(height: 4),
             Text(
               hint,
-              style: TextStyle(fontSize: 12, color: DshColors(context).muted),
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                color: DshColors(context).muted,
+              ),
             ),
           ],
           NamespaceForm(
@@ -763,148 +922,170 @@ class _SettingsShellState extends State<SettingsShell> {
 
 /// Headings for namespaces that share a settings page with others.
 const namespaceTitles = <String, ({String title, String hint})>{
-  'computer-use': (
-    title: 'Computer Use',
-    hint:
-        '模型与工作台共用控制环境。本机桌面与 UU 自连都会共享这台电脑的键鼠；需要同时使用本机其他软件时，可改用另一台 UU 设备或隔离浏览器。',
-  ),
+  'computer-use': (title: 'Computer Use', hint: DshSettingsZh.computerUseHint),
 };
 
-Widget _row(String title, String hint, Widget control) => Padding(
+Widget _row(
+  BuildContext context,
+  String title,
+  String hint,
+  Widget control, {
+  required Key key,
+  bool expandControl = false,
+}) => Padding(
+  key: key,
   padding: const EdgeInsets.symmetric(vertical: 14),
-  child: Row(
-    crossAxisAlignment: CrossAxisAlignment.center,
-    children: [
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: const TextStyle(fontSize: 14)),
-            if (hint.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 5),
-                child: Text(
-                  hint,
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+  child: LayoutBuilder(
+    builder: (context, constraints) {
+      final label = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontSize: DshTypography.sizeBody)),
+          if (hint.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 5),
+              child: Text(
+                hint,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: DshTokens.of(context).muted,
                 ),
               ),
+            ),
+        ],
+      );
+      final stacked =
+          constraints.maxWidth < 600 ||
+          MediaQuery.textScalerOf(context).scale(1) > 1.5;
+      if (stacked) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            label,
+            const SizedBox(height: 10),
+            if (expandControl)
+              SizedBox(width: constraints.maxWidth, child: control)
+            else
+              control,
           ],
-        ),
-      ),
-      const SizedBox(width: 20),
-      ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 270),
-        child: control,
-      ),
-    ],
+        );
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(flex: 2, child: label),
+          const SizedBox(width: 24),
+          if (expandControl) Expanded(flex: 3, child: control) else control,
+        ],
+      );
+    },
   ),
 );
 
 /// Keys may be qualified as `namespace.field` where a bare field name is
 /// ambiguous across namespaces.
 const fieldLabels = <String, String>{
-  'computer-use.enabled': '启用 Computer Use',
-  'computer-use.nativeProtocol': '原生 Computer 协议',
-  'computer-use.nativeTarget': '原生协议控制目标',
-  'computer-use.adapter': '执行适配器',
-  'computer-use.command': '外部控制命令',
-  'computer-use.browserExecutable': '浏览器可执行文件',
-  'computer-use.browserHeadless': '后台运行浏览器',
-  'computer-use.maxBrowserSessions': '最大浏览器会话数',
-  'computer-use.timeoutSeconds': '操作超时（秒）',
-  'default': 'Agent 预设',
-  'defaultPreset': '权限',
-  'busyEnter': '繁忙时 Enter 键行为',
-  'composerTips': '输入提示',
-  'hintDisplay': '回复提示显示',
-  'enabled': '启用',
-  'width': '工作台宽度',
-  'rememberWidth': '记住宽度',
-  'fullscreenOnOpen': '打开时全屏',
-  'showFiles': '显示文件入口',
-  'showGit': '显示 Git 入口',
-  'showBrowser': '显示网页入口',
-  'showTerminal': '显示终端入口',
-  'dataDirectory': '数据目录',
-  'cacheDirectory': '缓存目录',
-  'environmentDirectory': '运行环境目录',
-  'testDirectory': '测试目录',
-  'maxMembers': '团队成员上限',
-  'showButton': '显示团队按钮',
-  'defaultMode': '默认协作模式',
-  'maxParallel': '并行子智能体',
-  'maxDepth': '嵌套深度',
-  'maxTurns': '回合上限',
-  'timeoutSeconds': '超时（秒）',
-  'defaultProvider': '默认提供方',
-  'defaultModel': '默认模型',
-  'defaultReasoningEffort': '推理强度',
-  'defaultMaxTokens': '输出 Token 上限',
-  'toolCallMode': '工具调用呈现',
-  'serviceTier': '服务等级',
-  'apiRetryCount': '请求重试次数',
-  'approvalTimeoutSeconds': '审批等待时长（秒）',
-  'unattendedPolicy': '无人值守策略',
-  'riskToolPolicy': '高风险工具策略',
-  'outsideWritePolicy': '工作区外写入策略',
-  'sensitiveReadPolicy': '敏感文件读取策略',
-  'credentialShellPolicy': '凭据命令策略',
-  'userProfileEnabled': '用户资料',
-  'memoryBudget': '记忆预算',
-  'profileBudget': '资料预算',
-  'provider': '提供方',
-  'contextEngine': '上下文引擎',
-  'autoCompact': '自动压缩',
-  'compactThreshold': '压缩阈值',
-  'compactTarget': '压缩目标',
-  'protectRecentMessages': '保护最近消息数',
-  'persona': '角色描述',
-  'personaSuffix': '角色补充',
-  'includeHarnessIdentity': '包含 Harness 身份',
-  'includeRuntimeContext': '包含运行环境',
-  'autoClean': '自动清理',
-  'reduceContext': '精简上下文',
-  'keepDays': '保留天数',
-  'failedDays': '失败产物保留天数',
-  'recoveryDays': '恢复期（天）',
-  'softLimitGib': '容量软上限（GiB）',
-  'location': '位置',
-  'cliPath': '客户端程序路径',
-  'account': '账号',
-  'deviceId': '设备 ID',
-  'trajectory': '轨迹',
-  'artifacts': '产物',
-  'code-graph': '代码图谱',
-  'context': '上下文',
-  'tasks': '任务',
+  'computer-use.enabled': DshSettingsZh.enableComputerUse,
+  'computer-use.nativeProtocol': DshSettingsZh.nativeComputerProtocol,
+  'computer-use.nativeTarget': DshSettingsZh.nativeControlTarget,
+  'computer-use.adapter': DshSettingsZh.executionAdapter,
+  'computer-use.command': DshSettingsZh.externalControlCommand,
+  'computer-use.browserExecutable': DshSettingsZh.browserExecutable,
+  'computer-use.browserHeadless': DshSettingsZh.headlessBrowser,
+  'computer-use.maxBrowserSessions': DshSettingsZh.maxBrowserSessions,
+  'computer-use.timeoutSeconds': DshSettingsZh.operationTimeout,
+  'default': DshSettingsZh.agentPresets,
+  'defaultPreset': DshSettingsZh.permission,
+  'busyEnter': DshSettingsZh.busyEnter,
+  'composerTips': DshSettingsZh.composerTips,
+  'hintDisplay': DshSettingsZh.replyHints,
+  'enabled': DshSettingsZh.enable,
+  'width': DshSettingsZh.workbenchWidth,
+  'rememberWidth': DshSettingsZh.rememberWidth,
+  'fullscreenOnOpen': DshSettingsZh.openFullscreen,
+  'showFiles': DshSettingsZh.showFiles,
+  'showGit': DshSettingsZh.showGit,
+  'showBrowser': DshSettingsZh.showWeb,
+  'showTerminal': DshSettingsZh.showTerminal,
+  'dataDirectory': DshSettingsZh.dataDirectory,
+  'cacheDirectory': DshSettingsZh.cacheDirectory,
+  'environmentDirectory': DshSettingsZh.runtimeDirectory,
+  'testDirectory': DshSettingsZh.testDirectory,
+  'maxMembers': DshSettingsZh.maxTeamMembers,
+  'showButton': DshSettingsZh.showTeamButton,
+  'defaultMode': DshSettingsZh.defaultCollaboration,
+  'maxParallel': DshSettingsZh.parallelAgents,
+  'maxDepth': DshSettingsZh.nestingDepth,
+  'maxTurns': DshSettingsZh.turnLimit,
+  'timeoutSeconds': DshSettingsZh.timeout,
+  'defaultProvider': DshSettingsZh.defaultProvider,
+  'defaultModel': DshSettingsZh.defaultModel,
+  'defaultReasoningEffort': DshSettingsZh.reasoningEffort,
+  'defaultMaxTokens': DshSettingsZh.outputTokenLimit,
+  'toolCallMode': DshSettingsZh.toolPresentation,
+  'serviceTier': DshSettingsZh.serviceTier,
+  'apiRetryCount': DshSettingsZh.requestRetries,
+  'approvalTimeoutSeconds': DshSettingsZh.approvalTimeout,
+  'unattendedPolicy': DshSettingsZh.unattendedPolicy,
+  'riskToolPolicy': DshSettingsZh.highRiskPolicy,
+  'outsideWritePolicy': DshSettingsZh.outsideWorkspacePolicy,
+  'sensitiveReadPolicy': DshSettingsZh.sensitiveFilePolicy,
+  'credentialShellPolicy': DshSettingsZh.credentialCommandPolicy,
+  'userProfileEnabled': DshSettingsZh.userProfile,
+  'memoryBudget': DshSettingsZh.memoryBudget,
+  'profileBudget': DshSettingsZh.profileBudget,
+  'provider': DshSettingsZh.provider,
+  'contextEngine': DshSettingsZh.contextEngine,
+  'autoCompact': DshSettingsZh.autoCompaction,
+  'compactThreshold': DshSettingsZh.compactionThreshold,
+  'compactTarget': DshSettingsZh.compactionTarget,
+  'protectRecentMessages': DshSettingsZh.recentMessages,
+  'persona': DshSettingsZh.roleDescription,
+  'personaSuffix': DshSettingsZh.roleSupplement,
+  'includeHarnessIdentity': DshSettingsZh.includeHarnessIdentity,
+  'includeRuntimeContext': DshSettingsZh.includeEnvironment,
+  'autoClean': DshSettingsZh.autoCleanup,
+  'reduceContext': DshSettingsZh.compactContext,
+  'keepDays': DshSettingsZh.retainedDays,
+  'failedDays': DshSettingsZh.failedArtifactDays,
+  'recoveryDays': DshSettingsZh.recoveryDays,
+  'softLimitGib': DshSettingsZh.storageSoftLimit,
+  'location': DshSettingsZh.location,
+  'cliPath': DshSettingsZh.clientPath,
+  'account': DshSettingsZh.account,
+  'deviceId': DshSettingsZh.deviceId,
+  'trajectory': DshSettingsZh.trace,
+  'artifacts': DshSettingsZh.artifacts,
+  'code-graph': DshSettingsZh.codeGraph,
+  'context': DshSettingsZh.context,
 };
 const optionLabels = <String, String>{
-  'computer-use.local': '本机桌面',
-  'computer-use.browser': '隔离浏览器',
-  'computer-use.native-browser': '内置浏览器',
-  'computer-use.native-desktop': '本机桌面（Rust 原生）',
-  'computer-use.uu-desktop': 'UU 远程桌面',
-  'computer-use.command': '外部命令',
-  'queue': '排队发送',
-  'steer': '转向当前任务',
-  'on': '开启',
-  'off': '关闭',
-  'both': '图标＋文字',
-  'text': '仅文字',
-  'icons': '仅图标',
-  'read-only': '只读',
-  'workspace-write': '工作区内修改',
-  'full-access': '完全访问',
-  'ask': '询问',
-  'deny': '拒绝',
-  'allow': '允许',
-  'auto': '自动',
-  'standard': '标准模式',
-  'code': '代码模式',
-  'blank': '空白模式',
-  'native': '原生',
-  'inherit': '继承',
-  'zh-CN': '中文',
+  'computer-use.local': DshSettingsZh.localDesktop,
+  'computer-use.browser': DshSettingsZh.isolatedBrowser,
+  'computer-use.native-browser': DshSettingsZh.builtInBrowser,
+  'computer-use.native-desktop': DshSettingsZh.nativeDesktop,
+  'computer-use.uu-desktop': DshSettingsZh.remoteDesktop,
+  'computer-use.command': DshSettingsZh.externalCommand,
+  'queue': DshZh.queueMessage,
+  'steer': DshSettingsZh.steerExecution,
+  'on': DshSettingsZh.on,
+  'off': DshSettingsZh.close,
+  'both': DshSettingsZh.iconAndText,
+  'text': DshSettingsZh.textOnly,
+  'icons': DshSettingsZh.iconsOnly,
+  'read-only': DshSettingsZh.readOnly,
+  'workspace-write': DshSettingsZh.workspaceWrite,
+  'full-access': DshSettingsZh.fullAccess,
+  'ask': DshSettingsZh.ask,
+  'deny': DshSettingsZh.deny,
+  'allow': DshSettingsZh.allow,
+  'auto': DshSettingsZh.auto,
+  'standard': DshSettingsZh.standardMode,
+  'code': DshSettingsZh.codeMode,
+  'blank': DshSettingsZh.blankMode,
+  'native': DshSettingsZh.native,
+  'inherit': DshSettingsZh.inherit,
+  'zh-CN': DshSettingsZh.chinese,
   'en-US': 'English',
 };
 
@@ -939,6 +1120,26 @@ class _NamespaceFormState extends State<NamespaceForm> {
     return fallback;
   }
 
+  Object? topLevel(String key, [Object? fallback]) =>
+      current([key], object(widget.namespace['value'])[key] ?? fallback);
+
+  bool visibleField(String key) {
+    if (widget.namespace['ns'] == 'mini-menu' && key == 'tasks') return false;
+    if (widget.namespace['ns'] != 'computer-use') return true;
+    final adapter = '${topLevel('adapter', 'auto')}'.trim();
+    final auto = adapter.isEmpty || adapter == 'auto';
+    if (key == 'command') return auto || adapter == 'command';
+    if (const {
+      'browserExecutable',
+      'browserHeadless',
+      'maxBrowserSessions',
+    }.contains(key)) {
+      return adapter == 'native-browser' ||
+          (auto && '${topLevel('command', '')}'.trim().isEmpty);
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final schema = object(widget.namespace['schema']),
@@ -950,13 +1151,14 @@ class _NamespaceFormState extends State<NamespaceForm> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final key in {...fields.keys, ...value.keys})
-          if (![
-            'sessionLayouts',
-            'providers',
-            'models',
-            'modelPreferences',
-            'profiles',
-          ].contains(key))
+          if (visibleField(key) &&
+              ![
+                'sessionLayouts',
+                'providers',
+                'models',
+                'modelPreferences',
+                'profiles',
+              ].contains(key))
             field(
               context,
               [key],
@@ -965,11 +1167,14 @@ class _NamespaceFormState extends State<NamespaceForm> {
               refs,
             ),
         if (widget.namespace['applies'] == 'restart')
-          const Padding(
-            padding: EdgeInsets.only(bottom: 12),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
             child: Text(
-              '这些设置需要重启服务后生效',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+              DshSettingsZh.settingsRestartRequired,
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                color: DshTokens.of(context).muted,
+              ),
             ),
           ),
       ],
@@ -984,6 +1189,18 @@ class _NamespaceFormState extends State<NamespaceForm> {
     Json refs,
   ) {
     final ns = widget.namespace['ns'], key = path.last;
+    final rowKey = ValueKey('settings-field-$ns-${path.join('/')}');
+    final nativeTargetInactive =
+        ns == 'computer-use' &&
+        key == 'nativeTarget' &&
+        topLevel('nativeProtocol', false) != true;
+    final hint = nativeTargetInactive
+        ? DshSettingsFormZh.nativeTargetInactive
+        : ns == 'computer-use' &&
+              key == 'adapter' &&
+              {'', 'auto'}.contains('${topLevel('adapter', 'auto')}'.trim())
+        ? DshSettingsFormZh.autoAdapterHint
+        : '';
     final label =
         fieldLabels['$ns.$key'] ??
         fieldLabels[key] ??
@@ -998,18 +1215,21 @@ class _NamespaceFormState extends State<NamespaceForm> {
     }
     if (schema['type'] == 'boolean' || value is bool) {
       return _row(
+        context,
         label,
-        '',
+        hint,
         DshSwitch(
           value: value == true,
           onChanged: (v) => widget.onChange(path, v),
         ),
+        key: rowKey,
       );
     }
     if (options.isNotEmpty) {
       return _row(
+        context,
         label,
-        '',
+        hint,
         DshSelect<Object>(
           value: options.contains(value) ? value : null,
           options: {
@@ -1017,14 +1237,21 @@ class _NamespaceFormState extends State<NamespaceForm> {
               ?item:
                   optionLabels['$ns.$item'] ?? optionLabels['$item'] ?? '$item',
           },
-          onChanged: (v) => widget.onChange(path, v),
+          onChanged: nativeTargetInactive
+              ? null
+              : (v) => widget.onChange(path, v),
         ),
+        key: rowKey,
       );
     }
     if (value is Map) {
       final dict = object(schema['dict']);
       return ExpansionTile(
-        title: Text(label, style: const TextStyle(fontSize: 14)),
+        key: rowKey,
+        title: Text(
+          label,
+          style: const TextStyle(fontSize: DshTypography.sizeBody),
+        ),
         tilePadding: EdgeInsets.zero,
         children: [
           for (final child in value.keys)
@@ -1040,11 +1267,15 @@ class _NamespaceFormState extends State<NamespaceForm> {
     }
     if (value is List) {
       return Padding(
+        key: rowKey,
         padding: const EdgeInsets.symmetric(vertical: 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label, style: const TextStyle(fontSize: 14)),
+            Text(
+              label,
+              style: const TextStyle(fontSize: DshTypography.sizeBody),
+            ),
             const SizedBox(height: 8),
             for (final (index, item) in value.indexed)
               if (item is String)
@@ -1063,9 +1294,9 @@ class _NamespaceFormState extends State<NamespaceForm> {
                   ),
                 ),
             DshButton(
-              icon: LucideIcons.plus,
+              icon: DshIcons.plus.data,
               onPressed: () => widget.onChange(path, [...value, '']),
-              child: const Text('添加'),
+              child: const Text(DshSettingsZh.add),
             ),
           ],
         ),
@@ -1079,23 +1310,23 @@ class _NamespaceFormState extends State<NamespaceForm> {
     );
     final isNumber = schema['type'] == 'number' || value is num;
     return _row(
+      context,
       label,
-      '',
-      SizedBox(
-        width: 260,
-        child: DshField(
-          controller: input,
-          hint: object(schema['meta'])['default']?.toString(),
-          onChanged: (text) {
-            if (isNumber) {
-              final number = num.tryParse(text);
-              if (number != null) widget.onChange(path, number);
-            } else {
-              widget.onChange(path, text);
-            }
-          },
-        ),
+      hint,
+      DshField(
+        controller: input,
+        hint: object(schema['meta'])['default']?.toString(),
+        onChanged: (text) {
+          if (isNumber) {
+            final number = num.tryParse(text);
+            if (number != null) widget.onChange(path, number);
+          } else {
+            widget.onChange(path, text);
+          }
+        },
       ),
+      key: rowKey,
+      expandControl: true,
     );
   }
 }

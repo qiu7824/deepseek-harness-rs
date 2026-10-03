@@ -1,3 +1,5 @@
+import '../l10n/runtime_zh.dart';
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -27,10 +29,14 @@ class DesktopPreferences {
     );
   }
 
-  static Future<DesktopPreferences> load() async {
-    final prefs = DesktopPreferences();
-    if (await file.exists()) {
-      final data = object(jsonDecode(await file.readAsString()));
+  static Future<DesktopPreferences> load({
+    File? fromFile,
+    Future<void> Function(String content)? writer,
+  }) async {
+    final source = fromFile ?? file;
+    final prefs = DesktopPreferences(writer: writer);
+    if (await source.exists()) {
+      final data = object(jsonDecode(await source.readAsString()));
       prefs.address = data['address'] as String? ?? prefs.address;
       prefs.executable = data['executable'] as String? ?? '';
       prefs.sessionId = data['sessionId'] as String?;
@@ -127,20 +133,24 @@ class HostLauncher {
 
   static Future<int> start(String executable, String address) async {
     final uri = localHostUri(address);
-    if (uri.port == 0) throw const FormatException('请指定大于 0 的固定端口');
+    if (uri.port == 0) {
+      throw const FormatException(DshRuntimeZh.fixedPortRequired);
+    }
     if (uri.scheme != 'http' || uri.host == '::1') {
-      throw const FormatException('启动本机服务时请使用 http://127.0.0.1:端口');
+      throw const FormatException(DshRuntimeZh.localServiceAddressRequired);
     }
     final file = File(executable);
     if (!file.isAbsolute ||
         !await file.exists() ||
         (Platform.isWindows && !executable.toLowerCase().endsWith('.exe'))) {
       throw FormatException(
-        '请选择完整安装目录中的 ${DesktopPaths.hostName(Platform.operatingSystem)}',
+        DshRuntimeZh.hostExecutableRequired(
+          name: DesktopPaths.hostName(Platform.operatingSystem),
+        ),
       );
     }
     if (!Platform.isWindows && ((await file.stat()).mode & 0x49) == 0) {
-      throw const FormatException('所选服务程序没有执行权限。');
+      throw const FormatException(DshRuntimeZh.hostNotExecutable);
     }
     final portProbe = await ServerSocket.bind(
       InternetAddress.loopbackIPv4,
@@ -168,7 +178,7 @@ class HostLauncher {
           await Future<void>.delayed(const Duration(milliseconds: 150));
         }
       }
-      throw StateError('服务进程 ${process.pid} 尚未就绪，请检查服务日志或端口占用。');
+      throw StateError(DshRuntimeZh.hostNotReady(processId: process.pid));
     } finally {
       await probe.close();
     }

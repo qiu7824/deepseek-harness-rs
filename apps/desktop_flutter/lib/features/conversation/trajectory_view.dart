@@ -11,6 +11,9 @@ import '../../design/primitives.dart';
 import '../../src/controller.dart';
 import 'session_views.dart' show EventDetail, displayDate;
 
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
+
 Color traceColor(TraceRecord row, DshColors colors) => row.failed
     ? const Color(0xffe05252)
     : switch (row.kind) {
@@ -117,7 +120,10 @@ class _TraceViewState extends State<TraceView> {
             const SizedBox(width: 4),
             Text(
               label,
-              style: TextStyle(fontSize: 12, color: DshColors(context).muted),
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                color: DshColors(context).muted,
+              ),
             ),
           ],
         ),
@@ -200,7 +206,7 @@ class _TraceViewState extends State<TraceView> {
           return false;
         },
         child: display.isEmpty
-            ? const DshEmpty('没有匹配的轨迹')
+            ? const DshEmpty(DshConversationZh.noTrajectoryMatches)
             : ListView.builder(
                 key: const PageStorageKey('trajectory-ledger'),
                 controller: scroll,
@@ -260,10 +266,12 @@ class _TraceViewState extends State<TraceView> {
                                   width: 68,
                                   child: Text(
                                     item.turnStart && row.turn > 0
-                                        ? '第 ${row.turn} 轮'
+                                        ? DshConversationZh.turnLabel(
+                                            number: row.turn,
+                                          )
                                         : '',
                                     style: TextStyle(
-                                      fontSize: 10,
+                                      fontSize: DshTypography.sizeCaption,
                                       color: colors.muted,
                                     ),
                                     textAlign: TextAlign.center,
@@ -282,7 +290,7 @@ class _TraceViewState extends State<TraceView> {
                                       child: Text(
                                         row.role,
                                         style: TextStyle(
-                                          fontSize: 11,
+                                          fontSize: DshTypography.sizeCaption,
                                           color: color,
                                         ),
                                       ),
@@ -308,9 +316,14 @@ class _TraceViewState extends State<TraceView> {
                                                   maxLines: 1,
                                                   overflow:
                                                       TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                    fontFamily: 'Consolas',
-                                                    fontSize: 12,
+                                                  style: TextStyle(
+                                                    fontFamily: DshTypography
+                                                        .monospaceFamily,
+                                                    fontFamilyFallback:
+                                                        DshTypography
+                                                            .monospaceFallback,
+                                                    fontSize: DshTypography
+                                                        .sizeCaption,
                                                   ),
                                                 ),
                                               ),
@@ -322,8 +335,10 @@ class _TraceViewState extends State<TraceView> {
                                                   overflow:
                                                       TextOverflow.ellipsis,
                                                   style: TextStyle(
-                                                    fontFamily: 'Consolas',
-                                                    fontSize: 12,
+                                                    fontFamily: DshTypography
+                                                        .monospaceFamily,
+                                                    fontSize: DshTypography
+                                                        .sizeCaption,
                                                     color: colors.muted,
                                                   ),
                                                 ),
@@ -331,7 +346,8 @@ class _TraceViewState extends State<TraceView> {
                                               Text(
                                                 ' → ',
                                                 style: TextStyle(
-                                                  fontSize: 12,
+                                                  fontSize:
+                                                      DshTypography.sizeCaption,
                                                   color: colors.muted,
                                                 ),
                                               ),
@@ -342,9 +358,14 @@ class _TraceViewState extends State<TraceView> {
                                                   maxLines: 1,
                                                   overflow:
                                                       TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                    fontFamily: 'Consolas',
-                                                    fontSize: 12,
+                                                  style: TextStyle(
+                                                    fontFamily: DshTypography
+                                                        .monospaceFamily,
+                                                    fontFamilyFallback:
+                                                        DshTypography
+                                                            .monospaceFallback,
+                                                    fontSize: DshTypography
+                                                        .sizeCaption,
                                                   ),
                                                 ),
                                               ),
@@ -352,13 +373,24 @@ class _TraceViewState extends State<TraceView> {
                                           )
                                         : Text(
                                             item.summaryCount > 0
-                                                ? '${item.summaryKind == 'turn' ? '轮次' : '调用'}已收起 · ${item.summaryCount} 项'
+                                                ? DshConversationZh.collapsedSummary(
+                                                    kind:
+                                                        item.summaryKind ==
+                                                            'turn'
+                                                        ? DshConversationZh
+                                                              .turns
+                                                        : DshConversationZh
+                                                              .calls,
+                                                    count: item.summaryCount,
+                                                  )
                                                 : row.preview,
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
-                                              fontSize: 12,
-                                              fontFamily: 'Consolas',
+                                              fontSize:
+                                                  DshTypography.sizeCaption,
+                                              fontFamily:
+                                                  DshTypography.monospaceFamily,
                                               color: colors.text,
                                             ),
                                           ),
@@ -368,9 +400,9 @@ class _TraceViewState extends State<TraceView> {
                                   Padding(
                                     padding: const EdgeInsets.only(right: 8),
                                     child: Text(
-                                      '运行中',
+                                      DshConversationZh.running,
                                       style: TextStyle(
-                                        fontSize: 10,
+                                        fontSize: DshTypography.sizeCaption,
                                         color: colors.muted,
                                       ),
                                     ),
@@ -396,9 +428,11 @@ class _TraceViewState extends State<TraceView> {
             child: Row(
               children: [
                 toggle(
-                  '耗时',
-                  actualDuration ? '按等宽操作显示' : '按实际耗时显示',
-                  LucideIcons.clock3,
+                  DshConversationZh.duration,
+                  actualDuration
+                      ? DshConversationZh.equalWidthOperations
+                      : DshConversationZh.actualDurationOperations,
+                  DshIcons.clock3.data,
                   actualDuration,
                   () {
                     setState(() {
@@ -411,9 +445,11 @@ class _TraceViewState extends State<TraceView> {
                   },
                 ),
                 toggle(
-                  '轮次',
-                  collapseTurns ? '展开轮次' : '收起轮次',
-                  LucideIcons.panelLeft,
+                  DshConversationZh.turns,
+                  collapseTurns
+                      ? DshConversationZh.expandTurns
+                      : DshConversationZh.collapseTurns,
+                  DshIcons.panelLeft.data,
                   collapseTurns,
                   () => setState(() {
                     collapseTurns = !collapseTurns;
@@ -421,9 +457,11 @@ class _TraceViewState extends State<TraceView> {
                   }),
                 ),
                 toggle(
-                  '调用',
-                  collapseCalls ? '展开调用' : '收起调用',
-                  LucideIcons.square,
+                  DshConversationZh.calls,
+                  collapseCalls
+                      ? DshConversationZh.expandCalls
+                      : DshConversationZh.collapseCalls,
+                  DshIcons.square.data,
                   collapseCalls,
                   () => setState(() {
                     collapseCalls = !collapseCalls;
@@ -442,13 +480,15 @@ class _TraceViewState extends State<TraceView> {
                           inputFormatters: [
                             LengthLimitingTextInputFormatter(512),
                           ],
-                          style: const TextStyle(fontSize: 12),
+                          style: const TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                          ),
                           onChanged: (_) => setState(() {
                             follow = false;
                           }),
                           decoration: InputDecoration(
                             isDense: true,
-                            hintText: '搜索轨迹',
+                            hintText: DshConversationZh.searchTrajectory,
                             filled: true,
                             fillColor: colors.base,
                             contentPadding: const EdgeInsets.symmetric(
@@ -456,7 +496,7 @@ class _TraceViewState extends State<TraceView> {
                               vertical: 3,
                             ),
                             prefixIcon: DshGlyph(
-                              LucideIcons.search,
+                              DshIcons.search.data,
                               size: 12,
                               color: colors.muted,
                             ),
@@ -494,21 +534,25 @@ class _TraceViewState extends State<TraceView> {
                   if (c.window.hasBefore)
                     DshButton(
                       height: 28,
-                      fontSize: 12,
+                      fontSize: DshTypography.sizeCaption,
                       onPressed: c.loading ? null : () => loadOlder(display),
-                      child: Text(c.loading ? '正在加载更早记录…' : '加载更早记录'),
+                      child: Text(
+                        c.loading
+                            ? DshConversationZh.loadingEarlierHistory
+                            : DshConversationZh.loadEarlier,
+                      ),
                     ),
                   if (c.window.hasAfter)
                     DshButton(
                       height: 28,
-                      fontSize: 12,
+                      fontSize: DshTypography.sizeCaption,
                       onPressed: c.loading
                           ? null
                           : () {
                               follow = true;
                               c.run(() => c.loadHistory());
                             },
-                      child: const Text('返回最新'),
+                      child: const Text(DshConversationZh.backToLatest),
                     ),
                 ],
               ),
@@ -616,14 +660,21 @@ class _TraceTimelineState extends State<TraceTimeline> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                for (final label in ['输入', '模型', '工具'])
+                for (final label in [
+                  DshConversationZh.input,
+                  DshConversationZh.model,
+                  DshConversationZh.tool,
+                ])
                   Padding(
                     padding: const EdgeInsets.only(right: 4),
                     child: SizedBox(
                       height: 14,
                       child: Text(
                         label,
-                        style: TextStyle(fontSize: 10, color: colors.muted),
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                          color: colors.muted,
+                        ),
                       ),
                     ),
                   ),
@@ -633,7 +684,7 @@ class _TraceTimelineState extends State<TraceTimeline> {
           Expanded(
             child: LayoutBuilder(
               builder: (context, box) => Semantics(
-                label: '时间线概览；横向拖动聚焦事件',
+                label: DshConversationZh.timelineOverviewHint,
                 onIncrease: () => step(1),
                 onDecrease: () => step(-1),
                 child: Focus(
@@ -799,11 +850,17 @@ class TraceDetails extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    '事件详情 · ${row.role}',
-                    style: const TextStyle(fontSize: 13),
+                    DshConversationZh.eventDetailsForRole(role: row.role),
+                    style: const TextStyle(
+                      fontSize: DshTypography.sizeAuxiliary,
+                    ),
                   ),
                 ),
-                DshIcon(LucideIcons.x, label: '关闭事件详情', onPressed: onClose),
+                DshIcon(
+                  DshIcons.close.data,
+                  label: DshConversationZh.closeEventDetails,
+                  onPressed: onClose,
+                ),
               ],
             ),
           ),
@@ -812,29 +869,30 @@ class TraceDetails extends StatelessWidget {
               padding: const EdgeInsets.all(12),
               children: [
                 for (final field in <String, String>{
-                  '状态':
+                  DshConversationZh.status:
                       const {
-                        'running': '运行中',
-                        'complete': '已完成',
-                        'failed': '失败',
-                        'interrupted': '已中断',
+                        'running': DshConversationZh.running,
+                        'complete': DshConversationZh.completed,
+                        'failed': DshConversationZh.failed,
+                        'interrupted': DshConversationZh.interrupted,
                       }[row.status] ??
-                      '未提供',
-                  '轮次／步骤': '${row.turn} / ${row.step}',
-                  '开始时间': displayDate(row.startTime),
-                  '结束时间': displayDate(row.endTime),
-                  '总耗时': row.durationMs == null
-                      ? '未提供'
+                      DshConversationZh.unavailable,
+                  DshConversationZh.turnAndStep: '${row.turn} / ${row.step}',
+                  DshConversationZh.startTime: displayDate(row.startTime),
+                  DshConversationZh.endTime: displayDate(row.endTime),
+                  DshConversationZh.totalDuration: row.durationMs == null
+                      ? DshConversationZh.unavailable
                       : '${row.durationMs} ms',
-                  '首 Token 耗时':
+                  DshConversationZh.firstTokenDuration:
                       row.firstTokenTime == null || row.startTime == null
-                      ? '未提供'
+                      ? DshConversationZh.unavailable
                       : '${math.max(0, row.firstTokenTime! - row.startTime!)} ms',
                   if (row.kind == 'assistant')
-                    '提供方／模型':
-                        '${source['provider'] ?? '未提供'} / ${source['model'] ?? '未提供'}',
+                    DshConversationZh.providerAndModel:
+                        '${source['provider'] ?? DshConversationZh.unavailable} / ${source['model'] ?? DshConversationZh.unavailable}',
                   if (usage.isNotEmpty)
-                    '输出 Token': '${usage['outputTokens'] ?? '未提供'}',
+                    DshConversationZh.outputTokenLabel:
+                        '${usage['outputTokens'] ?? DshConversationZh.unavailable}',
                 }.entries)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
@@ -843,25 +901,35 @@ class TraceDetails extends StatelessWidget {
                       children: [
                         Text(
                           field.key,
-                          style: TextStyle(fontSize: 11, color: colors.muted),
+                          style: TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                            color: colors.muted,
+                          ),
                         ),
                         SelectableText(
                           field.value,
-                          style: const TextStyle(fontSize: 12),
+                          style: const TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                          ),
                         ),
                       ],
                     ),
                   ),
                 SelectableText(
                   row.preview,
-                  style: const TextStyle(fontSize: 12, height: 1.6),
+                  style: const TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    height: 1.6,
+                  ),
                 ),
                 const SizedBox(height: 12),
                 if (row.header != null)
                   DshButton(
                     height: 28,
-                    fontSize: 12,
-                    child: const Text('请求选项与系统提示词'),
+                    fontSize: DshTypography.sizeCaption,
+                    child: const Text(
+                      DshConversationZh.requestOptionsAndPrompt,
+                    ),
                     onPressed: () => showDialog<void>(
                       context: context,
                       builder: (_) => EventDetail(event: row.header!),
@@ -870,8 +938,8 @@ class TraceDetails extends StatelessWidget {
                 if (row.result != null)
                   DshButton(
                     height: 28,
-                    fontSize: 12,
-                    child: const Text('完整结果'),
+                    fontSize: DshTypography.sizeCaption,
+                    child: const Text(DshConversationZh.fullResult),
                     onPressed: () => showDialog<void>(
                       context: context,
                       builder: (_) => EventDetail(event: row.result!),
@@ -879,8 +947,11 @@ class TraceDetails extends StatelessWidget {
                   ),
                 const SizedBox(height: 8),
                 Text(
-                  '原始事件 · ${row.events.length}',
-                  style: TextStyle(fontSize: 11, color: colors.muted),
+                  DshConversationZh.rawEventCount(count: row.events.length),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
                 SizedBox(
                   height: math.min(180, row.events.length * 28.0),
@@ -891,7 +962,7 @@ class TraceDetails extends StatelessWidget {
                       final event = row.events[index];
                       return DshButton(
                         height: 28,
-                        fontSize: 11,
+                        fontSize: DshTypography.sizeCaption,
                         child: Text(
                           '#${event.seq} ${event.type}',
                           maxLines: 1,

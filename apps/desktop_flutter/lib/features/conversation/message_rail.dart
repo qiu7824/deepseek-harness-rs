@@ -6,13 +6,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/primitives.dart';
+import '../../design/motion.dart';
 import '../../design/typography.dart';
+
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class MessageRailEntry {
   const MessageRailEntry(this.seq, this.text, this.images);
   final int seq, images;
   final String text;
-  String get label => text.isEmpty ? '（仅图片）' : text;
+  String get label => text.isEmpty ? DshConversationZh.imageOnly : text;
 }
 
 String railSnippet(String text, [int length = 200]) {
@@ -165,11 +168,14 @@ class _UserMessageRailState extends State<UserMessageRail> {
           final preview =
               widget.error ??
               (active != null && active! < entries.length
-                  ? '${entries[active!].label}${entries[active!].images > 0 ? '\n含图片 ${entries[active!].images} 张' : ''}'
+                  ? DshConversationZh.railMessageWithImages(
+                      text: entries[active!].label,
+                      imageCount: entries[active!].images,
+                    )
                   : '');
           final previewStyle = DshTypography.body.copyWith(
             color: Colors.white,
-            fontSize: 13,
+            fontSize: DshTypography.sizeAuxiliary,
             height: 20 / 13,
           );
           var previewWidth = 0.0, previewHeight = 0.0;
@@ -199,8 +205,11 @@ class _UserMessageRailState extends State<UserMessageRail> {
                 width: 26,
                 height: entries.length * 10,
                 child: Semantics(
-                  label:
-                      '你说过的话：${widget.entries.length} 条，当前 ${start + 1}-${start + entries.length}',
+                  label: DshConversationZh.railRange(
+                    count: widget.entries.length,
+                    first: start + 1,
+                    last: start + entries.length,
+                  ),
                   child: Focus(
                     focusNode: widget.focusNode,
                     onFocusChange: (focused) {
@@ -264,8 +273,9 @@ class _UserMessageRailState extends State<UserMessageRail> {
                           for (var i = 0; i < entries.length; i++)
                             Semantics(
                               button: true,
-                              label:
-                                  '跳到你说的话：${railSnippet(entries[i].label, 64)}',
+                              label: DshConversationZh.jumpToUserMessage(
+                                snippet: railSnippet(entries[i].label, 64),
+                              ),
                               selected: entries[i].seq == current,
                               child: MouseRegion(
                                 cursor: SystemMouseCursors.click,
@@ -287,9 +297,11 @@ class _UserMessageRailState extends State<UserMessageRail> {
                                     child: Align(
                                       alignment: Alignment.centerLeft,
                                       child: AnimatedContainer(
-                                        duration: const Duration(
-                                          milliseconds: 120,
+                                        duration: DshMotion.duration(
+                                          context,
+                                          DshMotion.quick,
                                         ),
+                                        curve: DshMotion.curve,
                                         height: 2,
                                         width: active == null
                                             ? 12

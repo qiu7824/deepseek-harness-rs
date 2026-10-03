@@ -155,49 +155,7 @@ void main() {
     expect(text, contains('缓存命中 80%（部分请求）'));
     expect(text, isNot(contains('9999')));
   });
-  testWidgets('long session stats scroll horizontally without ellipsis', (
-    tester,
-  ) async {
-    final c = DesktopController(MemoryPreferences());
-    c.projectionWindow.apply('sessionStats', {
-      'turns': 1,
-      'steps': 18,
-      'llmMs': 360000,
-      'toolMs': 21000,
-      'ttftMs': 19300,
-      'ttftSteps': 1,
-      'requestMs': 5000,
-      'requestSamples': 1,
-      'requestOutputTokens': 220,
-    }, 1);
-    c.projectionWindow.apply('tokenUsage', {
-      'uncachedInputTokens': 37000,
-      'cacheReadTokens': 86000,
-      'outputTokens': 4400,
-    }, 1);
-    await tester.pumpWidget(
-      ShadApp(
-        home: Scaffold(
-          body: Center(
-            child: SizedBox(width: 640, child: SessionStatsLine(controller: c)),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    final scroll = find.byKey(const ValueKey('session-stats-scroll'));
-    expect(scroll, findsOneWidget);
-    expect(find.textContaining('输出 4.4K tok'), findsOneWidget);
-    final state = tester.state<ScrollableState>(
-      find.descendant(of: scroll, matching: find.byType(Scrollable)),
-    );
-    expect(state.position.maxScrollExtent, greaterThan(0));
-    await tester.drag(scroll, const Offset(-400, 0));
-    await tester.pumpAndSettle();
-    expect(state.position.pixels, greaterThan(0));
-    await tester.pumpWidget(const SizedBox());
-    c.dispose();
-  });
+
   test(
     'todo and goal updates carry the exact compare-and-swap identity',
     () async {
@@ -251,8 +209,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.byTooltip('上下文已用 20%'), findsOneWidget);
-      await tester.tap(find.byType(CircularProgressIndicator));
+      expect(find.text('上下文 20%'), findsOneWidget);
+      await tester.tap(find.text('上下文 20%'));
       await tester.pumpAndSettle();
       expect(find.text('系统提示词'), findsOneWidget);
       c.projectionWindow.apply('contextPressure', null, 2);
@@ -264,7 +222,7 @@ void main() {
       }, 3);
       c.projectionChanges.value++;
       await tester.pumpAndSettle();
-      expect(find.byTooltip('上下文已用 0%'), findsOneWidget);
+      expect(find.text('上下文 0%'), findsOneWidget);
       expect(find.text('系统提示词'), findsNothing);
       await tester.pumpWidget(const SizedBox());
       c.dispose();

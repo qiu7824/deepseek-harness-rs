@@ -73,7 +73,7 @@ void main() {
       expect(find.byType(DshGlyph), findsOneWidget);
       expect(
         tester.widget<DshGlyph>(find.byType(DshGlyph)).data,
-        LucideIcons.folder,
+        DshIcons.folder.data,
       );
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await mouse.addPointer(location: const Offset(700, 500));
@@ -81,7 +81,7 @@ void main() {
       await tester.pump();
       expect(
         tester.widget<DshGlyph>(find.byType(DshGlyph)).data,
-        LucideIcons.chevronDown,
+        DshIcons.chevronDown.data,
       );
       expect(find.byTooltip('在此工作区新建会话'), findsNothing);
       await mouse.removePointer();
@@ -247,19 +247,27 @@ void main() {
       await tester.pumpWidget(DesktopApp(controller: c));
       await tester.pumpAndSettle();
       expect(find.text('协作'), findsNothing);
-      expect(find.byTooltip('协作'), findsOneWidget);
-      expect(find.byTooltip('下载会话日志'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('more-header-menu')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('session-menu-team')), findsOneWidget);
+      expect(find.text('下载会话日志'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
       c.teamSettings = {'showButton': false};
       c.emit();
       await tester.pumpAndSettle();
-      expect(find.byTooltip('协作'), findsNothing);
+      await tester.tap(find.byKey(const Key('more-header-menu')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('session-menu-team')), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
       expect(find.byTooltip('本机服务连接'), findsNothing);
       await tester.tap(
         find.byKey(const ValueKey('session-s')),
         buttons: kSecondaryMouseButton,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('复制对话 ID'));
+      await tester.tap(find.text('复制会话 ID'));
       await tester.pumpAndSettle();
       expect(clipboard, 's');
       await tester.pumpWidget(const SizedBox());

@@ -13,41 +13,45 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import 'controller_test.dart' show MemoryPreferences;
 
 void main() {
-  testWidgets('assistant output uses Web typography and heading margins', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      ShadApp(
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: MessageCard(
-              item: TranscriptItem(
-                id: 'reply',
-                kind: 'assistant',
-                text:
-                    '正文\n\n# 一级标题\n\n## 二级标题\n\n### 三级标题\n\n#### 四级标题\n\n- 列表',
+  testWidgets(
+    'assistant output uses reading roles and stable heading margins',
+    (tester) async {
+      await tester.pumpWidget(
+        ShadApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: MessageCard(
+                item: TranscriptItem(
+                  id: 'reply',
+                  kind: 'assistant',
+                  text: '正文\n\n# 一级标题\n\n## 二级标题\n\n### 三级标题\n\n#### 四级标题\n\n- 列表',
+                ),
               ),
             ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    final blocks = tester
-        .widgetList<DshMarkdownBlock>(find.byType(DshMarkdownBlock))
-        .toList();
-    final style = blocks.first.style;
-    expect(style.p!.fontSize, 14);
-    expect(style.p!.height! * style.p!.fontSize!, 24);
-    expect(style.h1!.fontSize, 21);
-    expect(style.h2!.fontSize, 19);
-    expect(style.h3!.fontSize, 18);
-    expect(style.h4!.fontSize, 14);
-    expect(style.h2!.fontWeight, FontWeight.w700);
-    expect(conversationBlockSpacing(blocks[0].node, blocks[1].node), 32);
-    expect(conversationBlockSpacing(blocks[4].node, blocks[5].node), 8);
-    expect(tester.takeException(), isNull);
-  });
+      );
+      await tester.pumpAndSettle();
+      final blocks = tester
+          .widgetList<DshMarkdownBlock>(find.byType(DshMarkdownBlock))
+          .toList();
+      final style = blocks.first.style;
+      expect(style.p!.fontSize, 15);
+      expect(style.p!.height! * style.p!.fontSize!, 24);
+      expect(style.h1!.fontSize, 22);
+      expect(style.h1!.height! * style.h1!.fontSize!, closeTo(30, .001));
+      expect(style.h2!.fontSize, 18);
+      expect(style.h2!.height! * style.h2!.fontSize!, closeTo(26, .001));
+      expect(style.h3!.fontSize, 16);
+      expect(style.h3!.height! * style.h3!.fontSize!, closeTo(24, .001));
+      expect(style.h4!.fontSize, 15);
+      expect(style.code!.fontSize, 13);
+      expect(style.h2!.fontWeight, FontWeight.w700);
+      expect(conversationBlockSpacing(blocks[0].node, blocks[1].node), 32);
+      expect(conversationBlockSpacing(blocks[4].node, blocks[5].node), 8);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('math and Mermaid remain native blocks after renderer reuse', (
     tester,

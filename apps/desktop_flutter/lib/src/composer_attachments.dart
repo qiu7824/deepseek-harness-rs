@@ -1,3 +1,5 @@
+import '../l10n/runtime_zh.dart';
+
 import 'dart:async';
 import 'dart:ui' as ui;
 
@@ -104,7 +106,7 @@ Future<Uint8List> pngFromBgra(Uint8List pixels, int width, int height) async {
       height <= 0 ||
       width * height > maxClipboardImagePixels ||
       pixels.length != width * height * 4) {
-    throw StateError('剪贴板图片尺寸无效');
+    throw StateError(DshRuntimeZh.invalidClipboardImage);
   }
   final decoded = Completer<ui.Image>();
   ui.decodeImageFromPixels(
@@ -117,9 +119,9 @@ Future<Uint8List> pngFromBgra(Uint8List pixels, int width, int height) async {
   final image = await decoded.future;
   try {
     final png = await image.toByteData(format: ui.ImageByteFormat.png);
-    if (png == null) throw StateError('无法编码剪贴板图片');
+    if (png == null) throw StateError(DshRuntimeZh.clipboardEncodingFailed);
     if (png.lengthInBytes > maxClipboardAttachmentBytes) {
-      throw StateError('附件总大小不能超过 16 MiB');
+      throw StateError(DshRuntimeZh.attachmentsTooLarge);
     }
     return png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes);
   } finally {
@@ -155,10 +157,10 @@ class NativeClipboard {
           continue;
         }
         throw StateError(switch (e.code) {
-          'clipboard-busy' => '剪贴板正被其他程序使用，请重试。',
-          'clipboard-too-large' => '附件总大小不能超过 16 MiB，图片像素不能超过 3200 万。',
-          'clipboard-too-many-files' => '单条消息最多添加 8 个附件',
-          _ => '无法读取剪贴板图片或文件，请重新复制后重试。',
+          'clipboard-busy' => DshRuntimeZh.clipboardBusy,
+          'clipboard-too-large' => DshRuntimeZh.clipboardTooLarge,
+          'clipboard-too-many-files' => DshRuntimeZh.tooManyAttachments,
+          _ => DshRuntimeZh.clipboardReadFailed,
         });
       }
     }
@@ -167,12 +169,12 @@ class NativeClipboard {
       for (final file in raw['files'] as List? ?? const [])
         if (file is String && file.isNotEmpty) file,
     ];
-    if (files.length > 8) throw StateError('单条消息最多添加 8 个附件');
+    if (files.length > 8) throw StateError(DshRuntimeZh.tooManyAttachments);
     if (files.isNotEmpty) return ClipboardAttachments(files: files);
     final png = raw['png'];
     if (png is Uint8List) {
       if (png.length > maxClipboardAttachmentBytes) {
-        throw StateError('附件总大小不能超过 16 MiB');
+        throw StateError(DshRuntimeZh.attachmentsTooLarge);
       }
       final trimmed = trimPngStream(png);
       if (trimmed != null && trimmed.length >= 24) {
@@ -182,7 +184,7 @@ class NativeClipboard {
         if (width == 0 ||
             height == 0 ||
             width * height > maxClipboardImagePixels) {
-          throw StateError('剪贴板图片尺寸无效或像素超过 3200 万');
+          throw StateError(DshRuntimeZh.clipboardImagePixelLimit);
         }
         return ClipboardAttachments(png: trimmed);
       }

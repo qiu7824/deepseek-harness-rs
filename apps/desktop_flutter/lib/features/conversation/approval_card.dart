@@ -1,9 +1,12 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class ApprovalCard extends StatefulWidget {
   const ApprovalCard({
@@ -19,7 +22,7 @@ class ApprovalCard extends StatefulWidget {
 
 class _ApprovalCardState extends State<ApprovalCard> {
   bool busy = false;
-  String? error;
+  Object? error;
   Future<void> answer(String outcome) async {
     final c = widget.controller, frame = widget.frame;
     if (busy || !c.connected || c.answering.contains(frame.rpcId)) return;
@@ -37,7 +40,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
       if (mounted) {
         setState(() {
           busy = false;
-          error = '$e';
+          error = e;
         });
       }
     }
@@ -45,7 +48,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
+    listenable: widget.controller.interactionChanges,
     builder: (_, _) {
       final c = widget.controller,
           data = widget.frame.payload,
@@ -66,19 +69,19 @@ class _ApprovalCardState extends State<ApprovalCard> {
       final rememberable = data['rememberable'] == true;
       final grant = '${data['grantKey'] ?? ''}';
       final scope = !rememberable
-          ? '此请求只支持单次授权'
+          ? DshConversationZh.approvalOnceOnly
           : grant.startsWith('write-dir:')
-          ? '记忆只覆盖同一目录的写入；其他目录和子目录仍需审批。'
+          ? DshConversationZh.approvalDirectoryScope
           : grant.startsWith('shell:')
-          ? '记忆只覆盖这条命令；其他命令仍需审批。'
-          : '仅记住与本次请求匹配的授权范围';
+          ? DshConversationZh.approvalCommandScope
+          : DshConversationZh.approvalMatchingScope;
       return Container(
         key: const ValueKey('approval-card'),
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: colors.base,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: const Color(0xffedc46b)),
+          borderRadius: BorderRadius.circular(colors.tokens.radiusCard),
+          border: Border.all(color: colors.tokens.warning.border),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -86,23 +89,23 @@ class _ApprovalCardState extends State<ApprovalCard> {
           children: [
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: colors.dark
-                  ? const Color(0xff3b321d)
-                  : const Color(0xfffff6df),
+              color: colors.tokens.warning.background,
               child: Row(
                 children: [
-                  const DshGlyph(
-                    LucideIcons.shieldCheck,
+                  DshGlyph(
+                    DshIcons.shieldCheck.data,
                     size: 16,
-                    color: Color(0xffab7300),
+                    color: colors.warning,
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    busy ? '正在提交审批…' : '等待审批',
-                    style: const TextStyle(
-                      fontSize: 13,
+                    busy
+                        ? DshConversationZh.submittingApproval
+                        : DshConversationZh.awaitingApproval,
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeAuxiliary,
                       height: 18 / 13,
-                      color: Color(0xffab7300),
+                      color: colors.warning,
                     ),
                   ),
                 ],
@@ -122,10 +125,13 @@ class _ApprovalCardState extends State<ApprovalCard> {
                     children: [
                       SelectableText(
                         displayPathText(
-                          '${data['reason'] ?? '${data['toolName']} 请求执行权限'}',
+                          DshConversationZh.approvalReason(
+                            reason: data['reason'],
+                            tool: data['toolName'],
+                          ),
                         ),
                         style: TextStyle(
-                          fontSize: 15,
+                          fontSize: DshTypography.sizeConversation,
                           height: 24 / 15,
                           fontWeight: FontWeight.w500,
                           color: colors.text,
@@ -136,8 +142,9 @@ class _ApprovalCardState extends State<ApprovalCard> {
                         SelectableText(
                           displayPathText('$command'),
                           style: TextStyle(
-                            fontFamily: 'Consolas',
-                            fontSize: 13,
+                            fontFamily: DshTypography.monospaceFamily,
+                            fontFamilyFallback: DshTypography.monospaceFallback,
+                            fontSize: DshTypography.sizeAuxiliary,
                             height: 20 / 13,
                             color: colors.muted,
                           ),
@@ -147,19 +154,12 @@ class _ApprovalCardState extends State<ApprovalCard> {
                       Text(
                         scope,
                         style: TextStyle(
-                          fontSize: 13,
+                          fontSize: DshTypography.sizeAuxiliary,
                           height: 20 / 13,
                           color: colors.muted,
                         ),
                       ),
-                      if (error != null)
-                        Text(
-                          error!,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: Colors.red,
-                          ),
-                        ),
+                      if (error != null) DshErrorView(error: error!),
                     ],
                   ),
                 ),
@@ -177,14 +177,14 @@ class _ApprovalCardState extends State<ApprovalCard> {
                     pill: true,
                     outline: true,
                     onPressed: enabled ? () => answer('rejected') : null,
-                    child: const Text('拒绝'),
+                    child: const Text(DshConversationZh.deny),
                   ),
                   DshButton(
                     height: 36,
                     pill: true,
                     primary: true,
                     onPressed: enabled ? () => answer('allowed-once') : null,
-                    child: const Text('允许一次'),
+                    child: const Text(DshConversationZh.allowOnce),
                   ),
                   Tooltip(
                     message: scope,
@@ -195,7 +195,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
                       onPressed: enabled && rememberable
                           ? () => answer('allowed-always')
                           : null,
-                      child: const Text('始终允许'),
+                      child: const Text(DshConversationZh.allowAlways),
                     ),
                   ),
                 ],

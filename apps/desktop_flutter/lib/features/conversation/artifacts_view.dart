@@ -5,12 +5,15 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../design/context_menu.dart';
 import '../workbench/workbench_panel.dart' show NativeFileViewer, previewUrl;
 import 'session_status.dart' show ProjectionTextEditor;
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 String artifactName(String path) => path.replaceAll('\\', '/').split('/').last;
 String artifactDisplayPath(String path) => displayPath(path);
@@ -26,17 +29,17 @@ String artifactBytes(Object? value) {
 }
 
 const artifactLabels = {
-  'created': '新增',
-  'modified': '修改',
-  'presented': '已交付',
-  'deleted': '已移除',
-  'active': '运行中',
-  'retained': '保留中',
-  'candidate': '待交付',
-  'interrupted': '运行中断',
-  'failed': '失败材料',
-  'quarantined': '恢复队列',
-  'reclaimed': '已回收',
+  'created': DshConversationZh.added,
+  'modified': DshConversationZh.modified,
+  'presented': DshConversationZh.delivered,
+  'deleted': DshConversationZh.removed,
+  'active': DshConversationZh.running,
+  'retained': DshConversationZh.retained,
+  'candidate': DshConversationZh.awaitingDelivery,
+  'interrupted': DshConversationZh.runInterrupted,
+  'failed': DshConversationZh.failureArtifacts,
+  'quarantined': DshConversationZh.recoveryQueue,
+  'reclaimed': DshConversationZh.reclaimed,
 };
 
 /// One bounded request at a time, with screen/app visibility owning polling.
@@ -49,7 +52,8 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
   RequestScope? reader;
   Timer? poll;
   Json data = {};
-  String? error;
+  Object? error;
+  bool mutationFailed = false;
   bool loading = true,
       busy = false,
       working = false,
@@ -134,13 +138,13 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
       setState(() {
         data = result;
         loading = false;
-        error = null;
+        if (!mutationFailed) error = null;
         failures = 0;
       });
     } catch (e) {
-      if (active && token == generation) {
+      if (active && token == generation && !mutationFailed) {
         setState(() {
-          error = '$e';
+          error = e;
           loading = false;
           failures++;
         });
@@ -164,11 +168,17 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
       busy = true;
       working = indicate;
       error = null;
+      mutationFailed = false;
     });
     try {
       await work();
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted) {
+        setState(() {
+          error = e;
+          mutationFailed = true;
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -187,12 +197,32 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
   Widget notices() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      if (error != null || data['warning'] != null)
+      if (error != null)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text(
-            error ?? '${data['warning']}',
-            style: const TextStyle(color: Colors.red, fontSize: 13),
+          child: DshErrorView(
+            error: error!,
+            onRetry: mutationFailed || busy
+                ? null
+                : () {
+                    pause();
+                    setState(() {
+                      error = null;
+                      loading = data.isEmpty;
+                    });
+                    load();
+                  },
+            onDismiss: () => setState(() {
+              error = null;
+              mutationFailed = false;
+            }),
+          ),
+        ),
+      if (data['warning'] != null)
+        Text(
+          DshError.redact('${data['warning']}'),
+          style: DshTypography.body.copyWith(
+            color: DshTokens.of(context).warning.foreground,
           ),
         ),
       if (working) const LinearProgressIndicator(minHeight: 1),
@@ -242,7 +272,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
           context: context,
           barrierDismissible: false,
           builder: (_) => ProjectionTextEditor(
-            title: '重命名产物',
+            title: DshConversationZh.renameArtifact,
             maxLines: 1,
             width: 392,
             initial: path,
@@ -254,7 +284,14 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
       return;
     }
     if (intent == 'trash') {
-      if (!await confirmAction(context, '移入垃圾槽', path, action: '移入')) return;
+      if (!await confirmAction(
+        context,
+        DshConversationZh.moveToTrash,
+        path,
+        action: DshConversationZh.move,
+      )) {
+        return;
+      }
       if (mounted) await run(() => change(row, 'trash'));
       return;
     }
@@ -338,23 +375,23 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                   children: [
                     const Expanded(
                       child: Text(
-                        '产物',
+                        DshConversationZh.artifacts,
                         style: TextStyle(
-                          fontSize: 14,
+                          fontSize: DshTypography.sizeBody,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
                     Text(
-                      '${rows.length} 个文件',
-                      style: const TextStyle(fontSize: 14),
+                      DshConversationZh.fileCount(count: rows.length),
+                      style: const TextStyle(fontSize: DshTypography.sizeBody),
                     ),
                     const SizedBox(width: 12),
                     DshButton(
                       outline: true,
                       height: 33,
                       onPressed: busy ? null : load,
-                      child: const Text('刷新'),
+                      child: const Text(DshConversationZh.refresh),
                     ),
                   ],
                 ),
@@ -364,8 +401,8 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 8),
                   child: Text(
-                    '工作区较大，扫描已达到文件数量上限；工具记录的变更仍会显示。',
-                    style: TextStyle(fontSize: 12),
+                    DshConversationZh.artifactScanLimit,
+                    style: TextStyle(fontSize: DshTypography.sizeCaption),
                   ),
                 ),
               Flexible(
@@ -380,7 +417,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : rows.isEmpty
-                        ? const DshEmpty('此任务暂未记录文件变更')
+                        ? const DshEmpty(DshConversationZh.noArtifactChanges)
                         : ListView.builder(
                             itemExtent: 51,
                             itemCount: rows.length,
@@ -408,13 +445,20 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                                 context,
                                                 event.globalPosition,
                                                 {
-                                                  'preview': '预览',
-                                                  'copy': '复制路径',
-                                                  'reveal': '在资源管理器中显示',
-                                                  'open': '使用本地工具打开',
-                                                  'save': '保存原文件副本',
-                                                  'rename': '重命名',
-                                                  'trash': '移入垃圾槽',
+                                                  'preview':
+                                                      DshConversationZh.preview,
+                                                  'copy': DshConversationZh
+                                                      .copyPath,
+                                                  'reveal': DshConversationZh
+                                                      .revealInFileManager,
+                                                  'open': DshConversationZh
+                                                      .openWithLocalTool,
+                                                  'save': DshConversationZh
+                                                      .saveOriginalCopy,
+                                                  'rename':
+                                                      DshConversationZh.rename,
+                                                  'trash': DshConversationZh
+                                                      .moveToTrash,
                                                 },
                                               );
                                           if (mounted && action != null) {
@@ -435,7 +479,8 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                                 artifactLabels[row['change']] ??
                                                     '${row['change']}',
                                                 style: TextStyle(
-                                                  fontSize: 12,
+                                                  fontSize:
+                                                      DshTypography.sizeCaption,
                                                   color:
                                                       row['change'] == 'created'
                                                       ? const Color(0xff22c55e)
@@ -453,7 +498,8 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                                   overflow:
                                                       TextOverflow.ellipsis,
                                                   style: TextStyle(
-                                                    fontSize: 14,
+                                                    fontSize:
+                                                        DshTypography.sizeBody,
                                                     color: deleted
                                                         ? colors.muted
                                                         : colors.text,
@@ -464,7 +510,8 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                               Text(
                                                 artifactBytes(row['size']),
                                                 style: TextStyle(
-                                                  fontSize: 12,
+                                                  fontSize:
+                                                      DshTypography.sizeCaption,
                                                   color: colors.muted,
                                                 ),
                                               ),
@@ -474,7 +521,9 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                       ),
                                     ),
                                     PopupMenuButton<String>(
-                                      tooltip: '管理 $path',
+                                      tooltip: DshConversationZh.managePath(
+                                        path: path,
+                                      ),
                                       enabled: !busy,
                                       onSelected: (intent) =>
                                           manage(row, intent),
@@ -492,14 +541,19 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                       ),
                                       itemBuilder: (_) => [
                                         for (final item in const {
-                                          'preview': '预览',
-                                          'copy': '复制路径',
-                                          'reveal': '在资源管理器中显示',
-                                          'open': '使用本地工具打开',
-                                          'editor': '在编辑器中打开',
-                                          'save': '保存原文件副本',
-                                          'rename': '重命名',
-                                          'trash': '移入垃圾槽',
+                                          'preview': DshConversationZh.preview,
+                                          'copy': DshConversationZh.copyPath,
+                                          'reveal': DshConversationZh
+                                              .revealInFileManager,
+                                          'open': DshConversationZh
+                                              .openWithLocalTool,
+                                          'editor':
+                                              DshConversationZh.openInEditor,
+                                          'save': DshConversationZh
+                                              .saveOriginalCopy,
+                                          'rename': DshConversationZh.rename,
+                                          'trash':
+                                              DshConversationZh.moveToTrash,
                                         }.entries)
                                           PopupMenuItem(
                                             height: 34,
@@ -508,7 +562,8 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                             child: Text(
                                               item.value,
                                               style: const TextStyle(
-                                                fontSize: 14,
+                                                fontSize:
+                                                    DshTypography.sizeBody,
                                               ),
                                             ),
                                           ),
@@ -525,7 +580,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                                           ),
                                         ),
                                         child: DshGlyph(
-                                          LucideIcons.ellipsis,
+                                          DshIcons.ellipsis.data,
                                           size: 16,
                                           color: colors.muted,
                                         ),
@@ -552,7 +607,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
                             pause();
                             setState(() => garbage = true);
                           },
-                    child: const Text('查看产生的垃圾列表'),
+                    child: const Text(DshConversationZh.viewGeneratedTrash),
                   ),
                 ),
               ),
@@ -601,8 +656,8 @@ class _ArtifactPreviewState extends State<ArtifactPreview> {
           Align(
             alignment: Alignment.centerRight,
             child: DshIcon(
-              LucideIcons.x,
-              label: '关闭产物预览',
+              DshIcons.close.data,
+              label: DshConversationZh.closeArtifactPreview,
               onPressed: () => Navigator.pop(context),
             ),
           ),
@@ -682,10 +737,18 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   const Text(
-                    '垃圾槽',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                    DshConversationZh.trash,
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeBody,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                  Text('${rows.length} 项 · ${artifactBytes(total)}'),
+                  Text(
+                    DshConversationZh.itemStorageSummary(
+                      count: rows.length,
+                      bytes: artifactBytes(total),
+                    ),
+                  ),
                   DshButton(
                     outline: true,
                     height: 32,
@@ -694,9 +757,9 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                         : () async {
                             if (!await confirmAction(
                               context,
-                              '清理可回收项',
-                              '移除已到期且未固定、未使用的受管临时材料。',
-                              action: '清理',
+                              DshConversationZh.cleanupReclaimable,
+                              DshConversationZh.cleanupReclaimableHint,
+                              action: DshConversationZh.cleanup,
                             )) {
                               return;
                             }
@@ -712,14 +775,14 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                               });
                             }
                           },
-                    child: const Text('清理可回收项'),
+                    child: const Text(DshConversationZh.cleanupReclaimable),
                   ),
                   if (widget.onClose != null)
                     DshButton(
                       outline: true,
                       height: 32,
                       onPressed: busy ? null : widget.onClose,
-                      child: const Text('返回产物'),
+                      child: const Text(DshConversationZh.backToArtifacts),
                     ),
                 ],
               ),
@@ -741,7 +804,7 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : rows.isEmpty
-                      ? const DshEmpty('暂无受管临时材料')
+                      ? const DshEmpty(DshConversationZh.noManagedMaterials)
                       : ListView.builder(
                           itemCount: rows.length,
                           itemBuilder: (context, index) {
@@ -766,33 +829,35 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                       Text(
                                         '${row['label']}',
                                         style: const TextStyle(
-                                          fontSize: 14,
+                                          fontSize: DshTypography.sizeBody,
                                           fontWeight: FontWeight.w600,
                                         ),
                                       ),
                                       Text(
                                         inUse
-                                            ? '正在使用'
+                                            ? DshConversationZh.inUse
                                             : pinned
-                                            ? '固定保留'
+                                            ? DshConversationZh.pin
                                             : artifactLabels[state] ?? state,
                                         style: TextStyle(
-                                          fontSize: 12,
+                                          fontSize: DshTypography.sizeCaption,
                                           color: colors.muted,
                                         ),
                                       ),
                                       Text(
                                         row['sizePending'] == true
-                                            ? '占用统计中'
+                                            ? DshConversationZh.measuringStorage
                                             : artifactBytes(row['bytes']),
-                                        style: const TextStyle(fontSize: 12),
+                                        style: const TextStyle(
+                                          fontSize: DshTypography.sizeCaption,
+                                        ),
                                       ),
                                     ],
                                   ),
                                   Text(
                                     '${row['owner']}',
                                     style: TextStyle(
-                                      fontSize: 12,
+                                      fontSize: DshTypography.sizeCaption,
                                       color: colors.muted,
                                     ),
                                   ),
@@ -803,16 +868,13 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                     child: Text(
                                       artifactDisplayPath('${row['path']}'),
                                       style: TextStyle(
-                                        fontSize: 12,
+                                        fontSize: DshTypography.sizeCaption,
                                         color: colors.muted,
                                       ),
                                     ),
                                   ),
                                   if (row['error'] != null)
-                                    Text(
-                                      '${row['error']}',
-                                      style: const TextStyle(color: Colors.red),
-                                    ),
+                                    DshErrorView(error: row['error']!),
                                   Align(
                                     alignment: Alignment.centerLeft,
                                     child: Wrap(
@@ -835,7 +897,9 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                                     refresh: false,
                                                     indicate: false,
                                                   ),
-                                            child: const Text('查看文件'),
+                                            child: const Text(
+                                              DshConversationZh.viewFile,
+                                            ),
                                           ),
                                       ],
                                     ),
@@ -852,7 +916,11 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                               busy || state == 'quarantined'
                                               ? null
                                               : () => change(row, 'pin'),
-                                          child: Text(pinned ? '取消固定' : '固定保留'),
+                                          child: Text(
+                                            pinned
+                                                ? DshConversationZh.unpin
+                                                : DshConversationZh.pin,
+                                          ),
                                         ),
                                       if (state == 'candidate')
                                         DshButton(
@@ -861,7 +929,9 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                           onPressed: busy || inUse
                                               ? null
                                               : () => change(row, 'release'),
-                                          child: const Text('标记已完成'),
+                                          child: const Text(
+                                            DshConversationZh.markCompleted,
+                                          ),
                                         ),
                                       if (row['kind'] == 'trash' &&
                                           origin['sha256'] != null &&
@@ -873,7 +943,10 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                               ? null
                                               : () =>
                                                     change(row, 'restore-file'),
-                                          child: const Text('恢复原文件'),
+                                          child: const Text(
+                                            DshConversationZh
+                                                .restoreOriginalFile,
+                                          ),
                                         ),
                                       if (state == 'quarantined')
                                         DshButton(
@@ -882,7 +955,9 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                           onPressed: busy
                                               ? null
                                               : () => change(row, 'restore'),
-                                          child: const Text('恢复临时材料'),
+                                          child: const Text(
+                                            DshConversationZh.restoreMaterial,
+                                          ),
                                         )
                                       else if (state != 'reclaimed')
                                         DshButton(
@@ -895,7 +970,9 @@ class _ManagedResourcesViewState extends _PollingState<ManagedResourcesView> {
                                                   state == 'candidate'
                                               ? null
                                               : () => change(row, 'trash'),
-                                          child: const Text('移入恢复队列'),
+                                          child: const Text(
+                                            DshConversationZh.queueRecovery,
+                                          ),
                                         ),
                                     ],
                                   ),
@@ -925,7 +1002,10 @@ class ResourceContents extends StatefulWidget {
 class _ResourceContentsState extends State<ResourceContents> {
   String directory = '';
   Json data = {};
-  String? text, error;
+  String? text;
+  Object? error;
+  String requestedPath = '';
+  bool requestedFile = false;
   bool loading = true;
   RequestScope? scope;
   int generation = 0;
@@ -948,19 +1028,28 @@ class _ResourceContentsState extends State<ResourceContents> {
     scope?.cancel();
     final current = RequestScope(), token = ++generation;
     scope = current;
+    final api = widget.api, resourceId = widget.id;
+    bool isCurrent() =>
+        mounted &&
+        token == generation &&
+        !current.cancelled &&
+        identical(widget.api, api) &&
+        widget.id == resourceId;
     setState(() {
       loading = true;
       error = null;
       text = null;
+      requestedPath = path;
+      requestedFile = file;
     });
     try {
-      final value = await widget.api.request(
+      final value = await api.request(
         '/__dsh-artifacts/${file ? 'resource-read' : 'resource-files'}',
-        body: {'id': widget.id, 'path': path},
+        body: {'id': resourceId, 'path': path},
         scope: current,
         maxBytes: 2 * 1024 * 1024,
       );
-      if (mounted && token == generation) {
+      if (isCurrent()) {
         setState(() {
           if (file) {
             text = '${value['text'] ?? ''}';
@@ -971,9 +1060,9 @@ class _ResourceContentsState extends State<ResourceContents> {
         });
       }
     } catch (e) {
-      if (mounted && token == generation) setState(() => error = '$e');
+      if (isCurrent()) setState(() => error = e);
     } finally {
-      if (mounted && token == generation) setState(() => loading = false);
+      if (isCurrent()) setState(() => loading = false);
     }
   }
 
@@ -981,7 +1070,10 @@ class _ResourceContentsState extends State<ResourceContents> {
   Widget build(BuildContext context) {
     final entries = objects(data['entries']);
     return AlertDialog(
-      title: const Text('受管文件', style: TextStyle(fontSize: 16)),
+      title: const Text(
+        DshConversationZh.managedFiles,
+        style: TextStyle(fontSize: DshTypography.sizeComposer),
+      ),
       content: SizedBox(
         width: 640,
         height: MediaQuery.sizeOf(context).height * .6,
@@ -991,7 +1083,7 @@ class _ResourceContentsState extends State<ResourceContents> {
             if (directory.isNotEmpty)
               DshButton(
                 height: 30,
-                child: const Text('上一级'),
+                child: const Text(DshConversationZh.parentLevel),
                 onPressed: () => load(
                   directory
                       .split('/')
@@ -1000,18 +1092,26 @@ class _ResourceContentsState extends State<ResourceContents> {
                 ),
               ),
             if (error != null)
-              Text(error!, style: const TextStyle(color: Colors.red)),
-            if (data['warning'] != null) Text('${data['warning']}'),
-            if (data['truncated'] == true) const Text('目录较大，显示前 500 项'),
+              DshErrorView(
+                error: error!,
+                onRetry: loading
+                    ? null
+                    : () => load(requestedPath, file: requestedFile),
+              ),
+            if (data['warning'] != null)
+              Text(DshError.redact('${data['warning']}')),
+            if (data['truncated'] == true)
+              const Text(DshConversationZh.directoryDisplayLimit),
             if (loading) const LinearProgressIndicator(minHeight: 1),
             Expanded(
               child: text != null
                   ? SingleChildScrollView(
                       child: SelectableText(
                         text!,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontFamily: 'Consolas',
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                          fontFamily: DshTypography.monospaceFamily,
+                          fontFamilyFallback: DshTypography.monospaceFallback,
                         ),
                       ),
                     )
@@ -1039,7 +1139,7 @@ class _ResourceContentsState extends State<ResourceContents> {
               DshButton(
                 height: 30,
                 onPressed: () => load(directory),
-                child: const Text('返回目录'),
+                child: const Text(DshConversationZh.backToDirectory),
               ),
           ],
         ),
@@ -1047,7 +1147,7 @@ class _ResourceContentsState extends State<ResourceContents> {
       actions: [
         DshButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('关闭'),
+          child: const Text(DshConversationZh.close),
         ),
       ],
     );

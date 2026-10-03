@@ -1,24 +1,31 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:xterm/xterm.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:dsh_client/dsh_client.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
+import '../../design/bounded_image.dart';
 import '../../src/controller.dart';
 import '../../src/resource_diagnostics.dart';
 import 'computer_use_panel.dart';
 import 'subagent_panel.dart';
-import 'project_tasks.dart';
 import 'plan_preview.dart';
 import 'line_index.dart';
+import 'reclaimable_preview.dart';
+import 'start_panel.dart';
+import '../../l10n/workbench_zh.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 String previewUrl(String operation, String session, [Json values = const {}]) =>
     Uri(
@@ -30,10 +37,32 @@ String previewUrl(String operation, String session, [Json values = const {}]) =>
       },
     ).toString();
 
+class _WorkbenchError extends StatelessWidget {
+  const _WorkbenchError({required this.error, this.onRetry, this.onDismiss});
+  final Object error;
+  final VoidCallback? onRetry, onDismiss;
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: BoxConstraints(
+      maxHeight: math.min(260, MediaQuery.sizeOf(context).height * .45),
+    ),
+    child: SingleChildScrollView(
+      child: DshErrorView(error: error, onRetry: onRetry, onDismiss: onDismiss),
+    ),
+  );
+}
+
 /// A distinct request also reopens a file already selected in another tab.
 class FileOpenRequest {
   const FileOpenRequest(this.path);
   final String path;
+}
+
+/// Each explicit landing-page click may create one terminal after the Host
+/// has admitted the conversation. Opening a workbench tab has no such effect.
+class TerminalCreateRequest {
+  TerminalCreateRequest();
 }
 
 /// Preview routes take workspace-relative paths; upload receipts contain native
@@ -66,17 +95,24 @@ class WorkbenchPanel extends StatefulWidget {
     this.initialTab = 'files',
     this.openRequest = 0,
     this.onTabChanged,
+    this.onTabClosed,
     this.fileRequest,
     this.onFileRequestHandled,
     this.planPreviews,
     this.onPlanSource,
     this.onOpenSettings,
+    this.onOpenStartTool,
+    this.onSelectWorkspace,
+    this.preparingTool = false,
+    this.terminalRequest,
+    this.onTerminalRequestHandled,
   });
   final DesktopController controller;
   final VoidCallback onClose;
   final String initialTab;
   final int openRequest;
   final ValueChanged<String>? onTabChanged;
+  final ValueChanged<String>? onTabClosed;
   final FileOpenRequest? fileRequest;
   final ValueChanged<FileOpenRequest>? onFileRequestHandled;
   final PlanPreviewStore? planPreviews;
@@ -84,35 +120,61 @@ class WorkbenchPanel extends StatefulWidget {
 
   /// Opens the settings page that enables Computer Use.
   final VoidCallback? onOpenSettings;
+  final ValueChanged<String>? onOpenStartTool;
+  final VoidCallback? onSelectWorkspace;
+  final bool preparingTool;
+  final TerminalCreateRequest? terminalRequest;
+  final ValueChanged<TerminalCreateRequest>? onTerminalRequestHandled;
   @override
-  State<WorkbenchPanel> createState() => _WorkbenchPanelState();
+  State<WorkbenchPanel> createState() => WorkbenchPanelState();
 }
 
-class _WorkbenchPanelState extends State<WorkbenchPanel>
-    implements ResourceDiagnostics {
+class WorkbenchPanelState extends State<WorkbenchPanel>
+    with ResourceDiagnosticScope {
   static const labels = {
-    'files': '文件',
+    'start': DshWorkbenchZh.start,
+    'files': DshConversationZh.file,
     'git': 'Git',
-    'terminal': '终端',
-    'project-tasks': '项目任务',
-    'tasks': '后台任务',
-    'team': '子任务',
+    'terminal': DshConversationZh.terminal,
+    'tasks': DshConversationZh.backgroundJobs,
+    'team': DshConversationZh.subagents,
     'computer-use': 'Computer Use',
-    'plans': '计划预览',
+    'plans': DshConversationZh.planPreview,
   };
   final tabs = <String>[];
   final computerUse = GlobalKey<ComputerUsePanelState>();
   final tabAnchors = <String, GlobalKey>{};
+  final tabFocusNodes = <String, FocusNode>{};
   String? tab;
   FileOpenRequest? fileRequest;
+  Object? _host;
+  String? _session;
+  @override
+  String get resourceScopeKind => 'workbench';
   @override
   Map<String, int> get resourceDiagnostics => {'workbenchTabs': tabs.length};
 
   @override
   void initState() {
     super.initState();
+    _host = widget.controller.client;
+    _session = widget.controller.selectedId;
     activateTab(widget.initialTab, notify: false);
     acceptFileRequest();
+  }
+
+  /// Keyboard navigation is scoped by the shell to the active workbench.
+  void cycleTab({bool reverse = false}) {
+    if (tabs.isEmpty) return;
+    final next = (tabs.indexOf(tab ?? '') + (reverse ? -1 : 1)) % tabs.length;
+    setState(() => activateTab(tabs[next]));
+    focusActiveTab();
+  }
+
+  void focusActiveTab() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) tabFocusNodes[tab]?.requestFocus();
+    });
   }
 
   void activateTab(String value, {bool notify = true}) {
@@ -145,19 +207,37 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
     setState(() {
       tabs.removeAt(index);
       tabAnchors.remove(value);
+      tabFocusNodes.remove(value)?.dispose();
       if (value == 'files') fileRequest = null;
       if (value == 'plans') widget.planPreviews?.clear();
-      if (value == 'computer-use') computerUse.currentState?.endSession();
       if (tab == value) {
         tab = tabs.isEmpty ? null : tabs[(index - 1).clamp(0, tabs.length - 1)];
       }
     });
+    if (value == 'terminal' && widget.terminalRequest != null) {
+      widget.onTerminalRequestHandled?.call(widget.terminalRequest!);
+    }
+    widget.onTabClosed?.call(value);
     if (tab != null) widget.onTabChanged?.call(tab!);
+    focusActiveTab();
   }
 
   @override
   void didUpdateWidget(covariant WorkbenchPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(_host, widget.controller.client) ||
+        _session != widget.controller.selectedId) {
+      _host = widget.controller.client;
+      _session = widget.controller.selectedId;
+      tabs.clear();
+      tabAnchors.clear();
+      for (final node in tabFocusNodes.values) {
+        node.dispose();
+      }
+      tabFocusNodes.clear();
+      fileRequest = null;
+      activateTab(widget.initialTab, notify: false);
+    }
     if (oldWidget.initialTab != widget.initialTab ||
         oldWidget.openRequest != widget.openRequest) {
       activateTab(widget.initialTab, notify: false);
@@ -165,10 +245,33 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
     if (oldWidget.fileRequest != widget.fileRequest) acceptFileRequest();
   }
 
+  @override
+  void dispose() {
+    for (final node in tabFocusNodes.values) {
+      node.dispose();
+    }
+    tabFocusNodes.clear();
+    super.dispose();
+  }
+
   Widget panel(String value) {
+    if (value == 'start') {
+      final controller = widget.controller;
+      final path = controller.currentWorkspace?['path'] as String?;
+      return WorkbenchStartPanel(
+        connected: controller.connected,
+        hasWorkspace:
+            controller.selectedId != null || (path?.trim().isNotEmpty ?? false),
+        busy: widget.preparingTool,
+        onOpen:
+            widget.onOpenStartTool ??
+            (tool) => setState(() => activateTab(tool)),
+        onSelectWorkspace: widget.onSelectWorkspace,
+      );
+    }
     if (value == 'plans') {
       return widget.planPreviews == null
-          ? const DshEmpty('此计划预览已失效，请从原计划卡重新打开。')
+          ? const DshEmpty(DshConversationZh.planPreviewExpired)
           : PlanPreviewPanel(
               store: widget.planPreviews!,
               onSource: widget.onPlanSource ?? widget.onClose,
@@ -178,18 +281,21 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
     final api = controller.client;
     final session = controller.selectedId;
     if (api == null || session == null) {
-      return const DshEmpty('连接服务并选择会话后打开工具。');
+      return const DshEmpty(DshConversationZh.workbenchConnectionHint);
     }
     final key = ValueKey((api, session, value));
     return switch (value) {
-      'project-tasks' => ProjectTasks(key: key, api: api, session: session),
       'terminal' => NativeTerminalPanel(
         key: key,
         api: api,
         session: session,
+        createRequest: widget.terminalRequest,
+        onCreateRequestHandled: widget.onTerminalRequestHandled,
         onInputError: (message) {
           if (controller.client == api && controller.selectedId == session) {
-            controller.error = '终端输入发送失败：$message';
+            controller.error = DshConversationZh.terminalInputFailed(
+              error: message,
+            );
             controller.emit();
           }
         },
@@ -222,7 +328,7 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
       child: Column(
         children: [
           Container(
-            height: 44,
+            constraints: const BoxConstraints(minHeight: 44),
             padding: const EdgeInsets.symmetric(horizontal: 8),
             decoration: BoxDecoration(
               border: Border(bottom: BorderSide(color: colors.border)),
@@ -259,6 +365,10 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
                                   selected: tab == value,
                                   child: DshButton(
                                     key: ValueKey('workbench-select-$value'),
+                                    focusNode: tabFocusNodes.putIfAbsent(
+                                      value,
+                                      () => FocusNode(debugLabel: 'Tool tab'),
+                                    ),
                                     height: 30,
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 10,
@@ -267,14 +377,18 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
                                         setState(() => activateTab(value)),
                                     child: Text(
                                       labels[value]!,
-                                      style: const TextStyle(fontSize: 12),
+                                      style: const TextStyle(
+                                        fontSize: DshTypography.sizeCaption,
+                                      ),
                                     ),
                                   ),
                                 ),
                                 DshIcon(
-                                  LucideIcons.x,
+                                  DshIcons.close.data,
                                   key: ValueKey('workbench-close-$value'),
-                                  label: '关闭${labels[value]}标签',
+                                  label: DshConversationZh.closeToolTab(
+                                    title: labels[value],
+                                  ),
                                   size: 24,
                                   glyphSize: 13,
                                   onPressed: () => close(value),
@@ -288,9 +402,9 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
                 ),
                 PopupMenuButton<String>(
                   key: const Key('workbench-add-tab'),
-                  tooltip: '打开工具标签',
+                  tooltip: DshConversationZh.openToolTab,
                   padding: EdgeInsets.zero,
-                  icon: const DshGlyph(LucideIcons.plus, size: 16),
+                  icon: DshGlyph(DshIcons.plus.data, size: 16),
                   onSelected: (value) => setState(() => activateTab(value)),
                   itemBuilder: (_) => [
                     for (final entry in labels.entries)
@@ -299,19 +413,22 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
                         PopupMenuItem(
                           key: ValueKey('workbench-open-${entry.key}'),
                           value: entry.key,
+                          enabled:
+                              entry.key == 'start' ||
+                              widget.controller.selectedId != null,
                           child: Row(
                             children: [
                               Expanded(child: Text(entry.value)),
                               if (tabs.contains(entry.key))
-                                const DshGlyph(LucideIcons.check, size: 14),
+                                DshGlyph(DshIcons.check.data, size: 14),
                             ],
                           ),
                         ),
                   ],
                 ),
                 DshIcon(
-                  LucideIcons.x,
-                  label: '关闭工作台',
+                  DshIcons.close.data,
+                  label: DshConversationZh.closeWorkbench,
                   onPressed: widget.onClose,
                 ),
               ],
@@ -319,7 +436,7 @@ class _WorkbenchPanelState extends State<WorkbenchPanel>
           ),
           Expanded(
             child: tabs.isEmpty
-                ? const DshEmpty('使用 + 打开文件、终端或其他工具标签。')
+                ? const DshEmpty(DshConversationZh.emptyWorkbenchHint)
                 : Stack(
                     fit: StackFit.expand,
                     children: [
@@ -363,7 +480,9 @@ class FilePanel extends StatefulWidget {
   State<FilePanel> createState() => _FilePanelState();
 }
 
-class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
+class _FilePanelState extends State<FilePanel> with ResourceDiagnosticScope {
+  @override
+  String get resourceScopeKind => 'file-panel';
   @override
   Map<String, int> get resourceDiagnostics => {
     'filePanels': 1,
@@ -376,16 +495,17 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
   String directory = '', active = '';
   List<Json> entries = [];
   final files = <String>[];
-  String? error;
+  Object? error;
   bool loading = false;
   int listGeneration = 0;
-  final scope = RequestScope();
+  String listTarget = '';
+  RequestScope scope = RequestScope();
   final cache = ResourceCache<String, String>(
     maxBytes: 16 * 1024 * 1024 - PlanPreviewStore.maxRetainedBytes,
     maxEntries: 8,
     sizeOf: (text) => text.length * 2,
   );
-  final reading = <String, int>{};
+  final reading = <String, FilePreviewPosition>{};
   @override
   void initState() {
     super.initState();
@@ -396,6 +516,16 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
   @override
   void didUpdateWidget(covariant FilePanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.api, widget.api) ||
+        oldWidget.session != widget.session) {
+      scope.cancel();
+      cache.clear();
+      files.clear();
+      reading.clear();
+      entries = [];
+      directory = active = '';
+      list('');
+    }
     if (widget.fileRequest != null &&
         oldWidget.fileRequest != widget.fileRequest) {
       open(widget.fileRequest!.path);
@@ -413,14 +543,27 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
 
   Future<void> list(String path) async {
     final generation = ++listGeneration;
-    setState(() => loading = true);
+    scope.cancel();
+    final requestScope = scope = RequestScope();
+    final api = widget.api, session = widget.session;
+    bool current() =>
+        mounted &&
+        !requestScope.cancelled &&
+        generation == listGeneration &&
+        identical(widget.api, api) &&
+        widget.session == session;
+    setState(() {
+      loading = true;
+      error = null;
+      listTarget = path;
+    });
     try {
-      final value = await widget.api.request(
-        previewUrl('list', widget.session, {'path': path}),
-        scope: scope,
+      final value = await api.request(
+        previewUrl('list', session, {'path': path}),
+        scope: requestScope,
         maxBytes: 2 * 1024 * 1024,
       );
-      if (mounted && generation == listGeneration) {
+      if (current()) {
         setState(() {
           entries = objects(value['entries']);
           directory = '${value['path'] ?? path}';
@@ -428,11 +571,11 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
         });
       }
     } catch (e) {
-      if (mounted && generation == listGeneration) {
-        setState(() => error = '$e');
+      if (current()) {
+        setState(() => error = e);
       }
     } finally {
-      if (mounted && generation == listGeneration) {
+      if (current()) {
         setState(() => loading = false);
       }
     }
@@ -448,6 +591,10 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
         cache.remove(removed);
         reading.remove(removed);
       }
+      while (reading.length > 24) {
+        final oldest = reading.keys.firstWhere((name) => !files.contains(name));
+        reading.remove(oldest);
+      }
       active = path;
     });
   }
@@ -456,7 +603,6 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
     setState(() {
       files.remove(path);
       cache.remove(path);
-      reading.remove(path);
       if (active == path) active = files.lastOrNull ?? '';
     });
   }
@@ -468,7 +614,7 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
       children: [
         if (files.isNotEmpty)
           Container(
-            height: 34,
+            height: 44 + (MediaQuery.textScalerOf(context).scale(12) - 12),
             decoration: BoxDecoration(
               border: Border(bottom: BorderSide(color: colors.border)),
             ),
@@ -486,13 +632,16 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
                           onPressed: () => setState(() => active = path),
                           child: Text(
                             path.replaceAll('\\', '/').split('/').last,
-                            style: const TextStyle(fontSize: 11),
+                            style: const TextStyle(
+                              fontSize: DshTypography.sizeCaption,
+                            ),
                           ),
                         ),
                         DshIcon(
-                          LucideIcons.x,
-                          label:
-                              '关闭 ${path.replaceAll('\\', '/').split('/').last}',
+                          DshIcons.close.data,
+                          label: DshConversationZh.closeNamedFile(
+                            name: path.replaceAll('\\', '/').split('/').last,
+                          ),
                           size: 23,
                           onPressed: () => close(path),
                         ),
@@ -507,15 +656,25 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
             children: [
               Expanded(
                 child: active.isEmpty
-                    ? const DshEmpty('选择文件以查看内容', icon: LucideIcons.files)
-                    : NativeFileViewer(
+                    ? DshEmpty(
+                        DshConversationZh.selectFileHint,
+                        icon: DshIcons.files.data,
+                      )
+                    : ReclaimablePreview(
                         key: ValueKey(active),
-                        api: widget.api,
-                        session: widget.session,
-                        path: active,
-                        cache: cache,
-                        initialPage: reading[active] ?? 1,
-                        onPage: (page) => reading[active] = page,
+                        onRelease: cache.clear,
+                        builder: (_) => NativeFileViewer(
+                          key: ValueKey(active),
+                          api: widget.api,
+                          session: widget.session,
+                          path: active,
+                          cache: cache,
+                          position: reading.putIfAbsent(
+                            active,
+                            FilePreviewPosition.new,
+                          ),
+                          onPage: (_) {},
+                        ),
                       ),
               ),
               Container(
@@ -534,8 +693,8 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
                       child: Row(
                         children: [
                           DshIcon(
-                            LucideIcons.arrowUp,
-                            label: '上级目录',
+                            DshIcons.arrowUp.data,
+                            label: DshConversationZh.parentDirectory,
                             size: 26,
                             onPressed: directory.isEmpty
                                 ? null
@@ -551,15 +710,17 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
                           Expanded(
                             child: Text(
                               directory.isEmpty
-                                  ? '工作区'
+                                  ? DshConversationZh.workspace
                                   : directory.split('/').last,
-                              style: const TextStyle(fontSize: 11),
+                              style: const TextStyle(
+                                fontSize: DshTypography.sizeCaption,
+                              ),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           DshIcon(
-                            LucideIcons.refreshCw,
-                            label: '刷新目录',
+                            DshIcons.refreshCw.data,
+                            label: DshConversationZh.refreshDirectory,
                             size: 25,
                             onPressed: () => list(directory),
                           ),
@@ -570,12 +731,9 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
                     if (error != null)
                       Padding(
                         padding: const EdgeInsets.all(8),
-                        child: Text(
-                          error!,
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.red,
-                          ),
+                        child: _WorkbenchError(
+                          error: error!,
+                          onRetry: loading ? null : () => list(listTarget),
                         ),
                       ),
                     Expanded(
@@ -597,8 +755,8 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
                                 children: [
                                   DshGlyph(
                                     folder
-                                        ? LucideIcons.folder
-                                        : LucideIcons.file,
+                                        ? DshIcons.folder.data
+                                        : DshIcons.file.data,
                                     size: 14,
                                     color: folder ? colors.blue : colors.muted,
                                   ),
@@ -608,7 +766,9 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
                                       '${entry['name']}',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 11),
+                                      style: const TextStyle(
+                                        fontSize: DshTypography.sizeCaption,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -629,6 +789,14 @@ class _FilePanelState extends State<FilePanel> implements ResourceDiagnostics {
   }
 }
 
+/// Lightweight view state. Contains no source text, images or document handles.
+class FilePreviewPosition {
+  int page = 1, line = 1, match = -1;
+  double offset = 0;
+  String query = '';
+  bool source = false, wrap = false;
+}
+
 class NativeFileViewer extends StatefulWidget {
   const NativeFileViewer({
     super.key,
@@ -639,6 +807,7 @@ class NativeFileViewer extends StatefulWidget {
     required this.onPage,
     this.initialPage = 1,
     this.initialLine = 1,
+    this.position,
   });
   final DshClient api;
   final String session, path;
@@ -646,30 +815,38 @@ class NativeFileViewer extends StatefulWidget {
   final ValueChanged<int> onPage;
   final int initialPage;
   final int initialLine;
+  final FilePreviewPosition? position;
   @override
   State<NativeFileViewer> createState() => _NativeFileViewerState();
 }
 
 class _NativeFileViewerState extends State<NativeFileViewer>
-    implements ResourceDiagnostics {
+    with ResourceDiagnosticScope {
+  static const pdfCacheBudget = 24 * 1024 * 1024;
+  @override
+  String get resourceScopeKind => 'file-viewer';
   @override
   Map<String, int> get resourceDiagnostics => {
     'fileViewers': 1,
     'fileBinaryBytes': binary?.length ?? 0,
-    'pdfViewers': pdf ? 1 : 0,
-    'imageViewers': image ? 1 : 0,
-    'pdfImageCacheBudgetBytes': pdf ? 48 * 1024 * 1024 : 0,
+    'pdfViewers': pdf && binary != null ? 1 : 0,
+    'imageViewers': image && binary != null ? 1 : 0,
+    'pdfImageCacheBudgetBytes': pdf && binary != null ? pdfCacheBudget : 0,
     'indexedLinesBytes': lines.retainedBytes,
+    'fileTextUnits': text?.length ?? 0,
+    'fileRequests': loading && !scope.cancelled ? 1 : 0,
   };
-  final scope = RequestScope();
+  RequestScope scope = RequestScope(), exportScope = RequestScope();
   final search = TextEditingController(), lineInput = TextEditingController();
   final scroll = ScrollController();
-  String? text, error;
+  String? text;
+  Object? error;
   Uint8List? binary;
   LineIndex lines = LineIndex.empty();
   bool source = false, wrap = false, loading = true, saving = false;
   final pdfController = PdfViewerController();
-  int matchIndex = -1;
+  late FilePreviewPosition position;
+  int matchIndex = -1, loadGeneration = 0;
   String get ext => widget.path.split('.').last.toLowerCase();
   bool get pdf =>
       ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].contains(ext);
@@ -677,13 +854,55 @@ class _NativeFileViewerState extends State<NativeFileViewer>
   @override
   void initState() {
     super.initState();
-    source = widget.initialLine > 1;
+    restorePosition();
+    search.addListener(() => position.query = search.text);
+    scroll.addListener(() {
+      position.offset = scroll.offset;
+      if ((source || ext != 'md') && !wrap) {
+        position.line = (scroll.offset / lineHeight).floor() + 1;
+      }
+    });
     load();
+  }
+
+  void restorePosition() {
+    position =
+        widget.position ??
+        (FilePreviewPosition()
+          ..page = widget.initialPage
+          ..line = widget.initialLine
+          ..source = widget.initialLine > 1);
+    source = position.source;
+    wrap = position.wrap;
+    matchIndex = position.match;
+    search.text = position.query;
+  }
+
+  @override
+  void didUpdateWidget(covariant NativeFileViewer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final ownerChanged =
+        !identical(oldWidget.api, widget.api) ||
+        oldWidget.session != widget.session;
+    if (ownerChanged || oldWidget.path != widget.path) {
+      exportScope.cancel();
+      exportScope = RequestScope();
+      saving = false;
+      if (ownerChanged && identical(oldWidget.cache, widget.cache)) {
+        widget.cache.clear();
+      }
+      binary = null;
+      text = null;
+      lines = LineIndex.empty();
+      restorePosition();
+      load();
+    }
   }
 
   @override
   void dispose() {
     scope.cancel();
+    exportScope.cancel();
     search.dispose();
     lineInput.dispose();
     scroll.dispose();
@@ -694,52 +913,68 @@ class _NativeFileViewerState extends State<NativeFileViewer>
   }
 
   Future<void> load() async {
+    scope.cancel();
+    final requestScope = scope = RequestScope();
+    final generation = ++loadGeneration;
+    final api = widget.api, session = widget.session, path = widget.path;
+    bool current() =>
+        mounted &&
+        !requestScope.cancelled &&
+        generation == loadGeneration &&
+        identical(widget.api, api) &&
+        widget.session == session &&
+        widget.path == path;
+    setState(() {
+      loading = true;
+      error = null;
+    });
     try {
       if (pdf || image) {
         final office = ext != 'pdf' && pdf;
-        final loaded = await widget.api.bytes(
+        final loaded = await api.bytes(
           office
               ? '/__dsh-preview/office'
-              : previewUrl('file', widget.session, {'path': widget.path}),
-          body: office
-              ? {'sessionId': widget.session, 'path': widget.path}
-              : null,
-          scope: scope,
+              : previewUrl('file', session, {'path': path}),
+          body: office ? {'sessionId': session, 'path': path} : null,
+          scope: requestScope,
           maxBytes: 16 * 1024 * 1024,
         );
-        if (!mounted || scope.cancelled) return;
+        if (!current()) return;
         binary = loaded;
       } else {
-        text = widget.cache.get(widget.path);
+        text = widget.cache.get(path);
         if (text == null) {
-          final result = await widget.api.request(
-            previewUrl('source', widget.session, {'path': widget.path}),
-            scope: scope,
+          final result = await api.request(
+            previewUrl('source', session, {'path': path}),
+            scope: requestScope,
             maxBytes: 8 * 1024 * 1024,
           );
-          if (!mounted || scope.cancelled) return;
+          if (!current()) return;
           text = '${result['text'] ?? ''}';
-          widget.cache.put(widget.path, text!);
+          widget.cache.put(path, text!);
         }
         lines = LineIndex.fromText(text!);
-        if (widget.initialLine > 1 && lines.isNotEmpty) {
-          matchIndex = (widget.initialLine - 1).clamp(0, lines.length - 1);
+        if (matchIndex < 0 && position.line > 1 && lines.isNotEmpty) {
+          matchIndex = (position.line - 1).clamp(0, lines.length - 1);
         }
       }
-      if (mounted) setState(() => loading = false);
-      if (mounted && matchIndex >= 0) {
+      if (current()) setState(() => loading = false);
+      if (current()) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && scroll.hasClients) {
+          if (current() && scroll.hasClients) {
             scroll.jumpTo(
-              (matchIndex * 22.0).clamp(0, scroll.position.maxScrollExtent),
+              (position.offset > 0
+                      ? position.offset
+                      : math.max(0, matchIndex) * lineHeight)
+                  .clamp(0, scroll.position.maxScrollExtent),
             );
           }
         });
       }
     } catch (e) {
-      if (mounted) {
+      if (current()) {
         setState(() {
-          error = '$e';
+          error = e;
           loading = false;
         });
       }
@@ -748,30 +983,40 @@ class _NativeFileViewerState extends State<NativeFileViewer>
 
   Future<void> export() async {
     if (saving) return;
+    final api = widget.api, session = widget.session, path = widget.path;
+    final requestScope = exportScope;
+    bool current() =>
+        mounted &&
+        !requestScope.cancelled &&
+        identical(widget.api, api) &&
+        widget.session == session &&
+        widget.path == path;
     setState(() => saving = true);
     try {
-      final name = widget.path.replaceAll('\\', '/').split('/').last;
+      final name = path.replaceAll('\\', '/').split('/').last;
       final converted = pdf && ext != 'pdf';
       final target = await getSaveLocation(
         suggestedName: converted
             ? '${name.substring(0, name.lastIndexOf('.'))}.pdf'
             : name,
       );
-      if (target == null || !mounted) return;
+      if (target == null || !current()) return;
       if (converted) {
-        if (binary == null) throw StateError('PDF 预览尚未生成');
+        if (binary == null) throw StateError(DshConversationZh.pdfNotGenerated);
         await XFile.fromData(binary!).saveTo(target.path);
       } else {
-        await widget.api.downloadTo(
-          previewUrl('file', widget.session, {'path': widget.path}),
+        await api.downloadTo(
+          previewUrl('file', session, {'path': path}),
           File(target.path),
-          scope: scope,
+          scope: requestScope,
         );
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && current()) {
+        showDshError(context, e, operation: DshConversationZh.exportPdf);
+      }
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (current()) setState(() => saving = false);
     }
   }
 
@@ -780,10 +1025,10 @@ class _NativeFileViewerState extends State<NativeFileViewer>
     for (var i = 1; i <= lines.length; i++) {
       final index = (matchIndex + i) % lines.length;
       if (lines[index].toLowerCase().contains(search.text.toLowerCase())) {
-        setState(() => matchIndex = index);
+        setState(() => position.match = matchIndex = index);
         if (scroll.hasClients) {
           scroll.jumpTo(
-            (index * 22.0).clamp(0, scroll.position.maxScrollExtent),
+            (index * lineHeight).clamp(0, scroll.position.maxScrollExtent),
           );
         }
         break;
@@ -798,7 +1043,7 @@ class _NativeFileViewerState extends State<NativeFileViewer>
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Container(
-          height: 38,
+          constraints: const BoxConstraints(minHeight: 44),
           padding: const EdgeInsets.symmetric(horizontal: 6),
           decoration: BoxDecoration(
             border: Border(bottom: BorderSide(color: colors.border)),
@@ -808,37 +1053,42 @@ class _NativeFileViewerState extends State<NativeFileViewer>
               Expanded(
                 child: Text(
                   widget.path.replaceAll('\\', '/').split('/').last,
-                  style: const TextStyle(fontSize: 11),
+                  style: const TextStyle(fontSize: DshTypography.sizeCaption),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
               if (text != null) ...[
                 DshIcon(
-                  LucideIcons.code,
+                  DshIcons.code.data,
                   asset: 'assets/icons/source-code.svg',
-                  label: source ? '预览' : '源码',
+                  label: source
+                      ? DshConversationZh.preview
+                      : DshConversationZh.source,
                   active: source,
                   size: 25,
-                  onPressed: () => setState(() => source = !source),
+                  onPressed: () =>
+                      setState(() => position.source = source = !source),
                 ),
                 DshIcon(
-                  LucideIcons.wrapText,
-                  label: '自动换行',
+                  DshIcons.wrapText.data,
+                  label: DshConversationZh.wrapLines,
                   active: wrap,
                   size: 25,
-                  onPressed: () => setState(() => wrap = !wrap),
+                  onPressed: () => setState(() => position.wrap = wrap = !wrap),
                 ),
                 DshIcon(
-                  LucideIcons.copy,
-                  label: '复制文件内容',
+                  DshIcons.copy.data,
+                  label: DshConversationZh.copyFileContent,
                   size: 25,
                   onPressed: () =>
                       Clipboard.setData(ClipboardData(text: text!)),
                 ),
               ],
               DshIcon(
-                LucideIcons.download,
-                label: pdf && ext != 'pdf' ? '导出 PDF' : '保存原文件副本',
+                DshIcons.download.data,
+                label: pdf && ext != 'pdf'
+                    ? DshConversationZh.exportPdf
+                    : DshConversationZh.saveOriginalCopy,
                 size: 25,
                 onPressed: loading || saving ? null : export,
               ),
@@ -854,18 +1104,18 @@ class _NativeFileViewerState extends State<NativeFileViewer>
                   child: TextField(
                     controller: search,
                     onSubmitted: (_) => findNext(),
-                    style: const TextStyle(fontSize: 11),
+                    style: const TextStyle(fontSize: DshTypography.sizeCaption),
                     decoration: const InputDecoration(
                       isDense: true,
-                      hintText: '查找内容',
+                      hintText: DshConversationZh.findContent,
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.all(8),
                     ),
                   ),
                 ),
                 DshIcon(
-                  LucideIcons.search,
-                  label: '查找下一个',
+                  DshIcons.search.data,
+                  label: DshConversationZh.findNext,
                   size: 28,
                   onPressed: findNext,
                 ),
@@ -876,20 +1126,30 @@ class _NativeFileViewerState extends State<NativeFileViewer>
           child: loading
               ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
               : error != null
-              ? DshEmpty(error!, icon: LucideIcons.circleAlert)
+              ? SingleChildScrollView(
+                  padding: const EdgeInsets.all(12),
+                  child: DshErrorView(error: error!, onRetry: load),
+                )
               : pdf
               ? PdfViewer.data(
                   binary!,
-                  sourceName: '${widget.session}/${widget.path}',
+                  // pdfrx caches references by sourceName. An anonymous view
+                  // identity prevents reuse across Hosts or refreshed downloads.
+                  sourceName: 'file-preview-$resourceScopeId',
                   controller: pdfController,
-                  initialPageNumber: widget.initialPage,
-                  maxSizeToCacheOnMemory: 1024 * 1024,
+                  initialPageNumber: position.page,
+                  // The Host-authorized bytes are the sole complete buffer;
+                  // native reads do not duplicate the full PDF in memory.
+                  maxSizeToCacheOnMemory: 0,
                   params: PdfViewerParams(
-                    maxImageBytesCachedOnMemory: 48 * 1024 * 1024,
+                    maxImageBytesCachedOnMemory: pdfCacheBudget,
                     verticalCacheExtent: 0.3,
                     horizontalCacheExtent: 0.0,
                     onPageChanged: (page) {
-                      if (page != null) widget.onPage(page);
+                      if (page != null) {
+                        position.page = page;
+                        widget.onPage(page);
+                      }
                     },
                   ),
                 )
@@ -898,9 +1158,9 @@ class _NativeFileViewerState extends State<NativeFileViewer>
                   minScale: .1,
                   maxScale: 5,
                   child: Center(
-                    child: Image.memory(
-                      binary!,
-                      cacheWidth: 1600,
+                    child: DshBoundedImage(
+                      image: MemoryImage(binary!),
+                      evictOnDispose: true,
                       filterQuality: FilterQuality.medium,
                       errorBuilder: (_, e, _) => DshEmpty('$e'),
                     ),
@@ -908,6 +1168,7 @@ class _NativeFileViewerState extends State<NativeFileViewer>
                 )
               : ext == 'md' && !source
               ? SingleChildScrollView(
+                  controller: scroll,
                   padding: const EdgeInsets.all(18),
                   child: MarkdownBody(data: text!, selectable: true),
                 )
@@ -917,9 +1178,11 @@ class _NativeFileViewerState extends State<NativeFileViewer>
     );
   }
 
+  double get lineHeight => MediaQuery.textScalerOf(context).scale(13) * 1.6;
+
   Widget codeView(DshColors colors) => ListView.builder(
     controller: scroll,
-    itemExtent: wrap ? null : 22,
+    itemExtent: wrap ? null : lineHeight,
     itemCount: lines.length,
     itemBuilder: (context, i) => Container(
       color: i == matchIndex ? colors.blue.withValues(alpha: .12) : null,
@@ -928,14 +1191,21 @@ class _NativeFileViewerState extends State<NativeFileViewer>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 43,
+            width: math.max(
+              48,
+              lines.length.toString().length *
+                      MediaQuery.textScalerOf(context).scale(13) *
+                      .7 +
+                  12,
+            ),
             child: Text(
               '${i + 1}',
               textAlign: TextAlign.right,
               style: TextStyle(
-                fontFamily: 'Consolas',
-                fontSize: 11,
-                height: 1.7,
+                fontFamily: DshTypography.monospaceFamily,
+                fontFamilyFallback: DshTypography.monospaceFallback,
+                fontSize: DshTypography.sizeAuxiliary,
+                height: 1.6,
                 color: colors.muted,
               ),
             ),
@@ -946,9 +1216,10 @@ class _NativeFileViewerState extends State<NativeFileViewer>
               lines[i],
               maxLines: wrap ? null : 1,
               style: TextStyle(
-                fontFamily: 'Consolas',
-                fontSize: 12,
-                height: 1.65,
+                fontFamily: DshTypography.monospaceFamily,
+                fontFamilyFallback: DshTypography.monospaceFallback,
+                fontSize: DshTypography.sizeAuxiliary,
+                height: 1.6,
                 color: colors.text,
               ),
             ),
@@ -968,12 +1239,13 @@ class GitPanel extends StatefulWidget {
 }
 
 class _GitPanelState extends State<GitPanel> {
-  final scope = RequestScope();
+  RequestScope statusScope = RequestScope(), diffScope = RequestScope();
   Json? status;
-  String? path, error;
+  String? path;
+  Object? error;
   List<String> diff = [];
-  bool busy = false, staged = false;
-  int diffGeneration = 0;
+  bool busy = false, staged = false, diffLoading = false, retryDiff = false;
+  int diffGeneration = 0, statusGeneration = 0, errorGeneration = 0;
   @override
   void initState() {
     super.initState();
@@ -982,33 +1254,68 @@ class _GitPanelState extends State<GitPanel> {
 
   @override
   void dispose() {
-    scope.cancel();
+    statusScope.cancel();
+    diffScope.cancel();
     diff = [];
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(covariant GitPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.api, widget.api) ||
+        oldWidget.session != widget.session) {
+      diffScope.cancel();
+      diffGeneration++;
+      diffLoading = false;
+      status = null;
+      path = null;
+      diff = [];
+      load();
+    }
+  }
+
   Future<void> load() async {
-    setState(() => busy = true);
+    statusScope.cancel();
+    final requestScope = statusScope = RequestScope();
+    final generation = ++statusGeneration;
+    final errorToken = ++errorGeneration;
+    final api = widget.api, session = widget.session;
+    bool current() =>
+        mounted &&
+        !requestScope.cancelled &&
+        generation == statusGeneration &&
+        identical(widget.api, api) &&
+        widget.session == session;
+    setState(() {
+      busy = true;
+      error = null;
+      retryDiff = false;
+    });
     try {
-      final result = await widget.api.request(
-        previewUrl('git-status', widget.session),
-        scope: scope,
+      final result = await api.request(
+        previewUrl('git-status', session),
+        scope: requestScope,
       );
-      if (mounted) {
+      if (current()) {
         setState(() {
           status = result;
-          error = null;
+          if (errorToken == errorGeneration) error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (current() && errorToken == errorGeneration) setState(() => error = e);
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (current()) setState(() => busy = false);
     }
   }
 
   Future<void> select(Json entry) async {
+    diffScope.cancel();
+    final requestScope = diffScope = RequestScope();
     final generation = ++diffGeneration;
+    final errorToken = ++errorGeneration;
+    final api = widget.api, session = widget.session;
     final requestedPath = '${entry['path']}';
     final requestedStaged = entry['group'] == 'staged';
     setState(() {
@@ -1016,26 +1323,33 @@ class _GitPanelState extends State<GitPanel> {
       staged = requestedStaged;
       diff = [];
       error = null;
+      diffLoading = true;
+      retryDiff = true;
     });
     bool current() =>
         mounted &&
+        !requestScope.cancelled &&
+        identical(widget.api, api) &&
+        widget.session == session &&
         generation == diffGeneration &&
         path == requestedPath &&
         staged == requestedStaged;
     try {
-      final result = await widget.api.request(
-        previewUrl('git-diff', widget.session, {
+      final result = await api.request(
+        previewUrl('git-diff', session, {
           'path': requestedPath,
           'staged': requestedStaged ? '1' : '0',
         }),
-        scope: scope,
+        scope: requestScope,
         maxBytes: 8 * 1024 * 1024,
       );
       if (current()) {
         setState(() => diff = '${result['diff'] ?? ''}'.split('\n'));
       }
     } catch (e) {
-      if (current()) setState(() => error = '$e');
+      if (current() && errorToken == errorGeneration) setState(() => error = e);
+    } finally {
+      if (current()) setState(() => diffLoading = false);
     }
   }
 
@@ -1048,25 +1362,40 @@ class _GitPanelState extends State<GitPanel> {
           padding: const EdgeInsets.all(8),
           child: Row(
             children: [
-              DshGlyph(LucideIcons.gitBranch, size: 15, color: colors.muted),
+              DshGlyph(DshIcons.gitBranch.data, size: 15, color: colors.muted),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   '${status?['branch'] ?? 'Git'}',
-                  style: const TextStyle(fontSize: 12),
+                  style: const TextStyle(fontSize: DshTypography.sizeCaption),
                 ),
               ),
-              DshIcon(LucideIcons.refreshCw, label: '刷新修改', onPressed: load),
+              DshIcon(
+                DshIcons.refreshCw.data,
+                label: DshConversationZh.refreshChanges,
+                onPressed: load,
+              ),
             ],
           ),
         ),
-        if (busy) const LinearProgressIndicator(minHeight: 1),
+        if (busy || diffLoading) const LinearProgressIndicator(minHeight: 1),
         if (error != null)
           Padding(
             padding: const EdgeInsets.all(10),
-            child: Text(
-              error!,
-              style: const TextStyle(color: Colors.red, fontSize: 12),
+            child: _WorkbenchError(
+              error: error!,
+              onRetry: busy || diffLoading
+                  ? null
+                  : () {
+                      if (retryDiff && path != null) {
+                        select({
+                          'path': path,
+                          'group': staged ? 'staged' : 'unstaged',
+                        });
+                      } else {
+                        load();
+                      }
+                    },
             ),
           ),
         Expanded(
@@ -1074,9 +1403,9 @@ class _GitPanelState extends State<GitPanel> {
             children: [
               Expanded(
                 child: path == null
-                    ? const DshEmpty(
-                        '选择修改文件查看差异',
-                        icon: LucideIcons.gitCompareArrows,
+                    ? DshEmpty(
+                        DshConversationZh.selectChangeHint,
+                        icon: DshIcons.gitCompareArrows.data,
                       )
                     : Column(
                         children: [
@@ -1084,7 +1413,9 @@ class _GitPanelState extends State<GitPanel> {
                             padding: const EdgeInsets.all(8),
                             child: Text(
                               path!,
-                              style: const TextStyle(fontSize: 11),
+                              style: const TextStyle(
+                                fontSize: DshTypography.sizeCaption,
+                              ),
                             ),
                           ),
                           Expanded(
@@ -1093,11 +1424,11 @@ class _GitPanelState extends State<GitPanel> {
                               itemBuilder: (context, i) {
                                 final line = diff[i];
                                 final color = line.startsWith('+')
-                                    ? Colors.green
+                                    ? colors.success
                                     : line.startsWith('-')
-                                    ? Colors.red
+                                    ? colors.error
                                     : line.startsWith('@@')
-                                    ? Colors.blue
+                                    ? colors.blue
                                     : null;
                                 return Container(
                                   color: color?.withValues(alpha: .10),
@@ -1108,8 +1439,10 @@ class _GitPanelState extends State<GitPanel> {
                                   child: SelectableText(
                                     line,
                                     style: TextStyle(
-                                      fontFamily: 'Consolas',
-                                      fontSize: 11,
+                                      fontFamily: DshTypography.monospaceFamily,
+                                      fontFamilyFallback:
+                                          DshTypography.monospaceFallback,
+                                      fontSize: DshTypography.sizeCaption,
                                       color: color ?? colors.text,
                                     ),
                                   ),
@@ -1135,11 +1468,15 @@ class _GitPanelState extends State<GitPanel> {
                         ),
                         title: Text(
                           displayPath('${entry['path']}'),
-                          style: const TextStyle(fontSize: 11),
+                          style: const TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                          ),
                         ),
                         subtitle: Text(
                           '${entry['status']}',
-                          style: const TextStyle(fontSize: 10),
+                          style: const TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                          ),
                         ),
                         selected: path == entry['path'],
                         onTap: () => select(entry),
@@ -1189,7 +1526,7 @@ class TerminalOutputWindow {
     final total = (page['totalLines'] as num?)?.toInt();
     final text = page['text'];
     if (total == null || total < 0 || text is! String) {
-      throw const FormatException('终端输出格式无效');
+      throw const FormatException(DshConversationZh.terminalOutputInvalid);
     }
     final lines = text.split('\n');
     String append;
@@ -1231,24 +1568,36 @@ class NativeTerminalPanel extends StatefulWidget {
     required this.api,
     required this.session,
     this.onInputError,
+    this.createRequest,
+    this.onCreateRequestHandled,
   });
   final DshClient api;
   final String session;
   final ValueChanged<String>? onInputError;
+  final TerminalCreateRequest? createRequest;
+  final ValueChanged<TerminalCreateRequest>? onCreateRequestHandled;
   @override
   State<NativeTerminalPanel> createState() => _NativeTerminalPanelState();
 }
 
 class _NativeTerminalPanelState extends State<NativeTerminalPanel>
-    with WidgetsBindingObserver
-    implements ResourceDiagnostics {
+    with WidgetsBindingObserver, ResourceDiagnosticScope {
+  @override
+  String get resourceScopeKind => 'terminal-view';
   static final inputTails = <(DshClient, String, String), Future<void>>{};
   @override
   Map<String, int> get resourceDiagnostics => {
     'terminalPanels': 1,
     'terminalBufferLines': terminal.buffer.lines.length,
     'terminalQueuedInputUnits': pendingInput.length + queuedInputLength,
-    'terminalInputOwners': inputTails.length,
+    'terminalInputOwners': inputTails.keys
+        .where((key) => identical(key.$1, inputApi) && key.$2 == inputSession)
+        .length,
+    'terminalPollTimers': timer?.isActive == true ? 1 : 0,
+    'terminalResizeTimers': resizeTimer?.isActive == true ? 1 : 0,
+    'terminalInputTimers': inputTimer?.isActive == true ? 1 : 0,
+    'terminalPollRequests': pollingEpoch == null ? 0 : 1,
+    'terminalListRequests': listing && !listScope.cancelled ? 1 : 0,
   };
   late Terminal terminal;
   final scope = RequestScope();
@@ -1256,10 +1605,14 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
   late final inputApi = widget.api;
   late final inputSession = widget.session;
   RequestScope readScope = RequestScope();
+  RequestScope listScope = RequestScope();
+  RequestScope? pollingScope;
   List<Json> entries = [];
-  String? active, error;
+  String? active, failedRead;
+  Object? error;
   Timer? timer, resizeTimer, inputTimer;
   bool panelVisible = true, appVisible = true;
+  bool listing = false;
   bool get visible => panelVisible && appVisible;
   int? pollingEpoch;
   int listGeneration = 0, queuedInputLength = 0;
@@ -1267,12 +1620,43 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
   TerminalOutputWindow output = TerminalOutputWindow();
   String pendingInput = '';
   int epoch = 0;
+  TerminalCreateRequest? handledCreateRequest;
   @override
   void initState() {
     super.initState();
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    appVisible = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
     terminal = makeTerminal();
-    load();
+    if (widget.createRequest == null) {
+      load();
+    } else {
+      unawaited(createRequestedTerminal());
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant NativeTerminalPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.createRequest != oldWidget.createRequest &&
+        widget.createRequest != null) {
+      unawaited(createRequestedTerminal());
+    }
+  }
+
+  Future<void> createRequestedTerminal() async {
+    final request = widget.createRequest;
+    if (request == null || identical(request, handledCreateRequest)) return;
+    handledCreateRequest = request;
+    await load();
+    if (!mounted ||
+        scope.cancelled ||
+        !visible ||
+        !identical(widget.createRequest, request)) {
+      return;
+    }
+    widget.onCreateRequestHandled?.call(request);
+    if (failedRead != 'list') await open();
   }
 
   Terminal makeTerminal() {
@@ -1292,7 +1676,10 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
         return;
       }
       if (queuedInputLength + pendingInput.length + data.length > 65536) {
-        setState(() => error = '终端输入积压过多，请等待发送完成后重试');
+        setState(() {
+          error = DshConversationZh.terminalInputBacklog;
+          failedRead = null;
+        });
         return;
       }
       pendingInput += data;
@@ -1333,11 +1720,14 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
       unawaited(flushInput());
       timer?.cancel();
       readScope.cancel();
+      listScope.cancel();
+      listing = false;
       epoch++;
       resizeTimer?.cancel();
     } else {
       readScope = RequestScope();
       configureTerminal(terminal);
+      load();
       poll();
     }
   }
@@ -1353,6 +1743,7 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
     inputTimer?.cancel();
     scope.cancel();
     readScope.cancel();
+    listScope.cancel();
     terminal.onOutput = null;
     terminal.onResize = null;
     pendingInput = '';
@@ -1433,35 +1824,73 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
     } catch (e) {
       if (action == 'input' && !mounted && !inputScope.cancelled) {
         inputScope.cancel();
-        widget.onInputError?.call('$e');
+        widget.onInputError?.call(DshError.redact('$e'));
       }
       if (mounted &&
           generation == epoch &&
           active == owner &&
           !requestScope.cancelled) {
-        setState(() => error = '$e');
+        setState(() {
+          error = e;
+          failedRead = null;
+        });
       }
       return false;
     }
   }
 
   Future<void> load() async {
+    if (!visible || scope.cancelled) return;
     final generation = ++listGeneration;
+    listScope.cancel();
+    final requestScope = listScope = RequestScope();
+    final api = widget.api, session = widget.session;
+    bool current() =>
+        mounted &&
+        !requestScope.cancelled &&
+        generation == listGeneration &&
+        identical(widget.api, api) &&
+        widget.session == session;
+    setState(() => listing = true);
     try {
-      final value = await widget.api.request(
-        previewUrl('terminal-list', widget.session),
-        scope: scope,
+      final value = await api.request(
+        previewUrl('terminal-list', session),
+        scope: requestScope,
       );
-      if (!mounted || generation != listGeneration) return;
-      setState(() => entries = objects(value['entries']));
+      if (!current()) return;
+      setState(() {
+        entries = objects(value['entries']);
+        if (failedRead == 'list') {
+          error = null;
+          failedRead = null;
+        }
+      });
       if (active == null && entries.isNotEmpty) {
         select('${entries.first['id']}');
       }
     } catch (e) {
-      if (mounted && generation == listGeneration && !scope.cancelled) {
-        setState(() => error = '$e');
+      if (current() && (error == null || failedRead != null)) {
+        setState(() {
+          error = e;
+          failedRead = 'list';
+        });
       }
+    } finally {
+      if (current()) setState(() => listing = false);
     }
+  }
+
+  Future<void> retryReads() async {
+    if (!visible) return;
+    timer?.cancel();
+    readScope.cancel();
+    readScope = RequestScope();
+    setState(() {
+      error = null;
+      failedRead = null;
+    });
+    await load();
+    if (mounted && visible) await poll();
   }
 
   void select(String? id) {
@@ -1474,6 +1903,7 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
     epoch++;
     active = id;
     error = null;
+    failedRead = null;
     output = TerminalOutputWindow();
     terminal.onOutput = null;
     terminal.onResize = null;
@@ -1484,7 +1914,10 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
 
   Future<void> open() async {
     if (entries.length >= 3) {
-      setState(() => error = '最多同时保留 3 个终端，请先关闭不需要的终端');
+      setState(() {
+        error = DshConversationZh.terminalCountLimit;
+        failedRead = null;
+      });
       return;
     }
     final generation = epoch;
@@ -1494,7 +1927,7 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
         body: {
           'sessionId': widget.session,
           'action': 'open',
-          'name': '终端 ${entries.length + 1}',
+          'name': DshConversationZh.terminalName(index: entries.length + 1),
         },
         mutation: true,
         scope: scope,
@@ -1502,7 +1935,12 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
       await load();
       if (mounted && generation == epoch) select('${value['id']}');
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && generation == epoch) {
+        setState(() {
+          error = e;
+          failedRead = null;
+        });
+      }
     }
   }
 
@@ -1523,7 +1961,7 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
 
   Future<void> poll() async {
     timer?.cancel();
-    if (pollingEpoch == epoch ||
+    if ((pollingEpoch == epoch && identical(pollingScope, readScope)) ||
         active == null ||
         !visible ||
         scope.cancelled) {
@@ -1531,41 +1969,58 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
     }
     pollingEpoch = epoch;
     final generation = epoch, id = active!;
-    final requestScope = readScope;
+    final requestScope = pollingScope = readScope;
+    final api = widget.api, session = widget.session;
+    bool current() =>
+        mounted &&
+        !requestScope.cancelled &&
+        generation == epoch &&
+        identical(readScope, requestScope) &&
+        identical(widget.api, api) &&
+        widget.session == session;
     try {
-      final page = await widget.api.request(
-        previewUrl('terminal-read', widget.session, {
+      final page = await api.request(
+        previewUrl('terminal-read', session, {
           'terminalId': id,
           'count': output.initialized ? 64 : 2000,
         }),
         scope: requestScope,
         maxBytes: 1024 * 1024,
       );
-      if (!mounted || generation != epoch) return;
+      if (!current()) return;
       var update = output.apply(page);
       if (update == null) {
-        final snapshot = await widget.api.request(
-          previewUrl('terminal-read', widget.session, {
+        final snapshot = await api.request(
+          previewUrl('terminal-read', session, {
             'terminalId': id,
             'count': 2000,
           }),
           scope: requestScope,
           maxBytes: 1024 * 1024,
         );
-        if (!mounted || generation != epoch) return;
+        if (!current()) return;
         update = output.apply(snapshot, reset: true)!;
       }
       terminal.write(update);
+      if (failedRead == 'output') {
+        setState(() {
+          error = null;
+          failedRead = null;
+        });
+      }
     } catch (e) {
-      if (mounted && generation == epoch && !requestScope.cancelled) {
-        setState(() => error = '$e');
+      if (current() && (error == null || failedRead != null)) {
+        setState(() {
+          error = e;
+          failedRead = 'output';
+        });
       }
     } finally {
-      if (pollingEpoch == generation) pollingEpoch = null;
-      if (mounted &&
-          generation == epoch &&
-          !requestScope.cancelled &&
-          visible) {
+      if (pollingEpoch == generation && identical(pollingScope, requestScope)) {
+        pollingEpoch = null;
+        pollingScope = null;
+      }
+      if (current() && visible) {
         timer = Timer(Duration(milliseconds: error == null ? 450 : 3000), poll);
       }
     }
@@ -1590,7 +2045,7 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
                         child: Text(
                           '${entry['name'] ?? entry['id']}',
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: DshTypography.sizeCaption,
                             color: entry['id'] == active
                                 ? Colors.white
                                 : Colors.grey,
@@ -1601,19 +2056,19 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
                 ),
               ),
               IconButton(
-                tooltip: '新建终端',
+                tooltip: DshConversationZh.newTerminal,
                 onPressed: open,
-                icon: const DshGlyph(
-                  LucideIcons.plus,
+                icon: DshGlyph(
+                  DshIcons.plus.data,
                   size: 16,
                   color: Colors.white,
                 ),
               ),
               IconButton(
-                tooltip: '关闭当前终端',
+                tooltip: DshConversationZh.closeCurrentTerminal,
                 onPressed: active == null ? null : closeTerminal,
-                icon: const DshGlyph(
-                  LucideIcons.x,
+                icon: DshGlyph(
+                  DshIcons.close.data,
                   size: 16,
                   color: Colors.white,
                 ),
@@ -1621,12 +2076,17 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
             ],
           ),
         ),
+        if (listing) const LinearProgressIndicator(minHeight: 1),
         if (error != null)
           Padding(
             padding: const EdgeInsets.all(8),
-            child: Text(
-              error!,
-              style: const TextStyle(color: Colors.orange, fontSize: 11),
+            child: _WorkbenchError(
+              error: error!,
+              onRetry: failedRead == null || listing ? null : retryReads,
+              onDismiss: () => setState(() {
+                error = null;
+                failedRead = null;
+              }),
             ),
           ),
         Expanded(
@@ -1635,7 +2095,7 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
                   child: DshButton(
                     primary: true,
                     onPressed: open,
-                    child: const Text('新建终端'),
+                    child: const Text(DshConversationZh.newTerminal),
                   ),
                 )
               : Padding(
@@ -1644,9 +2104,10 @@ class _NativeTerminalPanelState extends State<NativeTerminalPanel>
                     terminal,
                     key: ValueKey(active),
                     autofocus: true,
-                    textStyle: const TerminalStyle(
-                      fontFamily: 'Consolas',
-                      fontSize: 12,
+                    textStyle: TerminalStyle(
+                      fontFamily: DshTypography.monospaceFamily,
+                      fontFamilyFallback: DshTypography.monospaceFallback,
+                      fontSize: DshTypography.sizeCaption,
                     ),
                   ),
                 ),
@@ -1663,13 +2124,22 @@ class TaskPanel extends StatefulWidget {
   State<TaskPanel> createState() => _TaskPanelState();
 }
 
-class _TaskPanelState extends State<TaskPanel> with WidgetsBindingObserver {
+class _TaskPanelState extends State<TaskPanel>
+    with WidgetsBindingObserver, ResourceDiagnosticScope {
+  @override
+  String get resourceScopeKind => 'background-tasks-view';
+  @override
+  Map<String, int> get resourceDiagnostics => {
+    'taskPanels': 1,
+    'taskPollTimers': timer?.isActive == true ? 1 : 0,
+    'taskPollRequests': busy && !readScope.cancelled ? 1 : 0,
+  };
   final scope = RequestScope();
   late final api = widget.controller.client!;
   late final session = widget.controller.selectedId!;
   RequestScope readScope = RequestScope();
   List<Json> entries = [];
-  String? error;
+  Object? error;
   bool busy = false;
   bool panelVisible = true, appVisible = true;
   bool get visible => panelVisible && appVisible;
@@ -1677,11 +2147,18 @@ class _TaskPanelState extends State<TaskPanel> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    appVisible = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
     load();
-    timer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (visible) load();
-    });
+    schedulePoll();
+  }
+
+  void schedulePoll() {
+    timer?.cancel();
+    timer = visible
+        ? Timer.periodic(const Duration(seconds: 4), (_) => load())
+        : null;
   }
 
   @override
@@ -1700,6 +2177,7 @@ class _TaskPanelState extends State<TaskPanel> with WidgetsBindingObserver {
     appVisible = app ?? appVisible;
     panelVisible = panel ?? panelVisible;
     if (visible == wasVisible) return;
+    schedulePoll();
     if (!visible) {
       readScope.cancel();
     } else {
@@ -1719,26 +2197,44 @@ class _TaskPanelState extends State<TaskPanel> with WidgetsBindingObserver {
   }
 
   Future<void> load() async {
-    if (busy || !visible) return;
-    busy = true;
+    bool ownsSession() =>
+        identical(widget.controller.client, api) &&
+        widget.controller.selectedId == session;
+    if (busy || !visible || !ownsSession()) return;
+    setState(() {
+      busy = true;
+      error = null;
+    });
     final requestScope = readScope;
     try {
       final value = await api.request(
         previewUrl('job-list', session),
         scope: requestScope,
       );
-      if (mounted && !requestScope.cancelled) {
-        setState(
-          () => entries = objects(
+      if (mounted && !requestScope.cancelled && ownsSession()) {
+        setState(() {
+          entries = objects(
             value['entries'] ?? value['items'] ?? value['agents'],
-          ),
-        );
+          );
+          error = null;
+        });
       }
     } catch (e) {
-      if (mounted && !requestScope.cancelled) setState(() => error = '$e');
+      if (mounted && !requestScope.cancelled && ownsSession()) {
+        setState(() => error = e);
+      }
     } finally {
-      if (identical(requestScope, readScope)) busy = false;
+      if (mounted && identical(requestScope, readScope)) {
+        setState(() => busy = false);
+      }
     }
+  }
+
+  Future<void> retry() async {
+    readScope.cancel();
+    readScope = RequestScope();
+    busy = false;
+    await load();
   }
 
   @override
@@ -1750,28 +2246,30 @@ class _TaskPanelState extends State<TaskPanel> with WidgetsBindingObserver {
           children: [
             Expanded(
               child: Text(
-                '后台任务',
+                DshConversationZh.backgroundJobs,
                 style: const TextStyle(
-                  fontSize: 13,
+                  fontSize: DshTypography.sizeAuxiliary,
                   fontWeight: FontWeight.w500,
                 ),
               ),
             ),
-            DshIcon(LucideIcons.refreshCw, label: '刷新', onPressed: load),
+            DshIcon(
+              DshIcons.refreshCw.data,
+              label: DshConversationZh.refresh,
+              onPressed: retry,
+            ),
           ],
         ),
       ),
+      if (busy) const LinearProgressIndicator(minHeight: 1),
       if (error != null)
         Padding(
           padding: const EdgeInsets.all(10),
-          child: Text(
-            error!,
-            style: const TextStyle(fontSize: 11, color: Colors.red),
-          ),
+          child: _WorkbenchError(error: error!, onRetry: busy ? null : retry),
         ),
       Expanded(
         child: entries.isEmpty
-            ? const DshEmpty('当前没有后台任务')
+            ? const DshEmpty(DshConversationZh.noBackgroundJobs)
             : ListView.builder(
                 itemCount: entries.length,
                 itemBuilder: (context, i) {
@@ -1779,22 +2277,28 @@ class _TaskPanelState extends State<TaskPanel> with WidgetsBindingObserver {
                   return ListTile(
                     title: Text(
                       '${row['title'] ?? row['name'] ?? row['id']}',
-                      style: const TextStyle(fontSize: 12),
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                      ),
                     ),
                     subtitle: Text(
                       '${row['status'] ?? row['state'] ?? ''}',
-                      style: const TextStyle(fontSize: 11),
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                      ),
                     ),
                     onTap: () => showDialog<void>(
                       context: context,
                       builder: (_) => AlertDialog(
-                        title: const Text('任务详情'),
+                        title: const Text(DshConversationZh.taskDetails),
                         content: SingleChildScrollView(
                           child: SelectableText(
                             const JsonEncoder.withIndent('  ').convert(row),
-                            style: const TextStyle(
-                              fontFamily: 'Consolas',
-                              fontSize: 12,
+                            style: TextStyle(
+                              fontFamily: DshTypography.monospaceFamily,
+                              fontFamilyFallback:
+                                  DshTypography.monospaceFallback,
+                              fontSize: DshTypography.sizeCaption,
                             ),
                           ),
                         ),

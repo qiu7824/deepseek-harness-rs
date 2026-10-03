@@ -25,9 +25,10 @@ void main() {
   final png = base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==',
   );
-  Future<({DesktopController c, FakeClient api})> mount(
-    WidgetTester tester,
-  ) async {
+  Future<
+    ({DesktopController c, FakeClient api, Future<void> Function() cleanup})
+  >
+  mount(WidgetTester tester) async {
     final api = FakeClient();
     final c = DesktopController(MemoryPreferences(), clientFactory: (_) => api);
     await c.connect('http://127.0.0.1');
@@ -42,12 +43,17 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    addTearDown(() async {
+    var disposed = false;
+    Future<void> cleanup() async {
+      if (disposed) return;
+      disposed = true;
       await tester.pumpWidget(const SizedBox());
       c.dispose();
       await tester.pump();
-    });
-    return (c: c, api: api);
+    }
+
+    addTearDown(cleanup);
+    return (c: c, api: api, cleanup: cleanup);
   }
 
   testWidgets(
@@ -67,24 +73,53 @@ void main() {
       expect(find.text('private unsent draft'), findsNothing);
       expect(state.attachments, isEmpty);
       expect(tester.takeException(), isNull);
+      await setup.cleanup();
     },
   );
 
-  testWidgets('starting another blank task clears the previous blank draft', (
+  testWidgets(
+    'returning to the same Hero preserves its text and clears transient attachments',
+    (tester) async {
+      final setup = await mount(tester);
+      final dynamic state = tester.state(find.byType(Conversation));
+      await tester.enterText(
+        find.byKey(const Key('prompt-input')),
+        'old blank draft',
+      );
+      await state.addFiles([XFile.fromData(png, path: 'old.png')]);
+      setup.c.newConversation();
+      await tester.pumpAndSettle();
+      expect(state.input.text, 'old blank draft');
+      expect(state.attachments, isEmpty);
+      expect(tester.takeException(), isNull);
+      await setup.cleanup();
+    },
+  );
+
+  testWidgets('changing Hero workspace restores only that workspace text', (
     tester,
   ) async {
-    final setup = await mount(tester);
+    final setup = await mount(tester), c = setup.c;
     final dynamic state = tester.state(find.byType(Conversation));
     await tester.enterText(
       find.byKey(const Key('prompt-input')),
-      'old blank draft',
+      'workspace one draft',
     );
-    await state.addFiles([XFile.fromData(png, path: 'old.png')]);
-    setup.c.newConversation();
+    c.workspaces.add({'workspaceId': 'other', 'path': 'E:/other'});
+    c.targetWorkspace('other');
     await tester.pumpAndSettle();
     expect(state.input.text, isEmpty);
-    expect(state.attachments, isEmpty);
-    expect(tester.takeException(), isNull);
+    await tester.enterText(
+      find.byKey(const Key('prompt-input')),
+      'workspace two draft',
+    );
+    c.targetWorkspace('w');
+    await tester.pumpAndSettle();
+    expect(state.input.text, 'workspace one draft');
+    c.targetWorkspace('other');
+    await tester.pumpAndSettle();
+    expect(state.input.text, 'workspace two draft');
+    await setup.cleanup();
   });
 
   testWidgets(
@@ -115,6 +150,7 @@ void main() {
       expect(state.attachments, hasLength(1));
       expect(state.importingAttachments, 0);
       expect(tester.takeException(), isNull);
+      await setup.cleanup();
     },
   );
 }

@@ -1,12 +1,16 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+
 import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
 import '../../design/select.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class LearningPanel extends StatefulWidget {
   const LearningPanel({super.key, required this.controller});
@@ -55,7 +59,7 @@ class _LearningPanelState extends State<LearningPanel> {
       setState(() {
         preview = null;
         loading = false;
-        error = '连接已变化，请关闭后重新打开设置。';
+        error = DshSettingsZh.connectionChanged;
       });
     } else if (session != widget.controller.selectedId) {
       session = widget.controller.selectedId;
@@ -65,7 +69,7 @@ class _LearningPanelState extends State<LearningPanel> {
   }
 
   DshClient currentApi() {
-    if (stale) throw StateError('连接已变化，请关闭后重新打开设置。');
+    if (stale) throw StateError(DshSettingsZh.connectionChanged);
     return api!;
   }
 
@@ -98,7 +102,7 @@ class _LearningPanelState extends State<LearningPanel> {
               value['revision'] is! num ||
               value['enabled'] is! bool ||
               value['memoryEnabled'] is! bool) {
-            throw StateError('自动经验目录返回的数据不完整。');
+            throw StateError(DshSettingsZh.learningResponseInvalid);
           }
           if (current()) setState(() => report = value);
         } catch (e) {
@@ -119,7 +123,7 @@ class _LearningPanelState extends State<LearningPanel> {
           if (value['items'] is! List ||
               value['text'] is! String ||
               value['sessionId'] != selected) {
-            throw StateError('经验预览与当前任务不匹配。');
+            throw StateError(DshSettingsZh.learningPreviewMismatch);
           }
           if (current()) setState(() => preview = value);
         } catch (e) {
@@ -185,9 +189,11 @@ class _LearningPanelState extends State<LearningPanel> {
     if (disabled) return;
     if (await confirmAction(
           context,
-          '删除自动经验记录？',
-          '删除“${entry['tool'] ?? entry['code'] ?? '此记录'}”后将停止复用此条记录。',
-          action: '删除',
+          DshSettingsZh.deleteLearningTitle,
+          DshSettingsZh.deleteLearningHint(
+            title: entry['tool'] ?? entry['code'] ?? DshSettingsZh.thisRecord,
+          ),
+          action: DshSettingsZh.delete,
         ) &&
         mounted) {
       await mutate('memory.learningRemove', {
@@ -200,7 +206,11 @@ class _LearningPanelState extends State<LearningPanel> {
   @override
   Widget build(BuildContext context) {
     final rows = objects(report?['items']), colors = DshColors(context);
-    final muted = TextStyle(fontSize: 12, height: 1.6, color: colors.muted);
+    final muted = TextStyle(
+      fontSize: DshTypography.sizeCaption,
+      height: 1.6,
+      color: colors.muted,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -210,23 +220,29 @@ class _LearningPanelState extends State<LearningPanel> {
           children: [
             const Expanded(
               child: Text(
-                '自动经验',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                DshSettingsZh.learning,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeComposer,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             DshIcon(
-              LucideIcons.refreshCw,
-              label: '刷新自动经验',
+              DshIcons.refreshCw.data,
+              label: DshSettingsZh.refreshLearning,
               onPressed: disabled ? null : load,
             ),
           ],
         ),
-        Text('记录工具失败与恢复，在后续任务中复用已验证的修正建议。运行诊断单独保留，不作为长期规则。', style: muted),
+        Text(DshSettingsZh.learningDescription, style: muted),
         if (report != null) ...[
           SwitchListTile(
             key: const ValueKey('learning-enabled'),
             contentPadding: EdgeInsets.zero,
-            title: const Text('自动捕获与复用', style: TextStyle(fontSize: 13)),
+            title: const Text(
+              DshSettingsZh.captureLearning,
+              style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
+            ),
             value: report!['enabled'] == true,
             onChanged: disabled || report!['memoryEnabled'] != true
                 ? null
@@ -236,14 +252,14 @@ class _LearningPanelState extends State<LearningPanel> {
                   }),
           ),
           if (report!['memoryEnabled'] != true)
-            Text('持久记忆已关闭，自动经验暂停捕获与复用；已有记录仍可查看。', style: muted),
+            Text(DshSettingsZh.memoryDisabledLearning, style: muted),
         ],
         const SizedBox(height: 10),
         DshField(
           key: const ValueKey('learning-search'),
           controller: search,
-          hint: '搜索工具、错误代码或修正建议',
-          prefix: LucideIcons.search,
+          hint: DshSettingsZh.searchLearning,
+          prefix: DshIcons.search.data,
           enabled: !busy && !stale,
           onChanged: (_) {
             debounce?.cancel();
@@ -259,7 +275,11 @@ class _LearningPanelState extends State<LearningPanel> {
         const SizedBox(height: 10),
         DshSelect<String>(
           value: status,
-          options: const {'all': '全部状态', 'pending': '待验证', 'verified': '已验证'},
+          options: const {
+            'all': DshSettingsZh.allStatuses,
+            'pending': DshSettingsZh.unverified,
+            'verified': DshSettingsZh.verified,
+          },
           onChanged: busy || stale
               ? null
               : (value) {
@@ -283,21 +303,31 @@ class _LearningPanelState extends State<LearningPanel> {
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: SelectableText(
               message,
-              style: const TextStyle(color: Colors.red, fontSize: 12),
+              style: TextStyle(
+                color: DshTokens.of(context).error.foreground,
+                fontSize: DshTypography.sizeCaption,
+              ),
             ),
           ),
         const SizedBox(height: 12),
         previewSection(muted),
         const SizedBox(height: 12),
         Text(
-          '经验记录 · ${report?['total'] ?? rows.length}',
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          DshSettingsZh.learningRecordCount(
+            count: report?['total'] ?? rows.length,
+          ),
+          style: const TextStyle(
+            fontSize: DshTypography.sizeBody,
+            fontWeight: FontWeight.w500,
+          ),
         ),
         if (rows.isEmpty && !loading)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 16),
             child: Text(
-              error == null ? '没有匹配的自动经验记录' : '经验目录读取失败，可刷新重试',
+              error == null
+                  ? DshSettingsZh.noLearningMatches
+                  : DshSettingsZh.learningLoadFailed,
               style: muted,
             ),
           ),
@@ -311,7 +341,7 @@ class _LearningPanelState extends State<LearningPanel> {
                     limit += 50;
                     load();
                   },
-            child: const Text('显示更多经验'),
+            child: const Text(DshSettingsZh.moreLearning),
           ),
         const SizedBox(height: 20),
       ],
@@ -324,59 +354,75 @@ class _LearningPanelState extends State<LearningPanel> {
       key: ValueKey(('learning-preview', session)),
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsets.only(bottom: 12),
-      title: const Text('当前任务候选经验', style: TextStyle(fontSize: 14)),
+      title: const Text(
+        DshSettingsZh.currentLearning,
+        style: TextStyle(fontSize: DshTypography.sizeBody),
+      ),
       subtitle: Text(
         session == null
-            ? '选择任务后查看下次请求的候选经验'
-            : '${widget.controller.selected?.title ?? session} · ${items.length} 条',
+            ? DshSettingsZh.selectLearningSession
+            : DshSettingsZh.candidateCount(
+                title: widget.controller.selected?.title ?? session,
+                count: items.length,
+              ),
         style: muted,
       ),
       children: [
-        if (previewError != null)
-          SelectableText(
-            previewError!,
-            style: const TextStyle(color: Colors.red, fontSize: 12),
-          ),
+        if (previewError != null) DshErrorView(error: previewError!),
         if (value != null)
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('${value['notice'] ?? '实际请求会重新检查匹配条件与预算。'}', style: muted),
-              if (value['historyLimited'] == true)
-                Text('历史预览仅覆盖有界记录，实际执行前重新读取工具目录。', style: muted),
               Text(
-                '预览不会增加复用次数 · ${value['usedCharacters'] ?? 0} / ${value['budget'] ?? 0} 字符',
+                '${value['notice'] ?? DshSettingsZh.learningBudgetHint}',
+                style: muted,
+              ),
+              if (value['historyLimited'] == true)
+                Text(DshSettingsZh.historicalLearningHint, style: muted),
+              Text(
+                DshSettingsZh.learningBudget(
+                  used: value['usedCharacters'] ?? 0,
+                  budget: value['budget'] ?? 0,
+                ),
                 style: muted,
               ),
               if (items.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Text('当前没有符合条件的已验证经验。'),
+                  child: Text(DshSettingsZh.noVerifiedLearning),
                 ),
               for (final item in items)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
                   child: Text(
-                    '${item['tool'] ?? item['category'] ?? '经验'}：${item['suggestion'] ?? ''}',
-                    style: const TextStyle(fontSize: 13, height: 1.6),
+                    '${item['tool'] ?? item['category'] ?? DshSettingsZh.learningShort}：${item['suggestion'] ?? ''}',
+                    style: const TextStyle(
+                      fontSize: DshTypography.sizeAuxiliary,
+                      height: 1.6,
+                    ),
                   ),
                 ),
               if (objects(value['excluded']).isNotEmpty)
                 Text(
-                  '另有 ${objects(value['excluded']).length} 条因工具可用性、规则或预算条件未纳入。',
+                  DshSettingsZh.excludedLearning(
+                    count: objects(value['excluded']).length,
+                  ),
                   style: muted,
                 ),
               if ('${value['text'] ?? ''}'.isNotEmpty)
                 ExpansionTile(
                   tilePadding: EdgeInsets.zero,
                   title: const Text(
-                    '查看候选上下文内容',
-                    style: TextStyle(fontSize: 13),
+                    DshSettingsZh.viewCandidateContext,
+                    style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
                   ),
                   children: [
                     SelectableText(
                       '${value['text']}',
-                      style: const TextStyle(fontSize: 12, height: 1.6),
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        height: 1.6,
+                      ),
                     ),
                   ],
                 ),
@@ -390,10 +436,10 @@ class _LearningPanelState extends State<LearningPanel> {
     final reusable = entry['reusableRule'] == true;
     final review = object(entry['review']);
     final state = !reusable
-        ? '运行诊断'
+        ? DshSettingsZh.diagnostics
         : entry['status'] == 'verified'
-        ? '已验证'
-        : '待验证';
+        ? DshSettingsZh.verified
+        : DshSettingsZh.unverified;
     return Container(
       key: ValueKey('learning-entry-${entry['id']}'),
       margin: const EdgeInsets.only(top: 12),
@@ -409,9 +455,9 @@ class _LearningPanelState extends State<LearningPanel> {
             children: [
               Expanded(
                 child: Text(
-                  '${entry['tool'] ?? entry['category'] ?? '经验记录'} · $state',
+                  '${entry['tool'] ?? entry['category'] ?? DshSettingsZh.learningRecords} · $state',
                   style: const TextStyle(
-                    fontSize: 14,
+                    fontSize: DshTypography.sizeBody,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
@@ -432,37 +478,58 @@ class _LearningPanelState extends State<LearningPanel> {
           ),
           const SizedBox(height: 6),
           Text(
-            '${entry['workspaceLabel'] ?? '工作区未命名'} · 发生 ${entry['occurrences'] ?? 0} 次 · 复用 ${entry['applicationCount'] ?? 0} 次',
+            DshSettingsZh.learningUsage(
+              workspace:
+                  entry['workspaceLabel'] ?? DshSettingsZh.unnamedWorkspace,
+              occurrences: entry['occurrences'] ?? 0,
+              applications: entry['applicationCount'] ?? 0,
+            ),
             style: muted,
           ),
-          if (!reusable) Text('仅用于排障，不注入后续模型上下文。', style: muted),
+          if (!reusable) Text(DshSettingsZh.diagnosticOnly, style: muted),
           if (entry['verification'] == 'user-confirmed')
-            Text('验证方式：用户确认', style: muted),
+            Text(DshSettingsZh.userVerified, style: muted),
           if (entry['verification'] == 'recovered')
-            Text('验证方式：已观察到匹配工具恢复', style: muted),
+            Text(DshSettingsZh.recoveredTool, style: muted),
           if ('${entry['suggestion'] ?? ''}'.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 '${entry['suggestion']}',
-                style: const TextStyle(fontSize: 13, height: 1.6),
+                style: const TextStyle(
+                  fontSize: DshTypography.sizeAuxiliary,
+                  height: 1.6,
+                ),
               ),
             ),
           ExpansionTile(
             tilePadding: EdgeInsets.zero,
             title: Text(
-              '错误代码：${entry['code'] ?? '未记录'}',
-              style: const TextStyle(fontSize: 12),
+              DshSettingsZh.errorCode(
+                code: entry['code'] ?? DshSettingsZh.noRecord,
+              ),
+              style: const TextStyle(fontSize: DshTypography.sizeCaption),
             ),
             children: [
-              SelectableText('${entry['message'] ?? '未记录诊断详情'}', style: muted),
+              SelectableText(
+                '${entry['message'] ?? DshSettingsZh.noDiagnosticDetails}',
+                style: muted,
+              ),
               if (entry['lastSessionId'] != null)
-                SelectableText('任务：${entry['lastSessionId']}', style: muted),
+                SelectableText(
+                  DshSettingsZh.diagnosticSession(id: entry['lastSessionId']),
+                  style: muted,
+                ),
               if (entry['lastCallId'] != null)
-                SelectableText('调用：${entry['lastCallId']}', style: muted),
+                SelectableText(
+                  DshSettingsZh.diagnosticCall(id: entry['lastCallId']),
+                  style: muted,
+                ),
               if (review.isNotEmpty) ...[
                 Text(
-                  entry['reviewStale'] == true ? '新增事件，需重新核对' : '已记录诊断核查结论',
+                  entry['reviewStale'] == true
+                      ? DshSettingsZh.diagnosticChanged
+                      : DshSettingsZh.diagnosticChecked,
                   style: muted,
                 ),
                 SelectableText('${review['summary'] ?? ''}', style: muted),
@@ -479,12 +546,12 @@ class _LearningPanelState extends State<LearningPanel> {
                 DshButton(
                   outline: true,
                   onPressed: disabled ? null : () => confirm(entry),
-                  child: const Text('确认修正建议'),
+                  child: const Text(DshSettingsZh.confirmLearningTitle),
                 ),
               DshButton(
                 key: ValueKey('learning-remove-${entry['id']}'),
                 onPressed: disabled ? null : () => remove(entry),
-                child: const Text('删除记录'),
+                child: const Text(DshSettingsZh.deleteRecord),
               ),
             ],
           ),
@@ -521,7 +588,7 @@ class _LearningSuggestionEditorState extends State<LearningSuggestionEditor> {
     if (busy) return;
     final value = suggestion.text.trim();
     if (value.isEmpty || value.runes.length > 1000) {
-      setState(() => error = '请填写 1–1000 字的修正步骤与适用条件。');
+      setState(() => error = DshSettingsZh.correctionLengthInvalid);
       return;
     }
     setState(() {
@@ -542,7 +609,10 @@ class _LearningSuggestionEditorState extends State<LearningSuggestionEditor> {
   Widget build(BuildContext context) => PopScope(
     canPop: !busy,
     child: AlertDialog(
-      title: const Text('确认修正建议', style: TextStyle(fontSize: 17)),
+      title: const Text(
+        DshSettingsZh.confirmLearningTitle,
+        style: TextStyle(fontSize: DshTypography.sizeSectionTitle),
+      ),
       content: SizedBox(
         width: 520,
         child: SingleChildScrollView(
@@ -551,21 +621,20 @@ class _LearningSuggestionEditorState extends State<LearningSuggestionEditor> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                '只确认已经检查的修正建议；记录为用户确认，不代表已观察到工具恢复。',
-                style: TextStyle(fontSize: 13, height: 1.6),
+                DshSettingsZh.confirmLearningHint,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeAuxiliary,
+                  height: 1.6,
+                ),
               ),
               const SizedBox(height: 12),
               DshField(
                 controller: suggestion,
                 enabled: !busy,
                 maxLines: 6,
-                hint: '修正步骤与适用条件',
+                hint: DshSettingsZh.correctionSteps,
               ),
-              if (error != null)
-                Text(
-                  error!,
-                  style: const TextStyle(color: Colors.red, fontSize: 12),
-                ),
+              if (error != null) DshErrorView(error: error!),
             ],
           ),
         ),
@@ -573,12 +642,12 @@ class _LearningSuggestionEditorState extends State<LearningSuggestionEditor> {
       actions: [
         DshButton(
           onPressed: busy ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshZh.cancel),
         ),
         DshButton(
           primary: true,
           onPressed: busy ? null : save,
-          child: Text(busy ? '保存中…' : '确认此建议'),
+          child: Text(busy ? DshZh.saving : DshSettingsZh.confirmCorrection),
         ),
       ],
     ),

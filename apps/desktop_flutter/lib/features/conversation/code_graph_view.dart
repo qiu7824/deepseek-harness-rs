@@ -7,8 +7,12 @@ import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import 'artifacts_view.dart' show ArtifactPreview;
 import 'code_graph_controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 const graphPalette = [
   Color(0xff7668cd),
@@ -18,13 +22,13 @@ const graphPalette = [
   Color(0xffa16c93),
 ];
 const graphStatuses = {
-  'queued': '等待索引',
-  'indexing': '正在索引',
-  'checking': '检查变更',
-  'ready': '索引就绪',
-  'partial': '部分索引',
-  'cancelled': '索引已暂停',
-  'failed': '索引失败',
+  'queued': DshConversationZh.indexPending,
+  'indexing': DshConversationZh.indexing,
+  'checking': DshConversationZh.checkingChanges,
+  'ready': DshConversationZh.indexReady,
+  'partial': DshConversationZh.partialIndex,
+  'cancelled': DshConversationZh.indexPaused,
+  'failed': DshConversationZh.indexFailed,
 };
 
 class CodeGraphView extends StatefulWidget {
@@ -202,7 +206,7 @@ class _CodeGraphViewState extends State<CodeGraphView>
     bool active = false,
   }) => DshButton(
     height: 32,
-    fontSize: 12,
+    fontSize: DshTypography.sizeCaption,
     padding: const EdgeInsets.symmetric(horizontal: 10),
     outline: true,
     onPressed: action,
@@ -213,9 +217,9 @@ class _CodeGraphViewState extends State<CodeGraphView>
           DshGlyph(
             icon,
             asset: {
-              LucideIcons.refreshCw: 'assets/icons/cg-refresh.svg',
-              LucideIcons.pause: 'assets/icons/cg-pause.svg',
-              LucideIcons.code: 'assets/icons/cg-code.svg',
+              DshIcons.refreshCw.data: 'assets/icons/cg-refresh.svg',
+              DshIcons.pause.data: 'assets/icons/cg-pause.svg',
+              DshIcons.code.data: 'assets/icons/cg-code.svg',
             }[icon],
             size: 15,
           ),
@@ -273,7 +277,7 @@ class _CodeGraphViewState extends State<CodeGraphView>
             child: Text(
               v.value,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: DshTypography.sizeCaption,
                 color: v.key == selected
                     ? DshColors(context).blue
                     : DshColors(context).muted,
@@ -337,13 +341,18 @@ class _CodeGraphViewState extends State<CodeGraphView>
               children: [
                 Expanded(
                   child: Text(
-                    edge == null ? '节点详情' : '关系详情',
-                    style: TextStyle(fontSize: 11, color: colors.muted),
+                    edge == null
+                        ? DshConversationZh.nodeDetails
+                        : DshConversationZh.relationshipDetails,
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: colors.muted,
+                    ),
                   ),
                 ),
                 DshIcon(
-                  LucideIcons.x,
-                  label: '关闭节点详情',
+                  DshIcons.close.data,
+                  label: DshConversationZh.closeNodeDetails,
                   size: 24,
                   onPressed: clearSelection,
                 ),
@@ -355,35 +364,53 @@ class _CodeGraphViewState extends State<CodeGraphView>
                   (edge!.name.isEmpty
                       ? '${edge.source} → ${edge.target}'
                       : edge.name),
-              style: const TextStyle(
-                fontFamily: 'Consolas',
-                fontSize: 16,
+              style: TextStyle(
+                fontFamily: DshTypography.monospaceFamily,
+                fontFamilyFallback: DshTypography.monospaceFallback,
+                fontSize: DshTypography.sizeComposer,
                 fontWeight: FontWeight.w600,
               ),
             ),
             const SizedBox(height: 6),
             Text(
               '$path:$line',
-              style: TextStyle(fontSize: 11, color: colors.muted),
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                color: colors.muted,
+              ),
             ),
             if (edge != null)
               Text(
-                '${edge.inferred
-                    ? '名称推断'
-                    : edge.kind == 'import'
-                    ? '文件导入'
-                    : '静态代码关联'} · ${edge.count} 处记录（显示首处）',
-                style: TextStyle(fontSize: 11, color: colors.muted),
+                DshConversationZh.graphRelationshipSummary(
+                  kind: edge.inferred
+                      ? DshConversationZh.nameInference
+                      : edge.kind == 'import'
+                      ? DshConversationZh.fileImport
+                      : DshConversationZh.staticCodeRelation,
+                  count: edge.count,
+                ),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 7,
               runSpacing: 7,
               children: [
-                button('打开源码', () => open(path, line), icon: LucideIcons.code),
-                if (node != null) button('聚焦关系', () => focusNode(node)),
+                button(
+                  DshConversationZh.openSource,
+                  () => open(path, line),
+                  icon: DshIcons.code.data,
+                ),
+                if (node != null)
+                  button(
+                    DshConversationZh.focusRelationships,
+                    () => focusNode(node),
+                  ),
                 if (node?.kind == 'file')
-                  button('查看符号', () {
+                  button(DshConversationZh.viewSymbols, () {
                     clearSelection();
                     positions.clear();
                     c.symbols(node!);
@@ -400,9 +427,9 @@ class _CodeGraphViewState extends State<CodeGraphView>
                   runSpacing: 4,
                   children: [
                     for (final value in const {
-                      'callers': '调用者',
-                      'callees': '被调用者',
-                      'blast': '影响范围',
+                      'callers': DshConversationZh.callers,
+                      'callees': DshConversationZh.callees,
+                      'blast': DshConversationZh.impactScope,
                     }.entries)
                       button(
                         value.value,
@@ -414,8 +441,11 @@ class _CodeGraphViewState extends State<CodeGraphView>
               ),
             const SizedBox(height: 16),
             const Text(
-              '源码片段',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+              DshConversationZh.sourceSnippet,
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 7),
             Container(
@@ -426,29 +456,40 @@ class _CodeGraphViewState extends State<CodeGraphView>
               ),
               constraints: const BoxConstraints(maxHeight: 180),
               child: SingleChildScrollView(
-                child: SelectableText(
-                  c.snippet.isEmpty ? '正在读取源码…' : c.snippet,
-                  style: TextStyle(
-                    fontFamily: 'Consolas',
-                    fontSize: 11,
-                    height: 1.75,
-                    color: colors.muted,
-                  ),
-                ),
+                child: c.sourceError != null
+                    ? DshErrorView(
+                        error: c.sourceError!,
+                        onRetry: () => c.readSource(path, line),
+                      )
+                    : SelectableText(
+                        c.snippet.isEmpty
+                            ? DshConversationZh.loadingSource
+                            : c.snippet,
+                        style: TextStyle(
+                          fontFamily: DshTypography.monospaceFamily,
+                          fontFamilyFallback: DshTypography.monospaceFallback,
+                          fontSize: DshTypography.sizeCaption,
+                          height: 1.75,
+                          color: colors.muted,
+                        ),
+                      ),
               ),
             ),
             if (node != null) ...[
               const SizedBox(height: 16),
               Text(
-                '画布中的相邻节点 · ${neighbors.length}',
-                style: TextStyle(fontSize: 11, color: colors.muted),
+                DshConversationZh.neighboringNodes(count: neighbors.length),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
               for (final n in c.model.nodes.where(
                 (n) => neighbors.contains(n.id),
               ))
                 DshButton(
                   height: 30,
-                  fontSize: 12,
+                  fontSize: DshTypography.sizeCaption,
                   onPressed: () => choose(n),
                   child: Text(
                     n.name,
@@ -458,8 +499,11 @@ class _CodeGraphViewState extends State<CodeGraphView>
                 ),
               if (neighbors.isEmpty)
                 Text(
-                  '当前范围内没有已解析的关联。',
-                  style: TextStyle(fontSize: 11, color: colors.muted),
+                  DshConversationZh.noResolvedRelationships,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
             ],
           ],
@@ -503,7 +547,7 @@ class _CodeGraphViewState extends State<CodeGraphView>
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: DshGlyph(
-                    LucideIcons.workflow,
+                    DshIcons.workflow.data,
                     asset: 'assets/icons/cg-graph.svg',
                     size: 23,
                     color: colors.blue,
@@ -515,25 +559,28 @@ class _CodeGraphViewState extends State<CodeGraphView>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        '代码画布',
+                        DshConversationZh.codeCanvas,
                         style: TextStyle(
-                          fontSize: 17,
+                          fontSize: DshTypography.sizeSectionTitle,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
                       Text(
-                        '从结构到细节，沿着关系探索代码',
+                        DshConversationZh.codeCanvasHint,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, color: colors.muted),
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                          color: colors.muted,
+                        ),
                       ),
                     ],
                   ),
                 ),
                 for (final stat in {
-                  'files': '索引文件',
-                  'totalSymbols': '代码符号',
-                  'totalCalls': '静态关系',
+                  'files': DshConversationZh.indexedFiles,
+                  'totalSymbols': DshConversationZh.codeSymbols,
+                  'totalCalls': DshConversationZh.staticRelationships,
                 }.entries)
                   Padding(
                     padding: const EdgeInsets.only(left: 12),
@@ -542,13 +589,16 @@ class _CodeGraphViewState extends State<CodeGraphView>
                         Text(
                           '${c.graph[stat.key] ?? '—'}',
                           style: const TextStyle(
-                            fontSize: 16,
+                            fontSize: DshTypography.sizeComposer,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                         Text(
                           stat.value,
-                          style: TextStyle(fontSize: 10, color: colors.muted),
+                          style: TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                            color: colors.muted,
+                          ),
                         ),
                       ],
                     ),
@@ -575,11 +625,15 @@ class _CodeGraphViewState extends State<CodeGraphView>
                       setState(() => results = true);
                     },
                     inputFormatters: [LengthLimitingTextInputFormatter(500)],
-                    style: const TextStyle(fontSize: 13),
+                    style: const TextStyle(
+                      fontSize: DshTypography.sizeAuxiliary,
+                    ),
                     decoration: InputDecoration(
-                      hintText: c.files ? '搜索文件或路径…' : '搜索函数、类型或路径…',
+                      hintText: c.files
+                          ? DshConversationZh.searchGraphFilesHint
+                          : DshConversationZh.searchGraphSymbolsHint,
                       isDense: true,
-                      prefixIcon: const DshGlyph(LucideIcons.search, size: 15),
+                      prefixIcon: DshGlyph(DshIcons.search.data, size: 15),
                       prefixIconConstraints: const BoxConstraints.tightFor(
                         width: 33,
                         height: 36,
@@ -596,7 +650,10 @@ class _CodeGraphViewState extends State<CodeGraphView>
                   ),
                 ),
                 segments(
-                  const {'files': '文件依赖', 'calls': '符号调用'},
+                  const {
+                    'files': DshConversationZh.fileDependencies,
+                    'calls': DshConversationZh.symbolCalls,
+                  },
                   c.files ? 'files' : 'calls',
                   (value) {
                     clearSelection();
@@ -606,27 +663,36 @@ class _CodeGraphViewState extends State<CodeGraphView>
                   },
                 ),
                 button(
-                  '推断关系',
+                  DshConversationZh.inferredRelationships,
                   () => setState(() => inferred = !inferred),
                   active: inferred,
                 ),
                 button(
-                  '更新',
+                  DshConversationZh.update,
                   () => c.refresh(resume: true),
-                  icon: LucideIcons.refreshCw,
+                  icon: DshIcons.refreshCw.data,
                 ),
-                if (c.indexing) button('暂停', c.pause, icon: LucideIcons.pause),
+                if (c.indexing)
+                  button(
+                    DshConversationZh.pause,
+                    c.pause,
+                    icon: DshIcons.pause.data,
+                  ),
               ],
             ),
           ),
           if (c.error != null || c.graph['error'] != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
-              child: Text(
-                c.error ?? '${c.graph['error']}',
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.red, fontSize: 11),
+              child: DshErrorView(
+                error: c.error ?? '${c.graph['error']}',
+                onRetry: c.loading || c.mutationFailed ? null : c.refresh,
+                onDismiss: () {
+                  c.error = null;
+                  c.graph = {...c.graph}..remove('error');
+                  c.mutationFailed = false;
+                  c.emit();
+                },
               ),
             ),
           Expanded(
@@ -680,7 +746,7 @@ class _CodeGraphViewState extends State<CodeGraphView>
                     return KeyEventResult.ignored;
                   },
                   child: Semantics(
-                    label: '代码关系画布：拖动平移，滚轮缩放，方向键平移，0 适应画布',
+                    label: DshConversationZh.graphKeyboardHint,
                     child: Listener(
                       onPointerSignal: (event) {
                         if (event is PointerScrollEvent && !overFloating) {
@@ -775,28 +841,37 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Text(
-                                      c.focus.isEmpty ? '工作区局部视图' : '聚焦视图',
+                                      c.focus.isEmpty
+                                          ? DshConversationZh.workspaceSubset
+                                          : DshConversationZh.focusedView,
                                       style: TextStyle(
-                                        fontSize: 11,
+                                        fontSize: DshTypography.sizeCaption,
                                         color: colors.muted,
                                       ),
                                     ),
                                     if (c.focus.isNotEmpty)
                                       DshButton(
                                         height: 22,
-                                        fontSize: 11,
+                                        fontSize: DshTypography.sizeCaption,
                                         onPressed: () {
                                           clearSelection();
                                           positions.clear();
                                           search.clear();
                                           c.overview();
                                         },
-                                        child: const Text('返回概览'),
+                                        child: const Text(
+                                          DshConversationZh.backToOverview,
+                                        ),
                                       ),
                                     const SizedBox(width: 8),
                                     Text(
-                                      '${c.model.nodes.length} 节点 · ${edges.length} 关联',
-                                      style: const TextStyle(fontSize: 11),
+                                      DshConversationZh.graphTotals(
+                                        nodes: c.model.nodes.length,
+                                        edges: edges.length,
+                                      ),
+                                      style: const TextStyle(
+                                        fontSize: DshTypography.sizeCaption,
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -815,10 +890,10 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                     children: [
                                       Text(
                                         search.text.isEmpty
-                                            ? '选择入口以聚焦关系'
-                                            : '搜索结果',
+                                            ? DshConversationZh.selectGraphEntry
+                                            : DshConversationZh.searchResults,
                                         style: TextStyle(
-                                          fontSize: 11,
+                                          fontSize: DshTypography.sizeCaption,
                                           color: colors.muted,
                                         ),
                                       ),
@@ -827,11 +902,14 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                         child: c.model.catalog.isEmpty
                                             ? Text(
                                                 c.indexing
-                                                    ? '正在索引…'
-                                                    : '没有匹配的文件或符号',
+                                                    ? DshConversationZh
+                                                          .indexingProgress
+                                                    : DshConversationZh
+                                                          .noGraphMatches,
                                                 style: TextStyle(
                                                   color: colors.muted,
-                                                  fontSize: 11,
+                                                  fontSize:
+                                                      DshTypography.sizeCaption,
                                                 ),
                                               )
                                             : ListView.builder(
@@ -863,11 +941,17 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                                             overflow:
                                                                 TextOverflow
                                                                     .ellipsis,
-                                                            style:
-                                                                const TextStyle(
-                                                                  fontFamily: 'Consolas',
-                                                                  fontSize: 12,
-                                                                ),
+                                                            style: TextStyle(
+                                                              fontFamily:
+                                                                  DshTypography
+                                                                      .monospaceFamily,
+                                                              fontFamilyFallback:
+                                                                  DshTypography
+                                                                      .monospaceFallback,
+                                                              fontSize:
+                                                                  DshTypography
+                                                                      .sizeCaption,
+                                                            ),
                                                           ),
                                                           Text(
                                                             '${displayPath(node.path)}:${node.line}',
@@ -876,7 +960,9 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                                                 TextOverflow
                                                                     .ellipsis,
                                                             style: TextStyle(
-                                                              fontSize: 10,
+                                                              fontSize:
+                                                                  DshTypography
+                                                                      .sizeCaption,
                                                               color:
                                                                   colors.muted,
                                                             ),
@@ -915,7 +1001,7 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           DshGlyph(
-                                            LucideIcons.workflow,
+                                            DshIcons.workflow.data,
                                             asset: 'assets/icons/cg-graph.svg',
                                             size: 40,
                                             color: colors.muted,
@@ -923,23 +1009,29 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                           const SizedBox(height: 10),
                                           Text(
                                             c.indexing
-                                                ? '正在构建代码地图'
+                                                ? DshConversationZh
+                                                      .buildingCodeMap
                                                 : search.text.isEmpty
-                                                ? '当前工作区暂无代码关系'
-                                                : '没有找到匹配项',
+                                                ? DshConversationZh
+                                                      .noCodeRelationships
+                                                : DshConversationZh.noMatches,
                                             style: TextStyle(
-                                              fontSize: 15,
+                                              fontSize: DshTypography
+                                                  .sizeConversation,
                                               color: colors.muted,
                                             ),
                                           ),
                                           const SizedBox(height: 8),
                                           Text(
                                             c.indexing
-                                                ? '索引在后台运行，可以继续使用会话。'
-                                                : '搜索文件或函数名称，找到探索的起点。',
+                                                ? DshConversationZh
+                                                      .indexingBackgroundHint
+                                                : DshConversationZh
+                                                      .graphStartHint,
                                             textAlign: TextAlign.center,
                                             style: TextStyle(
-                                              fontSize: 11,
+                                              fontSize:
+                                                  DshTypography.sizeCaption,
                                               color: colors.muted,
                                             ),
                                           ),
@@ -957,33 +1049,35 @@ class _CodeGraphViewState extends State<CodeGraphView>
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     DshIcon(
-                                      LucideIcons.minus,
-                                      label: '缩小画布',
+                                      DshIcons.minus.data,
+                                      label: DshConversationZh.zoomOutCanvas,
                                       asset: 'assets/icons/cg-minus.svg',
                                       size: 30,
                                       onPressed: () => zoom(1 / 1.2),
                                     ),
                                     Text(
                                       '${(scale * 100).round()}%',
-                                      style: const TextStyle(fontSize: 11),
+                                      style: const TextStyle(
+                                        fontSize: DshTypography.sizeCaption,
+                                      ),
                                     ),
                                     DshIcon(
-                                      LucideIcons.plus,
-                                      label: '放大画布',
+                                      DshIcons.plus.data,
+                                      label: DshConversationZh.zoomInCanvas,
                                       asset: 'assets/icons/cg-plus.svg',
                                       size: 30,
                                       onPressed: () => zoom(1.2),
                                     ),
                                     DshIcon(
-                                      LucideIcons.maximize,
-                                      label: '适应画布',
+                                      DshIcons.maximize.data,
+                                      label: DshConversationZh.fitCanvas,
                                       asset: 'assets/icons/cg-fit.svg',
                                       size: 30,
                                       onPressed: fit,
                                     ),
                                     DshIcon(
-                                      LucideIcons.layoutGrid,
-                                      label: '重新布局',
+                                      DshIcons.layoutGrid.data,
+                                      label: DshConversationZh.relayoutCanvas,
                                       asset: 'assets/icons/cg-layout.svg',
                                       size: 30,
                                       onPressed: () {
@@ -1076,16 +1170,25 @@ class _CodeGraphViewState extends State<CodeGraphView>
               runSpacing: 3,
               children: [
                 Text(
-                  '实线：静态关联',
-                  style: TextStyle(fontSize: 10, color: colors.muted),
+                  DshConversationZh.staticRelationshipLegend,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
                 Text(
-                  '虚线：名称推断',
-                  style: TextStyle(fontSize: 10, color: colors.muted),
+                  DshConversationZh.inferredRelationshipLegend,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
                 Text(
-                  '${graphStatuses[c.status] ?? c.status}${c.model.limited || c.graph['resultLimited'] == true ? ' · 局部展示' : ''}',
-                  style: TextStyle(fontSize: 10, color: colors.muted),
+                  '${graphStatuses[c.status] ?? c.status}${c.model.limited || c.graph['resultLimited'] == true ? DshConversationZh.partialViewSuffix : ''}',
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
               ],
             ),
@@ -1098,7 +1201,10 @@ class _CodeGraphViewState extends State<CodeGraphView>
                 (object(c.graph['stats'])['reasons'] as List).join('；'),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 10, color: colors.muted),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             ),
         ],
@@ -1158,8 +1264,9 @@ class _CodeNodeCard extends StatelessWidget {
                       ? '{}'
                       : node.kind,
                   style: TextStyle(
-                    fontFamily: 'Consolas',
-                    fontSize: 11,
+                    fontFamily: DshTypography.monospaceFamily,
+                    fontFamilyFallback: DshTypography.monospaceFallback,
+                    fontSize: DshTypography.sizeCaption,
                     color: color,
                   ),
                 ),
@@ -1167,17 +1274,23 @@ class _CodeNodeCard extends StatelessWidget {
               const SizedBox(width: 7),
               Text(
                 const {
-                      'file': '文件',
-                      'function': '函数',
-                      'struct': '结构体',
+                      'file': DshConversationZh.file,
+                      'function': DshConversationZh.function,
+                      'struct': DshConversationZh.structure,
                     }[node.kind] ??
                     node.kind,
-                style: TextStyle(fontSize: 10, color: colors.muted),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
               const Spacer(),
               Text(
-                '${node.degree} 关联',
-                style: TextStyle(fontSize: 10, color: colors.muted),
+                DshConversationZh.relationCount(count: node.degree),
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
             ],
           ),
@@ -1186,9 +1299,10 @@ class _CodeNodeCard extends StatelessWidget {
             node.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontFamily: 'Consolas',
-              fontSize: 14,
+            style: TextStyle(
+              fontFamily: DshTypography.monospaceFamily,
+              fontFamilyFallback: DshTypography.monospaceFallback,
+              fontSize: DshTypography.sizeBody,
               fontWeight: FontWeight.w600,
               height: 1.4,
             ),
@@ -1202,7 +1316,11 @@ class _CodeNodeCard extends StatelessWidget {
                 : '${node.path.replaceAll('\\', '/').split('/').last}:${node.line}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 10, color: colors.muted, height: 1.4),
+            style: TextStyle(
+              fontSize: DshTypography.sizeCaption,
+              color: colors.muted,
+              height: 1.4,
+            ),
           ),
         ],
       ),

@@ -8,10 +8,14 @@ import '../../design/primitives.dart';
 import '../../src/controller.dart';
 import 'session_status.dart';
 
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
+
 export 'trajectory_view.dart' show TraceView;
 
-String amount(Object? value) =>
-    value is num && value.isFinite && value >= 0 ? '${value.round()}' : '未提供';
+String amount(Object? value) => value is num && value.isFinite && value >= 0
+    ? '${value.round()}'
+    : DshConversationZh.unavailable;
 String displayDate(Object? value) =>
     value is num && value >= 0 && value < 8640000000000000
     ? DateTime.fromMillisecondsSinceEpoch(value.toInt())
@@ -19,7 +23,7 @@ String displayDate(Object? value) =>
           .toString()
           .split('.')
           .first
-    : '未提供';
+    : DshConversationZh.unavailable;
 
 class ContextView extends StatelessWidget {
   const ContextView({super.key, required this.controller});
@@ -39,19 +43,22 @@ class ContextView extends StatelessWidget {
           ? null
           : billedInputTokens(usage) + nonNegative(usage, 'outputTokens');
       final fields = <String, String>{
-        '会话': controller.selected?.title ?? controller.selectedId ?? '未提供',
-        '消息数':
+        DshConversationZh.session:
+            controller.selected?.title ??
+            controller.selectedId ??
+            DshConversationZh.unavailable,
+        DshConversationZh.messageCount:
             insights['userMessages'] is! num ||
                 insights['assistantMessages'] is! num
-            ? '未提供'
+            ? DshConversationZh.unavailable
             : amount(
                 nonNegative(insights, 'userMessages') +
                     nonNegative(insights, 'assistantMessages'),
               ),
-        '提供商':
+        DshConversationZh.provider:
             controller.catalog?.providerNames[selected['provider']] ??
-            '${selected['provider'] ?? '未提供'}',
-        '模型':
+            '${selected['provider'] ?? DshConversationZh.unavailable}',
+        DshConversationZh.model:
             controller.catalog?.choices
                 .where(
                   (m) =>
@@ -60,27 +67,32 @@ class ContextView extends StatelessWidget {
                 )
                 .firstOrNull
                 ?.name ??
-            '${selected['model'] ?? '未提供'}',
-        '上下文限制': pressure['contextWindowEstimated'] == true
-            ? '未提供（运行预算 ${amount(pressure['contextWindow'])}）'
+            '${selected['model'] ?? DshConversationZh.unavailable}',
+        DshConversationZh.contextLimit:
+            pressure['contextWindowEstimated'] == true
+            ? DshConversationZh.missingContextWithBudget(
+                budget: amount(pressure['contextWindow']),
+              )
             : amount(pressure['contextWindow']),
-        '总 token': amount(total),
-        '使用率': reading == null
-            ? '未提供'
+        DshConversationZh.totalTokens: amount(total),
+        DshConversationZh.usageRatio: reading == null
+            ? DshConversationZh.unavailable
             : '${reading.estimated ? '≈' : ''}${(reading.used / reading.capacity * 100).toStringAsFixed(1)}%',
-        '输入 token': amount(usage['uncachedInputTokens']),
-        '输出 token': amount(usage['outputTokens']),
-        '推理 token': amount(insights['reasoningTokens']),
-        '缓存 token（读/写）': usage.isEmpty
-            ? '未提供'
+        DshConversationZh.inputTokens: amount(usage['uncachedInputTokens']),
+        DshConversationZh.outputTokens: amount(usage['outputTokens']),
+        DshConversationZh.reasoningTokens: amount(insights['reasoningTokens']),
+        DshConversationZh.cacheReadWriteTokens: usage.isEmpty
+            ? DshConversationZh.unavailable
             : '${amount(usage['cacheReadTokens'])} / ${amount(usage['cacheWriteTokens'])}',
-        '用户消息': amount(insights['userMessages']),
-        '助手消息': amount(insights['assistantMessages']),
-        '总成本': insights['totalCost'] is num
+        DshConversationZh.userMessages: amount(insights['userMessages']),
+        DshConversationZh.assistantMessages: amount(
+          insights['assistantMessages'],
+        ),
+        DshConversationZh.totalCost: insights['totalCost'] is num
             ? 'USD ${(insights['totalCost'] as num).toStringAsFixed(4)}'
-            : '未提供',
-        '创建时间': displayDate(insights['createdAt']),
-        '最后活动': displayDate(
+            : DshConversationZh.unavailable,
+        DshConversationZh.createdAt: displayDate(insights['createdAt']),
+        DshConversationZh.lastActivity: displayDate(
           object(p['sessionListMetadata'])['updatedAt'] ??
               controller.selected?.updatedAt,
         ),
@@ -117,15 +129,19 @@ class ContextView extends StatelessWidget {
                         children: [
                           Text(
                             entry.key,
-                            style: TextStyle(fontSize: 12, color: colors.muted),
+                            style: TextStyle(
+                              fontSize: DshTypography.sizeCaption,
+                              color: colors.muted,
+                            ),
                           ),
                           const SizedBox(height: 4),
                           SelectableText(
                             entry.value,
                             style: TextStyle(
-                              fontSize: 14,
+                              fontSize: DshTypography.sizeBody,
                               height: 1.6,
-                              color: entry.value == '未提供'
+                              color:
+                                  entry.value == DshConversationZh.unavailable
                                   ? colors.muted
                                   : colors.text,
                             ),
@@ -138,8 +154,11 @@ class ContextView extends StatelessWidget {
             ),
             const SizedBox(height: 28),
             const Text(
-              '上下文细分',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+              DshConversationZh.contextBreakdown,
+              style: TextStyle(
+                fontSize: DshTypography.sizeBody,
+                fontWeight: FontWeight.w500,
+              ),
             ),
             const SizedBox(height: 12),
             if (roleTotal > 0)
@@ -169,8 +188,11 @@ class ContextView extends StatelessWidget {
               )
             else
               Text(
-                '尚无上下文统计',
-                style: TextStyle(color: colors.muted, fontSize: 12),
+                DshConversationZh.noContextStats,
+                style: TextStyle(
+                  color: colors.muted,
+                  fontSize: DshTypography.sizeCaption,
+                ),
               ),
             const SizedBox(height: 12),
             Wrap(
@@ -184,8 +206,10 @@ class ContextView extends StatelessWidget {
                       Container(width: 8, height: 8, color: roleColors[i]),
                       const SizedBox(width: 6),
                       Text(
-                        '${const ['用户', '助手', '工具调用', '其他'][i]} ${roleTotal == 0 ? '—' : '${(nonNegative(roles, roleIds[i]) / roleTotal * 100).toStringAsFixed(1)}%'}',
-                        style: const TextStyle(fontSize: 12),
+                        '${const [DshConversationZh.user, DshConversationZh.assistant, DshConversationZh.toolCalls, DshConversationZh.feedbackOther][i]} ${roleTotal == 0 ? '—' : '${(nonNegative(roles, roleIds[i]) / roleTotal * 100).toStringAsFixed(1)}%'}',
+                        style: const TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                        ),
                       ),
                     ],
                   ),
@@ -193,8 +217,12 @@ class ContextView extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              '上下文细分为当前模型可见内容的估算；总 token 为累计计费量，推理 token 包含在输出量中。未报告的用量与价格显示为“未提供”。',
-              style: TextStyle(fontSize: 12, height: 1.7, color: colors.muted),
+              DshConversationZh.contextStatsHint,
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                height: 1.7,
+                color: colors.muted,
+              ),
             ),
             const SizedBox(height: 28),
             ContextSummary(controller: controller),
@@ -231,7 +259,7 @@ class _EventDetailState extends State<EventDetail> {
     return AlertDialog(
       title: Text(
         '${widget.event.type} · #${widget.event.seq}',
-        style: const TextStyle(fontSize: 16),
+        style: const TextStyle(fontSize: DshTypography.sizeComposer),
       ),
       content: SizedBox(
         width: 760,
@@ -240,27 +268,34 @@ class _EventDetailState extends State<EventDetail> {
           key: ValueKey(page),
           child: SelectableText(
             text.substring(start, end),
-            style: const TextStyle(fontFamily: 'Consolas', fontSize: 12),
+            style: TextStyle(
+              fontFamily: DshTypography.monospaceFamily,
+              fontFamilyFallback: DshTypography.monospaceFallback,
+              fontSize: DshTypography.sizeCaption,
+            ),
           ),
         ),
       ),
       actions: [
-        Text('${page + 1} / $pages', style: const TextStyle(fontSize: 12)),
+        Text(
+          '${page + 1} / $pages',
+          style: const TextStyle(fontSize: DshTypography.sizeCaption),
+        ),
         DshButton(
           onPressed: page == 0 ? null : () => setState(() => page--),
-          child: const Text('上一页'),
+          child: const Text(DshConversationZh.previousPage),
         ),
         DshButton(
           onPressed: page + 1 >= pages ? null : () => setState(() => page++),
-          child: const Text('下一页'),
+          child: const Text(DshConversationZh.nextPage),
         ),
         DshButton(
           onPressed: () => Clipboard.setData(ClipboardData(text: text)),
-          child: const Text('复制事件'),
+          child: const Text(DshConversationZh.copyEvent),
         ),
         DshButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('关闭'),
+          child: const Text(DshConversationZh.close),
         ),
       ],
     );

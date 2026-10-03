@@ -2,11 +2,15 @@ import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
+import '../../design/loading.dart';
 import '../../design/rich_content.dart';
 import '../../design/select.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class SubagentPanel extends StatefulWidget {
   const SubagentPanel({super.key, required this.api, required this.parent});
@@ -24,7 +28,7 @@ class _SubagentPanelState extends State<SubagentPanel>
   bool loading = true, fetching = false;
   bool panelVisible = true, appVisible = true;
   bool get paused => !panelVisible || !appVisible;
-  String? error;
+  Object? error;
   Json? selected;
   Timer? timer;
 
@@ -89,13 +93,24 @@ class _SubagentPanelState extends State<SubagentPanel>
         });
       }
     } catch (e) {
-      if (mounted && !requestScope.cancelled) setState(() => error = '$e');
+      if (mounted && !requestScope.cancelled) setState(() => error = e);
     } finally {
       if (identical(requestScope, readScope)) fetching = false;
       if (mounted && !requestScope.cancelled) {
         setState(() => loading = false);
       }
     }
+  }
+
+  Future<void> retry() async {
+    readScope.cancel();
+    readScope = RequestScope();
+    fetching = false;
+    setState(() {
+      error = null;
+      loading = entries.isEmpty;
+    });
+    await load();
   }
 
   @override
@@ -118,27 +133,38 @@ class _SubagentPanelState extends State<SubagentPanel>
             children: [
               Expanded(
                 child: Text(
-                  '子任务 · ${entries.length}',
-                  style: const TextStyle(fontSize: 14),
+                  DshConversationZh.subagentCount(count: entries.length),
+                  style: const TextStyle(fontSize: DshTypography.sizeBody),
                 ),
               ),
-              DshIcon(LucideIcons.refreshCw, label: '刷新子任务', onPressed: load),
+              DshIcon(
+                DshIcons.refreshCw.data,
+                label: DshConversationZh.refreshSubagents,
+                onPressed: load,
+              ),
             ],
           ),
         ),
         if (error != null)
           Padding(
             padding: const EdgeInsets.all(12),
-            child: Text(
-              error!,
-              style: const TextStyle(color: Colors.red, fontSize: 12),
+            child: DshErrorView(
+              error: error!,
+              onRetry: fetching || paused ? null : retry,
             ),
           ),
         Expanded(
-          child: loading
-              ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          child: loading && entries.isEmpty
+              ? DshListSkeleton(
+                  label: DshConversationZh.loadingList(
+                    name: DshConversationZh.subagents,
+                  ),
+                )
               : entries.isEmpty
-              ? const DshEmpty('当前会话没有子任务', icon: LucideIcons.users)
+              ? DshEmpty(
+                  DshConversationZh.noSubagents,
+                  icon: DshIcons.users.data,
+                )
               : ListView.builder(
                   itemCount: entries.length,
                   itemBuilder: (context, index) {
@@ -180,20 +206,26 @@ class _SubagentPanelState extends State<SubagentPanel>
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: const TextStyle(
-                                          fontSize: 13,
+                                          fontSize: DshTypography.sizeAuxiliary,
                                           height: 18 / 13,
                                         ),
                                       ),
                                       Text(
                                         diagnostic
                                             ? switch (row['reason']) {
-                                                'corrupt' => '记录损坏',
-                                                'unsupported' => '暂不支持的记录格式',
-                                                _ => '暂时无法读取',
+                                                'corrupt' =>
+                                                  DshConversationZh
+                                                      .corruptRecord,
+                                                'unsupported' =>
+                                                  DshConversationZh
+                                                      .unsupportedRecordFormat,
+                                                _ =>
+                                                  DshConversationZh
+                                                      .recordUnavailable,
                                               }
-                                            : '${row['mode'] == 'continuable' ? '可继续对话' : '一次性任务'} · ${running ? '运行中' : '已停止'}',
+                                            : '${row['mode'] == 'continuable' ? DshConversationZh.conversationAllowed : DshConversationZh.oneShotTask} · ${running ? DshConversationZh.running : DshConversationZh.stopped}',
                                         style: TextStyle(
-                                          fontSize: 11,
+                                          fontSize: DshTypography.sizeCaption,
                                           height: 16 / 11,
                                           color: colors.muted,
                                         ),
@@ -203,7 +235,7 @@ class _SubagentPanelState extends State<SubagentPanel>
                                 ),
                                 if (!diagnostic)
                                   DshGlyph(
-                                    LucideIcons.chevronRight,
+                                    DshIcons.chevronRight.data,
                                     size: 14,
                                     color: colors.muted,
                                   ),
@@ -247,7 +279,8 @@ class _SubagentConversationState extends State<SubagentConversation>
   bool panelVisible = true, appVisible = true;
   bool get paused => !panelVisible || !appVisible;
   String delivery = 'queue';
-  String? error;
+  Object? error;
+  bool mutationFailed = false, retryPrevious = false;
   Timer? timer;
   Json get address => {
     'parentSessionId': widget.parent,
@@ -303,6 +336,7 @@ class _SubagentConversationState extends State<SubagentConversation>
   Future<void> load({bool previous = false}) async {
     if (fetching || paused) return;
     fetching = true;
+    retryPrevious = previous;
     final requestScope = readScope;
     try {
       final result = await widget.api.rpc(
@@ -325,10 +359,12 @@ class _SubagentConversationState extends State<SubagentConversation>
       setState(() {
         items = window.project();
         older = previous;
-        error = null;
+        if (!mutationFailed) error = null;
       });
     } catch (e) {
-      if (mounted && !requestScope.cancelled) setState(() => error = '$e');
+      if (mounted && !requestScope.cancelled && !mutationFailed) {
+        setState(() => error = e);
+      }
     } finally {
       if (identical(requestScope, readScope)) fetching = false;
       if (mounted && !requestScope.cancelled) {
@@ -337,10 +373,25 @@ class _SubagentConversationState extends State<SubagentConversation>
     }
   }
 
+  Future<void> retryHistory() async {
+    readScope.cancel();
+    readScope = RequestScope();
+    fetching = false;
+    setState(() {
+      error = null;
+      loading = items.isEmpty;
+    });
+    await load(previous: retryPrevious);
+  }
+
   Future<void> submit({bool interrupt = false}) async {
     final text = input.text.trim();
     if (sending || (!interrupt && text.isEmpty)) return;
-    setState(() => sending = true);
+    setState(() {
+      sending = true;
+      error = null;
+      mutationFailed = false;
+    });
     try {
       await widget.api.rpc(
         interrupt ? 'subagent.interrupt' : 'subagent.prompt',
@@ -361,7 +412,12 @@ class _SubagentConversationState extends State<SubagentConversation>
       if (!interrupt && input.text.trim() == text) input.clear();
       await load();
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted) {
+        setState(() {
+          error = e;
+          mutationFailed = true;
+        });
+      }
     } finally {
       if (mounted) setState(() => sending = false);
     }
@@ -375,8 +431,8 @@ class _SubagentConversationState extends State<SubagentConversation>
         child: Row(
           children: [
             DshIcon(
-              LucideIcons.chevronLeft,
-              label: '返回子任务',
+              DshIcons.chevronLeft.data,
+              label: DshConversationZh.backToSubagents,
               onPressed: widget.onBack,
             ),
             Expanded(
@@ -384,12 +440,12 @@ class _SubagentConversationState extends State<SubagentConversation>
                 '${widget.child['label'] ?? widget.child['id']}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 14),
+                style: const TextStyle(fontSize: DshTypography.sizeBody),
               ),
             ),
             DshIcon(
-              LucideIcons.refreshCw,
-              label: '刷新子任务历史',
+              DshIcons.refreshCw.data,
+              label: DshConversationZh.refreshChildHistory,
               onPressed: () => load(),
             ),
           ],
@@ -398,9 +454,13 @@ class _SubagentConversationState extends State<SubagentConversation>
       if (error != null)
         Padding(
           padding: const EdgeInsets.all(12),
-          child: Text(
-            error!,
-            style: const TextStyle(color: Colors.red, fontSize: 12),
+          child: DshErrorView(
+            error: error!,
+            onRetry: fetching || paused || mutationFailed ? null : retryHistory,
+            onDismiss: () => setState(() {
+              error = null;
+              mutationFailed = false;
+            }),
           ),
         ),
       if (window.hasBefore || older)
@@ -410,16 +470,16 @@ class _SubagentConversationState extends State<SubagentConversation>
             if (window.hasBefore)
               DshButton(
                 height: 28,
-                fontSize: 12,
+                fontSize: DshTypography.sizeCaption,
                 onPressed: () => load(previous: true),
-                child: const Text('更早记录'),
+                child: const Text(DshConversationZh.earlierHistory),
               ),
             if (older)
               DshButton(
                 height: 28,
-                fontSize: 12,
+                fontSize: DshTypography.sizeCaption,
                 onPressed: () => load(),
-                child: const Text('返回最新'),
+                child: const Text(DshConversationZh.backToLatest),
               ),
           ],
         ),
@@ -427,7 +487,7 @@ class _SubagentConversationState extends State<SubagentConversation>
         child: loading
             ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
             : items.isEmpty
-            ? const DshEmpty('暂无子任务记录')
+            ? const DshEmpty(DshConversationZh.noChildHistory)
             : ListView.builder(
                 padding: const EdgeInsets.all(16),
                 itemCount: items.length,
@@ -440,14 +500,14 @@ class _SubagentConversationState extends State<SubagentConversation>
                       children: [
                         Text(
                           item.kind == 'user'
-                              ? '你'
+                              ? DshConversationZh.you
                               : item.kind == 'assistant'
-                              ? '助手'
+                              ? DshConversationZh.assistant
                               : item.title.isNotEmpty
                               ? item.title
-                              : '执行记录',
+                              : DshConversationZh.executionRecords,
                           style: TextStyle(
-                            fontSize: 12,
+                            fontSize: DshTypography.sizeCaption,
                             color: DshColors(context).muted,
                           ),
                         ),
@@ -474,26 +534,33 @@ class _SubagentConversationState extends State<SubagentConversation>
               ),
             ),
           ),
-          child: const Text('查看下级子任务'),
+          child: const Text(DshConversationZh.viewNestedSubagents),
         ),
       if (widget.child['mode'] == 'continuable')
         Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
             children: [
-              DshField(controller: input, maxLines: 3, hint: '继续向子任务发送消息…'),
+              DshField(
+                controller: input,
+                maxLines: 3,
+                hint: DshConversationZh.childMessageHint,
+              ),
               const SizedBox(height: 8),
               Row(
                 children: [
                   DshSelect<String>(
-                    options: const {'queue': '排队发送', 'steer': '立即引导'},
+                    options: const {
+                      'queue': DshConversationZh.queueMessage,
+                      'steer': DshConversationZh.steerExecution,
+                    },
                     value: delivery,
                     onChanged: (v) => setState(() => delivery = v),
                   ),
                   const Spacer(),
                   DshButton(
                     onPressed: sending ? null : () => submit(interrupt: true),
-                    child: const Text('中断'),
+                    child: const Text(DshConversationZh.interrupt),
                   ),
                   ValueListenableBuilder(
                     valueListenable: input,
@@ -503,7 +570,7 @@ class _SubagentConversationState extends State<SubagentConversation>
                       onPressed: sending || value.text.trim().isEmpty
                           ? null
                           : submit,
-                      child: const Text('发送'),
+                      child: const Text(DshConversationZh.send),
                     ),
                   ),
                 ],

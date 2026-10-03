@@ -9,6 +9,7 @@ import 'package:dsh_desktop/src/interactions.dart';
 import 'package:dsh_desktop/src/preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:dsh_desktop/l10n/zh.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 class PlanPreferences extends DesktopPreferences {
@@ -150,7 +151,14 @@ void main() {
       await mount(tester, c, [question()]);
       await tester.tap(find.text('确认执行'));
       await tester.pump();
-      expect(find.textContaining('response rejected'), findsOneWidget);
+      expect(find.text(DshZh.unknownError), findsOneWidget);
+      expect(find.textContaining('response rejected'), findsNothing);
+      await tester.tap(find.text(DshZh.details));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<SelectableText>(find.byType(SelectableText)).data,
+        contains('response rejected'),
+      );
       c.fail = false;
       c.pendingAnswer = Completer<void>();
       final repeated = tester

@@ -146,6 +146,34 @@ bool _enabled(WidgetTester tester, String key) =>
     tester.widget<DshButton>(_key(key)).onPressed != null;
 
 void main() {
+  testWidgets('same client Host switch clears confirmation and stops reads', (
+    tester,
+  ) async {
+    final api = _PluginApi();
+    await _withPanel(tester, api, (controller) async {
+      await _spec(tester, _source);
+      await _tap(tester, 'plugin-check');
+      final confirm = tester
+          .widget<DshButton>(_key('plugin-confirm'))
+          .onPressed!;
+      controller.host = HostInfo.fromJson({
+        'version': 'other-host',
+        'home': 'other-home',
+        'cwd': 'other-workspace',
+      });
+      controller.notifyListeners();
+      confirm();
+      await tester.pump(const Duration(seconds: 20));
+      expect(_key('plugin-confirm'), findsNothing);
+      expect(_enabled(tester, 'plugin-check'), isFalse);
+      expect(api.reads, hasLength(1));
+      expect(api.mutations, isEmpty);
+      expect(_draft(tester), _source);
+      expect(find.textContaining('连接已变化'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   testWidgets(
     'install requires trusted full SHA confirmation and preserves separate drafts',
     (tester) async {

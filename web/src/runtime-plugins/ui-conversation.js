@@ -11048,7 +11048,6 @@ window.__ModuleLoader__.load({
 					/* v8 ignore next -- unreachable: list registration validates id at load. */
 					if (entry.options.id === void 0) continue;
                     if (["trajectory","artifacts","code-graph","context"].includes(entry.options.id)&&miniMenus.getSnapshot().value?.[entry.options.id]===false) continue;
-                    if (entry.options.id === "project-tasks" && miniMenus.getSnapshot().value?.tasks === false) continue;
 					tabs.push({
 						id: entry.options.id,
 						label: (0, _deepseek_ai_dsh_client_ui_slots.resolveSlotLabel)(entry.options.label) ?? entry.options.id

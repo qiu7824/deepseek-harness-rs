@@ -21,7 +21,9 @@ class OwnedResource extends StatefulWidget {
   State<OwnedResource> createState() => OwnedState();
 }
 
-class OwnedState extends State<OwnedResource> implements ResourceDiagnostics {
+class OwnedState extends State<OwnedResource> with ResourceDiagnosticScope {
+  @override
+  String get resourceScopeKind => 'test-owner';
   @override
   Map<String, int> get resourceDiagnostics => {'owned': 1, 'ownedBytes': 123};
   @override
@@ -29,6 +31,26 @@ class OwnedState extends State<OwnedResource> implements ResourceDiagnostics {
 }
 
 void main() {
+  test(
+    'frame window samples the latest frames and counts the full interval',
+    () {
+      final window = DesktopFrameWindow();
+      for (var i = 0; i < 600; i++) {
+        window.add(buildMicros: 1000, rasterMicros: 2000);
+      }
+      for (var i = 0; i < 1200; i++) {
+        window.add(buildMicros: 20000, rasterMicros: 30000);
+      }
+      final result = window.take();
+      expect(result['frameSamples'], 1200);
+      expect(result['frameReportedSamples'], 1800);
+      expect(result['frameSamplesDiscarded'], 600);
+      expect(result['buildP95Micros'], 20000);
+      expect(result['rasterP95Micros'], 30000);
+      expect(result['buildFramesOver16ms'], 1200);
+      expect(window.take()['frameSamples'], 0);
+    },
+  );
   testWidgets(
     'conversation reports speech and attachment owners only while mounted',
     (tester) async {
@@ -78,10 +100,17 @@ void main() {
       );
       final snapshot = monitor.snapshot();
       expect(snapshot['owners'], {'owned': 2, 'ownedBytes': 246});
+      final scopes = snapshot['scopes'] as List;
+      expect(scopes.length, 2);
+      expect(scopes.map((scope) => scope['id']).toSet().length, 2);
+      expect(scopes.first['kind'], 'test-owner');
+      expect(snapshot['processCurrentRssBytes'], greaterThan(0));
+      expect(snapshot['processMaxRssBytes'], greaterThan(0));
       expect(jsonEncode(snapshot), isNot(contains('PRIVATE_DRAFT_SENTINEL')));
       expect(jsonEncode(snapshot), isNot(contains('private-session')));
       await tester.pumpWidget(const SizedBox());
       expect(monitor.snapshot()['owners'], isEmpty);
+      expect(monitor.snapshot()['scopes'], isEmpty);
       monitor.close();
       c.dispose();
       expect(tester.takeException(), isNull);

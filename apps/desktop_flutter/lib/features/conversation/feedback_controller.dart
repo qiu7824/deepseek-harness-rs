@@ -2,15 +2,16 @@ import 'dart:convert';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/foundation.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 const feedbackCategories = {
-  'task-result': '任务结果',
-  'instruction-following': '指令遵循',
-  'product-interaction': '交互体验',
-  'service-stability': '服务稳定性',
-  'resource-cost': '资源与费用',
-  'security-privacy-permission': '安全、隐私与权限',
-  'other': '其他',
+  'task-result': DshConversationZh.feedbackTaskResult,
+  'instruction-following': DshConversationZh.feedbackInstructions,
+  'product-interaction': DshConversationZh.feedbackInteraction,
+  'service-stability': DshConversationZh.feedbackReliability,
+  'resource-cost': DshConversationZh.feedbackResources,
+  'security-privacy-permission': DshConversationZh.feedbackSecurity,
+  'other': DshConversationZh.feedbackOther,
 };
 
 /// The RPC carrier has already been decoded by DshClient. Feedback methods
@@ -20,15 +21,18 @@ Json feedbackValue(Json result) {
     final error = object(result['error']);
     final code = '${error['code'] ?? 'feedback-failed'}';
     throw DshException(code, switch (code) {
-      'version-conflict' => '这条反馈已在别处改动，已显示最新状态；请核对后再保存。',
-      'target-not-found' => '此消息无法评价，请刷新会话记录。',
-      'session-not-found' => '会话已不存在或尚未加载。',
-      'note-too-large' => '反馈说明过长，请缩短后重试。',
-      _ => '${error['message'] ?? '反馈保存失败，请重试。'}',
+      'version-conflict' => DshConversationZh.feedbackConflict,
+      'target-not-found' => DshConversationZh.feedbackMessageUnavailable,
+      'session-not-found' => DshConversationZh.sessionUnavailable,
+      'note-too-large' => DshConversationZh.feedbackNoteTooLong,
+      _ => '${error['message'] ?? DshConversationZh.feedbackSaveFailed}',
     });
   }
   if (result['ok'] != true || result['value'] is! Map) {
-    throw DshException('protocol', '服务未返回有效的反馈确认。');
+    throw DshException(
+      'protocol',
+      DshConversationZh.feedbackConfirmationInvalid,
+    );
   }
   return object(result['value']);
 }
@@ -42,7 +46,7 @@ class MessageFeedbackController extends ChangeNotifier {
   Set<String> _targets = {};
   Future<bool>? _load;
   bool ready = false, busy = false, _disposed = false;
-  String? error;
+  Object? error;
   Json? item(String id) => _items[id];
   int get retainedCount => _items.length;
 
@@ -80,7 +84,9 @@ class MessageFeedbackController extends ChangeNotifier {
         ),
       );
       if (_disposed) return false;
-      if (value['items'] is! List) throw DshException('protocol', '反馈列表格式无效。');
+      if (value['items'] is! List) {
+        throw DshException('protocol', DshConversationZh.feedbackListInvalid);
+      }
       _items.clear();
       var bytes = 0;
       for (final item in objects(value['items'])) {
@@ -89,7 +95,10 @@ class MessageFeedbackController extends ChangeNotifier {
         _validate(item, id);
         bytes += utf8.encode(jsonEncode(item)).length;
         if (bytes > 2 * 1024 * 1024) {
-          throw DshException('feedback-budget', '反馈内容过多，请缩小历史范围。');
+          throw DshException(
+            'feedback-budget',
+            DshConversationZh.feedbackHistoryTooLarge,
+          );
         }
         _items[id] = item;
       }
@@ -100,7 +109,7 @@ class MessageFeedbackController extends ChangeNotifier {
     } catch (e) {
       if (!_disposed) {
         ready = false;
-        error = '$e';
+        error = e;
         _emit();
       }
       return false;
@@ -111,7 +120,7 @@ class MessageFeedbackController extends ChangeNotifier {
     if (value['messageId'] != id ||
         value['version'] is! String ||
         !['positive', 'negative'].contains(value['rating'])) {
-      throw DshException('protocol', '服务未返回有效的消息评价。');
+      throw DshException('protocol', DshConversationZh.feedbackResponseInvalid);
     }
   }
 
@@ -130,7 +139,10 @@ class MessageFeedbackController extends ChangeNotifier {
     _emit();
     try {
       if (rating == null && ifVersion == null) {
-        throw DshException('protocol', '缺少评价版本。');
+        throw DshException(
+          'protocol',
+          DshConversationZh.feedbackRevisionMissing,
+        );
       }
       final result = await api.rpc(
         rating == null ? 'messageFeedback.delete' : 'messageFeedback.put',
@@ -160,7 +172,10 @@ class MessageFeedbackController extends ChangeNotifier {
       final value = feedbackValue(result);
       if (rating == null) {
         if (value['absent'] != true) {
-          throw DshException('protocol', '服务未确认撤销评价。');
+          throw DshException(
+            'protocol',
+            DshConversationZh.feedbackRemovalUnconfirmed,
+          );
         }
         _items.remove(id);
       } else {
@@ -170,7 +185,7 @@ class MessageFeedbackController extends ChangeNotifier {
       return true;
     } catch (e) {
       if (!_disposed) {
-        error = '$e';
+        error = e;
         if (e is DshException && e.outcomeUnknown) ready = false;
       }
       return false;

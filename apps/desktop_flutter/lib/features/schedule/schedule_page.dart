@@ -1,11 +1,15 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+import '../../l10n/conversation_zh.dart';
+
 import 'dart:async';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/loading.dart';
 import '../../design/select.dart';
 import '../../design/typography.dart';
 import '../../src/controller.dart';
@@ -31,12 +35,20 @@ class ScheduleApi {
         maxBytes: 4 * 1024 * 1024,
       );
     } on DshException catch (error) {
-      throw unsupportedHostPage(error, operation, '定时任务');
+      throw unsupportedHostPage(error, operation, DshScheduleZh.title);
     }
   }
 }
 
-const scheduleWeekdayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+const scheduleWeekdayNames = [
+  DshScheduleZh.monday,
+  DshScheduleZh.tuesday,
+  DshScheduleZh.wednesday,
+  DshScheduleZh.thursday,
+  DshScheduleZh.friday,
+  DshScheduleZh.saturday,
+  DshScheduleZh.sunday,
+];
 
 String _two(int value) => value.toString().padLeft(2, '0');
 
@@ -46,8 +58,12 @@ String formatScheduleTime(String? iso) {
   final now = DateTime.now();
   final clock = '${_two(value.hour)}:${_two(value.minute)}';
   final date = value.year == now.year
-      ? '${value.month}月${value.day}日'
-      : '${value.year}年${value.month}月${value.day}日';
+      ? DshScheduleZh.monthDay(month: value.month, day: value.day)
+      : DshScheduleZh.yearMonthDay(
+          year: value.year,
+          month: value.month,
+          day: value.day,
+        );
   return '$date $clock';
 }
 
@@ -55,14 +71,14 @@ String relativeScheduleTime(String? iso, {DateTime? now}) {
   final value = iso == null ? null : DateTime.tryParse(iso);
   if (value == null) return '';
   final delta = value.difference(now ?? DateTime.now());
-  if (delta <= Duration.zero) return '即将运行';
+  if (delta <= Duration.zero) return DshScheduleZh.upcoming;
   if (delta < const Duration(hours: 1)) {
-    return '${delta.inMinutes.clamp(1, 59)} 分钟后';
+    return DshScheduleZh.minutesFromNow(count: delta.inMinutes.clamp(1, 59));
   }
   if (delta < const Duration(days: 1)) {
-    return '${(delta.inMinutes / 60).round()} 小时后';
+    return DshScheduleZh.hoursFromNow(count: (delta.inMinutes / 60).round());
   }
-  return '${(delta.inHours / 24).round()} 天后';
+  return DshScheduleZh.daysFromNow(count: (delta.inHours / 24).round());
 }
 
 /// Chinese label for one stored rule, e.g. `每周一、周五 18:30`.
@@ -73,14 +89,20 @@ String scheduleRuleLabel(Json rule, {String? localZone}) {
       : '';
   switch (rule['kind']) {
     case 'at':
-      return '单次 · ${formatScheduleTime(rule['at'] as String?)}';
+      return DshScheduleZh.onceAt(
+        time: formatScheduleTime(rule['at'] as String?),
+      );
     case 'every':
       final seconds = (rule['everySeconds'] as num?)?.toInt() ?? 0;
-      if (seconds % 86400 == 0) return '每 ${seconds ~/ 86400} 天';
-      if (seconds % 3600 == 0) return '每 ${seconds ~/ 3600} 小时';
-      return '每 ${(seconds / 60).round()} 分钟';
+      if (seconds % 86400 == 0) {
+        return DshScheduleZh.everyDays(count: seconds ~/ 86400);
+      }
+      if (seconds % 3600 == 0) {
+        return DshScheduleZh.everyHours(count: seconds ~/ 3600);
+      }
+      return DshScheduleZh.everyMinutes(count: (seconds / 60).round());
     case 'daily':
-      return '每天 ${rule['time']}$zoneNote';
+      return DshScheduleZh.dailyAt(time: rule['time'], zone: zoneNote);
     case 'weekly':
       final days = [
         for (final day in (rule['weekdays'] as List? ?? []))
@@ -88,8 +110,12 @@ String scheduleRuleLabel(Json rule, {String? localZone}) {
             scheduleWeekdayNames[day.toInt() - 1],
       ];
       return days.length == 7
-          ? '每天 ${rule['time']}$zoneNote'
-          : '每${days.join('、')} ${rule['time']}$zoneNote';
+          ? DshScheduleZh.dailyAt(time: rule['time'], zone: zoneNote)
+          : DshScheduleZh.weeklyAt(
+              days: days.join('、'),
+              time: rule['time'],
+              zone: zoneNote,
+            );
     case 'cron':
       return 'Cron · ${rule['expression']}$zoneNote';
     default:
@@ -312,10 +338,10 @@ class _RuleEditorState extends State<RuleEditor> {
           runSpacing: 6,
           children: [
             for (final (kind, label) in [
-              ('at', '单次'),
-              ('every', '每隔'),
-              ('daily', '每天'),
-              ('weekly', '每周'),
+              ('at', DshScheduleZh.once),
+              ('every', DshScheduleZh.interval),
+              ('daily', DshScheduleZh.daily),
+              ('weekly', DshScheduleZh.weekly),
               ('cron', 'Cron'),
             ])
               DshButton(
@@ -324,18 +350,21 @@ class _RuleEditorState extends State<RuleEditor> {
                 pill: true,
                 active: draft.kind == kind,
                 onPressed: () => change((d) => d.kind = kind),
-                child: Text(label, style: const TextStyle(fontSize: 13)),
+                child: Text(
+                  label,
+                  style: const TextStyle(fontSize: DshTypography.sizeAuxiliary),
+                ),
               ),
           ],
         ),
         const SizedBox(height: 12),
         if (draft.kind == 'at')
           _Label(
-            '执行时间',
+            DshScheduleZh.runAt,
             DshButton(
               key: const Key('rule-at'),
               outline: true,
-              icon: LucideIcons.calendarClock,
+              icon: DshIcons.calendarClock.data,
               onPressed: pickMoment,
               child: Text(
                 '${local.year}-${_two(local.month)}-${_two(local.day)} ${_two(local.hour)}:${_two(local.minute)}',
@@ -344,7 +373,7 @@ class _RuleEditorState extends State<RuleEditor> {
           ),
         if (draft.kind == 'every')
           _Label(
-            '间隔',
+            DshScheduleZh.duration,
             Row(
               children: [
                 SizedBox(
@@ -364,7 +393,11 @@ class _RuleEditorState extends State<RuleEditor> {
                 ),
                 const SizedBox(width: 8),
                 DshSelect<int>(
-                  options: const {60: '分钟', 3600: '小时', 86400: '天'},
+                  options: const {
+                    60: DshScheduleZh.minutes,
+                    3600: DshScheduleZh.hours,
+                    86400: DshScheduleZh.days,
+                  },
                   value: draft.unitSeconds,
                   onChanged: (value) => change((d) => d.unitSeconds = value),
                 ),
@@ -373,18 +406,18 @@ class _RuleEditorState extends State<RuleEditor> {
           ),
         if (draft.kind == 'daily' || draft.kind == 'weekly')
           _Label(
-            '时间',
+            DshScheduleZh.time,
             DshButton(
               key: const Key('rule-time'),
               outline: true,
-              icon: LucideIcons.clock,
+              icon: DshIcons.clock.data,
               onPressed: pickTime,
               child: Text(draft.time),
             ),
           ),
         if (draft.kind == 'weekly')
           _Label(
-            '星期',
+            DshScheduleZh.weekday,
             Wrap(
               spacing: 6,
               runSpacing: 6,
@@ -402,7 +435,7 @@ class _RuleEditorState extends State<RuleEditor> {
                     child: Text(
                       scheduleWeekdayNames[day - 1],
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: DshTypography.sizeAuxiliary,
                         color: draft.weekdays.contains(day)
                             ? colors.base
                             : null,
@@ -414,16 +447,16 @@ class _RuleEditorState extends State<RuleEditor> {
           ),
         if (draft.kind == 'cron')
           _Label(
-            'Cron 表达式',
+            DshScheduleZh.cron,
             DshField(
               controller: expression,
               onChanged: (text) => change((d) => d.expression = text),
             ),
-            hint: '5 个字段：分 时 日 月 周，例如 0 9 * * 1-5 表示工作日 9:00',
+            hint: DshScheduleZh.cronHint,
           ),
         if (['daily', 'weekly', 'cron'].contains(draft.kind))
           _Label(
-            '时区',
+            DshScheduleZh.timezone,
             DshField(
               controller: zone,
               onChanged: (text) => change((d) => d.timeZone = text),
@@ -526,7 +559,7 @@ class _SchedulePageState extends State<SchedulePage> {
     _api = widget.api ?? (client == null ? null : ScheduleApi(client));
     catalog = null;
     selected = widget.initialTaskId;
-    error = client == null ? '请先连接本机服务' : null;
+    error = client == null ? DshScheduleZh.connectFirst : null;
     if (notify && mounted) setState(() {});
     final owner = _api, generation = _generation;
     if (owner != null) {
@@ -566,11 +599,13 @@ class _SchedulePageState extends State<SchedulePage> {
       setState(() {
         catalog = value;
         error = revision == null
-            ? '本机服务不支持定时任务，请更新到最新版本'
+            ? DshScheduleZh.unsupportedHost
             : value['error'] != null
-            ? '定时任务存储不可用：${value['error']}'
+            ? DshScheduleZh.storageUnavailable(detail: value['error'])
             : value['deliveryError'] != null
-            ? '定时任务投递或回执未能持久化：${value['deliveryError']}'
+            ? DshScheduleZh.deliveryPersistenceFailed(
+                detail: value['deliveryError'],
+              )
             : null;
       });
       return revision;
@@ -579,7 +614,7 @@ class _SchedulePageState extends State<SchedulePage> {
       if (request == _fetchRevision) {
         setState(
           () => error = e is DshException && e.code == 'http-404'
-              ? '本机服务不支持定时任务，请更新到最新版本'
+              ? DshScheduleZh.unsupportedHost
               : '$e',
         );
       }
@@ -600,7 +635,9 @@ class _SchedulePageState extends State<SchedulePage> {
     for (final session in widget.controller.sessions) {
       if (session.id == id) return session.displayTitle;
     }
-    return '会话 ${id.length > 12 ? id.substring(id.length - 8) : id}';
+    return DshScheduleZh.sessionLabel(
+      id: id.length > 12 ? id.substring(id.length - 8) : id,
+    );
   }
 
   Future<void> create() async {
@@ -708,8 +745,8 @@ class _SchedulePageState extends State<SchedulePage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     DshIcon(
-                      LucideIcons.arrowLeft,
-                      label: '返回对话',
+                      DshIcons.arrowLeft.data,
+                      label: DshScheduleZh.backToSession,
                       onPressed: widget.onClose,
                     ),
                     const SizedBox(width: 8),
@@ -718,16 +755,19 @@ class _SchedulePageState extends State<SchedulePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            '定时任务',
+                            DshScheduleZh.title,
                             style: TextStyle(
-                              fontSize: 22,
+                              fontSize: DshTypography.sizeTitle,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '到点后把任务作为新消息发送到原会话执行；关闭会话或重启应用后仍会按时运行。也可以直接在对话中让智能体设置。',
-                            style: TextStyle(fontSize: 13, color: colors.muted),
+                            DshScheduleZh.description,
+                            style: TextStyle(
+                              fontSize: DshTypography.sizeAuxiliary,
+                              color: colors.muted,
+                            ),
                           ),
                         ],
                       ),
@@ -736,11 +776,11 @@ class _SchedulePageState extends State<SchedulePage> {
                     DshButton(
                       key: const Key('schedule-create'),
                       primary: true,
-                      icon: LucideIcons.plus,
+                      icon: DshIcons.plus.data,
                       onPressed: api == null || catalog?['error'] != null
                           ? null
                           : create,
-                      child: const Text('新建任务'),
+                      child: const Text(DshScheduleZh.newTask),
                     ),
                   ],
                 ),
@@ -748,10 +788,7 @@ class _SchedulePageState extends State<SchedulePage> {
                 if (error != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
-                    child: Text(
-                      error!,
-                      style: const TextStyle(color: Colors.red),
-                    ),
+                    child: DshErrorView(error: error!),
                   ),
                 Wrap(
                   spacing: 6,
@@ -759,9 +796,9 @@ class _SchedulePageState extends State<SchedulePage> {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     for (final (id, label) in [
-                      ('all', '全部'),
-                      ('active', '已启用'),
-                      ('inactive', '已停用'),
+                      ('all', DshScheduleZh.all),
+                      ('active', DshScheduleZh.enabled),
+                      ('inactive', DshScheduleZh.disabled),
                     ])
                       DshButton(
                         key: ValueKey('schedule-filter-$id'),
@@ -771,14 +808,16 @@ class _SchedulePageState extends State<SchedulePage> {
                         onPressed: () => setState(() => filter = id),
                         child: Text(
                           '$label ${counts[id]}',
-                          style: const TextStyle(fontSize: 13),
+                          style: const TextStyle(
+                            fontSize: DshTypography.sizeAuxiliary,
+                          ),
                         ),
                       ),
                     SizedBox(
                       width: 220,
                       child: DshField(
-                        hint: '搜索任务',
-                        prefix: LucideIcons.search,
+                        hint: DshScheduleZh.search,
+                        prefix: DshIcons.search.data,
                         onChanged: (text) => setState(() => query = text),
                       ),
                     ),
@@ -827,15 +866,15 @@ class _TaskList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = DshColors(context);
-    if (loading) {
-      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    if (loading && tasks.isEmpty) {
+      return DshListSkeleton(
+        label: DshConversationZh.loadingList(name: DshScheduleZh.title),
+      );
     }
     if (tasks.isEmpty) {
       return DshEmpty(
-        total == 0
-            ? '还没有定时任务\n可以在这里新建，也可以在对话中说“每个工作日 9 点汇总昨天的提交”'
-            : '没有符合条件的任务',
-        icon: LucideIcons.alarmClock,
+        total == 0 ? DshScheduleZh.empty : DshScheduleZh.noMatches,
+        icon: DshIcons.alarmClock.data,
       );
     }
     return ListView.separated(
@@ -869,9 +908,9 @@ class _TaskList extends StatelessWidget {
                         height: 8,
                         decoration: BoxDecoration(
                           color: failed
-                              ? Colors.red
+                              ? DshTokens.of(context).error.foreground
                               : active
-                              ? const Color(0xff1e9e5a)
+                              ? DshTokens.of(context).success.foreground
                               : colors.muted,
                           shape: BoxShape.circle,
                         ),
@@ -883,7 +922,7 @@ class _TaskList extends StatelessWidget {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 14,
+                            fontSize: DshTypography.sizeBody,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -901,18 +940,24 @@ class _TaskList extends StatelessWidget {
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: colors.muted),
+                          style: TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                            color: colors.muted,
+                          ),
                         ),
                       ),
                       Text(
                         active
                             ? (task['nextRunAt'] == null
-                                  ? '等待投递'
+                                  ? DshScheduleZh.awaitingDelivery
                                   : relativeScheduleTime(
                                       task['nextRunAt'] as String?,
                                     ))
-                            : '已停用',
-                        style: TextStyle(fontSize: 12, color: colors.muted),
+                            : DshScheduleZh.disabled,
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                          color: colors.muted,
+                        ),
                       ),
                     ],
                   ),
@@ -921,7 +966,10 @@ class _TaskList extends StatelessWidget {
                     sessionTitle('${task['sessionId']}'),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: colors.muted),
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: colors.muted,
+                    ),
                   ),
                 ],
               ),
@@ -1064,7 +1112,7 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
     } on DshException catch (e) {
       if (!op.valid) return;
       if (e.code == 'http-409') {
-        notice = '任务已被其他操作修改，已刷新为最新内容';
+        notice = DshScheduleZh.conflict;
         baseline = '';
         try {
           await op.request(widget.onChanged);
@@ -1133,7 +1181,11 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
         children: [
           Row(
             children: [
-              DshIcon(LucideIcons.x, label: '关闭详情', onPressed: widget.onClose),
+              DshIcon(
+                DshIcons.close.data,
+                label: DshScheduleZh.closeDetails,
+                onPressed: widget.onClose,
+              ),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
@@ -1141,12 +1193,15 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontSize: 17,
+                    fontSize: DshTypography.sizeSectionTitle,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
-              const Text('启用', style: TextStyle(fontSize: 13)),
+              const Text(
+                DshScheduleZh.enable,
+                style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
+              ),
               const SizedBox(width: 6),
               DshSwitch(
                 key: const Key('schedule-active'),
@@ -1175,32 +1230,51 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                   object(task['rule']),
                   localZone: widget.hostZone,
                 ),
-                '下次运行：${active && task['nextRunAt'] != null ? '${formatScheduleTime(task['nextRunAt'] as String?)}（${relativeScheduleTime(task['nextRunAt'] as String?)}）' : '无'}',
-                '最近运行：${last.isEmpty ? '尚未运行' : '${formatScheduleTime(last['deliveredAt'] as String?)} · ${last['outcome'] == 'delivered' ? '已发送' : '发送失败'}'}',
-                task['origin'] == 'agent' ? '由智能体创建' : '由你创建',
+                DshScheduleZh.nextRun(
+                  value: active && task['nextRunAt'] != null
+                      ? '${formatScheduleTime(task['nextRunAt'] as String?)}（${relativeScheduleTime(task['nextRunAt'] as String?)}）'
+                      : DshScheduleZh.none,
+                ),
+                DshScheduleZh.recentRun(
+                  value: last.isEmpty
+                      ? DshScheduleZh.neverRun
+                      : '${formatScheduleTime(last['deliveredAt'] as String?)} · ${last['outcome'] == 'delivered' ? DshScheduleZh.delivered : DshScheduleZh.deliveryFailed}',
+                ),
+                task['origin'] == 'agent'
+                    ? DshScheduleZh.agentCreated
+                    : DshScheduleZh.userCreated,
               ])
-                Text(text, style: TextStyle(fontSize: 12, color: colors.muted)),
+                Text(
+                  text,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 6),
           Row(
             children: [
               Text(
-                '目标会话：',
-                style: TextStyle(fontSize: 12, color: colors.muted),
+                DshScheduleZh.targetSessionLabel,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeCaption,
+                  color: colors.muted,
+                ),
               ),
               Flexible(
                 child: Text(
                   widget.sessionTitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12),
+                  style: const TextStyle(fontSize: DshTypography.sizeCaption),
                 ),
               ),
               if (widget.sessionKnown)
                 TextButton(
                   onPressed: widget.onOpenSession,
-                  child: const Text('打开会话'),
+                  child: const Text(DshScheduleZh.openSession),
                 ),
             ],
           ),
@@ -1208,8 +1282,11 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
           Row(
             children: [
               for (final (id, label) in [
-                ('rules', '规则'),
-                ('records', '运行记录 ${task['historyCount'] ?? 0}'),
+                ('rules', DshScheduleZh.rule),
+                (
+                  'records',
+                  DshScheduleZh.historyTab(count: task['historyCount'] ?? 0),
+                ),
               ])
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
@@ -1222,32 +1299,39 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                       setState(() => tab = id);
                       if (id == 'records') unawaited(loadHistory());
                     },
-                    child: Text(label, style: const TextStyle(fontSize: 13)),
+                    child: Text(
+                      label,
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeAuxiliary,
+                      ),
+                    ),
                   ),
                 ),
             ],
           ),
           const SizedBox(height: 12),
           if (notice != null)
-            Text(notice!, style: TextStyle(fontSize: 12, color: colors.muted)),
-          if (error != null)
             Text(
-              error!,
-              style: const TextStyle(fontSize: 12, color: Colors.red),
+              notice!,
+              style: TextStyle(
+                fontSize: DshTypography.sizeCaption,
+                color: colors.muted,
+              ),
             ),
+          if (error != null) DshErrorView(error: error!),
           Expanded(
             child: tab == 'rules'
                 ? ListView(
                     children: [
                       _Label(
-                        '名称',
+                        DshScheduleZh.name,
                         DshField(
                           controller: title,
                           onChanged: (_) => setState(() {}),
                         ),
                       ),
                       _Label(
-                        '任务内容',
+                        DshScheduleZh.prompt,
                         DshField(
                           key: const Key('schedule-prompt'),
                           controller: prompt,
@@ -1256,7 +1340,7 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                         ),
                       ),
                       _Label(
-                        '频率',
+                        DshScheduleZh.frequency,
                         RuleEditor(
                           draft: draft,
                           onChanged: (next) => setState(() => draft = next),
@@ -1281,9 +1365,9 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                         final owner = operation();
                         final confirmed = await confirmAction(
                           context,
-                          '删除定时任务',
-                          '删除后不再运行，已发送的消息保留在会话中。',
-                          action: '删除',
+                          DshScheduleZh.deleteTask,
+                          DshScheduleZh.deleteHint,
+                          action: DshScheduleZh.delete,
                         );
                         if (!confirmed || !owner.valid) return;
                         await run('delete', (op) async {
@@ -1293,7 +1377,7 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                           widget.onDeleted();
                         });
                       },
-                child: const Text('删除'),
+                child: const Text(DshScheduleZh.delete),
               ),
               DshButton(
                 key: const Key('schedule-run-now'),
@@ -1307,12 +1391,17 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                         await op.request(widget.onChanged);
                         if (op.valid) await loadHistory();
                       }),
-                child: Text(busy == 'run' ? '运行中…' : '立即运行'),
+                child: Text(
+                  busy == 'run' ? DshScheduleZh.running : DshScheduleZh.runNow,
+                ),
               ),
               if (dirty)
                 Text(
-                  '有未保存的修改',
-                  style: TextStyle(fontSize: 12, color: colors.muted),
+                  DshScheduleZh.unsaved,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
                 ),
               DshButton(
                 onPressed: !dirty || busy != null
@@ -1326,7 +1415,7 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                         );
                         baseline = _signature();
                       }),
-                child: const Text('取消'),
+                child: const Text(DshZh.cancel),
               ),
               DshButton(
                 key: const Key('schedule-save'),
@@ -1334,7 +1423,7 @@ class _ScheduleTaskDetailState extends State<ScheduleTaskDetail> {
                 onPressed: !dirty || busy != null || prompt.text.trim().isEmpty
                     ? null
                     : save,
-                child: Text(busy == 'save' ? '正在保存…' : '保存'),
+                child: Text(busy == 'save' ? DshScheduleZh.saving : DshZh.save),
               ),
             ],
           ),
@@ -1355,13 +1444,16 @@ class _Records extends StatelessWidget {
     }
     final records = objects(history!['records']);
     if (records.isEmpty) {
-      return const DshEmpty('还没有运行记录', icon: LucideIcons.history);
+      return DshEmpty(DshScheduleZh.noHistory, icon: DshIcons.history.data);
     }
     return ListView(
       children: [
         Text(
-          '“已发送”表示消息已进入会话，不代表任务已完成。',
-          style: TextStyle(fontSize: 12, color: colors.muted),
+          DshScheduleZh.deliveryMeaning,
+          style: TextStyle(
+            fontSize: DshTypography.sizeCaption,
+            color: colors.muted,
+          ),
         ),
         const SizedBox(height: 8),
         for (final record in records)
@@ -1378,38 +1470,52 @@ class _Records extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      record['outcome'] == 'delivered' ? '已发送' : '发送失败',
+                      record['outcome'] == 'delivered'
+                          ? DshScheduleZh.delivered
+                          : DshScheduleZh.deliveryFailed,
                       style: TextStyle(
                         fontWeight: FontWeight.w600,
                         color: record['outcome'] == 'delivered'
                             ? null
-                            : Colors.red,
+                            : DshTokens.of(context).error.foreground,
                       ),
                     ),
                     if (record['manual'] == true) ...[
                       const SizedBox(width: 6),
                       Text(
-                        '手动',
-                        style: TextStyle(fontSize: 12, color: colors.muted),
+                        DshScheduleZh.manual,
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeCaption,
+                          color: colors.muted,
+                        ),
                       ),
                     ],
                     const Spacer(),
                     Text(
                       formatScheduleTime(record['deliveredAt'] as String?),
-                      style: TextStyle(fontSize: 12, color: colors.muted),
+                      style: TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        color: colors.muted,
+                      ),
                     ),
                   ],
                 ),
                 if (record['error'] != null)
                   Text(
                     '${record['error']}',
-                    style: const TextStyle(fontSize: 12, color: Colors.red),
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: DshTokens.of(context).error.foreground,
+                    ),
                   ),
                 const SizedBox(height: 4),
                 SelectableText(
                   '${record['prompt']}',
                   maxLines: 3,
-                  style: TextStyle(fontSize: 13, color: colors.muted),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeAuxiliary,
+                    color: colors.muted,
+                  ),
                 ),
               ],
             ),
@@ -1417,8 +1523,14 @@ class _Records extends StatelessWidget {
         if (history!['earlierRecordsPruned'] == true &&
             history!['hasMore'] != true)
           Text(
-            '更早的记录已按保留策略清理（${history!['retentionDays']} 天 / ${history!['retentionRecords']} 条）',
-            style: TextStyle(fontSize: 12, color: colors.muted),
+            DshScheduleZh.retentionNotice(
+              days: history!['retentionDays'],
+              records: history!['retentionRecords'],
+            ),
+            style: TextStyle(
+              fontSize: DshTypography.sizeCaption,
+              color: colors.muted,
+            ),
           ),
       ],
     );
@@ -1469,7 +1581,9 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
         session.id: session.displayTitle,
     for (final workspace in c.workspaces)
       'new:${displayPathText('${workspace['path']}')}':
-          '＋ 新会话 · ${workspace['title'] ?? workspace['path']}',
+          DshScheduleZh.newWorkspaceSession(
+            title: workspace['title'] ?? workspace['path'],
+          ),
   };
 
   String _defaultTarget() {
@@ -1519,8 +1633,9 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
               'session.rename',
               payload: {
                 'sessionId': sessionId,
-                'title':
-                    '定时任务 · ${name.length > 40 ? name.substring(0, 40) : name}',
+                'title': DshScheduleZh.sessionTitle(
+                  title: name.length > 40 ? name.substring(0, 40) : name,
+                ),
               },
               mutation: true,
               scope: op.scope,
@@ -1554,7 +1669,10 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
   Widget build(BuildContext context) {
     final options = targets;
     return AlertDialog(
-      title: const Text('新建定时任务', style: TextStyle(fontSize: 17)),
+      title: const Text(
+        DshScheduleZh.createTitle,
+        style: TextStyle(fontSize: DshTypography.sizeSectionTitle),
+      ),
       content: SizedBox(
         width: 520,
         child: SingleChildScrollView(
@@ -1563,28 +1681,31 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _Label(
-                '任务内容',
+                DshScheduleZh.prompt,
                 DshField(
                   key: const Key('schedule-create-prompt'),
                   controller: prompt,
                   maxLines: 4,
                   autofocus: true,
-                  hint: '到点后要执行的指令，例如：汇总今天的新闻并列出三条要点',
+                  hint: DshScheduleZh.promptHint,
                   onChanged: (_) => setState(() {}),
                 ),
               ),
-              _Label('名称', DshField(controller: title, hint: '留空则使用任务内容的开头')),
               _Label(
-                '频率',
+                DshScheduleZh.name,
+                DshField(controller: title, hint: DshScheduleZh.nameHint),
+              ),
+              _Label(
+                DshScheduleZh.frequency,
                 RuleEditor(
                   draft: draft,
                   onChanged: (next) => setState(() => draft = next),
                 ),
               ),
               _Label(
-                '目标会话',
+                DshScheduleZh.targetSession,
                 options.isEmpty
-                    ? const Text('请先添加工作区或新建一个会话')
+                    ? const Text(DshScheduleZh.sessionRequired)
                     : DshSelect<String>(
                         key: const Key('schedule-create-target'),
                         options: options,
@@ -1592,10 +1713,9 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
                         maxWidth: 480,
                         onChanged: (value) => setState(() => target = value),
                       ),
-                hint: '任务会发送到这个会话，由该会话的智能体执行',
+                hint: DshScheduleZh.targetSessionHint,
               ),
-              if (error != null)
-                Text(error!, style: const TextStyle(color: Colors.red)),
+              if (error != null) DshErrorView(error: error!),
             ],
           ),
         ),
@@ -1603,7 +1723,7 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
       actions: [
         DshButton(
           onPressed: busy ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshZh.cancel),
         ),
         DshButton(
           key: const Key('schedule-create-submit'),
@@ -1612,7 +1732,7 @@ class _ScheduleCreateDialogState extends State<ScheduleCreateDialog> {
               busy || prompt.text.trim().isEmpty || !options.containsKey(target)
               ? null
               : submit,
-          child: Text(busy ? '正在创建…' : '创建'),
+          child: Text(busy ? DshScheduleZh.creating : DshScheduleZh.create),
         ),
       ],
     );
@@ -1712,15 +1832,18 @@ class _ScheduleSessionBadgeState extends State<ScheduleSessionBadge> {
   Widget build(BuildContext context) {
     if (active.isEmpty) return const SizedBox.shrink();
     final colors = DshColors(context);
-    final label = '定时任务 ${active.length}';
+    final label = DshScheduleZh.activeCount(count: active.length);
     final badge = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        DshGlyph(LucideIcons.alarmClock, size: 15, color: colors.muted),
+        DshGlyph(DshIcons.alarmClock.data, size: 15, color: colors.muted),
         const SizedBox(width: 4),
         Text(
           '${active.length}',
-          style: TextStyle(fontSize: 12, color: colors.muted),
+          style: TextStyle(
+            fontSize: DshTypography.sizeCaption,
+            color: colors.muted,
+          ),
         ),
       ],
     );
@@ -1764,7 +1887,7 @@ class _ScheduleSessionBadgeState extends State<ScheduleSessionBadge> {
                             Text(
                               '${scheduleRuleLabel(object(task['rule']))} · ${relativeScheduleTime(task['nextRunAt'] as String?)}',
                               style: TextStyle(
-                                fontSize: 12,
+                                fontSize: DshTypography.sizeCaption,
                                 color: colors.muted,
                               ),
                             ),

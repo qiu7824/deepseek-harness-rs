@@ -18,7 +18,7 @@ class FlutterReleaseTests(unittest.TestCase):
         if platform == "windows":
             files = ["dsh_desktop.exe", "flutter_windows.dll", "data/app.so", "data/icudtl.dat"]
         elif platform == "linux":
-            files = ["dsh_desktop", "lib/libflutter_linux_gtk.so", "lib/libapp.so", "data/icudtl.dat"]
+            files = ["dsh_desktop", "lib/libflutter_linux_gtk.so", "lib/libapp.so", "data/icudtl.dat", *package.LINUX_DESKTOP_FILES]
         else:
             files = ["Contents/MacOS/DeepSeek Harness", "Contents/Frameworks/FlutterMacOS.framework/FlutterMacOS", "Contents/Frameworks/App.framework/App"]
         for name in files:
@@ -99,6 +99,26 @@ class FlutterReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unexpected bundled Host"):
                 package.stage(client, core, root / "delivery", "windows", "x86_64", "1.2.3", "revision")
             self.assertEqual((client / "host/keep.txt").read_text(), "unrelated")
+
+    def test_windows_rejects_cached_test_runner_before_staging(self):
+        for marker in ["Local\\DeepSeekHarnessFlutterDesktop-QA-candidate", "DeepSeek Harness QA candidate", "unidentified runner"]:
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                client, core = self.fixture(root, "windows")
+                (client / "dsh_desktop.exe").write_bytes(b"MZ" + marker.encode("utf-16-le"))
+                with self.assertRaisesRegex(ValueError, "runner"):
+                    package.stage(client, core, root / "delivery", "windows", "x86_64", "1.2.3", "revision")
+                self.assertFalse((root / "delivery").exists())
+
+    def test_linux_desktop_integration_is_required_before_staging(self):
+        for missing in package.LINUX_DESKTOP_FILES:
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                client, core = self.fixture(root, "linux")
+                (client / missing).unlink()
+                with self.assertRaisesRegex(ValueError, "missing desktop runtime"):
+                    package.stage(client, core, root / "delivery", "linux", "x86_64", "1.2.3", "revision")
+                self.assertFalse((root / "delivery").exists())
 
     def test_outside_symlinks_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

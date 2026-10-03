@@ -1,8 +1,9 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../design/primitives.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class WorkspaceTreeRow extends StatefulWidget {
   const WorkspaceTreeRow({
@@ -12,11 +13,15 @@ class WorkspaceTreeRow extends StatefulWidget {
     required this.expanded,
     required this.active,
     required this.onPressed,
+    this.onToggle,
+    this.toggleKey,
     required this.onMenu,
   });
   final String title, path;
   final bool expanded, active;
   final VoidCallback onPressed;
+  final VoidCallback? onToggle;
+  final Key? toggleKey;
   final ValueChanged<Offset> onMenu;
   @override
   State<WorkspaceTreeRow> createState() => _WorkspaceTreeRowState();
@@ -42,16 +47,31 @@ class _WorkspaceTreeRowState extends State<WorkspaceTreeRow> {
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Row(
                 children: [
-                  DshGlyph(
-                    hovered
-                        ? (widget.expanded
-                              ? LucideIcons.chevronDown
-                              : LucideIcons.chevronRight)
-                        : LucideIcons.folder,
-                    size: 16,
-                    color: !hovered && widget.active
-                        ? colors.blue
-                        : colors.muted,
+                  Tooltip(
+                    message:
+                        '${widget.expanded ? '收起' : '展开'}工作区：${widget.title}',
+                    child: InkWell(
+                      key: widget.toggleKey,
+                      onTap: widget.onToggle ?? widget.onPressed,
+                      borderRadius: BorderRadius.circular(4),
+                      child: SizedBox(
+                        width: 24,
+                        height: 30,
+                        child: Center(
+                          child: DshGlyph(
+                            hovered
+                                ? (widget.expanded
+                                      ? DshIcons.chevronDown.data
+                                      : DshIcons.chevronRight.data)
+                                : DshIcons.folder.data,
+                            size: 16,
+                            color: !hovered && widget.active
+                                ? colors.blue
+                                : colors.muted,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 6),
                   Expanded(
@@ -59,7 +79,10 @@ class _WorkspaceTreeRowState extends State<WorkspaceTreeRow> {
                       widget.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 14, height: 20 / 14),
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeBody,
+                        height: 20 / 14,
+                      ),
                     ),
                   ),
                 ],

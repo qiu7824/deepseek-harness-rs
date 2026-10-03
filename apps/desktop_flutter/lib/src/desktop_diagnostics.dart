@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -10,6 +11,48 @@ import 'dart:ui' show FrameTiming;
 import 'controller.dart';
 import 'resource_diagnostics.dart';
 
+/// Bounded recent samples, with exact event and missed-budget counts for the
+/// entire reporting interval. A stalled writer cannot grow this buffer.
+class DesktopFrameWindow {
+  static const capacity = 1200;
+  final _build = Queue<int>(), _raster = Queue<int>();
+  int _reported = 0, _buildOver = 0, _rasterOver = 0;
+
+  void add({required int buildMicros, required int rasterMicros}) {
+    _reported++;
+    if (buildMicros > 16667) _buildOver++;
+    if (rasterMicros > 16667) _rasterOver++;
+    if (_build.length == capacity) {
+      _build.removeFirst();
+      _raster.removeFirst();
+    }
+    _build.add(buildMicros);
+    _raster.add(rasterMicros);
+  }
+
+  Map<String, int> take() {
+    int percentile(Queue<int> samples) {
+      if (samples.isEmpty) return 0;
+      final sorted = samples.toList()..sort();
+      return sorted[((sorted.length - 1) * .95).round()];
+    }
+
+    final result = {
+      'frameSamples': _build.length,
+      'frameReportedSamples': _reported,
+      'frameSamplesDiscarded': _reported - _build.length,
+      'buildP95Micros': percentile(_build),
+      'rasterP95Micros': percentile(_raster),
+      'buildFramesOver16ms': _buildOver,
+      'rasterFramesOver16ms': _rasterOver,
+    };
+    _build.clear();
+    _raster.clear();
+    _reported = _buildOver = _rasterOver = 0;
+    return result;
+  }
+}
+
 /// Opt-in local JSONL counters. No control commands or conversation data.
 class DesktopDiagnostics with WidgetsBindingObserver {
   DesktopDiagnostics(this.controller, this.file);
@@ -17,12 +60,14 @@ class DesktopDiagnostics with WidgetsBindingObserver {
   final File file;
   Timer? _timer;
   bool _writing = false, _closed = false, _observing = false;
-  final _buildMicros = <int>[], _rasterMicros = <int>[];
+  final _frames = DesktopFrameWindow();
+  final _frameWindow = Stopwatch()..start();
   void _onTimings(List<FrameTiming> frames) {
     for (final frame in frames) {
-      if (_buildMicros.length >= 600) break;
-      _buildMicros.add(frame.buildDuration.inMicroseconds);
-      _rasterMicros.add(frame.rasterDuration.inMicroseconds);
+      _frames.add(
+        buildMicros: frame.buildDuration.inMicroseconds,
+        rasterMicros: frame.rasterDuration.inMicroseconds,
+      );
     }
   }
 
@@ -51,12 +96,19 @@ class DesktopDiagnostics with WidgetsBindingObserver {
 
   Map<String, Object> snapshot() {
     final owners = <String, int>{};
+    final scopes = <Map<String, Object>>[];
     void visit(Element element) {
       if (element is StatefulElement && element.state is ResourceDiagnostics) {
-        for (final value
-            in (element.state as ResourceDiagnostics)
-                .resourceDiagnostics
-                .entries) {
+        final state = element.state as ResourceDiagnostics;
+        final counters = state.resourceDiagnostics;
+        if (state is ScopedResourceDiagnostics) {
+          scopes.add({
+            'id': state.resourceScopeId,
+            'kind': state.resourceScopeKind,
+            'counters': counters,
+          });
+        }
+        for (final value in counters.entries) {
           owners.update(
             value.key,
             (n) => n + value.value,
@@ -70,22 +122,13 @@ class DesktopDiagnostics with WidgetsBindingObserver {
     WidgetsBinding.instance.rootElement?.visitChildElements(visit);
     final cache = PaintingBinding.instance.imageCache;
     final view = WidgetsBinding.instance.platformDispatcher.views.firstOrNull;
-    int percentile(List<int> values) {
-      if (values.isEmpty) return 0;
-      values.sort();
-      return values[((values.length - 1) * .95).round()];
-    }
-
-    final frames = _buildMicros.length,
-        buildP95 = percentile(_buildMicros),
-        rasterP95 = percentile(_rasterMicros);
-    final buildOver = _buildMicros.where((v) => v > 16667).length,
-        rasterOver = _rasterMicros.where((v) => v > 16667).length;
-    _buildMicros.clear();
-    _rasterMicros.clear();
+    final windowMs = _frameWindow.elapsedMilliseconds;
+    _frameWindow.reset();
     return {
       'time': DateTime.now().toUtc().toIso8601String(),
       'pid': pid,
+      'processCurrentRssBytes': ProcessInfo.currentRss,
+      'processMaxRssBytes': ProcessInfo.maxRss,
       'buildMode': kReleaseMode
           ? 'release'
           : kProfileMode
@@ -96,16 +139,15 @@ class DesktopDiagnostics with WidgetsBindingObserver {
       'devicePixelRatio': view?.devicePixelRatio ?? 0,
       ...controller.resourceDiagnostics,
       'owners': owners,
+      'scopes': scopes,
       'imageCacheBytes': cache.currentSizeBytes,
       'imageCacheEntries': cache.currentSize,
       'imageCacheLive': cache.liveImageCount,
       'imageCachePending': cache.pendingImageCount,
       'imageCacheBudgetBytes': cache.maximumSizeBytes,
-      'frameSamples': frames,
-      'buildP95Micros': buildP95,
-      'rasterP95Micros': rasterP95,
-      'buildFramesOver16ms': buildOver,
-      'rasterFramesOver16ms': rasterOver,
+      'frameWindowMilliseconds': windowMs,
+      'framePercentilePolicy': 'latest-1200-since-previous-sample',
+      ..._frames.take(),
     };
   }
 

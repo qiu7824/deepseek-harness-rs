@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../design/primitives.dart';
+import '../../design/motion.dart';
 
 /// Animates received text; history is displayed immediately when [revealInitial]
 /// is false. The pending tail catches up within a short interval and is flushed
@@ -76,7 +77,7 @@ class _ProgressiveTextState extends State<ProgressiveText>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    reduced = MediaQuery.disableAnimationsOf(context);
+    reduced = DshMotion.disabled(context);
     tickersEnabled = TickerMode.valuesOf(context).enabled;
     sync();
   }
@@ -142,8 +143,12 @@ class _ThinkingSweepState extends State<ThinkingSweep>
     vsync: this,
     duration: const Duration(milliseconds: 2600),
   );
+  bool get shouldAnimate =>
+      widget.running &&
+      !DshMotion.disabled(context) &&
+      TickerMode.valuesOf(context).enabled;
   void sync() {
-    if (widget.running && !MediaQuery.disableAnimationsOf(context)) {
+    if (shouldAnimate) {
       if (!animation.isAnimating) animation.repeat();
     } else {
       animation.stop();
@@ -174,7 +179,7 @@ class _ThinkingSweepState extends State<ThinkingSweep>
       child: Stack(
         children: [
           widget.child,
-          if (widget.running && !MediaQuery.disableAnimationsOf(context))
+          if (shouldAnimate)
             Positioned.fill(
               child: IgnorePointer(
                 child: CustomPaint(

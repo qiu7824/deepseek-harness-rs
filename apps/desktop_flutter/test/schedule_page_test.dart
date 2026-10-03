@@ -8,6 +8,7 @@ import 'package:dsh_desktop/src/preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'package:dsh_desktop/design/icons.dart';
 
 class SchedulePreferences extends DesktopPreferences {
   @override
@@ -338,33 +339,39 @@ void main() {
   testWidgets(
     'sidebar entries share one row and collapse to icons when narrow',
     (tester) async {
-      Future<void> pumpWidth(double width) => tester.pumpWidget(
-        ShadApp(
-          home: Scaffold(
-            body: Center(
-              child: SizedBox(
-                width: width,
-                child: SidebarEntryRow(
-                  entries: [
-                    SidebarEntry(
-                      key: const Key('e1'),
-                      icon: LucideIcons.alarmClock,
-                      label: '定时任务',
-                      onPressed: () {},
+      Future<void> pumpWidth(double width, {double scale = 1}) =>
+          tester.pumpWidget(
+            ShadApp(
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(context)
+                    .copyWith(textScaler: TextScaler.linear(scale)),
+                child: child!,
+              ),
+              home: Scaffold(
+                body: Center(
+                  child: SizedBox(
+                    width: width,
+                    child: SidebarEntryRow(
+                      entries: [
+                        SidebarEntry(
+                          key: const Key('e1'),
+                          icon: DshIcons.alarmClock.data,
+                          label: '定时任务',
+                          onPressed: () {},
+                        ),
+                        SidebarEntry(
+                          key: const Key('e2'),
+                          icon: DshIcons.grid2x2.data,
+                          label: '插件',
+                          onPressed: () {},
+                        ),
+                      ],
                     ),
-                    SidebarEntry(
-                      key: const Key('e2'),
-                      icon: LucideIcons.grid2x2,
-                      label: '插件',
-                      onPressed: () {},
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ),
-      );
+          );
       await pumpWidth(240);
       expect(find.text('定时任务'), findsOneWidget);
       expect(
@@ -377,6 +384,14 @@ void main() {
       );
       await pumpWidth(120);
       expect(find.text('定时任务'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await pumpWidth(240, scale: 2);
+      expect(find.text('定时任务'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.byKey(const Key('e2'))).dy,
+        greaterThan(tester.getTopLeft(find.byKey(const Key('e1'))).dy),
+      );
+      expect(find.byTooltip('定时任务'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

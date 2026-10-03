@@ -224,7 +224,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(ShortcutEditor), findsOneWidget);
     expect(find.text('Ctrl+P'), findsOneWidget);
-    expect(find.textContaining('保存失败，原快捷键仍然有效'), findsOneWidget);
+    expect(find.textContaining('保存失败，修改内容已保留'), findsOneWidget);
+    expect(find.textContaining('原快捷键仍然有效'), findsOneWidget);
     expect(shortcutLabel(configuredShortcuts(c)['sidebar']!), 'Ctrl+B');
     await tester.tap(find.text('保存'));
     await tester.pump();
@@ -251,9 +252,11 @@ void main() {
     expect(find.byTooltip('展开侧边栏 · Cmd+B'), findsOneWidget);
     await command(tester, LogicalKeyboardKey.keyK);
     final search = find.byWidgetPredicate(
-      (w) => w is TextField && w.decoration?.hintText == '搜索会话',
+      (w) => w is TextField && w.decoration?.hintText == '搜索会话、页面或命令',
     );
     expect(tester.widget<TextField>(search).focusNode!.hasFocus, true);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
     await command(tester, LogicalKeyboardKey.keyL);
     expect(
       tester
@@ -359,7 +362,7 @@ void main() {
         find.byKey(const ValueKey('session-current-task')),
         findsOneWidget,
       );
-      expect(tester.getSize(find.byTooltip('视图选项')), const Size(28, 28));
+      expect(tester.getSize(find.byTooltip('视图选项')), const Size(36, 36));
       await tester.tap(find.text('旧工作区'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('session-old-task')), findsOneWidget);
@@ -425,15 +428,22 @@ void main() {
       expect(find.byTooltip('展开侧边栏 · Ctrl+B'), findsOneWidget);
       expect(find.byTooltip('新建会话 · Ctrl+N'), findsOneWidget);
       expect(find.byTooltip('添加工作区'), findsOneWidget);
-      expect(find.byTooltip('ChatGPT / Codex · 已连接'), findsOneWidget);
-      expect(find.byTooltip('设置 · Ctrl+,'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('account-connection-menu')),
+        findsOneWidget,
+      );
+      expect(find.byTooltip('知识库'), findsOneWidget);
+      expect(find.byTooltip('定时任务'), findsOneWidget);
+      expect(find.byTooltip('插件'), findsOneWidget);
       await control(tester, LogicalKeyboardKey.keyK);
-      expect(c.preferences.layout['sideOpen'], true);
+      expect(c.preferences.layout['sideOpen'], false);
       final search = find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.hintText == '搜索会话',
+        (w) => w is TextField && w.decoration?.hintText == '搜索会话、页面或命令',
       );
       expect(search, findsOneWidget);
       expect((tester.widget(search) as TextField).focusNode!.hasFocus, true);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
       await control(tester, LogicalKeyboardKey.keyL);
       expect(
         tester
@@ -534,7 +544,7 @@ void main() {
       expect(find.byKey(const ValueKey('session-active')), findsOneWidget);
       expect(find.byKey(const ValueKey('session-archived')), findsNothing);
       expect(find.text('空工作区'), findsOneWidget);
-      await filter('全部对话');
+      await filter('全部会话');
       for (final id in ['active', 'archived', 'blank', 'other', 'loose']) {
         expect(find.byKey(ValueKey('session-$id')), findsOneWidget);
       }
@@ -545,7 +555,8 @@ void main() {
       expect(find.text('活动工作区'), findsNothing);
       expect(find.text('空工作区'), findsNothing);
       expect(find.byKey(const ValueKey('session-blank')), findsOneWidget);
-      await control(tester, LogicalKeyboardKey.keyK);
+      await tester.tap(find.byTooltip('筛选侧栏会话'));
+      await tester.pumpAndSettle();
       final search = find.byWidgetPredicate(
         (w) => w is TextField && w.decoration?.hintText == '搜索会话',
       );
@@ -553,7 +564,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('session-active')), findsNothing);
       expect(find.text('混合工作区'), findsNothing);
-      await filter('全部对话');
+      await filter('全部会话');
       expect(find.byKey(const ValueKey('session-active')), findsOneWidget);
       expect(find.byKey(const ValueKey('session-archived')), findsNothing);
       await tester.enterText(search, '');

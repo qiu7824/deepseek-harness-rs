@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=DeepSeek Harness
+Comment=Desktop workspace for DeepSeek Harness
+Comment[zh_CN]=DeepSeek Harness 桌面工作区
+Exec=@BINARY_NAME@
+TryExec=@BINARY_NAME@
+Icon=@APPLICATION_ID@
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+StartupWMClass=@APPLICATION_ID@

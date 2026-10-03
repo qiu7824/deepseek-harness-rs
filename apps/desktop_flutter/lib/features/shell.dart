@@ -8,21 +8,32 @@ import 'package:file_selector/file_selector.dart';
 import 'package:dsh_client/dsh_client.dart';
 
 import '../design/primitives.dart';
+import '../design/loading.dart';
 import '../design/shortcuts.dart';
+import '../design/motion.dart';
+import '../design/breakpoints.dart';
+import '../design/error.dart';
+import '../l10n/zh.dart';
+import '../l10n/conversation_zh.dart';
+import 'command_palette.dart';
 import '../src/controller.dart';
 import '../src/preferences.dart';
 import '../src/conversation.dart';
 import 'conversation/feedback_controller.dart';
 import 'conversation/session_log_export.dart';
 import 'settings/settings_shell.dart';
+import 'settings/plugin_page.dart';
 import 'workbench/workbench_panel.dart';
 import 'workbench/plan_preview.dart';
 import '../src/resource_diagnostics.dart';
 import 'workspace_tree_row.dart';
+import 'sidebar_entries.dart';
 import 'workspace_source_dialog.dart';
 import 'knowledge/knowledge_page.dart';
 import 'schedule/schedule_page.dart';
-import 'sidebar_entries.dart';
+import 'account_menu.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 String relativeSessionAge(int updatedAt, {int? nowMillis}) {
   final elapsed =
@@ -31,12 +42,14 @@ String relativeSessionAge(int updatedAt, {int? nowMillis}) {
         1 << 62,
       );
   const minute = 60000, hour = 60 * minute, day = 24 * hour;
-  if (elapsed < minute) return '刚刚';
-  if (elapsed < hour) return '${elapsed ~/ minute}分钟';
-  if (elapsed < day) return '${elapsed ~/ hour}小时';
-  if (elapsed < 30 * day) return '${elapsed ~/ day}天';
-  if (elapsed < 365 * day) return '${elapsed ~/ (30 * day)}个月';
-  return '${elapsed ~/ (365 * day)}年';
+  if (elapsed < minute) return DshShellZh.justNow;
+  if (elapsed < hour) return DshShellZh.minutesAgo(count: elapsed ~/ minute);
+  if (elapsed < day) return DshShellZh.hoursAgo(count: elapsed ~/ hour);
+  if (elapsed < 30 * day) return DshShellZh.daysAgo(count: elapsed ~/ day);
+  if (elapsed < 365 * day) {
+    return DshShellZh.monthsAgo(count: elapsed ~/ (30 * day));
+  }
+  return DshShellZh.yearsAgo(count: elapsed ~/ (365 * day));
 }
 
 class Workbench extends StatefulWidget {
@@ -61,11 +74,18 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       return;
     }
     if (!identical(previewClient, c.client)) scheduleFocus = null;
+    workbenchKey = GlobalKey<WorkbenchPanelState>();
+    if (!identical(previewClient, c.client)) {
+      syncingSessions.clear();
+      syncFailures.clear();
+      syncRetries.clear();
+    }
     previewClient = c.client;
     previewSession = c.selectedId;
     planPreviews.scope(c.client, c.selectedId);
-    dockTab = 'files';
+    dockTab = 'start';
     fileRequest = null;
+    terminalRequest = null;
     if (mounted) setState(() {});
   }
 
@@ -76,17 +96,21 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   }
 
   void closeDock() {
+    cancelStartToolIntent();
     scaffoldKey.currentState?.closeEndDrawer();
+    restoreFocus(dockReturnFocus);
+    dockReturnFocus = null;
     planPreviews.clear();
     setState(() {
       dockOpen = false;
-      if (dockTab == 'plans') dockTab = 'files';
+      terminalRequest = null;
+      if (dockTab == 'plans') dockTab = 'start';
     });
   }
 
   void planSource() {
     conversationViewRequest.value = 'conversation';
-    if (availableWidth < 1100) {
+    if (DshBreakpoints.overlayWorkbench(availableWidth)) {
       closeDock();
     }
     c.composerFocus.value++;
@@ -96,6 +120,163 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   final search = TextEditingController();
   final searchFocus = FocusNode();
   final shellFocus = FocusNode();
+  final sidebarFocus = FocusScopeNode(debugLabel: 'sidebar-region');
+  final conversationFocus = FocusScopeNode(debugLabel: 'conversation-region');
+  final workbenchFocus = FocusScopeNode(debugLabel: 'workbench-region');
+  GlobalKey<WorkbenchPanelState> workbenchKey =
+      GlobalKey<WorkbenchPanelState>();
+  FocusNode? dockReturnFocus;
+  List<String> get visibleSessionIds {
+    final query = search.text.toLowerCase();
+    final sessions = c.sessions.where((session) {
+      final archived = c.archivedSessionIds.contains(session.id);
+      final inArchive =
+          archiveFilter == 'all' ||
+          (archiveFilter == 'archived' ? archived : !archived);
+      return inArchive &&
+          (!session.blank ||
+              archived ||
+              (session.id == c.selectedId && query.isEmpty)) &&
+          (query.isEmpty ||
+              '${session.title} ${session.cwd}'.toLowerCase().contains(query));
+    }).toList();
+    final workspaceIds = c.workspaces.map((w) => w['workspaceId']).toSet();
+    return [
+      for (final workspace in c.workspaces)
+        if (groupExpandedForView('${workspace['workspaceId']}'))
+          for (final session in sessions)
+            if (c.workspaceOf(session)?['workspaceId'] ==
+                workspace['workspaceId'])
+              session.id,
+      for (final session in sessions)
+        if (!workspaceIds.contains(c.workspaceOf(session)?['workspaceId']))
+          session.id,
+    ];
+  }
+
+  final syncingSessions = <String>{};
+  final syncFailures = <String, Object>{};
+  final syncRetries = <String, Future<void> Function()>{};
+
+  Widget focusRegion(FocusScopeNode node, Widget child) =>
+      TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: DshMotion.duration(context, DshMotion.panel),
+        curve: DshMotion.curve,
+        builder: (context, opacity, child) =>
+            Opacity(opacity: opacity, child: child),
+        child: FocusScope(
+          node: node,
+          child: FocusTraversalGroup(child: child),
+        ),
+      );
+
+  void refreshShell() {
+    if (mounted) setState(() {});
+  }
+
+  void restoreFocus(FocusNode? node) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || ModalRoute.of(context)?.isCurrent == false) return;
+      if (node?.context != null && node!.canRequestFocus) {
+        node.requestFocus();
+      } else {
+        conversationFocus.requestFocus();
+      }
+    });
+  }
+
+  void cycleFocus({bool reverse = false}) {
+    // Drawers share the shell route but remain modal focus boundaries.
+    if (scaffoldKey.currentState?.isDrawerOpen == true ||
+        scaffoldKey.currentState?.isEndDrawerOpen == true) {
+      return;
+    }
+    final scopes = [
+      if (!DshBreakpoints.collapseSidebar(availableWidth) ||
+          scaffoldKey.currentState?.isDrawerOpen == true)
+        sidebarFocus,
+      conversationFocus,
+      if (dockOpen) workbenchFocus,
+    ];
+    final current = scopes.indexWhere((scope) => scope.hasFocus);
+    final next = scopes[(current + (reverse ? -1 : 1)) % scopes.length];
+    next.requestFocus();
+    if (next.focusedChild == null) next.nextFocus();
+  }
+
+  void cycleSession({bool reverse = false}) {
+    if (visibleSessionIds.isEmpty) return;
+    final current = visibleSessionIds.indexOf(c.selectedId ?? '');
+    final index = (current + (reverse ? -1 : 1)) % visibleSessionIds.length;
+    unawaited(openConversation(visibleSessionIds[index]));
+  }
+
+  Future<void> syncSession(String id, Future<void> Function() operation) async {
+    if (syncingSessions.contains(id)) return;
+    final owner = c.client;
+    setState(() {
+      syncingSessions.add(id);
+      syncFailures.remove(id);
+      syncRetries.remove(id);
+    });
+    try {
+      await operation();
+    } catch (error) {
+      if (mounted && identical(owner, c.client)) {
+        setState(() {
+          syncFailures[id] = error;
+          syncRetries[id] = operation;
+        });
+      }
+    } finally {
+      if (mounted && identical(owner, c.client)) {
+        setState(() => syncingSessions.remove(id));
+      }
+    }
+  }
+
+  Future<void> showSyncFailure(SessionSummary session) async {
+    final failure = syncFailures[session.id], retry = syncRetries[session.id];
+    if (failure == null) return;
+    final owner = c.client;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(DshZh.syncFailure(session.displayTitle)),
+        content: SizedBox(
+          width: 480,
+          child: DshErrorView(
+            error: failure,
+            onRetry: retry == null
+                ? null
+                : () {
+                    Navigator.pop(dialogContext);
+                    if (identical(owner, c.client)) {
+                      unawaited(syncSession(session.id, retry));
+                    }
+                  },
+          ),
+        ),
+        actions: [
+          DshButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              if (identical(owner, c.client)) {
+                unawaited(c.run(c.refreshSessions));
+              }
+            },
+            child: const Text(DshShellZh.refreshSessions),
+          ),
+          DshButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text(DshZh.cancel),
+          ),
+        ],
+      ),
+    );
+  }
+
   final scaffoldKey = GlobalKey<ScaffoldState>();
   final workspaceAnchor = GlobalKey();
   final conversationViewRequest = ValueNotifier<String>('');
@@ -103,6 +284,10 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   /// Global page shown in place of the conversation, e.g. `schedule`.
   String? mainPanel;
   String? scheduleFocus;
+  Object? openedHeaderScope;
+  Object get connectionScope => (c, c.client, c.host);
+  Object get headerActionScope =>
+      (c, c.client, c.host, c.selectedId, c.selectionRevision);
 
   void openPanel(String id, {String? focus}) {
     scaffoldKey.currentState?.closeDrawer();
@@ -121,11 +306,20 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   }
 
   final Map<String, bool> groupExpansion = {};
+  final Map<String, bool> filteredGroupExpansion = {};
   bool showSearch = false, sideOpen = true, dockOpen = false;
   double sidebarWidth = 280, dockWidth = 470, chatWidth = 0;
   double availableWidth = 0;
-  String dockTab = 'files';
+  String dockTab = 'start';
   int dockRequest = 0;
+  bool preparingTool = false;
+  int toolIntentEpoch = 0;
+  int? pendingToolIntent, pendingToolSelection;
+  String? pendingToolSession;
+  Object? pendingToolContext;
+  Object get toolContextScope =>
+      (c, c.client, c.host, c.workspaceId, c.workspaceTargetRevision);
+  TerminalCreateRequest? terminalRequest;
   FileOpenRequest? fileRequest;
   DshClient? fileRequestClient;
   String? fileRequestSession;
@@ -166,6 +360,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     previewSession = c.selectedId;
     planPreviews.scope(c.client, c.selectedId);
     c.addListener(previewScopeChanged);
+    c.addListener(toolIntentScopeChanged);
+    c.addListener(refreshShell);
     c.computerUseRequests.addListener(showComputerUse);
     FocusManager.instance.addEarlyKeyEventHandler(onShortcut);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -193,9 +389,14 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(previewScopeChanged);
+      oldWidget.controller.removeListener(toolIntentScopeChanged);
+      oldWidget.controller.removeListener(refreshShell);
       oldWidget.controller.computerUseRequests.removeListener(showComputerUse);
       c.addListener(previewScopeChanged);
+      c.addListener(toolIntentScopeChanged);
+      c.addListener(refreshShell);
       c.computerUseRequests.addListener(showComputerUse);
+      cancelStartToolIntent();
       previewScopeChanged();
     }
   }
@@ -203,10 +404,15 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   @override
   void dispose() {
     c.removeListener(previewScopeChanged);
+    c.removeListener(toolIntentScopeChanged);
+    c.removeListener(refreshShell);
     c.computerUseRequests.removeListener(showComputerUse);
     planPreviews.dispose();
     FocusManager.instance.removeEarlyKeyEventHandler(onShortcut);
     shellFocus.dispose();
+    sidebarFocus.dispose();
+    conversationFocus.dispose();
+    workbenchFocus.dispose();
     search.dispose();
     searchFocus.dispose();
     conversationViewRequest.dispose();
@@ -232,23 +438,26 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   };
 
   void setArchiveFilter(String value) {
-    setState(() => c.preferences.layout['archiveFilter'] = value);
+    setState(() {
+      filteredGroupExpansion.clear();
+      c.preferences.layout['archiveFilter'] = value;
+    });
     saveLayout();
   }
 
   String shortcutHint(String action, String label) =>
       '$label · ${shortcutLabel(configuredShortcuts(c)[action]!)}';
 
-  Widget shortcutBadge(String action) => Tooltip(
-    message: shortcutHint(action, shortcutNames[action]!),
-    child: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 84),
-      child: Text(
-        shortcutLabel(configuredShortcuts(c)[action]!),
-        key: ValueKey('sidebar-shortcut-$action'),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(fontSize: 11, color: DshColors(context).muted),
+  Widget shortcutBadge(String action) => ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 84),
+    child: Text(
+      shortcutLabel(configuredShortcuts(c)[action]!),
+      key: ValueKey('sidebar-shortcut-$action'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: DshTypography.sizeCaption,
+        color: DshColors(context).muted,
       ),
     ),
   );
@@ -264,6 +473,33 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
 
   bool groupExpanded(String id) => groupExpansion[id] ?? c.workspaceId == id;
 
+  // Search and the archive-only view reveal their matches without changing
+  // the user's saved folder expansion.
+  bool get filteringGroups =>
+      search.text.isNotEmpty || archiveFilter == 'archived';
+
+  bool groupExpandedForView(String id) =>
+      filteringGroups ? filteredGroupExpansion[id] ?? true : groupExpanded(id);
+
+  void toggleGroupExpansion(String id) {
+    if (filteringGroups) {
+      setState(() => filteredGroupExpansion[id] = !groupExpandedForView(id));
+    } else {
+      setGroupExpanded(id, !groupExpanded(id));
+    }
+  }
+
+  void toggleSidebarSearch() {
+    setState(() {
+      showSearch = !showSearch;
+      filteredGroupExpansion.clear();
+      if (!showSearch) search.clear();
+    });
+    if (!showSearch) {
+      searchFocus.unfocus();
+    }
+  }
+
   void setGroupExpanded(String id, bool expanded) {
     setState(() {
       groupExpansion.remove(id);
@@ -275,13 +511,14 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     saveLayout();
   }
 
-  void openDock([String tab = 'files']) {
+  void openDock([String tab = 'start']) {
+    if (!dockOpen) dockReturnFocus = FocusManager.instance.primaryFocus;
     setState(() {
       dockOpen = true;
       dockTab = tab;
       dockRequest++;
     });
-    if (availableWidth < 1100) {
+    if (DshBreakpoints.overlayWorkbench(availableWidth)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) scaffoldKey.currentState?.openEndDrawer();
       });
@@ -293,7 +530,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   /// user opens the tab.
   void showComputerUse() {
     if (!mounted || c.computerUse == null) return;
-    if (dockOpen || availableWidth >= 1100) openDock('computer-use');
+    if (dockOpen || !DshBreakpoints.overlayWorkbench(availableWidth)) {
+      openDock('computer-use');
+    }
   }
 
   void selectDockTab(String tab) {
@@ -304,28 +543,191 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     if (identical(fileRequest, request)) fileRequest = null;
   }
 
+  void terminalRequestHandled(TerminalCreateRequest request) {
+    if (identical(terminalRequest, request)) {
+      setState(() => terminalRequest = null);
+    }
+  }
+
+  void cancelStartToolIntent() {
+    toolIntentEpoch++;
+    pendingToolIntent = null;
+    pendingToolContext = null;
+    terminalRequest = null;
+  }
+
+  void toolIntentScopeChanged() {
+    if (pendingToolIntent == null) return;
+    final sameSelection =
+        c.selectionRevision == pendingToolSelection &&
+        c.selectedId == pendingToolSession;
+    // A controller-owned create may adopt the Hero draft once. Every other
+    // navigation invalidates the pending UI intent independently of admission.
+    final draftAdoption =
+        pendingToolSession == null &&
+        c.selectionAdoptsDraft &&
+        c.selectionRevision == pendingToolSelection! + 1;
+    if (pendingToolContext != toolContextScope ||
+        (!sameSelection && !draftAdoption)) {
+      cancelStartToolIntent();
+    }
+  }
+
+  void workbenchTabClosed(String tab) {
+    if (tab != 'start') return;
+    cancelStartToolIntent();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> openStartTool(String tab) async {
+    if (preparingTool || !c.connected) return;
+    final intent = ++toolIntentEpoch;
+    final contextScope = toolContextScope;
+    final api = c.client;
+    String? session = c.selectedId;
+    pendingToolIntent = intent;
+    pendingToolContext = contextScope;
+    pendingToolSelection = c.selectionRevision;
+    pendingToolSession = session;
+    setState(() => preparingTool = true);
+    try {
+      if (session == null) {
+        final path = c.currentWorkspace?['path'] as String?;
+        if (path == null || path.trim().isEmpty) return;
+        // Controller admission owns both the workspace and the unsent Hero
+        // draft. A stale Host/selection/workspace request returns no session.
+        await c.run(() async {
+          session = await c.create(path);
+        });
+      }
+      if (!mounted ||
+          pendingToolIntent != intent ||
+          toolIntentEpoch != intent ||
+          contextScope != toolContextScope ||
+          api != c.client ||
+          session == null ||
+          c.selectedId != session) {
+        return;
+      }
+      if (tab == 'terminal') terminalRequest = TerminalCreateRequest();
+      openDock(tab);
+    } finally {
+      if (pendingToolIntent == intent) {
+        pendingToolIntent = null;
+        pendingToolContext = null;
+      }
+      if (mounted) setState(() => preparingTool = false);
+    }
+  }
+
   void toggleSidebar() {
-    if (availableWidth < 900) {
-      scaffoldKey.currentState?.openDrawer();
+    if (DshBreakpoints.collapseSidebar(availableWidth)) {
+      if (scaffoldKey.currentState?.isDrawerOpen == true) {
+        scaffoldKey.currentState?.closeDrawer();
+      } else {
+        scaffoldKey.currentState?.openDrawer();
+      }
       return;
     }
     setState(() => sideOpen = !sideOpen);
     saveLayout();
   }
 
-  void openSearch() {
-    setState(() {
-      sideOpen = true;
-      showSearch = true;
-    });
-    saveLayout();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) searchFocus.requestFocus();
-    });
-    if (availableWidth < 900) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) scaffoldKey.currentState?.openDrawer();
-      });
+  Future<void> openSearch() async {
+    final previousFocus = FocusManager.instance.primaryFocus;
+    final owner = c.client;
+    final commands = <DshCommand>[
+      for (final session in c.sessions.where(
+        (s) => !s.blank && !c.archivedSessionIds.contains(s.id),
+      ))
+        DshCommand(
+          id: 'session-${session.id}',
+          group: DshZh.sessionsGroup,
+          title: session.displayTitle,
+          subtitle: displayPath(session.cwd),
+          icon: DshIcons.messageCircle.data,
+          onInvoke: () => unawaited(openConversation(session.id)),
+        ),
+      DshCommand(
+        id: 'schedule',
+        group: DshZh.pagesGroup,
+        title: DshShellZh.scheduledTasks,
+        icon: DshIcons.clock.data,
+        onInvoke: () => openPanel('schedule'),
+      ),
+      DshCommand(
+        id: 'knowledge',
+        group: DshZh.pagesGroup,
+        title: DshShellZh.knowledge,
+        icon: DshIcons.bookOpen.data,
+        onInvoke: () => openPanel('knowledge'),
+      ),
+      for (final page in settingsPages)
+        DshCommand(
+          id: 'settings-${page.id}',
+          group: DshZh.pagesGroup,
+          title: page.title,
+          subtitle: DshShellZh.settings,
+          icon: page.icon,
+          searchTerms: page.id,
+          onInvoke: () => unawaited(settings(page.id)),
+        ),
+      DshCommand(
+        id: 'new',
+        group: DshZh.commandsGroup,
+        title: DshZh.newSession,
+        icon: DshIcons.plus.data,
+        shortcut: shortcutLabel(configuredShortcuts(c)['new']!),
+        enabled: c.connected,
+        onInvoke: startConversation,
+      ),
+      DshCommand(
+        id: 'stop',
+        group: DshZh.commandsGroup,
+        title: DshZh.stopExecution,
+        icon: DshIcons.stop.data,
+        shortcut: shortcutLabel(configuredShortcuts(c)['stop']!),
+        enabled: c.interruptible,
+        onInvoke: () {
+          if (c.interruptible) unawaited(c.run(c.stop));
+        },
+      ),
+      DshCommand(
+        id: 'refresh',
+        group: DshZh.commandsGroup,
+        title: DshShellZh.refreshSessions,
+        icon: DshIcons.refreshCw.data,
+        enabled: c.connected,
+        onInvoke: () => unawaited(c.run(c.refreshSessions)),
+      ),
+      DshCommand(
+        id: 'shortcuts',
+        group: DshZh.commandsGroup,
+        title: DshShellZh.editShortcuts,
+        icon: DshIcons.keyboard.data,
+        onInvoke: () => showDialog<void>(
+          context: context,
+          builder: (_) => ShortcutEditor(controller: c),
+        ),
+      ),
+    ];
+    final selected = await showDialog<DshCommand>(
+      context: context,
+      animationStyle: AnimationStyle(
+        duration: DshMotion.duration(context, DshMotion.dialog),
+        curve: DshMotion.curve,
+      ),
+      builder: (_) => DshCommandPalette(commands: commands),
+    );
+    if (!mounted) return;
+    if (!identical(owner, c.client)) {
+      restoreFocus(previousFocus);
+      return;
+    }
+    if (selected == null) {
+      restoreFocus(previousFocus);
+    } else {
+      selected.onInvoke();
     }
   }
 
@@ -355,6 +757,20 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         ?.key;
     if (action == null) return KeyEventResult.ignored;
     switch (action) {
+      case 'focus-next':
+        cycleFocus();
+      case 'focus-previous':
+        cycleFocus(reverse: true);
+      case 'cycle-next':
+      case 'cycle-previous':
+        final reverse = action == 'cycle-previous';
+        if (workbenchFocus.hasFocus) {
+          workbenchKey.currentState?.cycleTab(reverse: reverse);
+        } else {
+          cycleSession(reverse: reverse);
+        }
+      case 'stop':
+        if (c.interruptible) unawaited(c.run(c.stop));
       case 'sidebar':
         toggleSidebar();
       case 'new':
@@ -364,25 +780,55 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       case 'settings':
         settings();
       case 'composer':
-        c.composerFocus.value++;
+        closePanel();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) c.composerFocus.value++;
+        });
       case 'workbench':
-        if (c.selectedId != null) {
-          if (dockOpen) {
-            closeDock();
-          } else {
-            openDock(dockTab);
-          }
+        if (dockOpen) {
+          closeDock();
+        } else {
+          openDock(dockTab);
         }
+    }
+    if (action.startsWith('session-')) {
+      final index = int.tryParse(action.substring(8));
+      if (index != null && index <= visibleSessionIds.length) {
+        unawaited(openConversation(visibleSessionIds[index - 1]));
+      }
     }
     return KeyEventResult.handled;
   }
+
+  Widget workbenchPanel() => focusRegion(
+    workbenchFocus,
+    WorkbenchPanel(
+      key: workbenchKey,
+      controller: c,
+      initialTab: dockTab,
+      openRequest: dockRequest,
+      onTabChanged: selectDockTab,
+      onTabClosed: workbenchTabClosed,
+      fileRequest: currentFileRequest,
+      onFileRequestHandled: fileRequestHandled,
+      planPreviews: planPreviews,
+      onPlanSource: planSource,
+      onOpenSettings: () => settings('environment'),
+      onOpenStartTool: (tab) => unawaited(openStartTool(tab)),
+      onSelectWorkspace: () => unawaited(chooseWorkspace()),
+      preparingTool: preparingTool,
+      terminalRequest: terminalRequest,
+      onTerminalRequestHandled: terminalRequestHandled,
+      onClose: closeDock,
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       availableWidth = constraints.maxWidth;
-      final wide = constraints.maxWidth >= 900;
-      final canDock = constraints.maxWidth >= 1100;
+      final wide = !DshBreakpoints.collapseSidebar(constraints.maxWidth);
+      final canDock = !DshBreakpoints.overlayWorkbench(constraints.maxWidth);
       final maxDockWidth = canDock
           ? (constraints.maxWidth -
                     (sideOpen ? sidebarWidth.clamp(220, 340) + 1 : 56) -
@@ -396,273 +842,219 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         child: Scaffold(
           key: scaffoldKey,
           onEndDrawerChanged: (open) {
-            if (!open && dockOpen && availableWidth < 1100) closeDock();
+            if (!open &&
+                dockOpen &&
+                DshBreakpoints.overlayWorkbench(availableWidth)) {
+              closeDock();
+            }
           },
-          drawer: wide ? null : Drawer(width: 280, child: sidebar()),
+          drawer: wide
+              ? null
+              : Drawer(width: 280, child: focusRegion(sidebarFocus, sidebar())),
           body: SafeArea(
             child: Row(
               children: [
                 if (wide && sideOpen) ...[
                   SizedBox(
                     width: sidebarWidth.clamp(220, 340),
-                    child: sidebar(),
+                    child: focusRegion(sidebarFocus, sidebar()),
                   ),
                   _divider(
                     (dx) => setState(
                       () => sidebarWidth = (sidebarWidth + dx).clamp(220, 340),
                     ),
+                    onReset: () {
+                      setState(() => sidebarWidth = 280);
+                      saveLayout();
+                    },
                   ),
                 ],
                 if (wide && !sideOpen)
-                  SizedBox(width: 56, child: collapsedSidebar()),
+                  SizedBox(
+                    width: 56,
+                    child: focusRegion(sidebarFocus, collapsedSidebar()),
+                  ),
                 Expanded(
-                  child: Column(
-                    children: [
-                      if (c.error != null)
-                        Container(
-                          width: double.infinity,
-                          color: Theme.of(context).colorScheme.errorContainer,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 7,
+                  child: focusRegion(
+                    conversationFocus,
+                    Column(
+                      children: [
+                        if (c.error != null)
+                          DshErrorView(
+                            error: c.error!,
+                            onDismiss: c.clearError,
                           ),
-                          child: Row(
+                        Expanded(
+                          child: Stack(
+                            fit: StackFit.expand,
                             children: [
-                              const DshGlyph(LucideIcons.circleAlert, size: 16),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  c.error!,
-                                  maxLines: 3,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 14),
+                              Offstage(
+                                offstage: mainPanel != null,
+                                child: TickerMode(
+                                  enabled: mainPanel == null,
+                                  child: ExcludeFocus(
+                                    excluding: mainPanel != null,
+                                    child: Conversation(
+                                      controller: c,
+                                      headerInset: !wide ? 56 : 28,
+                                      maxContentWidth: chatWidth,
+                                      onOpenSettings: () => settings('models'),
+                                      onOpenWorkbench: openDock,
+                                      onOpenPath: openFile,
+                                      onOpenPlan: openPlan,
+                                      onSelectWorkspace: chooseWorkspace,
+                                      workspaceAnchor: workspaceAnchor,
+                                      viewRequest: conversationViewRequest,
+                                    ),
+                                  ),
                                 ),
                               ),
-                              DshIcon(
-                                LucideIcons.x,
-                                label: '关闭提示',
-                                onPressed: c.clearError,
-                              ),
+                              if (mainPanel == 'schedule')
+                                Positioned.fill(
+                                  child: SchedulePage(
+                                    key: ValueKey((
+                                      c.client,
+                                      'schedule-page',
+                                      scheduleFocus,
+                                    )),
+                                    controller: c,
+                                    initialTaskId: scheduleFocus,
+                                    onClose: closePanel,
+                                    onOpenSession: (id) =>
+                                        unawaited(openConversation(id)),
+                                  ),
+                                ),
+                              if (mainPanel == 'knowledge')
+                                Positioned.fill(
+                                  child: KnowledgePage(
+                                    key: ValueKey((c.client, 'knowledge-page')),
+                                    controller: c,
+                                    onClose: closePanel,
+                                  ),
+                                ),
+                              if (mainPanel == 'plugins')
+                                Positioned.fill(
+                                  child: PluginPage(
+                                    key: ValueKey((c.client, 'plugins-page')),
+                                    controller: c,
+                                    onOpenPlugin: openPlugin,
+                                  ),
+                                ),
+                              if (!wide)
+                                Positioned(
+                                  top: 10,
+                                  left: 12,
+                                  child: Builder(
+                                    builder: (context) => DshIcon(
+                                      DshIcons.panelLeft.data,
+                                      label: DshShellZh.expandSidebar,
+                                      onPressed: () {
+                                        if (wide) {
+                                          setState(() => sideOpen = true);
+                                          saveLayout();
+                                        } else {
+                                          Scaffold.of(context).openDrawer();
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              if (mainPanel == null)
+                                Positioned(
+                                  top: 8,
+                                  right: 28,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (c.selectedId != null)
+                                        headerMoreMenu(),
+                                      const SizedBox(width: 8),
+                                      DshIcon(
+                                        DshIcons.panelRight.data,
+                                        label: DshShellZh.showWorkbench,
+                                        active: dockOpen,
+                                        onPressed: () {
+                                          if (dockOpen) {
+                                            closeDock();
+                                          } else {
+                                            openDock(dockTab);
+                                          }
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              if (constraints.maxWidth > 1000)
+                                Positioned(
+                                  right: 0,
+                                  top: 60,
+                                  bottom: 40,
+                                  child: Tooltip(
+                                    message: DshShellZh.resizeConversationHint,
+                                    child: GestureDetector(
+                                      onDoubleTap: () {
+                                        setState(() => chatWidth = 0);
+                                        saveLayout();
+                                      },
+                                      onHorizontalDragUpdate: (d) => setState(
+                                        () => chatWidth =
+                                            ((chatWidth > 0
+                                                        ? chatWidth
+                                                        : ((availableWidth -
+                                                                      (sideOpen
+                                                                          ? sidebarWidth +
+                                                                                1
+                                                                          : 56) -
+                                                                      (dockOpen
+                                                                          ? dockWidth
+                                                                          : 0)) *
+                                                                  .64)
+                                                              .clamp(0, 920)) -
+                                                    d.delta.dx * 2)
+                                                .clamp(520, 1100),
+                                      ),
+                                      onHorizontalDragEnd: (_) => saveLayout(),
+                                      child: MouseRegion(
+                                        cursor: SystemMouseCursors.resizeColumn,
+                                        child: Container(
+                                          width: 5,
+                                          color: Colors.transparent,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
                             ],
                           ),
                         ),
-                      Expanded(
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            Offstage(
-                              offstage: mainPanel != null,
-                              child: TickerMode(
-                                enabled: mainPanel == null,
-                                child: Conversation(
-                                  controller: c,
-                                  headerInset: !wide ? 56 : 28,
-                                  maxContentWidth: chatWidth,
-                                  onOpenSettings: () => settings('models'),
-                                  onOpenWorkbench: openDock,
-                                  onOpenPath: openFile,
-                                  onOpenPlan: openPlan,
-                                  onSelectWorkspace: chooseWorkspace,
-                                  workspaceAnchor: workspaceAnchor,
-                                  viewRequest: conversationViewRequest,
-                                ),
-                              ),
-                            ),
-                            if (mainPanel == 'schedule')
-                              Positioned.fill(
-                                child: SchedulePage(
-                                  key: ValueKey((
-                                    c.client,
-                                    'schedule-page',
-                                    scheduleFocus,
-                                  )),
-                                  controller: c,
-                                  initialTaskId: scheduleFocus,
-                                  onClose: closePanel,
-                                  onOpenSession: (id) =>
-                                      unawaited(openConversation(id)),
-                                ),
-                              ),
-                            if (mainPanel == 'knowledge')
-                              Positioned.fill(
-                                child: KnowledgePage(
-                                  key: ValueKey((c.client, 'knowledge-page')),
-                                  controller: c,
-                                  onClose: closePanel,
-                                ),
-                              ),
-                            if (!wide)
-                              Positioned(
-                                top: 10,
-                                left: 12,
-                                child: Builder(
-                                  builder: (context) => DshIcon(
-                                    LucideIcons.panelLeft,
-                                    label: '展开侧边栏',
-                                    onPressed: () {
-                                      if (wide) {
-                                        setState(() => sideOpen = true);
-                                        saveLayout();
-                                      } else {
-                                        Scaffold.of(context).openDrawer();
-                                      }
-                                    },
-                                  ),
-                                ),
-                              ),
-                            if (mainPanel == null &&
-                                c.selectedId != null &&
-                                !c.blankConversation)
-                              Positioned(
-                                top: 8,
-                                right: 28,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    ScheduleSessionBadge(
-                                      key: ValueKey((
-                                        c.client,
-                                        'schedule-badge',
-                                        c.selectedId,
-                                      )),
-                                      controller: c,
-                                      sessionId: c.selectedId!,
-                                      onOpen: (task) =>
-                                          openPanel('schedule', focus: task),
-                                    ),
-                                    SessionLogExportAction(
-                                      controller: c,
-                                      sessionId: c.selectedId!,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    DshIcon(
-                                      LucideIcons.messageCircle,
-                                      label: '会话反馈',
-                                      asset: 'assets/icons/web-session-feedback.svg',
-                                      glyphSize: 18,
-                                      onPressed: c.selectedId == null
-                                          ? null
-                                          : sessionFeedback,
-                                    ),
-                                    if (c.teamSettings['showButton'] != false)
-                                      const SizedBox(width: 8),
-                                    if (c.teamSettings['showButton'] != false)
-                                      DshIcon(
-                                        LucideIcons.users,
-                                        label: '协作',
-                                        asset: 'assets/icons/web-team.svg',
-                                        onPressed: c.selectedId == null
-                                            ? null
-                                            : () => openDock('team'),
-                                      ),
-                                    const SizedBox(width: 8),
-                                    DshIcon(
-                                      LucideIcons.panelRight,
-                                      label: '显示工作台',
-                                      active: dockOpen,
-                                      onPressed: c.selectedId == null
-                                          ? null
-                                          : () {
-                                              if (dockOpen) {
-                                                closeDock();
-                                              } else {
-                                                openDock(dockTab);
-                                              }
-                                            },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            if (constraints.maxWidth > 1000)
-                              Positioned(
-                                right: 0,
-                                top: 60,
-                                bottom: 40,
-                                child: Tooltip(
-                                  message: '拖动调整对话宽度；双击恢复默认',
-                                  child: GestureDetector(
-                                    onDoubleTap: () {
-                                      setState(() => chatWidth = 0);
-                                      saveLayout();
-                                    },
-                                    onHorizontalDragUpdate: (d) => setState(
-                                      () => chatWidth =
-                                          ((chatWidth > 0
-                                                      ? chatWidth
-                                                      : ((availableWidth -
-                                                                    (sideOpen
-                                                                        ? sidebarWidth +
-                                                                              1
-                                                                        : 56) -
-                                                                    (dockOpen
-                                                                        ? dockWidth
-                                                                        : 0)) *
-                                                                .64)
-                                                            .clamp(0, 920)) -
-                                                  d.delta.dx * 2)
-                                              .clamp(520, 1100),
-                                    ),
-                                    onHorizontalDragEnd: (_) => saveLayout(),
-                                    child: MouseRegion(
-                                      cursor: SystemMouseCursors.resizeColumn,
-                                      child: Container(
-                                        width: 5,
-                                        color: Colors.transparent,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-                if (canDock && dockOpen && c.selectedId != null) ...[
+                if (canDock && dockOpen) ...[
                   _divider(
                     (dx) => setState(
                       () =>
                           dockWidth = (dockWidth.clamp(330, maxDockWidth) - dx)
                               .clamp(330, maxDockWidth),
                     ),
+                    onReset: () {
+                      setState(() => dockWidth = 470);
+                      saveLayout();
+                    },
                   ),
                   SizedBox(
                     width: dockWidth.clamp(330, maxDockWidth),
-                    child: WorkbenchPanel(
-                      key: ValueKey((c.client, c.selectedId)),
-                      controller: c,
-                      initialTab: dockTab,
-                      openRequest: dockRequest,
-                      onTabChanged: selectDockTab,
-                      fileRequest: currentFileRequest,
-                      onFileRequestHandled: fileRequestHandled,
-                      planPreviews: planPreviews,
-                      onPlanSource: planSource,
-                      onOpenSettings: () => settings('environment'),
-                      onClose: closeDock,
-                    ),
+                    child: workbenchPanel(),
                   ),
                 ],
               ],
             ),
           ),
-          endDrawer: !canDock && dockOpen && c.selectedId != null
+          endDrawer: !canDock && dockOpen
               ? Drawer(
                   width: constraints.maxWidth * .9,
-                  child: WorkbenchPanel(
-                    key: ValueKey((c.client, c.selectedId)),
-                    controller: c,
-                    initialTab: dockTab,
-                    openRequest: dockRequest,
-                    onTabChanged: selectDockTab,
-                    fileRequest: currentFileRequest,
-                    onFileRequestHandled: fileRequestHandled,
-                    planPreviews: planPreviews,
-                    onPlanSource: planSource,
-                    onOpenSettings: () => settings('environment'),
-                    onClose: closeDock,
-                  ),
+                  child: workbenchPanel(),
                 )
               : null,
         ),
@@ -672,6 +1064,10 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
 
   Future<void> accountSettings() => showDialog<void>(
     context: context,
+    animationStyle: AnimationStyle(
+      duration: DshMotion.duration(context, DshMotion.dialog),
+      curve: DshMotion.curve,
+    ),
     barrierColor: Colors.transparent,
     barrierDismissible: false,
     builder: (_) => SettingsShell(
@@ -681,35 +1077,194 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     ),
   );
 
-  Widget accountEntries({bool compact = false}) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      for (final account in c.subscriptionAccounts.where(
-        (a) => a['signedIn'] == true,
-      ))
-        Padding(
-          padding: EdgeInsets.symmetric(vertical: compact ? 8 : 2),
-          child: compact
-              ? DshIcon(
-                  LucideIcons.workflow,
-                  label: '${account['name']} · 已连接',
-                  size: 36,
-                  color: DshColors(context).text,
-                  onPressed: accountSettings,
-                )
-              : Align(
-                  alignment: Alignment.centerLeft,
-                  child: DshButton(
-                    icon: LucideIcons.workflow,
-                    onPressed: accountSettings,
-                    child: Text(
-                      '${account['name']}',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  ),
-                ),
+  Widget headerMoreMenu() {
+    final api = c.client, session = c.selectedId;
+    final colors = DshColors(context);
+    Widget menuLabel(IconData icon, String title, {Widget? trailing}) => Row(
+      children: [
+        DshGlyph(icon, size: 16, color: colors.muted),
+        const SizedBox(width: 10),
+        Expanded(child: Text(title)),
+        ?trailing,
+      ],
+    );
+    return PopupMenuButton<String>(
+      key: const Key('more-header-menu'),
+      tooltip: DshShellZh.moreActions,
+      padding: EdgeInsets.zero,
+      position: PopupMenuPosition.under,
+      color: colors.base,
+      elevation: 4,
+      shadowColor: Colors.black.withValues(alpha: .1),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: colors.border.withValues(alpha: .6)),
+      ),
+      constraints: const BoxConstraints(minWidth: 220, maxWidth: 300),
+      onOpened: () => openedHeaderScope = headerActionScope,
+      onSelected: (value) {
+        if (!mounted ||
+            openedHeaderScope != headerActionScope ||
+            !identical(api, c.client) ||
+            session != c.selectedId) {
+          return;
+        }
+        switch (value) {
+          case 'log':
+            unawaited(exportSessionLog());
+          case 'feedback':
+            unawaited(sessionFeedback());
+          case 'team':
+            openDock('team');
+          case 'schedule':
+            openPanel('schedule');
+        }
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          key: const Key('session-menu-download'),
+          value: 'log',
+          enabled: api != null && session != null,
+          child: menuLabel(
+            DshIcons.download.data,
+            DshConversationZh.downloadSessionLog,
+          ),
         ),
-    ],
+        PopupMenuItem(
+          key: const Key('session-menu-feedback'),
+          value: 'feedback',
+          enabled: api != null && session != null,
+          child: menuLabel(
+            DshIcons.messageCircle.data,
+            DshConversationZh.feedback,
+          ),
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          key: const Key('session-menu-schedule'),
+          value: 'schedule',
+          child: Builder(
+            builder: (menuContext) => menuLabel(
+              DshIcons.alarmClock.data,
+              DshShellZh.scheduledTasks,
+              trailing: session == null
+                  ? null
+                  : ScheduleSessionBadge(
+                      key: ValueKey((api, 'schedule-badge', session)),
+                      controller: c,
+                      sessionId: session,
+                      onOpen: (task) {
+                        if (!mounted ||
+                            openedHeaderScope != headerActionScope ||
+                            !identical(api, c.client) ||
+                            session != c.selectedId) {
+                          return;
+                        }
+                        Navigator.of(menuContext).pop();
+                        openPanel('schedule', focus: task);
+                      },
+                    ),
+            ),
+          ),
+        ),
+        if (c.teamSettings['showButton'] != false)
+          PopupMenuItem(
+            key: const Key('session-menu-team'),
+            value: 'team',
+            child: menuLabel(DshIcons.users.data, DshShellZh.collaboration),
+          ),
+      ],
+      child: SizedBox(
+        width: 36,
+        height: 36,
+        child: Center(
+          child: DshGlyph(
+            DshIcons.ellipsis.data,
+            size: 18,
+            color: colors.muted,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> exportSessionLog() async {
+    final api = c.client, session = c.selectedId;
+    if (api == null || session == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => SessionLogExportDialog(
+        controller: c,
+        api: api,
+        sessionId: session,
+        pickLocation: (filename) async => (await getSaveLocation(
+          suggestedName: filename,
+          acceptedTypeGroups: [
+            const XTypeGroup(label: 'ZIP', extensions: ['zip']),
+          ],
+        ))?.path,
+      ),
+    );
+  }
+
+  Widget accountEntries({bool compact = false}) => AccountConnectionMenu(
+    controller: c,
+    compact: compact,
+    onlyWhenAuthorized: true,
+    showSettingsAction: false,
+    settingsShortcut: shortcutLabel(configuredShortcuts(c)['settings']!),
+    onAccounts: () => unawaited(accountSettings()),
+    onModels: () => unawaited(settings('models')),
+    onSettings: () => unawaited(settings()),
+  );
+
+  Widget sidebarNavigationContent(
+    IconData icon,
+    String title, {
+    Widget? trailing,
+  }) => Container(
+    constraints: BoxConstraints(
+      minHeight: DshTokens.of(context).controlHeight(context),
+    ),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+    child: Row(
+      children: [
+        DshGlyph(icon, size: 16, color: DshColors(context).text),
+        const SizedBox(width: 12),
+        Expanded(child: Text(title, style: DshTypography.body)),
+        if (trailing != null) ...[const SizedBox(width: 8), trailing],
+      ],
+    ),
+  );
+
+  Widget sidebarNavigation({
+    required Key key,
+    required IconData icon,
+    required String title,
+    required VoidCallback? onPressed,
+    bool active = false,
+    String? tooltip,
+    Widget? trailing,
+  }) => DshTooltip(
+    message: tooltip ?? title,
+    child: Semantics(
+      button: true,
+      selected: active,
+      enabled: onPressed != null,
+      child: Material(
+        color: active ? DshColors(context).selected : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          key: key,
+          borderRadius: BorderRadius.circular(8),
+          hoverColor: active
+              ? DshColors(context).selected
+              : DshColors(context).hover,
+          onTap: onPressed,
+          child: sidebarNavigationContent(icon, title, trailing: trailing),
+        ),
+      ),
+    ),
   );
 
   Widget collapsedSidebar() {
@@ -720,7 +1275,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         children: [
           const SizedBox(height: 12),
           Tooltip(
-            message: shortcutHint('sidebar', '展开侧边栏'),
+            message: shortcutHint('sidebar', DshShellZh.expandSidebar),
             child: InkWell(
               onTap: toggleSidebar,
               borderRadius: BorderRadius.circular(8),
@@ -754,53 +1309,56 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           ),
           const SizedBox(height: 12),
           DshIcon(
-            LucideIcons.circlePlus,
-            label: shortcutHint('new', '新建会话'),
+            DshIcons.newSession.data,
+            label: shortcutHint('new', DshShellZh.newSession),
             size: 36,
             color: colors.text,
             onPressed: c.connected ? startConversation : null,
           ),
           const SizedBox(height: 12),
           DshIcon(
-            LucideIcons.alarmClock,
-            label: '定时任务',
+            DshIcons.alarmClock.data,
+            key: const Key('open-schedule-direct'),
+            label: DshShellZh.scheduledTasks,
             size: 36,
             active: mainPanel == 'schedule',
-            color: colors.text,
             onPressed: () =>
                 mainPanel == 'schedule' ? closePanel() : openPanel('schedule'),
           ),
           const SizedBox(height: 12),
           DshIcon(
-            LucideIcons.bookOpen,
-            label: '知识',
+            DshIcons.bookOpen.data,
+            key: const Key('open-knowledge'),
+            label: DshShellZh.knowledge,
             size: 36,
             active: mainPanel == 'knowledge',
-            color: colors.text,
             onPressed: () => mainPanel == 'knowledge'
                 ? closePanel()
                 : openPanel('knowledge'),
           ),
           const SizedBox(height: 12),
           DshIcon(
-            LucideIcons.grid2x2,
-            label: '插件',
+            DshIcons.grid2x2.data,
+            key: const Key('open-plugins'),
+            label: DshShellZh.plugins,
             size: 36,
             color: colors.text,
-            onPressed: () => settings('plugins'),
+            active: mainPanel == 'plugins',
+            onPressed: () =>
+                mainPanel == 'plugins' ? closePanel() : openPanel('plugins'),
           ),
           const SizedBox(height: 12),
           DshIcon(
-            LucideIcons.folderPlus,
-            label: '添加工作区',
+            DshIcons.folderPlus.data,
+            label: DshShellZh.addWorkspace,
             size: 36,
             color: colors.text,
             onPressed: c.connected ? addWorkspace : null,
           ),
           const SizedBox(height: 12),
           DshIcon(
-            LucideIcons.search,
-            label: shortcutHint('search', '搜索会话'),
+            DshIcons.search.data,
+            label: shortcutHint('search', DshZh.searchSessions),
             size: 36,
             color: colors.text,
             onPressed: openSearch,
@@ -808,10 +1366,10 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           const Spacer(),
           accountEntries(compact: true),
           DshIcon(
-            LucideIcons.settings,
-            label: shortcutHint('settings', '设置'),
+            DshIcons.settings.data,
+            key: const Key('open-settings-direct'),
+            label: shortcutHint('settings', DshShellZh.settings),
             size: 36,
-            color: colors.text,
             onPressed: () => settings(),
           ),
           const SizedBox(height: 12),
@@ -820,18 +1378,21 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     );
   }
 
-  Widget _divider(ValueChanged<double> move) => MouseRegion(
-    cursor: SystemMouseCursors.resizeColumn,
-    child: GestureDetector(
-      onHorizontalDragUpdate: (d) => move(d.delta.dx),
-      onHorizontalDragEnd: (_) => saveLayout(),
-      child: Container(
-        width: 1,
-        color: DshColors(context).border,
-        child: const SizedBox.expand(),
-      ),
-    ),
-  );
+  Widget _divider(ValueChanged<double> move, {VoidCallback? onReset}) =>
+      MouseRegion(
+        cursor: SystemMouseCursors.resizeColumn,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onDoubleTap: onReset,
+          onHorizontalDragUpdate: (d) => move(d.delta.dx),
+          onHorizontalDragEnd: (_) => saveLayout(),
+          child: Container(
+            width: 1,
+            color: DshColors(context).border,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      );
   Widget sidebar() {
     final colors = DshColors(context);
     final query = search.text.toLowerCase();
@@ -873,25 +1434,28 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         Padding(
           padding: EdgeInsets.only(top: groupCount++ == 0 ? 0 : 4),
           child: WorkspaceTreeRow(
+            key: ValueKey('workspace-$id'),
             title: '${workspace['title']}',
             path: '${workspace['path']}',
-            expanded: groupExpanded(id),
+            expanded: groupExpandedForView(id),
             // Highlight only where 新会话 will start.
             active: c.workspaceId == id,
             onPressed: () {
-              final expanded = groupExpanded(id), previous = c.workspaceId;
+              final previous = c.workspaceId;
               // Default expansion follows the target; keep the old one as shown.
               if (previous != null && previous != id) {
                 groupExpansion.putIfAbsent(previous, () => true);
               }
               c.targetWorkspace(id);
-              setGroupExpanded(id, previous == id ? !expanded : true);
+              setGroupExpanded(id, true);
             },
+            toggleKey: ValueKey('workspace-toggle-$id'),
+            onToggle: () => toggleGroupExpansion(id),
             onMenu: (position) => workspaceMenu(workspace, position),
           ),
         ),
       );
-      if (groupExpanded(id)) {
+      if (groupExpandedForView(id)) {
         for (final (index, entry) in entries.indexed) {
           rows.add(
             Padding(
@@ -916,8 +1480,11 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 0, 6),
           child: Text(
-            '会话',
-            style: TextStyle(fontSize: 12, color: colors.muted),
+            DshShellZh.session,
+            style: TextStyle(
+              fontSize: DshTypography.sizeCaption,
+              color: colors.muted,
+            ),
           ),
         ),
       );
@@ -928,12 +1495,12 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 22, 12, 22),
+            padding: const EdgeInsets.fromLTRB(20, 14, 12, 14),
             child: Row(
               children: [
                 Expanded(
                   child: GestureDetector(
-                    onTap: startConversation,
+                    onTap: c.connected ? startConversation : null,
                     child: SvgPicture.asset(
                       colors.dark
                           ? 'assets/brand-dark.svg'
@@ -946,38 +1513,34 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                   ),
                 ),
                 DshIcon(
-                  LucideIcons.panelLeftClose,
-                  label: shortcutHint('sidebar', '收起侧边栏'),
-                  onPressed: () {
-                    setState(() => sideOpen = false);
-                    saveLayout();
-                  },
+                  DshIcons.panelLeftClose.data,
+                  label: shortcutHint('sidebar', DshShellZh.collapseSidebar),
+                  onPressed: toggleSidebar,
                 ),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            child: DshButton(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: sidebarNavigation(
               key: const Key('new-task'),
-              height: 38,
-              width: double.infinity,
-              outline: true,
-              icon: LucideIcons.circlePlus,
+              icon: DshIcons.newSession.data,
+              title: DshShellZh.blankSession,
+              tooltip: shortcutHint('new', DshShellZh.newSession),
               trailing: shortcutBadge('new'),
               onPressed: c.connected ? startConversation : null,
-              child: const Text('新会话'),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 10),
             child: SidebarEntryRow(
               entries: [
                 SidebarEntry(
-                  key: const Key('open-schedule'),
-                  icon: LucideIcons.alarmClock,
-                  label: '定时任务',
+                  key: const Key('open-schedule-direct'),
+                  icon: DshIcons.alarmClock.data,
+                  label: DshShellZh.scheduledShort,
+                  semanticLabel: DshShellZh.scheduledTasks,
                   active: mainPanel == 'schedule',
                   onPressed: () => mainPanel == 'schedule'
                       ? closePanel()
@@ -985,8 +1548,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 ),
                 SidebarEntry(
                   key: const Key('open-knowledge'),
-                  icon: LucideIcons.bookOpen,
-                  label: '知识',
+                  icon: DshIcons.bookOpen.data,
+                  label: DshShellZh.knowledgeShort,
+                  semanticLabel: DshShellZh.knowledge,
                   active: mainPanel == 'knowledge',
                   onPressed: () => mainPanel == 'knowledge'
                       ? closePanel()
@@ -994,40 +1558,46 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 ),
                 SidebarEntry(
                   key: const Key('open-plugins'),
-                  icon: LucideIcons.grid2x2,
-                  label: '插件',
-                  onPressed: () => settings('plugins'),
+                  icon: DshIcons.grid2x2.data,
+                  label: DshShellZh.plugins,
+                  active: mainPanel == 'plugins',
+                  onPressed: () => mainPanel == 'plugins'
+                      ? closePanel()
+                      : openPanel('plugins'),
                 ),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(18, 18, 10, 4),
+            padding: const EdgeInsets.fromLTRB(22, 18, 10, 4),
             child: Row(
               children: [
                 Text(
-                  '工作区',
-                  style: TextStyle(fontSize: 13, color: colors.muted),
+                  DshShellZh.workspace,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeAuxiliary,
+                    color: colors.muted,
+                  ),
                 ),
                 const Spacer(),
                 DshIcon(
-                  LucideIcons.search,
-                  label: shortcutHint('search', '搜索会话'),
+                  DshIcons.search.data,
+                  label: DshShellZh.filterSidebar,
                   active: showSearch,
-                  onPressed: () => setState(() => showSearch = !showSearch),
+                  onPressed: toggleSidebarSearch,
                 ),
                 SizedBox(
-                  width: 28,
-                  height: 28,
+                  width: 36,
+                  height: 36,
                   child: PopupMenuButton<String>(
-                    tooltip: '视图选项',
+                    tooltip: DshShellZh.viewOptions,
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(
                       minWidth: 220,
                       maxWidth: 280,
                     ),
                     icon: DshGlyph(
-                      LucideIcons.slidersHorizontal,
+                      DshIcons.slidersHorizontal.data,
                       size: 17,
                       color: colors.muted,
                     ),
@@ -1040,9 +1610,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                     },
                     itemBuilder: (_) => [
                       for (final entry in const {
-                        'hidden': '隐藏已归档',
-                        'all': '全部对话',
-                        'archived': '仅显示已归档',
+                        'hidden': DshShellZh.hideArchived,
+                        'all': DshShellZh.allSessions,
+                        'archived': DshShellZh.archivedOnly,
                       }.entries)
                         CheckedPopupMenuItem(
                           value: entry.key,
@@ -1052,18 +1622,18 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                       const PopupMenuDivider(),
                       const PopupMenuItem(
                         value: 'refresh',
-                        child: Text('刷新会话'),
+                        child: Text(DshShellZh.refreshSessions),
                       ),
                       const PopupMenuItem(
                         value: 'archive',
-                        child: Text('归档管理'),
+                        child: Text(DshShellZh.archiveManagement),
                       ),
                     ],
                   ),
                 ),
                 DshIcon(
-                  LucideIcons.folderPlus,
-                  label: '添加工作区',
+                  DshIcons.folderPlus.data,
+                  label: DshShellZh.addWorkspace,
                   onPressed: c.connected ? addWorkspace : null,
                 ),
               ],
@@ -1075,20 +1645,29 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
               child: DshField(
                 controller: search,
                 focusNode: searchFocus,
-                hint: '搜索会话',
+                hint: DshZh.searchSessions,
                 autofocus: true,
-                onChanged: (_) => setState(() {}),
+                onChanged: (_) => setState(filteredGroupExpansion.clear),
               ),
             ),
           Expanded(
-            child: rows.isEmpty
+            child: c.sessions.isEmpty && (c.connecting || c.loadingSessions)
+                ? DshListSkeleton(
+                    label: DshConversationZh.loadingList(name: DshZh.session),
+                  )
+                : rows.isEmpty
                 ? Align(
                     alignment: Alignment.topLeft,
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Text(
-                        c.connecting ? '正在连接…' : '暂无会话',
-                        style: TextStyle(fontSize: 14, color: colors.muted),
+                        c.connecting
+                            ? DshShellZh.connecting
+                            : DshShellZh.noSessions,
+                        style: TextStyle(
+                          fontSize: DshTypography.sizeBody,
+                          color: colors.muted,
+                        ),
                       ),
                     ),
                   )
@@ -1099,23 +1678,19 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                   ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: accountEntries(),
-          ),
-          Padding(
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-            child: Row(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: DshButton(
-                      icon: LucideIcons.settings,
-                      trailing: shortcutBadge('settings'),
-                      onPressed: () => settings(),
-                      child: const Text('设置'),
-                    ),
-                  ),
+                accountEntries(),
+                sidebarNavigation(
+                  key: const Key('open-settings-direct'),
+                  icon: DshIcons.settings.data,
+                  title: DshShellZh.settings,
+                  tooltip: shortcutHint('settings', DshShellZh.settings),
+                  trailing: shortcutBadge('settings'),
+                  onPressed: () => settings(),
                 ),
               ],
             ),
@@ -1128,13 +1703,16 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   Widget sessionRow(SessionSummary session) => Padding(
     padding: const EdgeInsets.only(bottom: 2),
     child: Material(
-      color: c.selectedId == session.id
-          ? DshColors(context).hover
+      color: mainPanel == null && c.selectedId == session.id
+          ? DshColors(context).selected
           : Colors.transparent,
       borderRadius: BorderRadius.circular(7),
       child: InkWell(
         key: ValueKey('session-${session.id}'),
         borderRadius: BorderRadius.circular(7),
+        hoverColor: mainPanel == null && c.selectedId == session.id
+            ? DshColors(context).selected
+            : DshColors(context).hover,
         onTap: () => unawaited(openConversation(session.id)),
         onSecondaryTapDown: (d) => sessionMenu(session, d.globalPosition),
         child: Padding(
@@ -1142,13 +1720,31 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  session.displayTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 14),
+                child: Tooltip(
+                  message: session.displayTitle,
+                  child: Text(
+                    session.displayTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: DshTypography.sizeBody),
+                  ),
                 ),
               ),
+              if (syncingSessions.contains(session.id))
+                const Tooltip(
+                  message: DshZh.syncing,
+                  child: SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+                ),
+              if (syncFailures.containsKey(session.id))
+                DshIcon(
+                  DshIcons.rotateCcw.data,
+                  label: DshZh.syncFailure(session.displayTitle),
+                  onPressed: () => showSyncFailure(session),
+                ),
               if (session.running)
                 const SizedBox(
                   width: 10,
@@ -1157,24 +1753,24 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 ),
               if (c.archivedSessionIds.contains(session.id))
                 Tooltip(
-                  message: '已归档',
+                  message: DshShellZh.archived,
                   child: DshGlyph(
-                    LucideIcons.archive,
+                    DshIcons.archive.data,
                     size: 13,
                     color: DshColors(context).muted,
                   ),
                 ),
               if (c.pending.values.any((f) => f.sessionId == session.id))
-                const DshGlyph(
-                  LucideIcons.circleHelp,
+                DshGlyph(
+                  DshIcons.circleHelp.data,
                   size: 13,
-                  color: Colors.orange,
+                  color: DshTokens.of(context).warning.foreground,
                 ),
               if (!session.blank && session.updatedAt > 0)
                 Text(
                   relativeSessionAge(session.updatedAt),
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: DshTypography.sizeCaption,
                     color: DshColors(context).muted,
                   ),
                 ),
@@ -1185,20 +1781,30 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     ),
   );
   Future<void> sessionMenu(SessionSummary session, Offset pos) async {
+    final ownerScope = connectionScope;
     final action = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
       items: [
-        const PopupMenuItem(value: 'copy-id', child: Text('复制对话 ID')),
-        const PopupMenuItem(value: 'rename', child: Text('重命名')),
-        const PopupMenuItem(value: 'fork', child: Text('创建分支')),
+        const PopupMenuItem(
+          value: 'copy-id',
+          child: Text(DshShellZh.copySessionId),
+        ),
+        const PopupMenuItem(value: 'rename', child: Text(DshShellZh.rename)),
+        const PopupMenuItem(value: 'fork', child: Text(DshShellZh.fork)),
         if (c.archivedSessionIds.contains(session.id))
-          const PopupMenuItem(value: 'restore', child: Text('恢复归档'))
+          const PopupMenuItem(
+            value: 'restore',
+            child: Text(DshShellZh.restoreArchive),
+          )
         else
-          const PopupMenuItem(value: 'archive', child: Text('归档')),
+          const PopupMenuItem(
+            value: 'archive',
+            child: Text(DshShellZh.archive),
+          ),
       ],
     );
-    if (!mounted) return;
+    if (!mounted || connectionScope != ownerScope) return;
     if (action == 'copy-id') {
       await Clipboard.setData(ClipboardData(text: session.id));
       return;
@@ -1206,19 +1812,24 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     if (action == 'rename') {
       final owner = c.client;
       if (owner == null) {
-        c.error = '请先连接服务';
+        c.error = DshShellZh.connectFirst;
         c.emit();
         return;
       }
       var base = c.titleEditBase(session.id);
       await editTextDialog(
         context,
-        '重命名会话',
+        DshShellZh.renameSession,
         session.title,
         onSubmit: (title) async {
-          if (title.trim().isEmpty) throw const FormatException('请输入会话名称。');
+          if (!mounted || connectionScope != ownerScope) {
+            throw StateError(DshShellZh.titleConnectionChanged);
+          }
+          if (title.trim().isEmpty) {
+            throw const FormatException(DshShellZh.sessionNameRequired);
+          }
           if (base == null) {
-            throw DshException('title-unloaded', '标题状态尚未加载，请读取最新状态。');
+            throw DshException('title-unloaded', DshShellZh.titleNotLoaded);
           }
           await c.renameSession(
             session.id,
@@ -1233,19 +1844,20 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 error.code == 'title-unloaded' ||
                 error.outcomeUnknown),
         onRecover: () async {
-          if (!identical(owner, c.client)) {
-            throw StateError('服务连接已改变，请重新打开标题编辑。');
+          if (!mounted || connectionScope != ownerScope) {
+            throw StateError(DshShellZh.titleConnectionChanged);
           }
           await c.refreshSessions();
           base = c.titleEditBase(session.id);
-          if (base == null) throw StateError('无法读取当前标题状态。');
-          return '当前标题：${base!['value'] ?? '新会话'}；编辑草稿已保留。';
+          if (base == null) throw StateError(DshShellZh.titleUnavailable);
+          return DshShellZh.latestTitle(
+            title: base!['value'] ?? DshShellZh.blankSession,
+          );
         },
       );
     }
     if (action == 'archive') {
-      final owner = c.client;
-      await c.run(() async {
+      await syncSession(session.id, () async {
         try {
           await c.archive(session.id);
         } on DshException catch (error) {
@@ -1253,27 +1865,36 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
               error.details['reason'] != 'active-schedules') {
             rethrow;
           }
-          if (!mounted || !identical(owner, c.client)) return;
+          if (!mounted || connectionScope != ownerScope) return;
           final confirmed = await confirmAction(
             context,
-            '停止提醒和定时任务并归档？',
-            '此会话仍有有效提醒。继续归档会停止这些提醒；取消后提醒保持原状。',
-            action: '停止并归档',
+            DshShellZh.archiveWithSchedulesTitle,
+            DshShellZh.archiveWithSchedulesHint,
+            action: DshShellZh.stopAndArchive,
           );
-          if (!confirmed || !mounted || !identical(owner, c.client)) return;
+          if (!confirmed || !mounted || connectionScope != ownerScope) return;
           await c.archive(session.id, stopSchedules: true);
         }
       });
     }
     if (action == 'restore') {
-      await c.run(() => c.archive(session.id, restore: true));
+      await syncSession(session.id, () => c.archive(session.id, restore: true));
     }
     if (action == 'fork') {
+      final api = c.client;
+      final selection = c.selectionRevision;
+      if (api == null) return;
       await c.run(() async {
-        final result = await c.client!.call('session.fork', {
+        final result = await api.call('session.fork', {
           'sessionId': session.id,
         }, true);
+        if (!mounted || connectionScope != ownerScope) return;
         await c.refreshSessions();
+        if (!mounted ||
+            connectionScope != ownerScope ||
+            c.selectionRevision != selection) {
+          return;
+        }
         closePanel();
         await c.select(result['sessionId'] as String);
       });
@@ -1281,59 +1902,69 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   }
 
   Future<void> workspaceMenu(Json workspace, Offset pos) async {
+    final ownerScope = connectionScope;
     final api = c.client;
     if (api == null) return;
     final action = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
       items: [
-        const PopupMenuItem(value: 'rename', child: Text('重命名工作区')),
-        const PopupMenuItem(value: 'open', child: Text('在文件管理器中打开')),
-        const PopupMenuItem(value: 'delete', child: Text('删除工作区')),
+        const PopupMenuItem(
+          value: 'rename',
+          child: Text(DshShellZh.renameWorkspace),
+        ),
+        const PopupMenuItem(
+          value: 'open',
+          child: Text(DshShellZh.openInFileManager),
+        ),
+        const PopupMenuItem(
+          value: 'delete',
+          child: Text(DshShellZh.deleteWorkspace),
+        ),
       ],
     );
-    if (!mounted) return;
+    if (!mounted || connectionScope != ownerScope) return;
     if (action == 'delete') {
       final confirmed = await confirmAction(
         context,
-        '删除工作区',
-        '将把“${workspace['title']}”从工作区列表移除。文件夹和会话记录保留，会话移至未分组。',
-        action: '删除工作区',
+        DshShellZh.deleteWorkspace,
+        DshShellZh.deleteWorkspaceHint(title: workspace['title']),
+        action: DshShellZh.deleteWorkspace,
       );
-      if (!confirmed || !mounted || c.client != api) return;
+      if (!confirmed || !mounted || connectionScope != ownerScope) return;
       await c.run(() async {
         await api.call('workspace.delete', {
           'workspaceId': workspace['workspaceId'],
         }, true);
-        if (c.client != api) return;
-        if (c.workspaceId == workspace['workspaceId']) c.workspaceId = null;
+        if (!mounted || connectionScope != ownerScope) return;
+        if (c.workspaceId == workspace['workspaceId']) c.targetWorkspace(null);
         groupExpansion.remove('${workspace['workspaceId']}');
         await c.refreshSessions();
-        saveLayout();
+        if (mounted && connectionScope == ownerScope) saveLayout();
       });
       return;
     }
     if (action == 'rename') {
       final title = await editTextDialog(
         context,
-        '重命名工作区',
+        DshShellZh.renameWorkspace,
         '${workspace['title']}',
       );
-      if (title != null) {
+      if (title != null && mounted && connectionScope == ownerScope) {
         await c.run(() async {
-          await c.client!.call('workspace.rename', {
+          await api.call('workspace.rename', {
             'workspaceId': workspace['workspaceId'],
             'title': title,
           }, true);
-          await c.refreshSessions();
+          if (mounted && connectionScope == ownerScope) {
+            await c.refreshSessions();
+          }
         });
       }
     }
     if (action == 'open') {
       await c.run(() async {
-        await c.client!.call('host.openPath', {
-          'path': workspace['path'],
-        }, true);
+        await api.call('host.openPath', {'path': workspace['path']}, true);
       });
     }
   }
@@ -1349,13 +1980,17 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       builder: (_) => NewTaskDialog(
         initialPath: path,
         onCreate: (path, scratch) async {
-          if (c.client != api) throw StateError('连接已切换，请重新选择工作区。');
+          if (c.client != api) {
+            throw StateError(DshShellZh.workspaceConnectionChanged);
+          }
           await api.request(
             '/__dsh-artifacts/workspace-settings',
             body: {'path': path, 'location': scratch},
             mutation: true,
           );
-          if (c.client != api) throw StateError('连接已切换，请重新选择工作区。');
+          if (c.client != api) {
+            throw StateError(DshShellZh.workspaceConnectionChanged);
+          }
           await c.addWorkspace(path);
         },
       ),
@@ -1363,6 +1998,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   }
 
   Future<void> chooseWorkspace() async {
+    final ownerScope = connectionScope;
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     final anchor = workspaceAnchor.currentContext?.findRenderObject();
@@ -1385,52 +2021,52 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
               message: displayPath('${w['path']}'),
               child: Row(
                 children: [
-                  const DshGlyph(LucideIcons.folder, size: 16),
+                  DshGlyph(DshIcons.folder.data, size: 16),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       '${w['title']}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 14),
+                      style: const TextStyle(fontSize: DshTypography.sizeBody),
                     ),
                   ),
                   if (w['workspaceId'] == c.workspaceId)
-                    const DshGlyph(LucideIcons.check, size: 14),
+                    DshGlyph(DshIcons.check.data, size: 14),
                 ],
               ),
             ),
           ),
         const PopupMenuDivider(),
-        const PopupMenuItem(
+        PopupMenuItem(
           value: '__add',
           height: 38,
           child: Row(
             children: [
-              DshGlyph(LucideIcons.plus, size: 16),
+              DshGlyph(DshIcons.plus.data, size: 16),
               SizedBox(width: 10),
-              Text('添加工作目录'),
+              Text(DshShellZh.addWorkingDirectory),
             ],
           ),
         ),
         const PopupMenuItem(
           value: '__git',
           height: 38,
-          child: Text('从 Git 克隆工作目录'),
+          child: Text(DshShellZh.cloneGitDirectory),
         ),
         const PopupMenuItem(
           value: '__cloud',
           height: 38,
-          child: Text('Cloud · 云端 Git 仓库'),
+          child: Text(DshShellZh.cloudRepository),
         ),
         const PopupMenuItem(
           value: '__ssh',
           height: 38,
-          child: Text('SSH 远程工作目录'),
+          child: Text(DshShellZh.sshDirectory),
         ),
       ],
     );
-    if (!mounted) return;
+    if (!mounted || connectionScope != ownerScope) return;
     if (id == '__add') {
       await addWorkspace();
     } else if (['__git', '__cloud', '__ssh'].contains(id)) {
@@ -1457,12 +2093,12 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       } else if (result['workspaceId'] is String) {
         await c.run(c.refreshSessions);
         if (!mounted || c.client != api) return;
-        c.workspaceId = result['workspaceId'] as String;
+        c.targetWorkspace(result['workspaceId'] as String);
         setGroupExpanded(c.workspaceId!, true);
         await c.run(c.startConversation);
       }
     } else if (id != null) {
-      c.workspaceId = id;
+      c.targetWorkspace(id);
       setGroupExpanded(id, true);
       await c.run(c.startConversation);
     }
@@ -1470,27 +2106,36 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
 
   Future<void> settings([String page = 'general']) => showDialog<void>(
     context: context,
+    animationStyle: AnimationStyle(
+      duration: DshMotion.duration(context, DshMotion.dialog),
+      curve: DshMotion.curve,
+    ),
     barrierColor: Colors.transparent,
     barrierDismissible: false,
     builder: (_) => SettingsShell(
       controller: c,
       initialPage: page,
       onOpenPlugin: (row) {
-        final id = '${row['id'] ?? row['entryId'] ?? row['name'] ?? ''}';
         Navigator.of(context).pop();
-        if (id.contains('workbench') || id.contains('sidebar')) {
-          openDock('files');
-        } else if (id.contains('context')) {
-          conversationViewRequest.value = 'user-message-rail';
-        } else if (id == 'dsh-artifacts') {
-          conversationViewRequest.value = 'artifacts';
-        } else {
-          conversationViewRequest.value = 'conversation';
-          c.composerFocus.value++;
-        }
+        openPlugin(row);
       },
     ),
   );
+
+  void openPlugin(Json row) {
+    final id = '${row['id'] ?? row['entryId'] ?? row['name'] ?? ''}';
+    closePanel();
+    if (id.contains('workbench') || id.contains('sidebar')) {
+      openDock('start');
+    } else if (id.contains('context')) {
+      conversationViewRequest.value = 'user-message-rail';
+    } else if (id == 'dsh-artifacts') {
+      conversationViewRequest.value = 'artifacts';
+    } else {
+      conversationViewRequest.value = 'conversation';
+      c.composerFocus.value++;
+    }
+  }
 
   Future<void> sessionFeedback() async {
     final session = c.selectedId, api = c.client;
@@ -1522,13 +2167,13 @@ class _SessionFeedbackDialogState extends State<SessionFeedbackDialog> {
   String? savedPayload;
   String requestId = newRequestId();
   static const categories = {
-    'task-result': '任务结果',
-    'instruction-following': '指令遵循',
-    'product-interaction': '交互体验',
-    'service-stability': '服务稳定性',
-    'resource-cost': '资源与费用',
-    'security-privacy-permission': '安全、隐私与权限',
-    'other': '其他',
+    'task-result': DshShellZh.feedbackTaskResult,
+    'instruction-following': DshShellZh.feedbackInstructions,
+    'product-interaction': DshShellZh.feedbackInteraction,
+    'service-stability': DshShellZh.feedbackStability,
+    'resource-cost': DshShellZh.feedbackCost,
+    'security-privacy-permission': DshShellZh.feedbackSecurity,
+    'other': DshShellZh.feedbackOther,
   };
 
   @override
@@ -1559,7 +2204,7 @@ class _SessionFeedbackDialogState extends State<SessionFeedbackDialog> {
         }, true),
       );
       if (value['recorded'] != true) {
-        throw DshException('protocol', '服务未确认保存反馈。');
+        throw DshException('protocol', DshShellZh.feedbackUnconfirmed);
       }
       if (mounted) Navigator.pop(context);
     } catch (e) {
@@ -1571,20 +2216,26 @@ class _SessionFeedbackDialogState extends State<SessionFeedbackDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('会话反馈', style: TextStyle(fontSize: 17)),
+    title: const Text(
+      DshShellZh.sessionFeedback,
+      style: TextStyle(fontSize: DshTypography.sizeSectionTitle),
+    ),
     content: SizedBox(
       width: 500,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('记录对整个会话的意见，不会启动新的模型请求。', style: TextStyle(fontSize: 13)),
+          const Text(
+            DshShellZh.feedbackHint,
+            style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
+          ),
           const SizedBox(height: 14),
           DropdownButtonFormField<String>(
             key: ValueKey(category),
             initialValue: category.isEmpty ? null : category,
             decoration: const InputDecoration(
-              labelText: '反馈分类（可选）',
+              labelText: DshShellZh.feedbackCategory,
               border: OutlineInputBorder(),
             ),
             items: [
@@ -1602,14 +2253,14 @@ class _SessionFeedbackDialogState extends State<SessionFeedbackDialog> {
             maxLines: 8,
             enabled: !busy,
             decoration: const InputDecoration(
-              labelText: '补充说明（可选）',
+              labelText: DshShellZh.feedbackNote,
               border: OutlineInputBorder(),
             ),
           ),
           if (error != null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: Text(error!, style: const TextStyle(color: Colors.red)),
+              child: DshErrorView(error: error!),
             ),
         ],
       ),
@@ -1617,12 +2268,12 @@ class _SessionFeedbackDialogState extends State<SessionFeedbackDialog> {
     actions: [
       DshButton(
         onPressed: busy ? null : () => Navigator.pop(context),
-        child: const Text('取消'),
+        child: const Text(DshZh.cancel),
       ),
       DshButton(
         primary: true,
         onPressed: busy ? null : save,
-        child: Text(busy ? '保存中…' : '保存反馈'),
+        child: Text(busy ? DshZh.saving : DshShellZh.saveFeedback),
       ),
     ],
   );
@@ -1673,7 +2324,10 @@ class _NewTaskDialogState extends State<NewTaskDialog> {
   Widget build(BuildContext context) => PopScope(
     canPop: !busy,
     child: AlertDialog(
-      title: const Text('添加工作区', style: TextStyle(fontSize: 18)),
+      title: const Text(
+        DshShellZh.addWorkspace,
+        style: TextStyle(fontSize: DshTypography.sizeSectionTitle),
+      ),
       content: SizedBox(
         width: 520,
         child: SingleChildScrollView(
@@ -1694,36 +2348,39 @@ class _NewTaskDialogState extends State<NewTaskDialog> {
                   ),
                   child: SelectableText(
                     displayPath(widget.initialPath),
-                    style: const TextStyle(fontSize: 14),
+                    style: const TextStyle(fontSize: DshTypography.sizeBody),
                   ),
                 )
               else
                 DshField(
                   key: const Key('working-directory'),
                   controller: input,
-                  hint: '工作目录',
+                  hint: DshShellZh.workingDirectory,
                   enabled: !busy,
                 ),
               const SizedBox(height: 16),
               DshButton(
                 icon: advanced
-                    ? LucideIcons.chevronDown
-                    : LucideIcons.chevronRight,
+                    ? DshIcons.chevronDown.data
+                    : DshIcons.chevronRight.data,
                 onPressed: busy
                     ? null
                     : () => setState(() => advanced = !advanced),
-                child: const Text('高级设置'),
+                child: const Text(DshShellZh.advancedSettings),
               ),
               if (advanced) ...[
                 const SizedBox(height: 12),
-                const Text('垃圾槽位置', style: TextStyle(fontSize: 14)),
+                const Text(
+                  DshShellZh.trashLocation,
+                  style: TextStyle(fontSize: DshTypography.sizeBody),
+                ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
                       child: DshField(
                         controller: scratch,
-                        hint: '使用全局位置',
+                        hint: DshShellZh.globalLocation,
                         enabled: !busy,
                       ),
                     ),
@@ -1738,23 +2395,23 @@ class _NewTaskDialogState extends State<NewTaskDialog> {
                                 scratch.text = displayPath(path);
                               }
                             },
-                      child: const Text('选择目录'),
+                      child: const Text(DshShellZh.chooseDirectory),
                     ),
                   ],
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  '留空使用全局位置。可选择空目录或已有垃圾槽，应用于此工作区的新运行。',
-                  style: TextStyle(fontSize: 12, height: 1.5),
+                  DshShellZh.trashLocationHint,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    height: 1.5,
+                  ),
                 ),
               ],
               if (error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
-                  child: Text(
-                    error!,
-                    style: const TextStyle(color: Colors.red),
-                  ),
+                  child: DshErrorView(error: error!),
                 ),
             ],
           ),
@@ -1763,13 +2420,13 @@ class _NewTaskDialogState extends State<NewTaskDialog> {
       actions: [
         DshButton(
           onPressed: busy ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: const Text(DshZh.cancel),
         ),
         DshButton(
           key: const Key('create-task'),
           primary: true,
           onPressed: busy ? null : create,
-          child: Text(busy ? '正在添加…' : '添加'),
+          child: Text(busy ? DshShellZh.adding : DshShellZh.add),
         ),
       ],
     ),
@@ -1827,7 +2484,10 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('本机服务', style: TextStyle(fontSize: 18)),
+    title: const Text(
+      DshShellZh.localService,
+      style: TextStyle(fontSize: DshTypography.sizeSectionTitle),
+    ),
     content: SizedBox(
       width: 500,
       child: Column(
@@ -1846,30 +2506,38 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
                       exe.text = HostLauncher.discover();
                       submit(false);
                     },
-              child: const Text('使用已安装版本的配置'),
+              child: const Text(DshShellZh.installedConfiguration),
             ),
           ),
           if (widget.controller.host != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: SelectableText(
-                '配置目录：${displayPath(widget.controller.host!.home)}',
-                style: const TextStyle(fontSize: 12),
+                DshShellZh.configDirectory(
+                  path: displayPath(widget.controller.host!.home),
+                ),
+                style: const TextStyle(fontSize: DshTypography.sizeCaption),
               ),
             ),
           const SizedBox(height: 16),
           Row(
             children: [
               Expanded(
-                child: DshField(controller: exe, hint: 'Host 程序位置'),
+                child: DshField(
+                  controller: exe,
+                  hint: DshShellZh.hostExecutable,
+                ),
               ),
               DshIcon(
-                LucideIcons.folderOpen,
-                label: '选择程序',
+                DshIcons.folderOpen.data,
+                label: DshShellZh.chooseExecutable,
                 onPressed: () async {
                   final file = await openFile(
                     acceptedTypeGroups: [
-                      const XTypeGroup(label: '程序', extensions: ['exe']),
+                      const XTypeGroup(
+                        label: DshShellZh.executable,
+                        extensions: ['exe'],
+                      ),
                     ],
                   );
                   if (mounted && file != null) exe.text = file.path;
@@ -1877,8 +2545,7 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
               ),
             ],
           ),
-          if (error != null)
-            Text(error!, style: const TextStyle(color: Colors.red)),
+          if (error != null) DshErrorView(error: error!),
           if (busy) const LinearProgressIndicator(),
         ],
       ),
@@ -1886,17 +2553,17 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
     actions: [
       DshButton(
         onPressed: busy ? null : () => Navigator.pop(context),
-        child: const Text('取消'),
+        child: const Text(DshZh.cancel),
       ),
       DshButton(
         onPressed: busy ? null : () => submit(true),
         outline: true,
-        child: const Text('启动并连接'),
+        child: const Text(DshShellZh.startAndConnect),
       ),
       DshButton(
         onPressed: busy ? null : () => submit(false),
         primary: true,
-        child: const Text('连接'),
+        child: const Text(DshShellZh.connect),
       ),
     ],
   );

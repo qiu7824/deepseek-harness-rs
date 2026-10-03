@@ -1,11 +1,14 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
+import '../../design/error.dart';
 import '../../design/rich_content.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
+import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 class QuestionFlow extends StatefulWidget {
   const QuestionFlow({
@@ -26,7 +29,8 @@ class _QuestionFlowState extends State<QuestionFlow> {
   final input = TextEditingController(), scroll = ScrollController();
   final inputFocus = FocusNode();
   int index = 0;
-  String? busy, error;
+  String? busy;
+  Object? error;
   List<Json> get questions => objects(widget.frame.payload['questions']);
   bool get enabled =>
       busy == null &&
@@ -67,7 +71,7 @@ class _QuestionFlowState extends State<QuestionFlow> {
       );
       if (missing >= 0) {
         move(missing);
-        setState(() => error = '请回答或跳过剩余问题');
+        setState(() => error = DshConversationZh.questionsRemaining);
         return;
       }
     }
@@ -104,7 +108,7 @@ class _QuestionFlowState extends State<QuestionFlow> {
       if (mounted) {
         setState(() {
           busy = null;
-          error = '$e';
+          error = e;
         });
       }
     }
@@ -151,7 +155,7 @@ class _QuestionFlowState extends State<QuestionFlow> {
         maxHeight: (MediaQuery.sizeOf(context).height * .6).clamp(0, 520),
       ),
       decoration: BoxDecoration(
-        color: colors.dark ? const Color(0xff2c2c2e) : Colors.white,
+        color: colors.base,
         border: Border.all(color: colors.border),
         borderRadius: BorderRadius.circular(narrow ? 16 : 20),
         boxShadow: [
@@ -183,19 +187,19 @@ class _QuestionFlowState extends State<QuestionFlow> {
                       Row(
                         children: [
                           DshGlyph(
-                            LucideIcons.circleHelp,
+                            DshIcons.circleHelp.data,
                             size: 14,
                             color: colors.muted,
                           ),
                           const SizedBox(width: 6),
                           Text(
                             busy == 'answer'
-                                ? '正在提交'
+                                ? DshConversationZh.submittingAnswers
                                 : busy == 'cancel'
-                                ? '正在放弃'
-                                : '等待回答',
+                                ? DshConversationZh.abandoningAnswers
+                                : DshConversationZh.awaitingAnswers,
                             style: TextStyle(
-                              fontSize: 12,
+                              fontSize: DshTypography.sizeCaption,
                               height: 1.5,
                               color: colors.muted,
                             ),
@@ -205,7 +209,10 @@ class _QuestionFlowState extends State<QuestionFlow> {
                       if (q['header'] is String)
                         Text(
                           q['header'] as String,
-                          style: TextStyle(fontSize: 11, color: colors.muted),
+                          style: TextStyle(
+                            fontSize: DshTypography.sizeCaption,
+                            color: colors.muted,
+                          ),
                         ),
                       Text(
                         '${q['question']}',
@@ -219,8 +226,8 @@ class _QuestionFlowState extends State<QuestionFlow> {
                   ),
                 ),
                 DshIcon(
-                  LucideIcons.x,
-                  label: '放弃整组问题',
+                  DshIcons.close.data,
+                  label: DshConversationZh.abandonQuestions,
                   size: 24,
                   onPressed: enabled ? () => settle(cancel: true) : null,
                 ),
@@ -265,12 +272,15 @@ class _QuestionFlowState extends State<QuestionFlow> {
                           enabled: enabled,
                           minLines: options.isEmpty ? 2 : 1,
                           maxLines: options.isEmpty ? 5 : 1,
-                          style: const TextStyle(fontSize: 14, height: 24 / 14),
+                          style: const TextStyle(
+                            fontSize: DshTypography.sizeBody,
+                            height: 24 / 14,
+                          ),
                           decoration: InputDecoration(
-                            hintText: '输入你的答案',
+                            hintText: DshConversationZh.answerHint,
                             hintStyle: TextStyle(
                               color: colors.muted,
-                              fontSize: 14,
+                              fontSize: DshTypography.sizeBody,
                             ),
                             isDense: true,
                             contentPadding: const EdgeInsets.symmetric(
@@ -282,7 +292,7 @@ class _QuestionFlowState extends State<QuestionFlow> {
                                 : Padding(
                                     padding: const EdgeInsets.all(10),
                                     child: DshGlyph(
-                                      LucideIcons.pencil,
+                                      DshIcons.pencil.data,
                                       size: 16,
                                       color: colors.muted,
                                     ),
@@ -325,21 +335,23 @@ class _QuestionFlowState extends State<QuestionFlow> {
           if (error != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 8, 10, 0),
-              child: Text(
-                error!,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-              ),
+              child: error is! String
+                  ? DshErrorView(error: error!)
+                  : Text(
+                      error! as String,
+                      style: TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
             ),
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 12, 10, 10),
             child: Row(
               children: [
                 DshIcon(
-                  LucideIcons.chevronLeft,
-                  label: '上一题',
+                  DshIcons.chevronLeft.data,
+                  label: DshConversationZh.previousQuestion,
                   size: 24,
                   onPressed: enabled && index > 0
                       ? () => move(index - 1)
@@ -347,11 +359,14 @@ class _QuestionFlowState extends State<QuestionFlow> {
                 ),
                 Text(
                   '${index + 1} / ${questions.length}',
-                  style: TextStyle(fontSize: 14, color: colors.muted),
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeBody,
+                    color: colors.muted,
+                  ),
                 ),
                 DshIcon(
-                  LucideIcons.chevronRight,
-                  label: '下一题',
+                  DshIcons.chevronRight.data,
+                  label: DshConversationZh.nextQuestion,
                   size: 24,
                   onPressed: enabled && index < questions.length - 1
                       ? () => move(index + 1)
@@ -362,7 +377,7 @@ class _QuestionFlowState extends State<QuestionFlow> {
                   height: 36,
                   outline: true,
                   onPressed: enabled ? skip : null,
-                  child: const Text('跳过本题'),
+                  child: const Text(DshConversationZh.skipQuestion),
                 ),
                 const SizedBox(width: 12),
                 DshButton(
@@ -372,10 +387,10 @@ class _QuestionFlowState extends State<QuestionFlow> {
                   onPressed: enabled && answered(id) ? advance : null,
                   child: Text(
                     busy == 'answer'
-                        ? '正在提交'
+                        ? DshConversationZh.submittingAnswers
                         : index == questions.length - 1
-                        ? '提交'
-                        : '下一题',
+                        ? DshConversationZh.submit
+                        : DshConversationZh.nextQuestion,
                   ),
                 ),
               ],
@@ -441,7 +456,9 @@ class _QuestionFlowState extends State<QuestionFlow> {
                   height: 24,
                   child: multiple
                       ? DshGlyph(
-                          chosen ? LucideIcons.squareCheck : LucideIcons.square,
+                          chosen
+                              ? DshIcons.squareCheck.data
+                              : DshIcons.checkboxUnchecked.data,
                           size: 16,
                         )
                       : Center(
@@ -455,7 +472,9 @@ class _QuestionFlowState extends State<QuestionFlow> {
                             alignment: Alignment.center,
                             child: Text(
                               '${number + 1}',
-                              style: const TextStyle(fontSize: 12),
+                              style: const TextStyle(
+                                fontSize: DshTypography.sizeCaption,
+                              ),
                             ),
                           ),
                         ),
@@ -469,7 +488,7 @@ class _QuestionFlowState extends State<QuestionFlow> {
                       Text(
                         display,
                         style: const TextStyle(
-                          fontSize: 14,
+                          fontSize: DshTypography.sizeBody,
                           fontWeight: FontWeight.w500,
                           height: 24 / 14,
                         ),
@@ -482,15 +501,18 @@ class _QuestionFlowState extends State<QuestionFlow> {
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
-                            '推荐',
-                            style: TextStyle(fontSize: 11, color: colors.blue),
+                            DshConversationZh.recommended,
+                            style: TextStyle(
+                              fontSize: DshTypography.sizeCaption,
+                              color: colors.blue,
+                            ),
                           ),
                         ),
                       if (option['description'] is String)
                         Text(
                           option['description'] as String,
                           style: TextStyle(
-                            fontSize: 14,
+                            fontSize: DshTypography.sizeBody,
                             height: 24 / 14,
                             color: colors.muted,
                           ),

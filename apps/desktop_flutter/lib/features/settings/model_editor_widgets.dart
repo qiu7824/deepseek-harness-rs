@@ -1,12 +1,16 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+
 import 'dart:convert';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
 import '../../design/select.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 int? modelCapacity(String text) {
   final match = RegExp(
@@ -66,13 +70,16 @@ class InlineModelRow extends StatelessWidget {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: const TextStyle(fontSize: 12)),
+        Text(
+          title,
+          style: const TextStyle(fontSize: DshTypography.sizeCaption),
+        ),
         const SizedBox(height: 4),
         TextFormField(
           key: ValueKey('model-field-$name'),
           initialValue: rawValues[name] ?? '${model[name] ?? ''}',
           enabled: enabled,
-          style: const TextStyle(fontSize: 13),
+          style: const TextStyle(fontSize: DshTypography.sizeAuxiliary),
           decoration: const InputDecoration(
             isDense: true,
             contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 9),
@@ -115,14 +122,19 @@ class InlineModelRow extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      manual ? '新手动模型' : '${model['name'] ?? model['id']}',
-                      style: const TextStyle(fontSize: 13, height: 18 / 13),
+                      manual
+                          ? DshSettingsZh.newManualModel
+                          : '${model['name'] ?? model['id']}',
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeAuxiliary,
+                        height: 18 / 13,
+                      ),
                     ),
                     if (!manual)
                       Text(
                         '${model['id']}',
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: DshTypography.sizeCaption,
                           height: 16 / 11,
                           color: colors.muted,
                         ),
@@ -131,7 +143,7 @@ class InlineModelRow extends StatelessWidget {
                 ),
               ),
               Semantics(
-                label: '显示模型 ${model['id']}',
+                label: DshSettingsZh.showModel(id: model['id']),
                 checked: model['enabled'] != false,
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -151,16 +163,20 @@ class InlineModelRow extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      model['enabled'] == false ? '隐藏' : '显示',
-                      style: const TextStyle(fontSize: 12),
+                      model['enabled'] == false
+                          ? DshSettingsZh.hide
+                          : DshSettingsZh.show,
+                      style: const TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                      ),
                     ),
                   ],
                 ),
               ),
               if (!manual)
                 DshIcon(
-                  LucideIcons.trash2,
-                  label: '删除模型 ${model['id']}',
+                  DshIcons.trash2.data,
+                  label: DshSettingsZh.deleteModelLabel(id: model['id']),
                   size: 28,
                   onPressed: enabled ? onRemove : null,
                 ),
@@ -172,7 +188,10 @@ class InlineModelRow extends StatelessWidget {
               child: Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: [field('id', '模型 ID'), field('name', '显示名称')],
+                children: [
+                  field('id', DshSettingsZh.modelId),
+                  field('name', DshSettingsZh.displayName),
+                ],
               ),
             ),
           if (expanded)
@@ -192,7 +211,10 @@ class InlineModelRow extends StatelessWidget {
                   tilePadding: EdgeInsets.zero,
                   childrenPadding: const EdgeInsets.only(bottom: 8),
                   dense: true,
-                  title: const Text('容量', style: TextStyle(fontSize: 12)),
+                  title: const Text(
+                    DshSettingsZh.capacity,
+                    style: TextStyle(fontSize: DshTypography.sizeCaption),
+                  ),
                   trailing: const SizedBox.shrink(),
                   children: [
                     Align(
@@ -201,9 +223,9 @@ class InlineModelRow extends StatelessWidget {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          if (!manual) field('name', '显示名称'),
-                          field('contextWindow', '上下文长度'),
-                          field('maxTokens', '最大输出 Token'),
+                          if (!manual) field('name', DshSettingsZh.displayName),
+                          field('contextWindow', DshSettingsZh.contextLength),
+                          field('maxTokens', DshSettingsZh.maxOutputTokens),
                         ],
                       ),
                     ),
@@ -215,7 +237,10 @@ class InlineModelRow extends StatelessWidget {
             DshButton(
               height: 28,
               onPressed: enabled ? onRemove : null,
-              child: const Text('移除草稿', style: TextStyle(fontSize: 12)),
+              child: const Text(
+                DshSettingsZh.removeDraft,
+                style: TextStyle(fontSize: DshTypography.sizeCaption),
+              ),
             ),
         ],
       ),
@@ -294,7 +319,7 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
     final ids = models.map((m) => '${m['id'] ?? ''}'.trim()).toList();
     if (!RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$').hasMatch(id) ||
         (!committed && widget.taken.contains(id))) {
-      setState(() => error = '请使用不重复、以字母开头的提供方 ID。');
+      setState(() => error = DshSettingsZh.providerIdInvalid);
       return;
     }
     if (uri == null ||
@@ -305,7 +330,7 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
         ids.any((v) => v.isEmpty) ||
         ids.toSet().length != ids.length ||
         invalid.isNotEmpty) {
-      setState(() => error = '请填写有效 URL、协议和不重复的模型 ID；容量支持正整数或 K/M。');
+      setState(() => error = DshSettingsZh.providerFieldsInvalid);
       return;
     }
     final secret = keyInput.text.trim(),
@@ -374,7 +399,10 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontSize: 12)),
+        Text(
+          label,
+          style: const TextStyle(fontSize: DshTypography.sizeCaption),
+        ),
         const SizedBox(height: 6),
         DshField(
           key: ValueKey('provider-field-$label'),
@@ -393,14 +421,17 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          '添加自定义提供方',
-          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          DshSettingsZh.addProvider,
+          style: TextStyle(
+            fontSize: DshTypography.sizeBody,
+            fontWeight: FontWeight.w500,
+          ),
         ),
         const SizedBox(height: 14),
         DshSelect<String>(
           value: preset,
           options: {
-            '': '自定义提供方',
+            '': DshSettingsZh.customProvider,
             for (final p in presets.where(
               (p) =>
                   !widget.taken.contains(p['id']) &&
@@ -436,7 +467,10 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
         CheckboxListTile(
           contentPadding: EdgeInsets.zero,
           controlAffinity: ListTileControlAffinity.leading,
-          title: const Text('无需 API 密钥', style: TextStyle(fontSize: 13)),
+          title: const Text(
+            DshSettingsZh.noApiKey,
+            style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
+          ),
           value: keyless,
           onChanged: busy || committed
               ? null
@@ -448,10 +482,13 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
                   changed();
                 },
         ),
-        field('提供方 ID', route),
-        field('显示名称', name),
+        field(DshSettingsZh.providerId, route),
+        field(DshSettingsZh.displayName, name),
         field('Base URL', base),
-        const Text('接口协议', style: TextStyle(fontSize: 12)),
+        const Text(
+          DshSettingsZh.protocol,
+          style: TextStyle(fontSize: DshTypography.sizeCaption),
+        ),
         const SizedBox(height: 6),
         DshSelect<String>(
           value: protocol,
@@ -464,7 +501,7 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
                 },
         ),
         const SizedBox(height: 12),
-        if (!keyless) field('API 密钥', keyInput, secret: true),
+        if (!keyless) field(DshSettingsZh.apiKey, keyInput, secret: true),
         for (final model in models)
           InlineModelRow(
             key: ValueKey(model['_draftId']),
@@ -494,7 +531,7 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
             },
           ),
         DshButton(
-          icon: LucideIcons.plus,
+          icon: DshIcons.plus.data,
           onPressed: busy || committed
               ? null
               : () {
@@ -507,26 +544,25 @@ class _CustomProviderCardState extends State<CustomProviderCard> {
                   );
                   changed();
                 },
-          child: const Text('添加模型'),
+          child: const Text(DshSettingsZh.addModel),
         ),
-        if (error != null)
-          Text(error!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+        if (error != null) DshErrorView(error: error!),
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
             DshButton(
               onPressed: busy ? null : widget.onCancel,
-              child: const Text('取消'),
+              child: const Text(DshZh.cancel),
             ),
             DshButton(
               primary: true,
               onPressed: busy ? null : save,
               child: Text(
                 busy
-                    ? '保存中…'
+                    ? DshZh.saving
                     : committed
-                    ? '重试保存密钥'
-                    : '添加',
+                    ? DshSettingsZh.retryKeySave
+                    : DshSettingsZh.add,
               ),
             ),
           ],

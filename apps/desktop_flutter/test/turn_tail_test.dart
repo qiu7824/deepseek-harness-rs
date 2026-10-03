@@ -115,7 +115,7 @@ void main() {
       await show();
       await tester.pumpAndSettle();
       expect(find.byTooltip('复制'), findsNothing);
-      expect(find.byTooltip('在新对话中分支'), findsNothing);
+      expect(find.byTooltip('在新会话中分支'), findsNothing);
       events.add(
         HistoryEvent.fromJson({
           'seq': 4,
@@ -126,7 +126,7 @@ void main() {
       await show();
       await tester.pumpAndSettle();
       expect(find.byTooltip('复制'), findsOneWidget);
-      expect(find.byTooltip('在新对话中分支'), findsOneWidget);
+      expect(find.byTooltip('在新会话中分支'), findsOneWidget);
       expect(find.text('第一段'), findsOneWidget);
       expect(find.text('第二段'), findsOneWidget);
       String? copied;

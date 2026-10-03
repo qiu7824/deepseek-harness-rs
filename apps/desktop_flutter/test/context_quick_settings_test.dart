@@ -62,16 +62,16 @@ void main() {
       final slider = find.byKey(const Key('compaction-threshold'));
       final left =
           tester.getTopLeft(slider) +
-          Offset(24, tester.getSize(slider).height / 2);
+          Offset(4, tester.getSize(slider).height / 2);
       await tester.tapAt(left);
       await tester.pumpAndSettle();
       final write = calls.lastWhere((call) => call.$1 == 'settings.replace').$2;
       expect(write['ns'], 'context-compaction');
       expect(write['section'], {
-        'thresholds': {'deepseek/v4': 0.5},
+        'thresholds': {'deepseek/v4': 0.3},
       });
       expect(find.text('当前模型使用自定义阈值'), findsOneWidget);
-      expect(find.text('50%'), findsOneWidget);
+      expect(find.text('30%'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('compaction-threshold-reset')));
       await tester.pumpAndSettle();

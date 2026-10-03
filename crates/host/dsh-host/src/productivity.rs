@@ -1,4 +1,4 @@
-//! Workspace task, local memory import, and connection diagnostic UI boundary.
+//! Local memory import and connection diagnostic UI boundary.
 use cordis::Context;
 use dsh_schemastery::Schema;
 use dsh_settings::{SettingsProvider, SettingsRegisterOptions, settings_namespace};
@@ -11,13 +11,12 @@ pub fn install(
     registry: Arc<dsh_workspace::WorkspaceRegistry>,
     server: &Arc<dsh_host_webserver::WebServer>,
     allow_remote: bool,
-    system_prompt: &Arc<dsh_system_prompt::SystemPrompt>,
 ) -> Result<dsh_host_webserver::RouteDisposer, String> {
     settings.register(
         ctx,
         settings_namespace("mini-menu")?,
         Schema::object(
-            ["trajectory", "artifacts", "code-graph", "context", "tasks"]
+            ["trajectory", "artifacts", "code-graph", "context"]
                 .into_iter()
                 .map(|key| {
                     (
@@ -29,33 +28,20 @@ pub fn install(
         ),
         SettingsRegisterOptions::default(),
     )?;
-    let board = Arc::new(super::project_tasks::Board::new(registry.clone()));
-    board.install_tool(ctx)?;
-    let summary_board = board.clone();
-    system_prompt.context(
-        ctx,
-        dsh_system_prompt::PromptContext {
-            name: "project:tasks".into(),
-            order: 106.0,
-            text: dsh_system_prompt::PromptText::Provider(Arc::new(move |assembly| {
-                assembly
-                    .field_str("cwd")
-                    .map(|cwd| summary_board.summary(cwd))
-                    .unwrap_or_default()
-            })),
-        },
-    );
     let imports = Arc::new(super::memory_import::Imports::new(ctx, home, registry));
     imports.start(ctx);
     Ok(server.register(dsh_host_webserver::WebRoute{kind:dsh_host_webserver::WebRouteKind::Prefix,path:"/__dsh-productivity".into(),handler:Arc::new(move|request|{
-        let board=board.clone();let imports=imports.clone();Box::pin(async move{
+        let imports=imports.clone();Box::pin(async move{
             let allowed=request.method()==http::Method::POST&&super::trusted_web_request(&request,allow_remote);
             let operation=request.uri().path().trim_start_matches("/__dsh-productivity/").to_string();
+            if allowed && operation.starts_with("tasks/") {
+                let value=json!({"error":"项目任务功能已退役","code":"feature-retired","feature":"project-tasks"});
+                return Ok(http::Response::builder().status(410).header("content-type","application/json").header("cache-control","no-store").body(axum::body::Body::from(value.to_string())).unwrap());
+            }
             let result:Result<Value,String>=async{
                 if !allowed{return Err("forbidden".into())}
                 let bytes=axum::body::to_bytes(axum::body::Body::new(request.into_body()),2*1024*1024).await.map_err(|_|"请求过大")?;
                 let args:Value=serde_json::from_slice(&bytes).map_err(|_|"请求格式无效")?;
-                if let Some(action)=operation.strip_prefix("tasks/"){return board.request(action,&args).await}
                 if let Some(action)=operation.strip_prefix("memory/"){return imports.request(action,&args).await}
                 if operation=="network"{
                     let client=dsh_http_proxy::builder()?.connect_timeout(std::time::Duration::from_secs(10)).timeout(std::time::Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().map_err(|e|e.to_string())?;

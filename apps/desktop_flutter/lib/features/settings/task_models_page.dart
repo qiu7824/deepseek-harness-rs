@@ -1,7 +1,12 @@
+import '../../design/error.dart';
+import '../../l10n/zh.dart';
+
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 
 import '../../design/primitives.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class TaskModelsPage extends StatefulWidget {
   const TaskModelsPage({super.key, required this.api, this.namespace});
@@ -13,11 +18,11 @@ class TaskModelsPage extends StatefulWidget {
 
 class _TaskModelsPageState extends State<TaskModelsPage> {
   static const roles = {
-    'diagnose': '排错',
-    'optimize': '优化',
-    'vision': '看图',
-    'image': '生图',
-    'search': '搜索',
+    'diagnose': DshSettingsZh.debugRole,
+    'optimize': DshSettingsZh.optimizeRole,
+    'vision': DshSettingsZh.visionRole,
+    'image': DshSettingsZh.imageRole,
+    'search': DshSettingsZh.searchRole,
   };
   final fields = <String, TextEditingController>{};
   RequestScope scope = RequestScope();
@@ -110,15 +115,15 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
   }
 
   static String stateLabel(dynamic value) => switch (value) {
-    'ready' => '已验证可用',
-    'temporary_failure' => '暂时失败',
-    'unsupported' => '不支持',
-    'authorization_required' => '需要授权',
-    'unconfigured' => '未配置',
-    'present' => '凭据已配置',
-    'not_required' => '无需凭据',
-    'missing' || 'invalid' || 'expired' => '需要登录或更新凭据',
-    _ => '尚未验证',
+    'ready' => DshSettingsZh.capabilityVerified,
+    'temporary_failure' => DshSettingsZh.temporaryFailure,
+    'unsupported' => DshSettingsZh.unsupported,
+    'authorization_required' => DshSettingsZh.authorizationRequired,
+    'unconfigured' => DshSettingsZh.unconfigured,
+    'present' => DshSettingsZh.credentialsConfigured,
+    'not_required' => DshSettingsZh.credentialsNotRequired,
+    'missing' || 'invalid' || 'expired' => DshSettingsZh.credentialsRequired,
+    _ => DshSettingsZh.capabilityUnverified,
   };
   Widget capabilityDetails(String role) {
     final p = providers
@@ -131,17 +136,17 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '${data['registered'] == true ? '工具已注册' : '工具未注册'} · ${stateLabel(data['authorization'])} · ${stateLabel(data['state'])}',
+          '${data['registered'] == true ? DshSettingsZh.toolRegistered : DshSettingsZh.toolUnregistered} · ${stateLabel(data['authorization'])} · ${stateLabel(data['state'])}',
           key: ValueKey('native-lifecycle-$role'),
         ),
         const Text(
-          '记录仅适用于下列模型与操作；执行权限在每次调用时检查。',
-          style: TextStyle(fontSize: 12),
+          DshSettingsZh.capabilityScope,
+          style: TextStyle(fontSize: DshTypography.sizeCaption),
         ),
         for (final row in rows)
           Text(
-            '${row['model']} / ${row['operation']}${row['driverModel'] == null ? '' : ' · 驱动 ${row['driverModel']}'} · ${stateLabel((row['expiresAt'] is num && (row['expiresAt'] as num) * 1000 <= DateTime.now().millisecondsSinceEpoch) ? 'unverified' : row['state'])}${row['expired'] == true ? '（记录已过期）' : ''}',
-            style: const TextStyle(fontSize: 12),
+            '${row['model']} / ${row['operation']}${row['driverModel'] == null ? '' : DshSettingsZh.driverModelSuffix(model: row['driverModel'])} · ${stateLabel((row['expiresAt'] is num && (row['expiresAt'] as num) * 1000 <= DateTime.now().millisecondsSinceEpoch) ? 'unverified' : row['state'])}${row['expired'] == true ? DshSettingsZh.expiredRecord : ''}',
+            style: const TextStyle(fontSize: DshTypography.sizeCaption),
           ),
       ],
     );
@@ -197,7 +202,7 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
       if (mounted && generation == current) {
         setState(() {
           snapshot = value;
-          notice = '已保存';
+          notice = DshSettingsZh.saved;
         });
       }
     } catch (e) {
@@ -208,16 +213,19 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
   }
 
   String hint(String state) => switch (state) {
-    'unsupported' => '此连接不支持该图像或托管搜索工具，请选择兼容连接或清空分工。',
-    'unavailable' => '该连接已不可用，请重新选择。',
-    'compatible' => '连接协议兼容；具体模型能力和账号权限仍需验证。',
-    'inherited' => '跟随当前会话连接；分工留空不会增加该连接的工具能力。',
-    _ => '当前服务尚未提供兼容性信息，工具可用性未验证。',
+    'unsupported' => DshSettingsZh.incompatibleConnection,
+    'unavailable' => DshSettingsZh.unavailableConnection,
+    'compatible' => DshSettingsZh.compatibleConnection,
+    'inherited' => DshSettingsZh.followConnectionHint,
+    _ => DshSettingsZh.capabilityUnknown,
   };
   @override
   Widget build(BuildContext context) => ListView(
     children: [
-      const Text('为辅助任务指定模型', style: TextStyle(fontSize: 14)),
+      const Text(
+        DshZh.auxiliaryModels,
+        style: TextStyle(fontSize: DshTypography.sizeBody),
+      ),
       if (snapshot == null && error == null) const LinearProgressIndicator(),
       if (snapshot != null)
         for (final role in roles.entries)
@@ -232,14 +240,23 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
                   key: ValueKey('${role.key}/${provider(role.key)}'),
                   initialValue: provider(role.key),
                   isExpanded: true,
-                  decoration: const InputDecoration(labelText: '提供方'),
+                  decoration: const InputDecoration(
+                    labelText: DshSettingsZh.provider,
+                  ),
                   items: [
-                    const DropdownMenuItem(value: '', child: Text('跟随当前会话')),
+                    const DropdownMenuItem(
+                      value: '',
+                      child: Text(DshSettingsZh.followSession),
+                    ),
                     if (provider(role.key).isNotEmpty &&
                         !providers.any((p) => p['id'] == provider(role.key)))
                       DropdownMenuItem(
                         value: provider(role.key),
-                        child: Text('${provider(role.key)} · 不可用'),
+                        child: Text(
+                          DshSettingsZh.unavailableProvider(
+                            provider: provider(role.key),
+                          ),
+                        ),
                       ),
                     for (final p in providers)
                       DropdownMenuItem<String>(
@@ -249,7 +266,7 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
                                 object(p['nativeTools'])[role.key] ==
                                     'unsupported'),
                         child: Text(
-                          '${p['name'] ?? p['id']}${['image', 'search'].contains(role.key) && object(p['nativeTools'])[role.key] == 'unsupported' ? ' · 不支持' : ''}',
+                          '${p['name'] ?? p['id']}${['image', 'search'].contains(role.key) && object(p['nativeTools'])[role.key] == 'unsupported' ? DshSettingsZh.unsupportedSuffix : ''}',
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -270,7 +287,9 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
                           padding: const EdgeInsets.only(right: 8),
                           child: DshField(
                             controller: fields['${role.key}/$key']!,
-                            hint: key == 'model' ? '模型 ID' : '推理等级',
+                            hint: key == 'model'
+                                ? DshSettingsZh.modelId
+                                : DshSettingsZh.reasoningLevel,
                           ),
                         ),
                       ),
@@ -284,13 +303,13 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
                       hint(capability(role.key)),
                       key: ValueKey('capability-${role.key}'),
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: DshTypography.sizeCaption,
                         color:
                             [
                               'unsupported',
                               'unavailable',
                             ].contains(capability(role.key))
-                            ? Colors.red
+                            ? DshTokens.of(context).error.foreground
                             : DshColors(context).muted,
                       ),
                     ),
@@ -300,22 +319,24 @@ class _TaskModelsPageState extends State<TaskModelsPage> {
               ],
             ),
           ),
-      if (error != null)
-        Text(error!, style: const TextStyle(color: Colors.red)),
+      if (error != null) DshErrorView(error: error!),
       if (snapshot == null && error != null)
-        DshButton(onPressed: load, child: const Text('重新加载')),
+        DshButton(onPressed: load, child: const Text(DshSettingsZh.reload)),
       if (notice != null)
-        Text(notice!, style: const TextStyle(color: Colors.green)),
+        Text(
+          notice!,
+          style: TextStyle(color: DshTokens.of(context).success.foreground),
+        ),
       DshButton(
         onPressed: busy || snapshot == null ? null : refreshCapabilities,
-        child: const Text('刷新能力记录'),
+        child: const Text(DshSettingsZh.refreshCapabilities),
       ),
       Align(
         alignment: Alignment.centerRight,
         child: DshButton(
           primary: true,
           onPressed: busy || snapshot == null || invalid ? null : save,
-          child: const Text('保存任务模型'),
+          child: const Text(DshSettingsZh.saveAuxiliaryModels),
         ),
       ),
     ],

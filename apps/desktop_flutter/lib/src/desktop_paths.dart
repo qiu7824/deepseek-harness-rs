@@ -1,3 +1,5 @@
+import '../l10n/runtime_zh.dart';
+
 import 'package:path/path.dart' as p;
 
 /// Desktop-owned data and bundled Host locations, independent of process cwd.
@@ -28,7 +30,7 @@ abstract final class DesktopPaths {
           : paths.join(home, '.config');
     }
     if (root.isEmpty || !paths.isAbsolute(root)) {
-      throw const FormatException('无法确定用户设置目录，请配置 DSH_DESKTOP_PREFERENCES。');
+      throw const FormatException(DshRuntimeZh.preferencesDirectoryUnknown);
     }
     return paths.join(root, 'DeepSeek Harness Desktop', 'preferences.json');
   }

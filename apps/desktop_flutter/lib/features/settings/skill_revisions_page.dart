@@ -1,14 +1,18 @@
+import '../../l10n/zh.dart';
+import '../../design/error.dart';
+
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../../design/primitives.dart';
 import '../../design/text_document.dart';
 import '../../src/controller.dart';
+
+import 'package:dsh_desktop/design/typography.dart';
 
 class SkillRevisionsPage extends StatefulWidget {
   const SkillRevisionsPage({
@@ -47,7 +51,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
       scope.cancel();
       setState(() {
         busy = false;
-        error = '连接已变化，请关闭后重新打开技能版本。';
+        error = DshSettingsZh.skillConnectionChanged;
       });
     }
   }
@@ -153,7 +157,9 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
       if (mounted && current && token == generation) {
         setState(() {
           state = value['state'] is Map ? object(value['state']) : value;
-          notice = action == 'Create' ? '版本已保存，尚未启用' : '操作已保存';
+          notice = action == 'Create'
+              ? DshSettingsZh.skillVersionSaved
+              : DshSettingsZh.operationSaved;
           if (action == 'Create') disposeEditor();
           if (['Activate', 'Withdraw', 'Restore', 'Create'].contains(action)) {
             detail = null;
@@ -202,7 +208,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
     final fields = editor;
     if (fields == null) return;
     if (fields.values.any((controller) => controller.text.trim().isEmpty)) {
-      setState(() => error = '请填写名称、说明、项目目录和技能正文。');
+      setState(() => error = DshSettingsZh.skillFieldsRequired);
       return;
     }
     await perform('Create', {
@@ -226,10 +232,10 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
   }
 
   String label(Json candidate) => candidate['withdrawn'] == true
-      ? '已撤回'
+      ? DshSettingsZh.withdrawn
       : candidate['active'] == true
-      ? '已启用'
-      : '未启用';
+      ? DshSettingsZh.enabled
+      : DshSettingsZh.inactive;
   @override
   Widget build(BuildContext context) {
     final candidates = objects(state?['candidates']);
@@ -241,32 +247,37 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
           children: [
             const Expanded(
               child: Text(
-                '技能版本',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                DshSettingsZh.skillRevisions,
+                style: TextStyle(
+                  fontSize: DshTypography.sizeComposer,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             if (widget.onClose != null)
               DshIcon(
-                LucideIcons.x,
-                label: '关闭技能版本',
+                DshIcons.close.data,
+                label: DshSettingsZh.closeSkillRevisions,
                 onPressed: widget.onClose,
               ),
           ],
         ),
         const SizedBox(height: 10),
-        const Text('手动选择对应项目使用的技能版本。编辑会保存新版本，启用、撤回和恢复均由你选择。'),
+        const Text(DshSettingsZh.skillRevisionsHint),
         if (busy) const LinearProgressIndicator(minHeight: 2),
-        if (error != null)
-          Text(error!, style: const TextStyle(color: Colors.red)),
+        if (error != null) DshErrorView(error: error!),
         if (notice != null)
-          Text(notice!, style: const TextStyle(color: Colors.green)),
+          Text(
+            notice!,
+            style: TextStyle(color: DshTokens.of(context).success.foreground),
+          ),
         Expanded(
           child: ListView(
             children: [
               if (state != null)
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('启用项目技能版本'),
+                  title: const Text(DshSettingsZh.enableProjectSkills),
                   value: state!['enabled'] == true,
                   onChanged: busy || !current
                       ? null
@@ -276,7 +287,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                 alignment: Alignment.centerLeft,
                 child: DshButton(
                   onPressed: busy || !current ? null : load,
-                  child: const Text('刷新版本'),
+                  child: const Text(DshSettingsZh.refreshRevisions),
                 ),
               ),
               Align(
@@ -285,13 +296,13 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                   onPressed: busy || !current || state?['enabled'] != true
                       ? null
                       : () => editRevision(null),
-                  child: const Text('创建技能版本'),
+                  child: const Text(DshSettingsZh.createRevision),
                 ),
               ),
               if (state != null && candidates.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 14),
-                  child: Text('暂无技能版本。'),
+                  child: Text(DshSettingsZh.noRevisions),
                 ),
               for (final candidate in candidates)
                 Card(
@@ -308,7 +319,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                         Text(
                           '${candidate['project'] ?? ''}',
                           style: TextStyle(
-                            fontSize: 12,
+                            fontSize: DshTypography.sizeCaption,
                             color: DshColors(context).muted,
                           ),
                         ),
@@ -322,7 +333,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                               onPressed: busy || !current
                                   ? null
                                   : () => inspect('${candidate['id']}'),
-                              child: const Text('查看版本'),
+                              child: const Text(DshSettingsZh.viewRevision),
                             ),
                             DshButton(
                               onPressed:
@@ -335,7 +346,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                                   : () => perform('Activate', {
                                       'id': candidate['id'],
                                     }),
-                              child: const Text('启用版本'),
+                              child: const Text(DshSettingsZh.enableRevision),
                             ),
                             if (candidate['withdrawn'] == true)
                               DshButton(
@@ -347,7 +358,9 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                                     : () => perform('Restore', {
                                         'id': candidate['id'],
                                       }),
-                                child: const Text('恢复版本'),
+                                child: const Text(
+                                  DshSettingsZh.restoreRevision,
+                                ),
                               )
                             else
                               DshButton(
@@ -356,7 +369,9 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                                     : () => perform('Withdraw', {
                                         'id': candidate['id'],
                                       }),
-                                child: const Text('撤回版本'),
+                                child: const Text(
+                                  DshSettingsZh.withdrawRevision,
+                                ),
                               ),
                           ],
                         ),
@@ -372,15 +387,15 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          '保存技能版本',
+                          DshSettingsZh.saveRevision,
                           style: TextStyle(fontWeight: FontWeight.w600),
                         ),
-                        const Text('同名技能的旧版本仍会保留，保存后需要单独启用。'),
+                        const Text(DshSettingsZh.revisionHint),
                         for (final field in const {
-                          'name': '技能名称',
-                          'description': '说明',
-                          'project': '项目目录',
-                          'content': '技能正文',
+                          'name': DshSettingsZh.skillName,
+                          'description': DshSettingsZh.description,
+                          'project': DshSettingsZh.projectDirectory,
+                          'content': DshSettingsZh.skillBody,
                         }.entries)
                           Padding(
                             padding: const EdgeInsets.only(top: 10),
@@ -408,13 +423,13 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                                   busy || !current || state?['enabled'] != true
                                   ? null
                                   : saveRevision,
-                              child: const Text('保存新版本'),
+                              child: const Text(DshSettingsZh.saveNewRevision),
                             ),
                             DshButton(
                               onPressed: busy
                                   ? null
                                   : () => setState(disposeEditor),
-                              child: const Text('取消编辑'),
+                              child: const Text(DshSettingsZh.cancelEdit),
                             ),
                           ],
                         ),
@@ -435,7 +450,7 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                         ),
                         ExpansionTile(
                           tilePadding: EdgeInsets.zero,
-                          title: const Text('技能正文'),
+                          title: const Text(DshSettingsZh.skillBody),
                           children: [
                             SizedBox(
                               height: 240,
@@ -451,10 +466,10 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                               ),
                             ),
                             if (text.length > 64000)
-                              const Text('正文较长，显示前 64000 个字符。'),
+                              const Text(DshSettingsZh.skillPreviewTruncated),
                             DshButton(
                               onPressed: saveText,
-                              child: const Text('保存完整正文'),
+                              child: const Text(DshSettingsZh.saveFullContent),
                             ),
                           ],
                         ),
@@ -466,13 +481,13 @@ class _SkillRevisionsPageState extends State<SkillRevisionsPage> {
                                   busy || !current || state?['enabled'] != true
                                   ? null
                                   : () => editRevision(detail),
-                              child: const Text('编辑为新版本'),
+                              child: const Text(DshSettingsZh.editAsRevision),
                             ),
                             DshButton(
                               onPressed: busy
                                   ? null
                                   : () => setState(() => detail = null),
-                              child: const Text('关闭详情'),
+                              child: const Text(DshSettingsZh.closeDetails),
                             ),
                           ],
                         ),
