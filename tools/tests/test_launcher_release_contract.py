@@ -206,8 +206,13 @@ class LauncherReleaseContractTests(unittest.TestCase):
 
     def test_release_pipeline_runs_task_knowledge_and_atomic_write_unit_regressions(self):
         gate = workflow_step(WORKFLOW.read_text(encoding="utf-8"), "Host 与启动器回归")
-        commands = [shlex.split(line.strip()) for line in gate.splitlines()
-                    if line.strip().startswith("cargo test ")]
+        commands = []
+        for line in gate.splitlines():
+            command = shlex.split(line.strip())
+            if command[:2] == ["python", "tools/run_release_regression.py"]:
+                command = command[command.index("--") + 1:]
+            if command[:2] == ["cargo", "test"]:
+                commands.append(command)
         library_packages = set()
         for command in commands:
             if "--lib" not in command:
