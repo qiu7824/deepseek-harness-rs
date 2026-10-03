@@ -60,6 +60,8 @@ mod deny_read_acl;
 mod deny_read_state;
 #[cfg(target_os = "windows")]
 mod private_read_acl;
+#[cfg(any(target_os = "windows", test))]
+mod private_read_plan;
 #[cfg(target_os = "windows")]
 mod desktop;
 #[cfg(target_os = "windows")]

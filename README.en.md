@@ -6,7 +6,7 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: [`0.1.3-alpha.38-r4`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r4). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
+Current release line: [`0.1.3-alpha.38-r5`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r5). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
 
 Implementation and verification scope for file isolation, execution receipts, manually managed skill versions, and message recovery is recorded in the [reliability review](docs/hermes-agent-reliability-review-20260928.zh.md). Its alpha.37 test history includes task acceptance and sample validation mechanisms that were retired in alpha.38.
 
@@ -23,7 +23,7 @@ Teams are available from the conversation header and Settings. Model search keep
 - **Model protocol compatibility**: compatible tool input schemas prevent Devin / Claude from rejecting root-level composition. Local argument validation still uses the original tool rules, and Devin errors retain their actual protocol codes.
 - **Office and file management**: native `office_read` reads DOCX paragraphs/tables and XLSX cells; `office_write` produces real DOCX/XLSX files. Overwrites and file management require manual approval. Structural checks do not replace content or visual verification.
 - **Image generation and editing**: generated and edited images become session attachments for reuse. Explicitly text-only models receive references and descriptions; vision models retain the original images.
-- **File isolation and execution**: isolate private directories, attachments and managed temporary files by session. Native sandboxes support exact read roots and long Windows paths. Approval waits do not consume execution budgets, and repeated environment startup failures stop within a bounded policy.
+- **File isolation and execution**: isolate private directories, attachments and managed temporary files by session. Native sandboxes support exact read roots and long Windows paths. PowerShell correctly initializes its working directory in managed execution copies while the source project remains protected as read-only. Approval waits do not consume execution budgets, and repeated environment startup failures stop within a bounded policy.
 - **Simplified execution flow**: retire the project task board, task contracts, task acceptance APIs, completion gates and automatic acceptance continuation. Goals, plans, background jobs and schedules continue independently; users manage skill versions manually.
 
 Desktop verification scope is recorded in the [platform matrix](docs/desktop-platforms.zh.md) and [experience upgrade review](docs/desktop-fidelity/flutter-upgrade-2026-09-29.md). Historical changes remain in the [alpha.36](release/notes/v0.1.3-alpha.36.md), [alpha.31](release/notes/v0.1.3-alpha.31.md) and [alpha.22](release/notes/v0.1.3-alpha.22.md) release notes.
@@ -43,10 +43,10 @@ Complete Windows x86_64 packages:
 
 | Edition | Installer | Portable package |
 |---|---|---|
-| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r4/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r4/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r4/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r4/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r5/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r5/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r5/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r5/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r4); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
+Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r5); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
 
 A complete package contains the Rust Host, `web/dist`, `config/agent-presets`, bundled Web plugins, Node and ripgrep runtimes, and security documentation. Flutter packages also contain the client, Flutter runtime libraries and assets, with a complete Host in the `host` subdirectory. Keep the entire installation or extracted directory so resources and bundled runtimes remain available.
 

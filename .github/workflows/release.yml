@@ -206,7 +206,7 @@ jobs:
         if: matrix.platform == 'windows'
         run: cargo test --locked -p dsh-desktop-controller -p dsh-uu-controller input::tests -- --test-threads=1
       - name: 构建正式二进制
-        timeout-minutes: 45
+        timeout-minutes: 60
         run: cargo build --locked --release --timings -p dsh-host-cli --bin dsh -p dsh-launcher --bin dsh-launcher -p dsh-remote-execution --bin dsh-remote-helper
       - name: Build Windows native sandbox
         if: matrix.platform == 'windows'
@@ -215,6 +215,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native sandbox build failed' }
           cargo test --locked -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
           if ($LASTEXITCODE -ne 0) { throw 'Native sandbox protocol tests failed' }
+          cargo test --locked -p codex-windows-sandbox --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox --lib private_read_acl::tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native sandbox private-directory access tests failed' }
       - name: Build Windows desktop controller binaries
         if: matrix.platform == 'windows'
         run: |

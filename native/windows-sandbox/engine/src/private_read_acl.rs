@@ -1,5 +1,6 @@
 //! Account-scoped access to product-owned private trees. The caller holds the
 //! account's execution lease and the shared ACL update mutex until this returns.
+use crate::private_read_plan::{PrivateAccess, navigation_ancestor_keys, private_access};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,9 +28,12 @@ struct State {
     migrated: BTreeMap<String, RootStamp>,
     #[serde(default)]
     grants: Vec<PathBuf>,
+    #[serde(default)]
+    navigation_ancestors: Vec<PathBuf>,
 }
 
-const MIGRATION_VERSION: u32 = 2;
+const MIGRATION_VERSION: u32 = 3;
+const NAVIGATION_ACCESS: u32 = FILE_READ_ATTRIBUTES | FILE_TRAVERSE;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct RootStamp {
     volume: u32,
@@ -91,6 +95,22 @@ fn canonical_existing(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
             dunce::canonicalize(path)
                 .with_context(|| format!("resolve private access root {}", path.display()))
         })
+        .collect()
+}
+
+fn navigation_paths(grants: &[PathBuf], private_roots: &[PathBuf]) -> BTreeMap<String, PathBuf> {
+    let keys = navigation_ancestor_keys(
+        &grants.iter().map(|path| key(path)).collect::<Vec<_>>(),
+        &private_roots
+            .iter()
+            .map(|path| key(path))
+            .collect::<Vec<_>>(),
+    );
+    grants
+        .iter()
+        .flat_map(|grant| grant.ancestors().skip(1))
+        .filter(|ancestor| keys.contains(&key(ancestor)))
+        .map(|ancestor| (key(ancestor), ancestor.to_path_buf()))
         .collect()
 }
 fn validate_private_root(root: &Path) -> Result<()> {
@@ -191,6 +211,14 @@ pub unsafe fn sync_private_read_acls(
         .collect();
     current_grants.sort_by_key(|path| key(path));
     current_grants.dedup_by(|a, b| key(a) == key(b));
+    let root_keys = state.roots.iter().map(|path| key(path)).collect::<Vec<_>>();
+    let read_keys = reads.iter().map(|path| key(path)).collect::<Vec<_>>();
+    let write_keys = writes.iter().map(|path| key(path)).collect::<Vec<_>>();
+    let navigation = navigation_paths(&current_grants, &state.roots);
+    let navigation_keys = navigation.keys().cloned().collect::<BTreeSet<_>>();
+    let mut navigation_changes = state.navigation_ancestors.clone();
+    navigation_changes.extend(navigation_paths(&state.grants, &state.roots).into_values());
+    navigation_changes.extend(navigation.values().cloned());
     let mut changes = state.grants.clone();
     changes.extend(current_grants.clone());
     let mut migrations = Vec::new();
@@ -213,6 +241,11 @@ pub unsafe fn sync_private_read_acls(
     state.grants.extend(current_grants.clone());
     state.grants.sort_by_key(|path| key(path));
     state.grants.dedup_by(|a, b| key(a) == key(b));
+    state
+        .navigation_ancestors
+        .extend(navigation.values().cloned());
+    state.navigation_ancestors.sort_by_key(|path| key(path));
+    state.navigation_ancestors.dedup_by(|a, b| key(a) == key(b));
     state.pending = true;
     store_state(&state_path, &state)?;
     let mut seen = BTreeSet::new();
@@ -229,21 +262,22 @@ pub unsafe fn sync_private_read_acls(
             count += 1;
             let boundary = boundary_for(&path, &state.roots)
                 .context("private grant escaped its registered boundary")?;
-            // Workspace/platform ancestor grants are not exceptions to a
-            // private boundary: only its explicit, more-specific roots count.
-            let own = |allow: &PathBuf| {
-                within(allow, boundary) && key(allow) != key(boundary) && within(&path, allow)
-            };
-            let write = writes.iter().any(own);
-            let read = write || reads.iter().any(own);
+            let access = private_access(
+                &key(&path),
+                &root_keys,
+                &read_keys,
+                &write_keys,
+                &navigation_keys,
+            );
             let directory = unsafe {
                 reconcile_object(
                     &path,
                     &root,
                     account_sids,
                     group_sid,
-                    read,
-                    write,
+                    matches!(access, PrivateAccess::Read | PrivateAccess::Write),
+                    access == PrivateAccess::Write,
+                    access == PrivateAccess::Navigate,
                     key(&path) == key(boundary),
                 )
             }?;
@@ -256,6 +290,35 @@ pub unsafe fn sync_private_read_acls(
             }
         }
     }
+    // Strict ancestors are point updates, not new recursive migration roots.
+    // Visit revoked grants' old ancestors as well, including version-2 state.
+    for path in navigation_changes {
+        if !path.exists() || !seen.insert(key(&path)) {
+            continue;
+        }
+        let boundary = boundary_for(&path, &state.roots)
+            .context("private navigation escaped its registered boundary")?;
+        let access = private_access(
+            &key(&path),
+            &root_keys,
+            &read_keys,
+            &write_keys,
+            &navigation_keys,
+        );
+        unsafe {
+            reconcile_object(
+                &path,
+                boundary,
+                account_sids,
+                group_sid,
+                matches!(access, PrivateAccess::Read | PrivateAccess::Write),
+                access == PrivateAccess::Write,
+                access == PrivateAccess::Navigate,
+                key(&path) == key(boundary),
+            )?;
+        }
+        count += 1;
+    }
     for root in &state.roots {
         if root.exists() {
             state.migrated.insert(key(root), unsafe {
@@ -264,6 +327,7 @@ pub unsafe fn sync_private_read_acls(
         }
     }
     state.grants = current_grants;
+    state.navigation_ancestors = navigation.into_values().collect();
     state.version = MIGRATION_VERSION;
     state.pending = false;
     store_state(&state_path, &state)?;
@@ -404,6 +468,33 @@ unsafe fn root_stamp(
     })
 }
 
+unsafe fn has_navigation_signature(dacl: *mut ACL, sid: *mut c_void) -> Result<bool> {
+    let mut self_denied = false;
+    let mut children_denied = false;
+    for index in 0..unsafe { (*dacl).AceCount } {
+        let mut ace = std::ptr::null_mut();
+        ensure!(
+            unsafe { GetAce(dacl, index as u32, &mut ace) } != 0,
+            "read navigation signature ACE failed"
+        );
+        let header = unsafe { &*(ace as *const ACE_HEADER) };
+        if header.AceType != 1 {
+            continue;
+        }
+        let denied = unsafe { &*(ace as *const ACCESS_DENIED_ACE) };
+        let denied_sid = std::ptr::addr_of!(denied.SidStart).cast_mut().cast();
+        if unsafe { EqualSid(denied_sid, sid) } == 0 {
+            continue;
+        }
+        self_denied |=
+            header.AceFlags == 0 && denied.Mask == (FILE_ALL_ACCESS & !NAVIGATION_ACCESS);
+        children_denied |= u32::from(header.AceFlags)
+            == (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)
+            && denied.Mask == FILE_ALL_ACCESS;
+    }
+    Ok(self_denied && children_denied)
+}
+
 unsafe fn reconcile_object(
     path: &Path,
     root: &Path,
@@ -411,6 +502,7 @@ unsafe fn reconcile_object(
     group: *mut c_void,
     read: bool,
     write: bool,
+    navigation: bool,
     boundary: bool,
 ) -> Result<bool> {
     let wide = crate::winutil::to_wide_file_path(path)?;
@@ -441,6 +533,7 @@ unsafe fn reconcile_object(
     // target or use that target as an authority to change external ACLs.
     let reparse = info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
     let directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+    let navigation = navigation && directory && !reparse;
     ensure!(
         directory || info.nNumberOfLinks == 1,
         "PRIVATE_HARD_LINK: refusing to change ACLs through a multiply-linked file"
@@ -483,6 +576,7 @@ unsafe fn reconcile_object(
         "read private DACL failed: {status}"
     );
     let mut kept = Vec::<Vec<u8>>::new();
+    let mut other_navigation = false;
     for index in 0..unsafe { (*dacl).AceCount } {
         let mut ace = std::ptr::null_mut();
         ensure!(
@@ -496,10 +590,40 @@ unsafe fn reconcile_object(
                     .add(std::mem::size_of::<ACE_HEADER>() + std::mem::size_of::<u32>())
                     .cast()
             };
+            let mask = unsafe { (*(ace as *const ACCESS_ALLOWED_ACE)).Mask };
+            let own_account = accounts
+                .iter()
+                .any(|account| unsafe { EqualSid(sid, *account) } != 0);
+            // Preserve another slot only when its same-machine SID has the
+            // exact navigation signature: a self-only allow, the reduced
+            // self deny, and the full inherit-only deny for new children.
+            other_navigation |= directory
+                && !reparse
+                && header.AceType == 0
+                && header.AceFlags == 0
+                && mask == NAVIGATION_ACCESS
+                && !own_account
+                && unsafe { EqualSid(sid, group) } == 0
+                && accounts
+                    .iter()
+                    .any(|account| unsafe { EqualPrefixSid(sid, *account) } != 0)
+                && unsafe { has_navigation_signature(dacl, sid) }?;
+            let group_denial = boundary
+                && header.AceType == 1
+                && unsafe { EqualSid(sid, group) } != 0
+                && (mask == (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE)
+                    || mask == ((FILE_GENERIC_READ | FILE_GENERIC_EXECUTE) & !NAVIGATION_ACCESS))
+                && [
+                    0,
+                    OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                    OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE,
+                ]
+                .contains(&(u32::from(header.AceFlags) & !INHERITED_ACE));
             if accounts
                 .iter()
                 .any(|account| unsafe { EqualSid(sid, *account) } != 0)
                 || header.AceType == 0 && unsafe { EqualSid(sid, group) } != 0
+                || group_denial
             {
                 continue;
             }
@@ -509,29 +633,13 @@ unsafe fn reconcile_object(
                 .to_vec(),
         );
     }
-    let bytes = std::mem::size_of::<ACL>() + kept.iter().map(Vec::len).sum::<usize>();
-    let mut storage = vec![0u32; bytes.div_ceil(4)];
-    let filtered = storage.as_mut_ptr().cast::<ACL>();
-    ensure!(
-        unsafe { InitializeAcl(filtered, (storage.len() * 4) as u32, ACL_REVISION) } != 0,
-        "initialize private DACL failed"
-    );
-    for ace in &kept {
-        ensure!(
-            unsafe {
-                AddAce(
-                    filtered,
-                    ACL_REVISION,
-                    u32::MAX,
-                    ace.as_ptr().cast(),
-                    ace.len() as u32,
-                )
-            } != 0,
-            "preserve host ACE failed"
-        );
-    }
     let mask = if !read {
         FILE_ALL_ACCESS
+            & if navigation {
+                !NAVIGATION_ACCESS
+            } else {
+                u32::MAX
+            }
     } else if write {
         FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | FILE_GENERIC_WRITE | DELETE
     } else {
@@ -542,7 +650,9 @@ unsafe fn reconcile_object(
         .map(|sid| EXPLICIT_ACCESS_W {
             grfAccessPermissions: mask,
             grfAccessMode: if read { SET_ACCESS } else { DENY_ACCESS },
-            grfInheritance: if directory {
+            grfInheritance: if navigation {
+                0
+            } else if directory {
                 OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
             } else {
                 0
@@ -556,6 +666,34 @@ unsafe fn reconcile_object(
             },
         })
         .collect();
+    if navigation {
+        for sid in accounts {
+            entries.push(EXPLICIT_ACCESS_W {
+                grfAccessPermissions: NAVIGATION_ACCESS,
+                grfAccessMode: SET_ACCESS,
+                grfInheritance: 0,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: std::ptr::null_mut(),
+                    MultipleTrusteeOperation: 0,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: (*sid).cast(),
+                },
+            });
+            entries.push(EXPLICIT_ACCESS_W {
+                grfAccessPermissions: FILE_ALL_ACCESS,
+                grfAccessMode: DENY_ACCESS,
+                grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: std::ptr::null_mut(),
+                    MultipleTrusteeOperation: 0,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: (*sid).cast(),
+                },
+            });
+        }
+    }
     if read {
         let denied = if write {
             WRITE_DAC | WRITE_OWNER
@@ -587,10 +725,20 @@ unsafe fn reconcile_object(
         }));
     }
     if boundary {
+        let group_navigation = navigation || other_navigation;
         entries.push(EXPLICIT_ACCESS_W {
-            grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            grfAccessPermissions: (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE)
+                & if group_navigation {
+                    !NAVIGATION_ACCESS
+                } else {
+                    u32::MAX
+                },
             grfAccessMode: DENY_ACCESS,
-            grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            grfInheritance: if group_navigation {
+                0
+            } else {
+                OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+            },
             Trustee: TRUSTEE_W {
                 pMultipleTrustee: std::ptr::null_mut(),
                 MultipleTrusteeOperation: 0,
@@ -599,21 +747,102 @@ unsafe fn reconcile_object(
                 ptstrName: group.cast(),
             },
         });
+        if group_navigation {
+            entries.push(EXPLICIT_ACCESS_W {
+                grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+                grfAccessMode: DENY_ACCESS,
+                grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: std::ptr::null_mut(),
+                    MultipleTrusteeOperation: 0,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: group.cast(),
+                },
+            });
+        }
     }
-    let mut replacement = std::ptr::null_mut();
-    let status = unsafe {
-        SetEntriesInAclW(
-            entries.len() as u32,
-            entries.as_ptr(),
-            filtered,
-            &mut replacement,
-        )
-    };
-    let _replacement = Local(replacement.cast());
+    // Keep self-only and inherit-only ACEs distinct. SetEntriesInAclW may
+    // combine same-SID entries; construct a canonical DACL without that merge.
+    let bytes = std::mem::size_of::<ACL>()
+        + kept.iter().map(Vec::len).sum::<usize>()
+        + entries
+            .iter()
+            .map(|entry| 8 + unsafe { GetLengthSid(entry.Trustee.ptstrName.cast()) } as usize)
+            .sum::<usize>();
     ensure!(
-        status == ERROR_SUCCESS,
-        "construct private DACL failed: {status}"
+        bytes <= u16::MAX as usize,
+        "private DACL exceeds Windows ACL limit"
     );
+    let mut storage = vec![0u32; bytes.div_ceil(4)];
+    let replacement = storage.as_mut_ptr().cast::<ACL>();
+    let revision = u32::from(unsafe { (*dacl).AclRevision });
+    ensure!(
+        unsafe { InitializeAcl(replacement, (storage.len() * 4) as u32, revision) } != 0,
+        "initialize private DACL failed"
+    );
+    let add_entry = |entry: &EXPLICIT_ACCESS_W| -> Result<()> {
+        let ok = unsafe {
+            if entry.grfAccessMode == DENY_ACCESS {
+                AddAccessDeniedAceEx(
+                    replacement,
+                    revision,
+                    entry.grfInheritance,
+                    entry.grfAccessPermissions,
+                    entry.Trustee.ptstrName.cast(),
+                )
+            } else {
+                AddAccessAllowedAceEx(
+                    replacement,
+                    revision,
+                    entry.grfInheritance,
+                    entry.grfAccessPermissions,
+                    entry.Trustee.ptstrName.cast(),
+                )
+            }
+        };
+        ensure!(ok != 0, "construct private managed ACE failed");
+        Ok(())
+    };
+    let add_kept = |ace: &Vec<u8>| -> Result<()> {
+        ensure!(
+            unsafe {
+                AddAce(
+                    replacement,
+                    revision,
+                    u32::MAX,
+                    ace.as_ptr().cast(),
+                    ace.len() as u32,
+                )
+            } != 0,
+            "preserve host ACE failed"
+        );
+        Ok(())
+    };
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.grfAccessMode == DENY_ACCESS)
+    {
+        add_entry(entry)?;
+    }
+    for ace in kept
+        .iter()
+        .filter(|ace| u32::from(ace[1]) & INHERITED_ACE == 0)
+    {
+        add_kept(ace)?;
+    }
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.grfAccessMode != DENY_ACCESS)
+    {
+        add_entry(entry)?;
+    }
+    for ace in kept
+        .iter()
+        .filter(|ace| u32::from(ace[1]) & INHERITED_ACE != 0)
+    {
+        add_kept(ace)?;
+    }
     // Root protection preserves its current host ACL while preventing a broad
     // sandbox group grant on an outside parent from being inherited again.
     let flags = DACL_SECURITY_INFORMATION
@@ -886,7 +1115,7 @@ mod tests {
         }
         assert_eq!(
             sync()?,
-            2,
+            3,
             "warm execution visits its current grant, not eighty unrelated files"
         );
         let other = LocalSid::from_string("S-1-5-21-22-33-44-1003")?;
@@ -902,7 +1131,7 @@ mod tests {
         }
         assert_eq!(
             sync()?,
-            2,
+            3,
             "another slot's additional denials cannot cause repeated whole-tree migrations"
         );
         unsafe {
@@ -1130,4 +1359,6 @@ mod tests {
         std::fs::remove_dir(&alias)?;
         Ok(())
     }
+
+    include!("private_read_acl_access_tests.rs");
 }

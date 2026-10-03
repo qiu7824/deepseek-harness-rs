@@ -1,0 +1,135 @@
+name: Windows PowerShell 回归诊断
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/pwsh-regressions.yml
+      - crates/shell/pwsh-local/src/**
+      - native/windows-sandbox/**
+      - tools/e2e_scratch_context.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      DSH_BUILD_SOURCE_ID: ${{ github.sha }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with: { toolchain: 1.97.1, components: rustfmt }
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          cache-on-failure: true
+      - name: 隔离测试临时目录并固定实际 Git Bash
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
+          root.mkdir(parents=True, exist_ok=True)
+          root = root.resolve(strict=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
+                  stream.write(f'{key}={root}\n')
+          PY
+          DSH_TEST_BASH="$(cygpath -w "$BASH")"
+          echo "DSH_TEST_BASH=$DSH_TEST_BASH" >> "$GITHUB_ENV"
+      - name: 固定官方 Node 运行时
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/node-runtime.log" -- python tools/stage_node_runtime.py --stage target/debug --platform windows --arch x86_64 --cache "$RUNNER_TEMP/dsh-node-cache"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          node = Path('target/debug/runtime/node').resolve(strict=True)
+          with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
+              stream.write(f'{node}\n')
+          PY
+      - name: 构建当前 debug Host
+        id: host_build
+        timeout-minutes: 45
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/host-build.log" -- cargo build --locked -p dsh-host-cli --bin dsh
+      - name: 构建并核验当前真实 Windows 沙箱 SDK
+        id: native_build
+        timeout-minutes: 35
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-build-wrapper.log" -- python tools/build_native_sandbox.py --target-dir target/native-windows-sandbox
+      - name: Windows 原生沙箱强回归
+        timeout-minutes: 20
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-tests.log" -- cargo test --locked -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+      - name: Windows engine 私有读取 ACL 安全回归
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        timeout-minutes: 20
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-private-read-acl-tests.log" -- cargo test --locked -p codex-windows-sandbox --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox --lib private_read_acl::tests -- --test-threads=1
+      - name: 固化 debug Host 资源与真实 SDK 身份
+        id: stage
+        if: ${{ !cancelled() && steps.host_build.outcome == 'success' && steps.native_build.outcome == 'success' }}
+        shell: bash
+        run: |
+          python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/web-stage.log" -- python tools/stage_release_web.py --target target/debug/web/dist
+          python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/pwsh-regression-logs/runtime-stage.log"
+          import json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          sys.path.insert(0, str(root / 'tools'))
+          from native_sandbox_identity import HELPERS, IDENTITY_FILE, verify_directory
+          source = root / 'target/native-windows-sandbox/release'
+          verify_directory(root, source)
+          target = root / 'target/debug'
+          native = target / 'native-sandbox'
+          native.mkdir(parents=True, exist_ok=True)
+          for name in (*HELPERS, IDENTITY_FILE):
+              shutil.copy2(source / name, native / name)
+          identity = verify_directory(root, native)
+          for source_name, target_name in (('config/agent-presets', 'config/agent-presets'), ('release/plugins', 'plugins')):
+              destination = target / target_name
+              if destination.exists():
+                  shutil.rmtree(destination)
+              shutil.copytree(root / source_name, destination)
+          host = json.loads(subprocess.check_output([str(target / 'dsh.exe'), '--build-info'], text=True, timeout=15))
+          if host['revision'] != os.environ['GITHUB_SHA'] or host['dirty']:
+              raise SystemExit('debug Host does not match the clean workflow source')
+          record = {'host': host, 'nativeSandbox': identity, 'node': json.loads((target / 'runtime/node/IDENTITY.json').read_text(encoding='utf-8'))}
+          logs = Path(os.environ['RUNNER_TEMP']) / 'pwsh-regression-logs'
+          logs.mkdir(parents=True, exist_ok=True)
+          (logs / 'runtime-identities.json').write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps({'host': host, 'nativeSandboxSourceSha256': identity['sourceSha256'], 'nodeVersion': record['node']['version']}))
+          PY
+      - name: 普通路径 scratch 源只读与副本可写回归
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/scratch-context.log" -- python tools/e2e_scratch_context.py --binary target/debug/dsh.exe --workdir "$RUNNER_TEMP/dsh-scratch-context"
+      - name: 空格与引号路径 scratch 强回归
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/scratch-context-quoted.log" -- python tools/e2e_scratch_context.py --binary target/debug/dsh.exe --workdir "$RUNNER_TEMP/dsh-scratch-context with 'quote'"
+      - name: 始终保留完整定点诊断日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pwsh-regression-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pwsh-regression-logs/
+            target/native-windows-sandbox/native-build.log
+            ${{ runner.temp }}/dsh-scratch-context/**/model-requests.json
+            ${{ runner.temp }}/dsh-scratch-context/**/model-management-host-scratch-context.log
+            ${{ runner.temp }}/dsh-scratch-context/**/evidence.json
+            ${{ runner.temp }}/dsh-scratch-context with 'quote'/**/model-requests.json
+            ${{ runner.temp }}/dsh-scratch-context with 'quote'/**/model-management-host-scratch-context.log
+            ${{ runner.temp }}/dsh-scratch-context with 'quote'/**/evidence.json
+          if-no-files-found: warn

@@ -21,7 +21,15 @@ class Model(BaseHTTPRequestHandler):
         if step==0:args={'action':'prepare_copy'}
         elif step==1:
             copy=parsed(0);target=str(self.project/'input.txt').replace("'","''")
-            tool='pwsh';args={'description':'Check managed execution output and source protection','workdir':copy['workdir'],'command':"Write-Output ('BEGIN_'+('x'*22000)+'_END'); Set-Content -LiteralPath (Join-Path $pwd 'result.txt') -Value 'DELIVERED_FIXTURE' -Encoding UTF8 -NoNewline; try {Set-Content -LiteralPath '"+target+"' -Value 'INVALID' -ErrorAction Stop; Write-Output 'SOURCE_WRITE_ALLOWED'} catch {Write-Output 'SOURCE_WRITE_BLOCKED'}"}
+            workdir=copy['workdir'].replace("'","''")
+            diagnostics=(
+                "if ($null -eq $PWD) { [Console]::Error.WriteLine('DSH_SCRATCH_PWD_NULL PWD=<null>'); "
+                "try {[Console]::Error.WriteLine('Get-Location='+[string](Get-Location).Path)} catch {[Console]::Error.WriteLine('Get-Location ERROR='+[string]$_.Exception.Message)}; "
+                "try {[Console]::Error.WriteLine('GetCurrentDirectory='+[IO.Directory]::GetCurrentDirectory())} catch {[Console]::Error.WriteLine('GetCurrentDirectory ERROR='+[string]$_.Exception.Message)}; "
+                "[Console]::Error.WriteLine('CopyWorkdir='+'"+workdir+"'); "
+                "try {[Console]::Error.WriteLine('CopyInputReadable='+[IO.File]::ReadAllText('"+workdir+"/input.txt'))} catch {[Console]::Error.WriteLine('CopyInputReadable ERROR='+[string]$_.Exception.Message)}; }; "
+            )
+            tool='pwsh';args={'description':'Check managed execution output and source protection','workdir':copy['workdir'],'command':diagnostics+"Write-Output ('BEGIN_'+('x'*22000)+'_END'); Set-Content -LiteralPath (Join-Path $pwd 'result.txt') -Value 'DELIVERED_FIXTURE' -Encoding UTF8 -NoNewline; try {Set-Content -LiteralPath '"+target+"' -Value 'INVALID' -ErrorAction Stop; Write-Output 'SOURCE_WRITE_ALLOWED'} catch {Write-Output 'SOURCE_WRITE_BLOCKED'}"}
         elif step==2:
             assert len(outputs[1].encode('utf8'))<=12000, len(outputs[1]);assert 'SOURCE_WRITE_BLOCKED' in outputs[1],outputs[1][-1800:]
             match=re.search(r'scratch:([a-f0-9-]+)',outputs[1]);assert match,outputs[1][-1000:]
