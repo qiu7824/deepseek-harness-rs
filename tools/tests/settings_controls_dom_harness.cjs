@@ -17,7 +17,7 @@ function load(name, fetch, exports = []) {
     const primitives = new Proxy({ Button: ({ children, ...props }) => h("button", props, children) }, { get: (object, key) => object[key] || (() => h("svg")) });
     const runtime = { defineStore: spec => spec, createSnapshotStore: initial => ({ getSnapshot: () => initial, subscribe: () => () => {} }) };
     const source = fs.readFileSync(path.join(sourceRoot, name), "utf8").replace("return module.exports;", exports.map(name => `exports.${name}=${name};`).join("") + "return module.exports;");
-    vm.runInNewContext(source, { document, console, fetch, AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
+    vm.runInNewContext(source, { document, console, fetch, AbortController, crypto: require("node:crypto").webcrypto, setTimeout, clearTimeout, setInterval, clearInterval,
         window: { __ModuleLoader__: { load: definition => result = definition.factory(id => id === "react" ? React : id === "react/jsx-runtime" ? jsx : id.endsWith("/client") ? runtime : id.endsWith("ui-primitives") ? primitives : { Service: class {} }) } }
     });
     return result;
@@ -35,14 +35,52 @@ const response = value => ({ ok: true, json: async () => value });
     assert.ok(document.querySelector(".dshDiscoveryBudgets"));
     await render(null);
     assert.equal(document.querySelector("style[data-tool-discovery-controls]"), null, "discovery releases its owned stylesheet");
-    const skills = load("ui-settings-skill-revisions.js", async () => response({}));
-    let registered = false;
-    skills.apply({ slots: { inject: () => { registered = true; }, register: () => { registered = true; } } });
-    assert.equal(registered, false, "retired skill revisions page stays absent");
+    let skillRevision = 4, active = false, withdrawn = false, registered;
+    const skillRequests = [];
+    const skillState = () => ({ revision: skillRevision, enabled: true, candidates: [
+        { id: "manual-1", name: "Project skill", description: "Manually selected project workflow", project: "D:/fixture", active, withdrawn }
+    ] });
+    const skills = load("ui-settings-skill-revisions.js", async (url, options) => {
+        const { method, payload } = JSON.parse(options.body);
+        assert.equal(url, "/api/" + method);
+        skillRequests.push(method);
+        if (method !== "capabilities.skillRevisionList") {
+            assert.deepEqual(payload, { expectedRevision: skillRevision, id: "manual-1" }, "manual actions carry only the version and selected skill");
+            if (method === "capabilities.skillRevisionActivate") active = true;
+            else if (method === "capabilities.skillRevisionWithdraw") { active = false; withdrawn = true; }
+            else if (method === "capabilities.skillRevisionRestore") { active = true; withdrawn = false; }
+            else assert.fail("unexpected skill revision operation: " + method);
+            skillRevision++;
+        }
+        return response({ result: { ok: true, value: skillState() } });
+    });
+    skills.apply({ slots: {
+        inject: (name, register) => { assert.equal(name, "settings.section"); register(); },
+        register: (config, component) => { registered = { config, component }; }
+    } });
+    assert.equal(registered.config.id, "skill-revisions", "manual skill revisions register their settings entry");
+    assert.equal(registered.config.label(), "技能版本");
+    assert.equal(registered.component, skills.SkillRevisionsSection);
+    await render(h(registered.component));
+    const skillSection = () => document.querySelector('[aria-label="技能版本"]');
+    assert.match(skillSection().textContent, /手动选择/);
+    assert.doesNotMatch(skillSection().textContent, /验收|样本|自动验证|已验证|核验/, "manual revisions have no automated acceptance controls or claims");
+    assert.equal(button("启用版本").disabled, false);
+    await click(button("启用版本"));
+    assert.match(skillSection().textContent, /已启用/);
+    assert.equal(button("启用版本").disabled, true);
+    await click(button("撤回版本"));
+    assert.match(skillSection().textContent, /已撤回/);
+    assert.equal(button("启用版本").disabled, true);
+    await click(button("恢复版本"));
+    assert.match(skillSection().textContent, /已启用/);
+    assert.equal(button("恢复版本"), undefined);
+    assert.deepEqual(skillRequests, ["capabilities.skillRevisionList", "capabilities.skillRevisionActivate", "capabilities.skillRevisionWithdraw", "capabilities.skillRevisionRestore"]);
+    await render(null);
     const plugins = load("ui-settings-plugins.js", async () => response({}), ["PluginInstallControls"]);
     await render(h(plugins.PluginInstallControls));
     assert.equal(window.getComputedStyle(button("检查操作")).minHeight, "36px", "plugin controls do not require workbench previews");
     await render(null);
     assert.equal(document.querySelector("style[data-plugin-center-controls]"), null);
-    console.log("PASS settings controls: retired sections absent, settings plugin loads, independent styles and switch alignment");
+    console.log("PASS settings controls: retired sections absent, manual skill revision activation/withdrawal/restore, independent styles and switch alignment");
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await React.act(async () => root.unmount()); dom.window.close(); });
