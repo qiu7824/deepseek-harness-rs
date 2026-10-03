@@ -163,7 +163,9 @@ pub trait CodeRuntime: Send + Sync + 'static {
 
     /// Whether this provider calls and honors the trusted dispatch guard at
     /// its actual program boundary. Unknown providers remain conservative.
-    fn supports_dispatch_guard(&self) -> bool { false }
+    fn supports_dispatch_guard(&self) -> bool {
+        false
+    }
 
     /// Execute one program against the request's bindings and capture what
     /// it emitted. The error is a result field; a `Err` return means Service

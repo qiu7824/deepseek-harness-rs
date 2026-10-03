@@ -183,18 +183,7 @@ mod tests {
         std::path::PathBuf,
         std::sync::Arc<dsh_attachment_local::LocalAttachmentStore>,
     ) {
-        dsh_attachment_local::codec::configure_worker(
-            dsh_attachment_local::codec::CodecWorkerCommand {
-                program: std::env::current_exe().unwrap(),
-                arguments: vec![
-                    "--exact".into(),
-                    "computer_use_http::annotation::tests::image_codec_worker_entry".into(),
-                    "--ignored".into(),
-                    "--nocapture".into(),
-                ],
-            },
-        )
-        .unwrap();
+        crate::configure_test_image_codec();
         let root =
             std::env::temp_dir().join(format!("dsh-annotation-test-{}", uuid::Uuid::new_v4()));
         let context = cordis::Context::root();

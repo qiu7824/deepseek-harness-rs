@@ -89,6 +89,22 @@ mod workspace_prompt;
 mod workspace_resources;
 mod workspace_ssh;
 
+#[cfg(test)]
+pub(crate) fn configure_test_image_codec() {
+    dsh_attachment_local::codec::configure_worker(
+        dsh_attachment_local::codec::CodecWorkerCommand {
+            program: std::env::current_exe().unwrap(),
+            arguments: vec![
+                "--exact".into(),
+                "computer_use_http::annotation::tests::image_codec_worker_entry".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+        },
+    )
+    .unwrap();
+}
+
 #[cfg(windows)]
 static ALLOCATOR_COLLECT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 

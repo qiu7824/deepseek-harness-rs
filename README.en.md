@@ -6,7 +6,7 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: [`0.1.3-alpha.38-r1`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r1). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
+Current release line: [`0.1.3-alpha.38-r2`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r2). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
 
 Implementation and verification scope for file isolation, execution receipts, manually managed skill versions, and message recovery is recorded in the [reliability review](docs/hermes-agent-reliability-review-20260928.zh.md). Its alpha.37 test history includes task acceptance and sample validation mechanisms that were retired in alpha.38.
 
@@ -42,10 +42,10 @@ Complete Windows x86_64 packages:
 
 | Edition | Installer | Portable package |
 |---|---|---|
-| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r1/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r1/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r1/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r1/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r1); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
+Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r2); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
 
 A complete package contains the Rust Host, `web/dist`, `config/agent-presets`, bundled Web plugins, Node and ripgrep runtimes, and security documentation. Flutter packages also contain the client, Flutter runtime libraries and assets, with a complete Host in the `host` subdirectory. Keep the entire installation or extracted directory so resources and bundled runtimes remain available.
 

@@ -28,6 +28,7 @@ async fn call(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_private_boundary_real_tools_deny_secrets_other_sessions_and_allow_owned_files() {
+    crate::configure_test_image_codec();
     let root = std::env::temp_dir().join(format!("host-private-boundary-{}", uuid::Uuid::new_v4()));
     let home = root.join("custom-home");
     let project = root.join("project");
@@ -318,7 +319,7 @@ async fn host_private_boundary_real_tools_deny_secrets_other_sessions_and_allow_
         .resolve(&alias.join("public.txt").to_string_lossy(), None)
         .await
         .unwrap();
-    std::fs::remove_dir(&alias).unwrap();
+    remove_directory_alias(&alias);
     let own_data = paths[0].parent().unwrap();
     let saved_data = own_data.with_file_name("saved-data");
     std::fs::rename(own_data, &saved_data).unwrap();
@@ -329,7 +330,7 @@ async fn host_private_boundary_real_tools_deny_secrets_other_sessions_and_allow_
             .await
             .is_err()
     );
-    std::fs::remove_dir(own_data).unwrap();
+    remove_directory_alias(own_data);
     std::fs::rename(&saved_data, own_data).unwrap();
     make_directory_alias(&home, &alias);
     std::fs::write(home.join("public.txt"), "BOUNDARY_PRIVATE_SENTINEL").unwrap();
@@ -394,7 +395,7 @@ async fn host_private_boundary_real_tools_deny_secrets_other_sessions_and_allow_
                 .is_err()
         );
     }
-    std::fs::remove_dir(&alias).unwrap();
+    remove_directory_alias(&alias);
     dsh_sandbox_policy::set_sandbox_mode(a.session(), dsh_sandbox::SandboxMode::ReadOnly).unwrap();
     assert!(
         call(&host, &a, "read", json!({"file_path":credential}))
@@ -430,6 +431,13 @@ fn make_directory_alias(target: &Path, alias: &Path) {
     }
     #[cfg(unix)]
     std::os::unix::fs::symlink(target, alias).unwrap();
+}
+
+fn remove_directory_alias(alias: &Path) {
+    #[cfg(windows)]
+    std::fs::remove_dir(alias).unwrap();
+    #[cfg(unix)]
+    std::fs::remove_file(alias).unwrap();
 }
 
 #[cfg(windows)]
