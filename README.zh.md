@@ -6,65 +6,26 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：[`0.1.3-alpha.35`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.35)。
+当前发布线：[`0.1.3-alpha.38`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38)，完整变更见 [alpha.38 发布说明](release/notes/v0.1.3-alpha.38.md)。源码版本与安装包身份可通过 `--build-info` 和包内构建清单核对。
 
-开发版本：`0.1.3-alpha.38`；开发源码不代表已发布安装包。
+文件隔离、执行回执、手动技能版本与消息恢复的实现及验证范围见[可靠性对照记录](docs/hermes-agent-reliability-review-20260928.zh.md)。该记录保留 alpha.37 的历史测试，任务验收与样本验证机制已在 alpha.38 退役。
 
-执行回执、文件读取隔离、能力状态、手动技能版本与消息恢复的实现及验证范围见[可靠性对照记录](docs/hermes-agent-reliability-review-20260928.zh.md)。
-
-开发修复包含旧格式会话列表兼容、Windows Flutter 图片粘贴、本地 Markdown 图片预览、MCP 管理，以及自动审阅人工回退、配置锁恢复和上下文错误处理；实施边界和未完成项见 [v0.1.7-rc.2 评估](docs/upstream-v0.1.7-rc.2-evaluation.zh.md)及[更新计划](docs/plans/更新计划.md)。
-
-历史变更见 [alpha.31 变更说明](release/notes/v0.1.3-alpha.31.md)。
+跨版本适配与未完成项见 [v0.1.7-rc.2 评估](docs/upstream-v0.1.7-rc.2-evaluation.zh.md)及[更新计划](docs/plans/更新计划.md)。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
 双向分页、阅读锚点和实时消息缓冲的设计见 [Rust 对话滚动与分页](docs/rust-conversation-scrolling.zh.md)。
 
-## 0.1.3-alpha.28 内存回收与界面一致性
+## 0.1.3-alpha.38 近期变化
 
-- 修复响应缓冲释放、主线程空闲回收、准备缓存和历史窗口容量保留；真实历史测量见[内存生命周期核查](docs/memory/lifecycle-audit-20260920.zh.md)。
-- 启动器、快捷方式与安装器沿用标准鲸鱼图标，并核验内嵌图标资源。
-- 统一账号、运行环境、远端执行和技能控件样式，修复会话切换后的旧请求回写与诊断操作丢失草稿。
-- 补齐侧栏与设置控件回归，修复跨平台发布门禁。
+- **Flutter 桌面体验**：统一深浅主题、文字缩放与语义图标，增加命令搜索、焦点和快捷键配置；保留工作区草稿、历史阅读位置，隐藏预览按需回收。模型与思考等级共用紧凑入口，分层菜单即时显示缓存并保留最后一次切换意图。
+- **桌面交互修复**：修复关闭窗口崩溃，关闭前保存草稿，后台 Host 与任务继续运行；账号入口、插件主页面和侧栏菜单重新整理。回合结束后在回复下方显示产物卡，可直接预览和操作文件。
+- **模型协议兼容**：Devin / Claude 请求使用兼容的工具输入结构，修复根级组合结构被拒绝的问题；本地继续按原始工具规则校验参数，Devin 错误保留实际协议错误码。
+- **Office 与文件整理**：`office_read` 原生读取 DOCX 段落、表格和 XLSX 单元格，`office_write` 直接生成真实 DOCX/XLSX；覆盖与文件整理需人工批准。结构检查不替代内容核对或视觉验收。
+- **文件隔离与执行**：按会话隔离私有目录、附件和受管临时文件；原生沙箱支持精确读取根与 Windows 长路径。人工审批等待不消耗执行预算，重复环境启动失败形成有界停止。
+- **执行流程简化**：退役任务契约、任务验收接口、完成门禁和自动验收续接；目标、计划、后台作业及定时任务继续独立运行，技能版本由用户手动管理。
 
-## 0.1.3-alpha.24 图标与界面修复
-
-- 启动器、快捷方式与安装器共用标准鲸鱼图标；安装后刷新系统图标，发布时核验嵌入资源。
-- 修复账号切换按钮样式，保留登录状态和现有账号操作。
-- 更新侧栏 Office 查看器注册与卸载回归，恢复跨平台发布门禁。
-
-## 0.1.3-alpha.23 可靠性与工作台
-
-- 释放已退役 Agent 和 Session，清理目标服务保留的多代历史副本。
-- Windows 工作区沙箱权限经核验后复用，启动准备与命令执行分别计时。
-- 增加任务环境迁移、回合文件审阅、计划与子代理侧栏、WPS Office 预览及统一插件中心。
-
-## 0.1.3-alpha.22 能力更新
-
-- **团队入口**：会话顶部常驻团队按钮；设置中可启用团队并配置成员上限，面板可填写团队任务草稿、查看成员与共享任务。
-- **模型操作**：搜索框保持完整高度，删除按钮位于模型行右侧；保留确认、草稿与保存流程。
-- **输入提示**：输入框获得用户焦点时显示随机提示，失焦隐藏；“设置 → 通用 → 输入提示”可关闭并持久保存。
-- **Computer Use**：实际能力与 Codex／OpenAI 的差异见[兼容矩阵](docs/computer-use-compatibility.zh.md)。
-
-- **会话与反馈**：永久删除包含所属子智能体历史，保留独立分支；赞踩先确认，可选分类持久化，失败保留草稿。
-- **通用附件与导入**：支持普通文件选择、粘贴和拖放；官方 V0/V1/V2/V3 日志及带图片 ZIP 经校验后导入，原件保留。
-- **Agent Teams**：显式启用具名成员、持久消息、共享任务版本校验及团队面板。
-- **网络与协议**：Host HTTP 客户端共用代理策略；Responses Lite 按模型声明启用，保留端点与账号隔离。
-- **资源版本**：前端总资源标识随发布版本更新，源码、dist、模块摘要和二进制身份联合核验。
-
-配置和边界见[会话、附件、团队与网络](docs/session-files-teams-and-network.zh.md)。
-
-
-- **Windows 执行可靠性**：祖先目录权限更新不再遍历子目录；沙箱准备、实际命令和清理分别计时；取消与超时回收所属进程，保留部分输出和具体错误原因。
-- **对话滚动与统计**：短对话和折叠后的内容不再显示多余的“返回底部”按钮；发送后恢复跟随最新回复；修复 V3 系统消息、上下文和缓存统计分类。
-- **系统目录选择**：系统文件夹窗口返回的路径正确回填工作区表单，确认后同步工作区；取消不创建目录或工作区，选择器错误保留可见提示。
-- **文件阅读与交付**：代码支持行号定位、换行及阅读位置恢复；Markdown、HTML 和 PDF 保留各自滚动位置，PDF 支持页码与缩放恢复；产物按回合关联并通过 `present` 明确交付。
-- **账号与模型管理**：验证码登录遇到临时网络错误时保留有效请求并重试；补齐官方 Flash 能力目录和动态系统提示词；模型连接支持搜索、筛选、批量可见性和草稿保护。
-- **任务控制与诊断**：明确暂停目标后，模型不能自行恢复；重复执行错误按错误码识别，诊断记录关联具体会话和工具调用；MCP 新配置失败时保留原有可用连接与工具。
-- **UU 兼容**：重新发现升级后的客户端安装位置，支持新版终端兼容路径并保持连接归属隔离；保留网页画面、批注、连接复用和人工接管。
-- **发布一致性**：核心提供 `--build-info`；打包核对版本、源码提交和修改状态；Windows、Linux、macOS 的安装包与便携包均由同一提交验收，附件提供 SHA-256 校验和。
-
-完整变更见 [alpha.22 发布说明](release/notes/v0.1.3-alpha.22.md)，协议适配范围见 [rc.1 能力评估](docs/upstream-v0.1.5-rc.1-evaluation.zh.md)。
+桌面实际验证范围见[平台矩阵](docs/desktop-platforms.zh.md)与[体验升级记录](docs/desktop-fidelity/flutter-upgrade-2026-09-29.md)。旧版变更保留在 [alpha.36](release/notes/v0.1.3-alpha.36.md)、[alpha.31](release/notes/v0.1.3-alpha.31.md)及 [alpha.22](release/notes/v0.1.3-alpha.22.md) 发布说明中。
 
 ### UU 网页画面与接管
 
@@ -77,21 +38,25 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases) 下载对应平台的完整包：
+Windows x86_64 完整包：
 
-- `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-core-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-core-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.22-macos-{x86_64,aarch64}-core-portable.tar.gz`
-- 对应的 Windows `setup.exe`、Linux `.deb` 与 macOS `.pkg` 安装包
+| 版本 | 安装包 | 便携包 |
+|---|---|---|
+| Flutter 桌面版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web 核心版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-完整包包含二进制、`web/dist`、`config/agent-presets`、随附Web插件和安全说明。不要只复制二进制后再期待完整Web界面和随附插件可用。
+Linux、macOS 及 SHA-256 校验文件见 [alpha.38 发布页](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38)的 **Assets**；请以实际上传的资产为准。源码 ZIP 不含编译后的运行程序。
 
-文件搜索工具 `glob`／`grep` 需要 PATH 中可运行的 [ripgrep（rg）](https://github.com/BurntSushi/ripgrep#installation)。DEB 包声明该依赖；Windows、macOS 和 Linux 便携安装需先安装 ripgrep，可用 `rg --version` 检查。
+完整包包含 Rust Host、`web/dist`、`config/agent-presets`、随附 Web 插件、Node 与 ripgrep 运行时及安全说明；Flutter 桌面包还包含客户端、Flutter 运行库和资源，并在 `host` 子目录中附带完整 Host。保留整个安装或解压目录，避免缺失资源与随附运行时。
+
+源码构建或自定义安装需确保文件搜索工具能找到 [ripgrep（rg）](https://github.com/BurntSushi/ripgrep#installation)。Linux 的系统沙箱依赖见下方说明。
 
 
 ## 快速启动
 
-默认下载 `core` 包（皮肤版已下线，界面提供浅色与深色两种模式）。解压后直接运行三平台统一的 ZSUI 原生启动器：
+Windows 使用 Flutter 桌面包时，解压后运行 `dsh_desktop.exe`；客户端会启动随附 Host，或连接已运行的本机服务。关闭桌面窗口会保留后台服务及其任务。
+
+使用 Web 核心包时，解压后运行 ZSUI 原生启动器，再打开浏览器界面：
 
 ```text
 Windows: dsh-launcher.exe
@@ -111,7 +76,7 @@ http://127.0.0.1:58080/
 
 发行结构为 **Web 核心版与 Flutter 桌面客户端**，共用 Rust Host 及 HTTP/WebSocket 协议。Web 仅提供 `core` 包；模型目录与连接管理在核心版设置中提供，不按模型另设安装版本。Flutter 源码位于 [`apps/desktop_flutter`](apps/desktop_flutter)，各平台的构建与验收状态见[桌面平台矩阵](docs/desktop-platforms.zh.md)。
 
-普通会话、原生工具和 Web 界面由 Rust 核心提供。JavaScript／TypeScript 代码模式及部分外部工具需要单独配置 Node；设置中的运行环境页显示实际路径、版本及能力检测结果。
+普通会话、原生工具和 Web 界面由 Rust 核心提供。完整发行包随附用于 JavaScript／TypeScript 代码模式的 Node；源码构建与部分外部工具仍需配置相应运行环境。设置中的运行环境页显示实际路径、版本及能力检测结果。
 
 账号登录后自动同步可用模型和能力；模型管理中的显示开关保留跨刷新、重启的用户偏好，隐藏模型不会删除已有会话。代码图谱按需索引当前工作区，提供局部调用关系、文件依赖与源码定位；打开会话不会自动扫描整个项目，推断关系和未覆盖范围会明确标示。
 
@@ -268,6 +233,8 @@ cargo test -p dsh-host-cli --lib -- --test-threads=1
 
 ## 已知限制
 
+- 上游 v0.2.0-rc.1 Web 客户端已完成构建与 Remote 契约清单，整体换装仍在后续适配阶段，当前发行使用现有 Web 界面；进度见[Web 换装计划](docs/plans/web-upstream-v0.2.0-rebase.zh.md)；
+- 一键自动更新、完整首次引导，以及原生输入法、读屏和跨平台桌面实机验收仍有未完成项；平台状态见[桌面平台矩阵](docs/desktop-platforms.zh.md)；
 - 通用pi-ai provider catalog尚未完整移植；
 - UU 实机验证覆盖连接与 Windows 锁屏画面，应用内输入和远程终端命令仍需被控端解锁后验收；
 - 多账号授权、切换与恢复已通过模拟账号回归，两个真实账号之间的完整授权切换尚未验收；账号服务的高缓存命中率也未得到实测证实；

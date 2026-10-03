@@ -6,60 +6,26 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: [`0.1.3-alpha.35`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.35).
+Current release line: [`0.1.3-alpha.38`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
 
-Development version: `0.1.3-alpha.38`; development source does not identify a published installer.
+Implementation and verification scope for file isolation, execution receipts, manually managed skill versions, and message recovery is recorded in the [reliability review](docs/hermes-agent-reliability-review-20260928.zh.md). Its alpha.37 test history includes task acceptance and sample validation mechanisms that were retired in alpha.38.
 
-Development fixes cover legacy session visibility, Windows Flutter image paste, local Markdown image previews, MCP management, manual approval after automatic review denial, configuration lock recovery, and context error handling. See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and [development plan](docs/plans/更新计划.md) for implementation status and remaining work.
-
-See the historical [alpha.31 change notes](release/notes/v0.1.3-alpha.31.md).
+See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and [development plan](docs/plans/更新计划.md) for cross-version adaptation and remaining work.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
 Teams are available from the conversation header and Settings. Model search keeps its full height, model rows expose a compact delete action, and focus-only composer tips can be switched off in General settings. Computer Use compatibility is documented in [the capability matrix](docs/computer-use-compatibility.zh.md).
 
-The `glob` and `grep` tools require [ripgrep (rg)](https://github.com/BurntSushi/ripgrep#installation) on PATH. DEB packages declare the dependency; install ripgrep separately for Windows, macOS and portable Linux setups, then check `rg --version`.
+## 0.1.3-alpha.38 recent changes
 
-## 0.1.3-alpha.28 memory reclamation and consistent controls
+- **Flutter desktop experience**: consistent light/dark themes, text scaling and semantic icons; command search, focus navigation and configurable shortcuts. Workspace drafts and history reading positions persist, and hidden previews release resources. A compact model/reasoning entry uses layered menus, cached catalogs and the latest selection intent.
+- **Desktop interaction fixes**: fix the window-close crash and save drafts before closing while the background Host and tasks continue. Reorganize account access, the plugin page and sidebar menus. Settled replies show an artifact card with inline previews and file actions.
+- **Model protocol compatibility**: compatible tool input schemas prevent Devin / Claude from rejecting root-level composition. Local argument validation still uses the original tool rules, and Devin errors retain their actual protocol codes.
+- **Office and file management**: native `office_read` reads DOCX paragraphs/tables and XLSX cells; `office_write` produces real DOCX/XLSX files. Overwrites and file management require manual approval. Structural checks do not replace content or visual verification.
+- **File isolation and execution**: isolate private directories, attachments and managed temporary files by session. Native sandboxes support exact read roots and long Windows paths. Approval waits do not consume execution budgets, and repeated environment startup failures stop within a bounded policy.
+- **Simplified execution flow**: retire task contracts, task acceptance APIs, completion gates and automatic acceptance continuation. Goals, plans, background jobs and schedules continue independently; users manage skill versions manually.
 
-- Release response storage before collection, collect on the main thread while idle, and bound prepared-session and history-window retention. See the [memory lifecycle audit](docs/memory/lifecycle-audit-20260920.zh.md).
-- Keep the standard whale icon consistent across launchers, shortcuts and installers, with embedded-resource validation.
-- Align account, execution-environment, remote-workspace and skill controls; preserve drafts during diagnostics and reject stale UI responses.
-- Restore cross-platform release gates and add settings-control regressions.
-
-## 0.1.3-alpha.24 icon and interface fixes
-
-- Use the standard whale icon consistently across launchers, shortcuts and installers; refresh shell icons after installation and verify embedded resources.
-- Style account-provider switches consistently while preserving sign-in and account controls.
-- Update Office viewer registration and disposal coverage in cross-platform release gates.
-
-## 0.1.3-alpha.23 reliability and workbench
-
-- Release retired Agent and Session generations, including goal history caches.
-- Reuse verified Windows workspace sandbox capabilities and separate startup from command timeouts.
-- Add task environment migration, turn file review, plan and child-session previews, WPS Office preview, and a unified plugin center.
-
-## 0.1.3-alpha.22 capabilities
-
-- **Sessions and feedback**: permanent deletion includes owned subagent histories while preserving independent forks; ratings require confirmation and retain failed drafts.
-- **Files and imports**: upload ordinary files through the picker, clipboard or drop; validated V0/V1/V2/V3 and image-bearing ZIP imports preserve source artifacts.
-- **Agent Teams**: opt-in named teammates, durable peer messages, versioned shared tasks and a team panel.
-- **Networking and protocol**: shared Host HTTP proxy policy and capability-gated Responses Lite with account and endpoint isolation.
-- **Release identity**: the frontend manifest version follows the package version, alongside module hashes and binary source identity.
-
-See [configuration and boundaries](docs/session-files-teams-and-network.zh.md).
-
-
-- **Windows execution reliability**: ancestor permission updates no longer traverse descendants. Sandbox preparation, command execution and cleanup have separate budgets; cancellation and timeouts reclaim owned processes while preserving partial output and specific errors.
-- **Conversation scrolling and statistics**: short or collapsed conversations hide the unnecessary return-to-bottom button; sending restores following of the live reply. V3 system-message, context and cache statistics use the correct categories.
-- **Native directory selection**: the system folder dialog returns a path to the workspace form, and confirmation updates the selected workspace. Cancellation creates nothing and picker failures remain visible.
-- **Document reading and delivery**: code supports line navigation, wrapping and reading-position restoration. Markdown, HTML and PDF keep independent reading state, including PDF pages and zoom. Artifacts are associated with turns and delivered explicitly through `present`.
-- **Accounts and models**: temporary device-login failures preserve valid requests for retry. Official Flash capabilities and dynamic system prompts are updated; model connections support search, filtering, bulk visibility and protected drafts.
-- **Task control and diagnostics**: a model cannot rearm an explicitly paused goal. Repeated infrastructure errors retain session and call evidence. Failed MCP configuration changes preserve the previous working connection and tools.
-- **UU compatibility**: upgraded client locations and compatible terminal paths are discovered while preserving connection ownership, browser display, annotations, connection reuse and manual handoff.
-- **Release integrity**: `--build-info` exposes the build identity. Packaging checks the version, source commit and modification state. Windows, Linux and macOS packages are verified against the same commit and include SHA-256 checksums.
-
-See the [alpha.21 release notes](release/notes/v0.1.3-alpha.22.md) and [rc.1 capability evaluation](docs/upstream-v0.1.5-rc.1-evaluation.zh.md).
+Desktop verification scope is recorded in the [platform matrix](docs/desktop-platforms.zh.md) and [experience upgrade review](docs/desktop-fidelity/flutter-upgrade-2026-09-29.md). Historical changes remain in the [alpha.36](release/notes/v0.1.3-alpha.36.md), [alpha.31](release/notes/v0.1.3-alpha.31.md) and [alpha.22](release/notes/v0.1.3-alpha.22.md) release notes.
 
 ### UU display and manual handoff
 
@@ -72,18 +38,24 @@ See the [alpha.21 release notes](release/notes/v0.1.3-alpha.22.md) and [rc.1 cap
 
 ## Downloads
 
-Download a complete package from [GitHub Releases](https://github.com/qiu7824/deepseek-harness-rs/releases):
+Complete Windows x86_64 packages:
 
-- `deepseek-harness-rs-v0.1.3-alpha.22-windows-x86_64-core-portable.zip`
-- `deepseek-harness-rs-v0.1.3-alpha.22-linux-x86_64-core-portable.tar.gz`
-- `deepseek-harness-rs-v0.1.3-alpha.22-macos-{x86_64,aarch64}-core-portable.tar.gz`
-- matching Windows `setup.exe`, Linux `.deb`, and macOS `.pkg` installers
+| Edition | Installer | Portable package |
+|---|---|---|
+| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-A complete package contains the binary, `web/dist`, `config/agent-presets`, bundled Web plugins, and security documentation. Copying only the binary does not provide a complete Web installation.
+Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
+
+A complete package contains the Rust Host, `web/dist`, `config/agent-presets`, bundled Web plugins, Node and ripgrep runtimes, and security documentation. Flutter packages also contain the client, Flutter runtime libraries and assets, with a complete Host in the `host` subdirectory. Keep the entire installation or extracted directory so resources and bundled runtimes remain available.
+
+Source builds and custom installations must provide [ripgrep (rg)](https://github.com/BurntSushi/ripgrep#installation) for file search. Linux system sandbox dependencies are described below.
 
 ## Quick start
 
-The default download is the `core` package, which contains no extension skins. Launch the shared ZSUI native manager:
+For the Windows Flutter package, extract it and run `dsh_desktop.exe`. The client starts the bundled Host or connects to an existing local service. Closing the desktop window leaves the background service and its tasks running.
+
+For the Web core package, extract it and run the ZSUI native launcher, then open the browser interface:
 
 ```text
 Windows: dsh-launcher.exe
@@ -105,7 +77,7 @@ Distribution consists of the **Web core and Flutter desktop client**, sharing th
 
 ## Data, profiles, and workspaces
 
-The Rust core starts without Node. JavaScript/TypeScript Code Mode and some external tools require an optional Node installation; environment settings report the detected executable, version, and capabilities. Model catalogs synchronize account access and reasoning metadata while preserving display preferences. The code graph indexes the active workspace on demand and links local relationships to source locations. Opening a conversation does not automatically scan the whole project; inferred relationships and coverage limits remain visible.
+The Rust core starts without Node. Complete releases bundle Node for JavaScript/TypeScript Code Mode; source builds and some external tools still require their corresponding runtimes. Environment settings report the detected executable, version, and capabilities. Model catalogs synchronize account access and reasoning metadata while preserving display preferences. The code graph indexes the active workspace on demand and links local relationships to source locations. Opening a conversation does not automatically scan the whole project; inferred relationships and coverage limits remain visible.
 
 New Windows installations default to `D:\Program Files (x86)\DeepSeek Harness-rs\<variant>`; upgrades retain the previous installation directory. If the default location is unavailable, choose another directory in the installer.
 
@@ -240,6 +212,8 @@ See `PLUGIN_SECURITY.md` for the Web plugin trust boundary.
 
 ## Known limitations
 
+- The upstream v0.2.0-rc.1 Web client build and Remote contract inventory are complete, but replacing the current Web interface still requires further adaptation. Releases use the existing Web interface; see the [Web migration plan](docs/plans/web-upstream-v0.2.0-rebase.zh.md).
+- One-click automatic updates, complete onboarding, and native input-method, screen-reader and cross-platform desktop verification have remaining work. See the [desktop platform matrix](docs/desktop-platforms.zh.md).
 - The generic pi-ai provider catalog has not been fully ported.
 - UU live verification covers connection and the Windows lock screen; application input and remote terminal commands still require validation after the target is unlocked.
 - Multi-account authorization, switching, and recovery pass fixture tests; complete authorization and switching between two real accounts remain unverified. High cache-hit rates on the account service have not been demonstrated.

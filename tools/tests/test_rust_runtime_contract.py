@@ -144,7 +144,9 @@ class RustRuntimeContractTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn('staged_web = ROOT / "target" / "release" / "web" / "dist"', package)
+        self.assertIn('parser.add_argument("--target-dir", type=pathlib.Path, default=ROOT / "target")', package)
+        self.assertIn('target = args.target_dir.resolve()', package)
+        self.assertIn('staged_web = target / "release" / "web" / "dist"', package)
         self.assertIn("python tools/stage_release_web.py", workflow)
 
     def test_schedule_projection_and_header_catalog_are_composed(self):
