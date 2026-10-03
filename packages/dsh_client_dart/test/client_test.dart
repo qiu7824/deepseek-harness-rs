@@ -32,6 +32,32 @@ void main() {
     }
     expect(localHostUri('http://localhost:58080').port, 58080);
   });
+  test('a route or method an older Host lacks is reported as unsupported', () async {
+    server.listen((request) async {
+      await request.drain<void>();
+      request.response.statusCode = request.uri.path.startsWith('/api/')
+          ? 404
+          : 405;
+      request.response.write('not found');
+      await request.response.close();
+    });
+    await expectLater(
+      client.call('commands.activity'),
+      throwsA(
+        isA<DshException>()
+            .having((e) => e.code, 'code', 'unsupported')
+            .having((e) => e.message, 'message', contains('commands.activity')),
+      ),
+    );
+    await expectLater(
+      client.request('/__dsh-schedule/catalog', body: {}),
+      throwsA(
+        isA<DshException>()
+            .having((e) => e.code, 'code', 'unsupported')
+            .having((e) => e.message, 'message', contains('版本较旧')),
+      ),
+    );
+  });
   test('uses Host envelope and rejects correlation mismatch', () async {
     server.listen((request) async {
       final body = object(jsonDecode(await utf8.decoder.bind(request).join()));

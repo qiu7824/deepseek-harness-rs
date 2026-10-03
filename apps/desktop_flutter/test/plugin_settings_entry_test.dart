@@ -1,6 +1,7 @@
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/design/primitives.dart';
 import 'package:dsh_desktop/design/select.dart';
+import 'package:dsh_desktop/features/settings/plugin_inventory_row.dart';
 import 'package:dsh_desktop/features/settings/resource_page.dart';
 import 'package:dsh_desktop/src/controller.dart';
 import 'package:flutter/material.dart';
@@ -102,14 +103,14 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          final toggle = find.byKey(
-            const ValueKey('plugin-config-toggle-clock'),
-          );
-          final previousCallback = tester.widget<DshButton>(toggle).onPressed!;
+          final row = find.byKey(const ValueKey('plugin-row-clock'));
+          final previousCallback = tester
+              .widget<PluginInventoryRow>(row)
+              .onConfigure!;
           controller.changeConnection(reuseApi: reuseApi);
           previousCallback();
           await tester.pumpAndSettle();
-          expect(tester.widget<DshButton>(toggle).onPressed, isNull);
+          expect(tester.widget<PluginInventoryRow>(row).onConfigure, isNull);
           expect(
             find.byKey(const ValueKey('time-context-interval')),
             findsNothing,
@@ -164,10 +165,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('空操作插件'), findsOneWidget);
       expect(find.text('自动审批'), findsOneWidget);
-      expect(find.text('运行状态：运行中'), findsOneWidget);
-      expect(find.text('运行状态：启动失败'), findsOneWidget);
-      expect(find.text('已启用'), findsOneWidget);
+      // One state per row: a disabled plugin is not described by the
+      // failure its runtime last reported.
+      expect(find.text('运行中'), findsOneWidget);
       expect(find.text('未启用'), findsOneWidget);
+      expect(find.text('启动失败'), findsNothing);
       expect(find.text('active'), findsNothing);
       expect(find.text('dsh-skin-center'), findsNothing);
       expect(find.text('@deepseek-ai/dsh-skin-center'), findsNothing);
@@ -226,7 +228,7 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(find.text('example-plugin-59'), findsNothing);
-        final toggle = find.byKey(const ValueKey('plugin-config-toggle-clock'));
+        final toggle = find.byKey(const ValueKey('plugin-row-clock'));
         await tester.tap(toggle);
         await tester.pumpAndSettle();
         final interval = find.descendant(
@@ -250,6 +252,9 @@ void main() {
         tester.state<ScrollableState>(scrollable).position.jumpTo(5000);
         await tester.pumpAndSettle();
         expect(find.text('example-plugin-0'), findsNothing);
+        // The search field scrolls with the heading.
+        tester.state<ScrollableState>(scrollable).position.jumpTo(0);
+        await tester.pumpAndSettle();
         final search = find.descendant(
           of: find.byType(DshField).first,
           matching: find.byType(TextField),
@@ -311,16 +316,15 @@ void main() {
         await tester.pump();
         await tester.pump();
         expect(controller.api.configReads, 0);
-        await tester.tap(
-          find.byKey(const ValueKey('plugin-config-toggle-clock')),
-        );
+        await tester.tap(find.byKey(const ValueKey('plugin-row-clock')));
         await tester.pumpAndSettle();
         expect(
           find.byKey(const ValueKey('time-context-interval')),
           findsOneWidget,
         );
         expect(find.textContaining('插件未启用'), findsOneWidget);
-        await tester.tap(find.text('安装与维护'));
+        await tester.ensureVisible(find.byKey(const ValueKey('plugin-add')));
+        await tester.tap(find.byKey(const ValueKey('plugin-add')));
         await tester.pump(const Duration(milliseconds: 250));
         await tester.pump();
         expect(find.text('插件安装与维护'), findsOneWidget);

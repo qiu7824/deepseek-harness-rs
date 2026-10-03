@@ -80,9 +80,11 @@ void main() {
       await mouse.moveTo(tester.getCenter(find.byType(WorkspaceTreeRow)));
       await tester.pump();
       expect(
-        tester.widget<DshGlyph>(find.byType(DshGlyph)).data,
+        tester.widget<DshGlyph>(find.byType(DshGlyph).first).data,
         DshIcons.chevronDown.data,
       );
+      // Hover also reveals the row menu that a right click opens.
+      expect(find.byTooltip('工作区操作'), findsOneWidget);
       expect(find.byTooltip('在此工作区新建会话'), findsNothing);
       await mouse.removePointer();
     },

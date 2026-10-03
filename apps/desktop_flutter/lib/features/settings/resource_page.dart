@@ -28,12 +28,16 @@ class SettingsResourcePage extends StatefulWidget {
     this.footer,
     this.onOpenPlugin,
     this.workspace = false,
+    this.onClose,
   });
   final DesktopController controller;
   final String page;
   final Widget? footer;
   final ValueChanged<Json>? onOpenPlugin;
   final bool workspace;
+
+  /// Returns from the main plugin page to the conversation.
+  final VoidCallback? onClose;
   @override
   State<SettingsResourcePage> createState() => _SettingsResourcePageState();
 }
@@ -177,13 +181,9 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             .toLowerCase()
             .contains(query);
     final entries = inventory.where(matches).toList();
-    if (widget.page == 'plugins' && widget.workspace) {
+    if (widget.page == 'plugins') {
       return pluginWorkspace(inventory, entries, matches);
     }
-    final visibleRows = widget.page == 'plugins' ? inventory : entries;
-    Key pluginKey(Json entry) => ValueKey(
-      'plugin-${entry['entryId'] ?? entry['id'] ?? entry['moduleName']}',
-    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -203,15 +203,6 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
               label: DshSettingsZh.refresh,
               onPressed: loading || busy || staleConnection ? null : load,
             ),
-            if (widget.page == 'plugins')
-              DshButton(
-                outline: true,
-                icon: DshIcons.puzzle.data,
-                onPressed: busy || pluginManagerOpen || staleConnection
-                    ? null
-                    : openPluginManager,
-                child: const Text(DshSettingsZh.installationMaintenance),
-              ),
             if (widget.page == 'skills')
               DshButton(
                 outline: true,
@@ -281,32 +272,14 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                 )
               : ListView.builder(
                   padding: const EdgeInsets.only(right: 16, bottom: 16),
-                  findChildIndexCallback: widget.page != 'plugins'
-                      ? null
-                      : (key) {
-                          final index = inventory.indexWhere(
-                            (entry) => pluginKey(entry) == key,
-                          );
-                          return index < 0 ? null : index;
-                        },
                   itemCount:
-                      visibleRows.length +
+                      entries.length +
                       (widget.page == 'memory' ? 1 : 0) +
                       (widget.page == 'skills' ? 1 : 0) +
                       (widget.footer != null ? 1 : 0) +
                       (widget.page == 'discovery' ? 1 : 0),
                   itemBuilder: (context, i) {
-                    if (i < visibleRows.length) {
-                      final entry = visibleRows[i];
-                      if (widget.page != 'plugins') return row(entry);
-                      // Visited configuration editors retain their own state;
-                      // ordinary rows still use the list's lazy lifecycle.
-                      return Offstage(
-                        key: pluginKey(entry),
-                        offstage: !matches(entry),
-                        child: row(entry),
-                      );
-                    }
+                    if (i < entries.length) return row(entries[i]);
                     if (widget.page == 'memory' && i == entries.length) {
                       return LearningPanel(controller: widget.controller);
                     }
@@ -344,17 +317,41 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
     Key pluginKey(Json entry) => ValueKey(
       'plugin-${entry['entryId'] ?? entry['id'] ?? entry['moduleName']}',
     );
-    final heading = Column(
+    // The main page shares the knowledge and schedule page heading.
+    final title = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(DshSettingsZh.plugins, style: DshTypography.headline),
-        const SizedBox(height: 6),
+        Text(
+          DshSettingsZh.plugins,
+          style: widget.workspace
+              ? const TextStyle(
+                  fontSize: DshTypography.sizeTitle,
+                  fontWeight: FontWeight.w700,
+                )
+              : DshTypography.composer.copyWith(fontWeight: FontWeight.w500),
+        ),
+        SizedBox(height: widget.workspace ? 4 : 6),
         Text(
           DshPluginSettingsZh.pageHint,
           style: DshTypography.auxiliary.copyWith(color: colors.muted),
         ),
       ],
     );
+    final heading = widget.onClose == null
+        ? title
+        : Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DshIcon(
+                DshIcons.arrowLeft.data,
+                key: const ValueKey('plugin-page-back'),
+                label: DshPluginSettingsZh.backToSession,
+                onPressed: widget.onClose,
+              ),
+              const SizedBox(width: 8),
+              Flexible(child: title),
+            ],
+          );
     final actions = Wrap(
       spacing: 8,
       runSpacing: 8,
@@ -365,26 +362,20 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
           label: DshSettingsZh.refresh,
           onPressed: loading || busy || staleConnection ? null : load,
         ),
-        FilledButton.icon(
+        DshButton(
           key: const ValueKey('plugin-add'),
+          primary: true,
+          icon: DshIcons.plus.data,
           onPressed: busy || pluginManagerOpen || staleConnection
               ? null
               : openPluginManager,
-          style: FilledButton.styleFrom(
-            backgroundColor: colors.text,
-            foregroundColor: colors.base,
-            textStyle: DshTypography.body.copyWith(fontWeight: FontWeight.w500),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-          icon: DshGlyph(DshIcons.plus.data, color: colors.base, size: 16),
-          label: const Text(DshPluginSettingsZh.addPlugin),
+          child: const Text(DshPluginSettingsZh.addPlugin),
         ),
       ],
     );
-    return Column(
+    // The heading scrolls with the rows, so short windows and large text
+    // keep every control reachable instead of squeezing the list to nothing.
+    final header = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         LayoutBuilder(
@@ -407,7 +398,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             );
           },
         ),
-        const SizedBox(height: 24),
+        SizedBox(height: widget.workspace ? 24 : 16),
         Align(
           alignment: Alignment.centerLeft,
           child: ConstrainedBox(
@@ -420,7 +411,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
             ),
           ),
         ),
-        const SizedBox(height: 24),
+        SizedBox(height: widget.workspace ? 24 : 16),
         Row(
           children: [
             Expanded(
@@ -439,38 +430,59 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         if (error != null) DshErrorView(error: error!),
         if (busy || loading && data.isNotEmpty)
           const LinearProgressIndicator(minHeight: 2),
-        Expanded(
-          child: loading && data.isEmpty
-              ? const DshListSkeleton(label: DshSettingsZh.plugins)
-              : ListView.builder(
-                  padding: const EdgeInsets.only(bottom: 24),
-                  findChildIndexCallback: (key) {
-                    final index = inventory.indexWhere(
-                      (entry) => pluginKey(entry) == key,
-                    );
-                    return index < 0 ? null : index;
-                  },
-                  itemCount: inventory.length + (widget.footer == null ? 0 : 1),
-                  itemBuilder: (context, index) {
-                    if (index == inventory.length) return widget.footer!;
-                    final entry = inventory[index];
-                    return Offstage(
-                      key: pluginKey(entry),
-                      offstage: !matches(entry),
-                      child: pluginWorkspaceRow(entry),
-                    );
-                  },
-                ),
-        ),
-        if (!loading && entries.isEmpty)
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Text(
-              DshSettingsZh.noRecords,
-              style: DshTypography.auxiliary.copyWith(color: colors.muted),
-            ),
-          ),
       ],
+    );
+    final skeleton = loading && data.isEmpty;
+    final empty = !loading && entries.isEmpty;
+    final rows = skeleton ? 0 : inventory.length;
+    return ListView.builder(
+      key: const ValueKey('plugin-inventory-list'),
+      padding: const EdgeInsets.only(bottom: 24),
+      findChildIndexCallback: (key) {
+        final index = inventory.indexWhere((entry) => pluginKey(entry) == key);
+        return index < 0 || skeleton ? null : index + 1;
+      },
+      itemCount:
+          1 +
+          (skeleton ? 1 : rows) +
+          (empty ? 1 : 0) +
+          (widget.footer == null ? 0 : 1),
+      itemBuilder: (context, index) {
+        if (index == 0) return header;
+        index--;
+        if (skeleton) {
+          if (index == 0) {
+            return const SizedBox(
+              height: 280,
+              child: DshListSkeleton(label: DshSettingsZh.plugins),
+            );
+          }
+          index--;
+        } else if (index < rows) {
+          final entry = inventory[index];
+          // Visited configuration editors keep their state while filtered.
+          return Offstage(
+            key: pluginKey(entry),
+            offstage: !matches(entry),
+            child: pluginWorkspaceRow(entry),
+          );
+        } else {
+          index -= rows;
+        }
+        if (empty) {
+          if (index == 0) {
+            return Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text(
+                DshSettingsZh.noRecords,
+                style: DshTypography.auxiliary.copyWith(color: colors.muted),
+              ),
+            );
+          }
+          index--;
+        }
+        return widget.footer!;
+      },
     );
   }
 
@@ -481,13 +493,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
     final canOpen =
         widget.onOpenPlugin != null &&
         entry['enabled'] == true &&
-        const {
-          'dsh-artifacts',
-          'dsh-context-jump',
-          'dsh-better-sidebar',
-          'dsh-sidebar-workbench-suite',
-          'dsh-voice-input',
-        }.contains(moduleName);
+        DshPluginSettingsZh.openable.contains(moduleName);
     Widget inventoryRow({VoidCallback? configure, bool expanded = false}) =>
         PluginInventoryRow(
           key: ValueKey('plugin-row-${entry['entryId'] ?? moduleName}'),
@@ -518,8 +524,6 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         entryId: entry['entryId'] as String,
         enabled: entry['enabled'] == true,
         canConfigure: () => mounted && !staleConnection,
-        workspace: true,
-        entry: inventoryRow(),
         entryBuilder: (configure, expanded) =>
             inventoryRow(configure: configure, expanded: expanded),
       );
@@ -531,12 +535,7 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
     if (widget.page == 'archive') return archiveRow(row);
     final rawTitle =
         '${row['name'] ?? row['title'] ?? row['moduleName'] ?? row['id'] ?? row['sessionId']}';
-    final plugin = widget.page == 'plugins';
-    final moduleName =
-        '${row['moduleName'] ?? row['id'] ?? row['entryId'] ?? ''}';
-    final title = plugin
-        ? DshPluginSettingsZh.title(moduleName, rawTitle)
-        : rawTitle;
+    final title = rawTitle;
     final description = displayPathText(
       '${row['description'] ?? row['content'] ?? row['cwd'] ?? row['trust'] ?? ''}',
     );
@@ -559,35 +558,6 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
                     fontWeight: FontWeight.w500,
                   ),
                 ),
-                if (plugin && moduleName.isNotEmpty && moduleName != title)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: SelectableText(
-                      moduleName,
-                      style: TextStyle(
-                        fontSize: DshTypography.sizeCaption,
-                        color: DshColors(context).muted,
-                      ),
-                    ),
-                  ),
-                if (plugin)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 5),
-                    child: Wrap(
-                      spacing: 12,
-                      runSpacing: 4,
-                      children: [
-                        Text(
-                          DshPluginSettingsZh.configured(
-                            row['enabled'] == true,
-                          ),
-                        ),
-                        Text(
-                          DshPluginSettingsZh.runtimeStatus(row['fiberPhase']),
-                        ),
-                      ],
-                    ),
-                  ),
                 if (description.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 5),
@@ -607,52 +577,6 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
           ),
           const SizedBox(width: 12),
           ...switch (widget.page) {
-            'plugins' => [
-              if (widget.onOpenPlugin != null &&
-                  row['enabled'] == true &&
-                  const {
-                    'dsh-artifacts',
-                    'dsh-context-jump',
-                    'dsh-better-sidebar',
-                    'dsh-sidebar-workbench-suite',
-                    'dsh-voice-input',
-                  }.contains(row['moduleName'] ?? row['entryId'] ?? row['id']))
-                DshButton(
-                  outline: true,
-                  height: 28,
-                  padding: const EdgeInsets.symmetric(horizontal: 9),
-                  onPressed: staleConnection
-                      ? null
-                      : () {
-                          if (!staleConnection) widget.onOpenPlugin!(row);
-                        },
-                  child: Text(
-                    '${row['id'] ?? row['entryId'] ?? ''}'.contains('voice')
-                        ? DshSettingsZh.voiceInput
-                        : DshSettingsZh.openPlugin,
-                    style: const TextStyle(fontSize: DshTypography.sizeCaption),
-                  ),
-                ),
-              Semantics(
-                label: DshPluginSettingsZh.toggle(title),
-                child: DshSwitch(
-                  value: row['enabled'] == true,
-                  onChanged: busy || staleConnection
-                      ? null
-                      : (v) => action(() async {
-                          await api.rpc(
-                            'pluginInventory.setEnabled',
-                            payload: {'entryId': row['entryId'], 'enabled': v},
-                            mutation: true,
-                            scope: scope,
-                          );
-                          if (!staleConnection) {
-                            await widget.controller.loadPlugins();
-                          }
-                        }),
-                ),
-              ),
-            ],
             'skills' => [
               DshSwitch(
                 value: row['enabled'] == true,
@@ -737,20 +661,6 @@ class _SettingsResourcePageState extends State<SettingsResourcePage> {
         ],
       ),
     );
-    if (widget.page == 'plugins' &&
-        const {
-          'dsh-time-context',
-          '@deepseek-ai/dsh-time-context',
-        }.contains(row['moduleName']) &&
-        row['entryId'] is String) {
-      return _TimeContextPluginSection(
-        controller: widget.controller,
-        entryId: row['entryId'] as String,
-        enabled: row['enabled'] == true,
-        canConfigure: () => mounted && !staleConnection,
-        entry: entry,
-      );
-    }
     return entry;
   }
 
@@ -1333,18 +1243,14 @@ class _TimeContextPluginSection extends StatefulWidget {
     required this.entryId,
     required this.enabled,
     required this.canConfigure,
-    required this.entry,
-    this.workspace = false,
-    this.entryBuilder,
+    required this.entryBuilder,
   });
 
   final DesktopController controller;
   final String entryId;
   final bool enabled;
   final bool Function() canConfigure;
-  final Widget entry;
-  final bool workspace;
-  final Widget Function(VoidCallback? onConfigure, bool expanded)? entryBuilder;
+  final Widget Function(VoidCallback? onConfigure, bool expanded) entryBuilder;
 
   @override
   State<_TimeContextPluginSection> createState() =>
@@ -1377,7 +1283,7 @@ class _TimeContextPluginSectionState extends State<_TimeContextPluginSection>
             visible: expanded,
             maintainState: true,
             child: Padding(
-              padding: EdgeInsets.all(widget.workspace ? 20 : 0),
+              padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1398,63 +1304,23 @@ class _TimeContextPluginSectionState extends State<_TimeContextPluginSection>
             ),
           )
         : const SizedBox.shrink();
-    if (widget.workspace) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          widget.entryBuilder!(widget.canConfigure() ? toggle : null, expanded),
-          if (visited)
-            Container(
-              margin: EdgeInsets.only(bottom: expanded ? 12 : 0),
-              decoration: BoxDecoration(
-                color: expanded ? DshColors(context).layer : null,
-                border: expanded
-                    ? Border.all(color: DshColors(context).border)
-                    : null,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: configuration,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        widget.entryBuilder(widget.canConfigure() ? toggle : null, expanded),
+        if (visited)
+          Container(
+            margin: EdgeInsets.only(bottom: expanded ? 12 : 0),
+            decoration: BoxDecoration(
+              color: expanded ? DshColors(context).layer : null,
+              border: expanded
+                  ? Border.all(color: DshColors(context).border)
+                  : null,
+              borderRadius: BorderRadius.circular(12),
             ),
-        ],
-      );
-    }
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      decoration: BoxDecoration(
-        color: DshColors(context).layer,
-        border: Border.all(color: DshColors(context).border),
-        borderRadius: BorderRadius.circular(
-          DshTokens.of(context).radiusControl,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          widget.entry,
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: DshButton(
-              key: ValueKey('plugin-config-toggle-${widget.entryId}'),
-              icon: expanded
-                  ? DshIcons.chevronUp.data
-                  : DshIcons.chevronDown.data,
-              onPressed: !widget.canConfigure() ? null : toggle,
-              child: Text(
-                expanded
-                    ? DshPluginSettingsZh.collapseConfiguration
-                    : DshPluginSettingsZh.expandConfiguration,
-              ),
-            ),
+            child: configuration,
           ),
-          if (visited)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: configuration,
-            ),
-        ],
-      ),
+      ],
     );
   }
 }

@@ -87,6 +87,8 @@ abstract final class DshShellZh {
   static const knowledge = '知识库';
   static const settings = '设置';
   static const moreActions = '更多操作';
+  static const sessionActions = '会话操作';
+  static const workspaceActions = '工作区操作';
   static const refreshSessions = '刷新会话';
   static const editShortcuts = '编辑快捷键';
   static const expandSidebar = '展开侧边栏';
@@ -628,6 +630,10 @@ abstract final class DshSettingsZh {
   static const login = '登录';
   static const installClient = '安装官方客户端';
   static const loginRequired = '需要重新登录';
+  static const reloginShort = '重新登录';
+  static const linkedAccounts = '已连接';
+  static const availableAccounts = '可登录的服务';
+  static String connectedCount(int linked, int total) => '$linked / $total 已连接';
   static const currentAccount = '当前账号';
   static const switchAccount = '切换';
   static const removeAccount = '移除账号';
@@ -703,13 +709,10 @@ abstract final class DshSettingsZh {
   static const archivedSessions = '归档会话';
   static const memoryContext = '记忆与上下文';
   static const toolDiscovery = '工具发现';
-  static const installationMaintenance = '安装与维护';
   static const revisionsValidation = '版本与验证';
   static const addSkill = '添加技能';
   static const archiveHint = '归档只会隐藏会话，完整记录仍会保留。你可以恢复或永久删除记录。';
   static const noRecords = '暂无记录';
-  static const voiceInput = '使用语音输入';
-  static const openPlugin = '打开插件';
   static const editSkill = '编辑技能';
   static const removeSkill = '移除技能';
   static const viewPreset = '查看预设';
@@ -833,6 +836,10 @@ abstract final class DshSettingsZh {
   static const earlierReceipts = '加载更早回执';
   static const refreshReceipts = '刷新回执';
   static const general = '通用设置';
+  static const groupGeneral = '常用';
+  static const groupAgent = '智能体';
+  static const groupSystem = '系统';
+  static const groupData = '数据';
   static const runtimeEnvironment = '目录与运行环境';
   static const collaboration = '协作';
   static const security = '安全盾';

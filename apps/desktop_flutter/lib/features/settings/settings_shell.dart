@@ -4,12 +4,12 @@ import '../../l10n/settings_form_zh.dart';
 
 import 'dart:convert';
 import 'dart:math';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:dsh_client/dsh_client.dart';
 
+import '../../design/motion.dart';
 import '../../design/primitives.dart';
 import '../../design/select.dart';
 import '../../design/shortcuts.dart';
@@ -20,54 +20,95 @@ import 'schedule_panel.dart';
 
 import 'package:dsh_desktop/design/typography.dart';
 
-final settingsPages = <({String id, String title, IconData icon})>[
-  (id: 'general', title: DshSettingsZh.general, icon: DshIcons.settings.data),
-  (id: 'models', title: DshSettingsZh.models, icon: DshIcons.database.data),
-  (
-    id: 'plugins',
-    title: DshSettingsZh.plugins,
-    icon: DshIcons.slidersHorizontal.data,
-  ),
-  (
-    id: 'environment',
-    title: DshSettingsZh.runtimeEnvironment,
-    icon: DshIcons.folderCog.data,
-  ),
-  (id: 'memory', title: DshSettingsZh.memoryContext, icon: DshIcons.brain.data),
-  (
-    id: 'presets',
-    title: DshSettingsZh.agentPresets,
-    icon: DshIcons.workflow.data,
-  ),
-  (
-    id: 'collaboration',
-    title: DshSettingsZh.collaboration,
-    icon: DshIcons.users.data,
-  ),
-  (
-    id: 'security',
-    title: DshSettingsZh.security,
-    icon: DshIcons.shieldCheck.data,
-  ),
-  (id: 'skills', title: DshSettingsZh.skillsMcp, icon: DshIcons.briefcase.data),
-  (
-    id: 'discovery',
-    title: DshSettingsZh.toolDiscovery,
-    icon: DshIcons.wrench.data,
-  ),
-  (
-    id: 'archive',
-    title: DshSettingsZh.archiveManagement,
-    icon: DshIcons.archive.data,
-  ),
-  (id: 'schedule', title: DshSettingsZh.reminders, icon: DshIcons.clock.data),
-  (
-    id: 'menu',
-    title: DshSettingsZh.menuSettings,
-    icon: DshIcons.listFilter.data,
-  ),
-  (id: 'trash', title: DshSettingsZh.trash, icon: DshIcons.trash2.data),
-];
+/// Settings pages in navigation order. Each page has its own glyph from the
+/// desktop icon set; groups keep fourteen entries scannable.
+final settingsPages =
+    <({String id, String title, IconData icon, String group})>[
+      (
+        id: 'general',
+        title: DshSettingsZh.general,
+        icon: DshIcons.settings.data,
+        group: DshSettingsZh.groupGeneral,
+      ),
+      (
+        id: 'models',
+        title: DshSettingsZh.models,
+        icon: DshIcons.database.data,
+        group: DshSettingsZh.groupGeneral,
+      ),
+      (
+        id: 'plugins',
+        title: DshSettingsZh.plugins,
+        icon: DshIcons.grid2x2.data,
+        group: DshSettingsZh.groupGeneral,
+      ),
+      (
+        id: 'skills',
+        title: DshSettingsZh.skillsMcp,
+        icon: DshIcons.puzzle.data,
+        group: DshSettingsZh.groupGeneral,
+      ),
+      (
+        id: 'presets',
+        title: DshSettingsZh.agentPresets,
+        icon: DshIcons.workflow.data,
+        group: DshSettingsZh.groupAgent,
+      ),
+      (
+        id: 'collaboration',
+        title: DshSettingsZh.collaboration,
+        icon: DshIcons.users.data,
+        group: DshSettingsZh.groupAgent,
+      ),
+      (
+        id: 'memory',
+        title: DshSettingsZh.memoryContext,
+        icon: DshIcons.brain.data,
+        group: DshSettingsZh.groupAgent,
+      ),
+      (
+        id: 'discovery',
+        title: DshSettingsZh.toolDiscovery,
+        icon: DshIcons.wrench.data,
+        group: DshSettingsZh.groupAgent,
+      ),
+      (
+        id: 'security',
+        title: DshSettingsZh.security,
+        icon: DshIcons.shieldCheck.data,
+        group: DshSettingsZh.groupSystem,
+      ),
+      (
+        id: 'environment',
+        title: DshSettingsZh.runtimeEnvironment,
+        icon: DshIcons.folderCog.data,
+        group: DshSettingsZh.groupSystem,
+      ),
+      (
+        id: 'schedule',
+        title: DshSettingsZh.reminders,
+        icon: DshIcons.clock.data,
+        group: DshSettingsZh.groupSystem,
+      ),
+      (
+        id: 'menu',
+        title: DshSettingsZh.menuSettings,
+        icon: DshIcons.listFilter.data,
+        group: DshSettingsZh.groupSystem,
+      ),
+      (
+        id: 'archive',
+        title: DshSettingsZh.archiveManagement,
+        icon: DshIcons.archive.data,
+        group: DshSettingsZh.groupData,
+      ),
+      (
+        id: 'trash',
+        title: DshSettingsZh.trash,
+        icon: DshIcons.trash2.data,
+        group: DshSettingsZh.groupData,
+      ),
+    ];
 
 class SettingsShell extends StatefulWidget {
   const SettingsShell({
@@ -75,11 +116,15 @@ class SettingsShell extends StatefulWidget {
     required this.controller,
     this.initialPage = 'general',
     this.initialModelTab = 'api',
+    this.initialAccountProvider,
     this.onOpenPlugin,
   });
   final DesktopController controller;
   final String initialPage;
   final String initialModelTab;
+
+  /// Subscription provider to expand when the accounts tab opens.
+  final String? initialAccountProvider;
   final ValueChanged<Json>? onOpenPlugin;
   @override
   State<SettingsShell> createState() => _SettingsShellState();
@@ -251,6 +296,65 @@ class _SettingsShellState extends State<SettingsShell> {
     if (mounted) Navigator.pop(context);
   }
 
+  List<({String id, String title, IconData icon, String group})>
+  get visiblePages => [
+    for (final item in settingsPages)
+      if ('${item.title} ${item.group} ${item.id}'.toLowerCase().contains(
+        pageQuery.toLowerCase(),
+      ))
+        item,
+  ];
+
+  Widget navItem(
+    ({String id, String title, IconData icon, String group}) item,
+  ) {
+    final colors = DshColors(context);
+    final selected = page == item.id;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Semantics(
+        selected: selected,
+        button: true,
+        child: Material(
+          color: selected ? colors.selected : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            key: ValueKey('settings-nav-${item.id}'),
+            borderRadius: BorderRadius.circular(8),
+            hoverColor: selected ? colors.selected : colors.hover,
+            onTap: () => selectPage(item.id),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              child: Row(
+                children: [
+                  DshGlyph(
+                    item.icon,
+                    size: 16,
+                    color: selected ? colors.text : colors.muted,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      item.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: DshTypography.body.copyWith(
+                        color: colors.text,
+                        fontWeight: selected
+                            ? FontWeight.w500
+                            : FontWeight.w400,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = DshColors(context);
@@ -265,10 +369,11 @@ class _SettingsShellState extends State<SettingsShell> {
           onPopInvokedWithResult: (didPop, _) {
             if (!didPop) close();
           },
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 2, sigmaY: 2),
+          // A plain scrim: a full-window blur renders in software on
+          // machines without a GPU and made opening and closing lag.
+          child: SizedBox.expand(
             child: ColoredBox(
-              color: Colors.black.withValues(alpha: colors.dark ? .5 : .24),
+              color: Colors.black.withValues(alpha: colors.dark ? .55 : .32),
               child: Dialog(
                 insetPadding: small
                     ? EdgeInsets.zero
@@ -350,13 +455,10 @@ class _SettingsShellState extends State<SettingsShell> {
                           child: ListView(
                             scrollDirection: Axis.horizontal,
                             children: [
-                              for (final item in settingsPages.where(
-                                (item) => '${item.title} ${item.id}'
-                                    .toLowerCase()
-                                    .contains(pageQuery.toLowerCase()),
-                              ))
+                              for (final item in visiblePages)
                                 DshButton(
                                   onPressed: () => selectPage(item.id),
+                                  active: page == item.id,
                                   child: Text(item.title),
                                 ),
                             ],
@@ -377,79 +479,27 @@ class _SettingsShellState extends State<SettingsShell> {
                                     12,
                                   ),
                                   children: [
-                                    for (final item in settingsPages.where(
-                                      (item) => '${item.title} ${item.id}'
-                                          .toLowerCase()
-                                          .contains(pageQuery.toLowerCase()),
-                                    ))
-                                      Padding(
-                                        padding: const EdgeInsets.only(
-                                          bottom: 4,
-                                        ),
-                                        child: Material(
-                                          color: page == item.id
-                                              ? colors.hover
-                                              : Colors.transparent,
-                                          borderRadius: BorderRadius.circular(
-                                            8,
+                                    for (final (index, item)
+                                        in visiblePages.indexed) ...[
+                                      if (pageQuery.isEmpty &&
+                                          (index == 0 ||
+                                              visiblePages[index - 1].group !=
+                                                  item.group))
+                                        Padding(
+                                          padding: EdgeInsets.fromLTRB(
+                                            12,
+                                            index == 0 ? 0 : 12,
+                                            12,
+                                            4,
                                           ),
-                                          child: InkWell(
-                                            borderRadius: BorderRadius.circular(
-                                              8,
-                                            ),
-                                            onTap: () => selectPage(item.id),
-                                            child: Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 9,
-                                                  ),
-                                              child: Row(
-                                                children: [
-                                                  DshGlyph(
-                                                    item.icon,
-                                                    size:
-                                                        [
-                                                          'environment',
-                                                          'trash',
-                                                          'memory',
-                                                          'collaboration',
-                                                          'security',
-                                                          'skills',
-                                                          'archive',
-                                                        ].contains(item.id)
-                                                        ? 18
-                                                        : 16,
-                                                    asset: const {
-                                                      'environment': 'assets/icons/web-nav-runtime-paths.svg',
-                                                      'memory': 'assets/icons/web-nav-memory.svg',
-                                                      'collaboration': 'assets/icons/web-nav-subagent.svg',
-                                                      'security': 'assets/icons/web-nav-security.svg',
-                                                      'skills': 'assets/icons/web-nav-capabilities.svg',
-                                                      'archive': 'assets/icons/web-nav-archived-sessions.svg',
-                                                      'trash': 'assets/icons/web-nav-trash.svg',
-                                                      'plugins': 'assets/icons/web-IconPersonalizationOutline16.svg',
-                                                      'discovery': 'assets/icons/web-IconSettingsOutline16.svg',
-                                                      'menu': 'assets/icons/web-IconSettingsOutline16.svg',
-                                                    }[item.id],
-                                                  ),
-                                                  const SizedBox(width: 11),
-                                                  Expanded(
-                                                    child: Text(
-                                                      item.title,
-                                                      style: const TextStyle(
-                                                        fontSize: DshTypography
-                                                            .sizeBody,
-                                                        height: 22 / 14,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
+                                          child: Text(
+                                            item.group,
+                                            style: DshTypography.caption
+                                                .copyWith(color: colors.muted),
                                           ),
                                         ),
-                                      ),
+                                      navItem(item),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -560,6 +610,7 @@ class _SettingsShellState extends State<SettingsShell> {
         controller: c,
         onSettingsChanged: load,
         initialTab: widget.initialModelTab,
+        initialAccountProvider: widget.initialAccountProvider,
         onDirtyChanged: (value) {
           if (mounted && modelDirty != value) {
             setState(() => modelDirty = value);
@@ -691,7 +742,6 @@ class _SettingsShellState extends State<SettingsShell> {
   );
 
   Widget general() {
-    final colors = DshColors(context);
     return ListView(
       children: [
         generalRow(
@@ -719,6 +769,11 @@ class _SettingsShellState extends State<SettingsShell> {
           DshSettingsZh.agentPresets,
           DshSettingsZh.defaultPresetHint,
           generalSelect('agent-presets', 'default', c.preset, {
+            // The saved default reads as a name before the list arrives.
+            for (final id in {
+              '${setting('agent-presets', 'default', c.preset)}',
+            })
+              id: optionLabels[id] ?? id,
             for (final p in c.presets)
               if (p['broken'] == null) '${p['id']}': '${p['name'] ?? p['id']}',
           }),
@@ -741,81 +796,25 @@ class _SettingsShellState extends State<SettingsShell> {
             'en': 'English',
           }),
         ),
-        Container(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            border: Border(bottom: BorderSide(color: colors.border)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        generalRow(
+          DshSettingsZh.appearance,
+          '',
+          Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                DshSettingsZh.appearance,
-                style: TextStyle(
-                  fontSize: DshTypography.sizeBody,
-                  height: 22 / 14,
+              for (final dark in [false, true]) ...[
+                if (dark) const SizedBox(width: 12),
+                ThemeSwatch(
+                  key: ValueKey('theme-${dark ? 'dark' : 'light'}'),
+                  dark: dark,
+                  selected: c.preferences.dark == dark,
+                  onTap: () {
+                    setState(() => c.preferences.dark = dark);
+                    c.emit();
+                    c.run(c.preferences.save);
+                  },
                 ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  for (final dark in [false, true]) ...[
-                    if (dark) const SizedBox(width: 8),
-                    Expanded(
-                      child: Semantics(
-                        checked: c.preferences.dark == dark,
-                        label: dark ? DshSettingsZh.dark : DshSettingsZh.light,
-                        child: Material(
-                          color: c.preferences.dark == dark
-                              ? colors.layer
-                              : colors.dark
-                              ? DshTokens.of(context).layer
-                              : colors.base,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
-                            side: BorderSide(
-                              color: c.preferences.dark == dark
-                                  ? colors.muted.withValues(alpha: .6)
-                                  : colors.border,
-                            ),
-                          ),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(18),
-                            onTap: () {
-                              setState(() => c.preferences.dark = dark);
-                              c.emit();
-                              c.run(c.preferences.save);
-                            },
-                            child: SizedBox(
-                              height: 82,
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  DshGlyph(
-                                    dark
-                                        ? DshIcons.moon.data
-                                        : DshIcons.sun.data,
-                                    size: 18,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    dark
-                                        ? DshSettingsZh.dark
-                                        : DshSettingsZh.light,
-                                    style: const TextStyle(
-                                      fontSize: DshTypography.sizeBody,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+              ],
             ],
           ),
         ),
@@ -1327,6 +1326,121 @@ class _NamespaceFormState extends State<NamespaceForm> {
       ),
       key: rowKey,
       expandControl: true,
+    );
+  }
+}
+
+/// A small preview of the window in one theme; the chosen theme is outlined
+/// in the accent colour.
+class ThemeSwatch extends StatelessWidget {
+  const ThemeSwatch({
+    super.key,
+    required this.dark,
+    required this.selected,
+    required this.onTap,
+  });
+  final bool dark, selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = DshColors(context);
+    final preview = dark ? DshTokens.dark : DshTokens.light;
+    Widget line(double width, Color color) => Container(
+      width: width,
+      height: 4,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(2),
+      ),
+    );
+    final label = dark ? DshSettingsZh.dark : DshSettingsZh.light;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedContainer(
+                duration: DshMotion.duration(context, DshMotion.quick),
+                width: 112,
+                height: 68,
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(11),
+                  border: Border.all(
+                    color: selected ? colors.blue : colors.border,
+                    width: selected ? 2 : 1,
+                  ),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Container(
+                        width: 28,
+                        color: preview.sidebar,
+                        padding: const EdgeInsets.fromLTRB(5, 8, 5, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            line(16, preview.muted.withValues(alpha: .5)),
+                            const SizedBox(height: 5),
+                            line(12, preview.muted.withValues(alpha: .35)),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: Container(
+                          color: preview.base,
+                          padding: const EdgeInsets.fromLTRB(7, 8, 7, 6),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: line(30, preview.bubble),
+                              ),
+                              const SizedBox(height: 6),
+                              line(46, preview.muted.withValues(alpha: .45)),
+                              const SizedBox(height: 4),
+                              line(34, preview.muted.withValues(alpha: .3)),
+                              const Spacer(),
+                              Container(
+                                height: 11,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: preview.border),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                style: DshTypography.caption.copyWith(
+                  color: selected ? colors.text : colors.muted,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

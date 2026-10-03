@@ -144,6 +144,8 @@ class DshButton extends StatelessWidget {
     this.focusNode,
     this.loading = false,
     this.tooltip,
+    this.iconColor,
+    this.textColor,
   });
   final Widget child;
   final VoidCallback? onPressed;
@@ -159,6 +161,9 @@ class DshButton extends StatelessWidget {
   final FocusNode? focusNode;
   final bool loading;
   final String? tooltip;
+
+  /// Overrides the leading glyph and label colours, e.g. for navigation.
+  final Color? iconColor, textColor;
   @override
   Widget build(BuildContext context) {
     final tokens = DshTokens.of(context);
@@ -169,11 +174,13 @@ class DshButton extends StatelessWidget {
       primary: primary,
       fontSize: fontSize,
     );
-    final foreground = destructive
-        ? tokens.error.foreground
-        : primary
-        ? tokens.onAccent
-        : tokens.text;
+    final foreground =
+        textColor ??
+        (destructive
+            ? tokens.error.foreground
+            : primary
+            ? tokens.onAccent
+            : tokens.text);
     final button = ShadButton.raw(
       variant: primary
           ? ShadButtonVariant.primary
@@ -240,7 +247,7 @@ class DshButton extends StatelessWidget {
                   )
           : icon == null
           ? null
-          : DshGlyph(icon, size: tokens.iconSize),
+          : DshGlyph(icon, size: tokens.iconSize, color: iconColor),
       trailing: trailing,
       textStyle: DshTypography.body.copyWith(
         fontSize: fontSize,

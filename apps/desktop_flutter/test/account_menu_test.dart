@@ -4,56 +4,92 @@ import 'package:dsh_desktop/features/account_menu.dart';
 import 'package:dsh_desktop/features/settings/settings_shell.dart';
 import 'package:dsh_desktop/src/app.dart';
 import 'package:dsh_desktop/src/controller.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import 'controller_test.dart' show MemoryPreferences;
 import 'workbench_tabs_test.dart' as fixture;
 
-void main() {
-  testWidgets(
-    'Settings remains direct and login details appear only after authorization',
-    (tester) async {
-      await tester.binding.setSurfaceSize(const Size(1440, 900));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      final api = fixture.TabApi();
-      final c = fixture.TabController(api);
-      await tester.pumpWidget(DesktopApp(controller: c));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const ValueKey('account-connection-menu')),
-        findsNothing,
-      );
-      expect(find.byKey(const Key('open-settings-direct')), findsOneWidget);
-      expect(find.byKey(const Key('open-schedule-direct')), findsOneWidget);
-      await tester.tap(find.byKey(const Key('open-settings-direct')));
-      await tester.pumpAndSettle();
-      expect(find.byType(SettingsShell), findsOneWidget);
-      expect(find.text('管理订阅账号'), findsNothing);
-      Navigator.pop(tester.element(find.byType(SettingsShell)));
-      await tester.pumpAndSettle();
-      c.subscriptionAccounts = [
-        {
-          'id': 'openai-codex',
-          'name': 'ChatGPT / Codex',
-          'signedIn': true,
-          'accounts': [
-            {'label': 'demo@example.test', 'active': true, 'needsLogin': false},
-          ],
-        },
-      ];
-      c.emit();
-      await tester.pumpAndSettle();
-      expect(find.text('账号'), findsOneWidget);
-      expect(find.byKey(const Key('open-settings-direct')), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-      await api.close();
-    },
+/// The Host lists every supported subscription provider, signed in or not.
+List<Json> hostProviders({bool attention = true}) => [
+  for (final id in [
+    'copilot',
+    'qwen-oauth',
+    'minimax-oauth',
+    'minimax-cn-oauth',
+    'nous',
+    'xai-oauth',
+  ])
+    {'id': id, 'name': id.toUpperCase(), 'signedIn': false, 'accounts': []},
+  {
+    'id': 'openai-codex',
+    'name': 'ChatGPT / Codex',
+    'signedIn': true,
+    'accounts': [
+      {
+        'accountScope': 'a',
+        'label': 'demo@example.test',
+        'active': true,
+        'needsLogin': false,
+      },
+    ],
+  },
+  {
+    'id': 'devin',
+    'name': 'Devin',
+    'signedIn': true,
+    'accounts': [
+      {
+        'accountScope': 'b',
+        'label': 'review@example.test',
+        'active': true,
+        'needsLogin': attention,
+      },
+    ],
+  },
+];
+
+Future<void> pumpMenu(
+  WidgetTester tester,
+  DesktopController c, {
+  required ValueChanged<String?> onManage,
+  VoidCallback? onModels,
+  ValueChanged<String>? onLogin,
+  bool compact = false,
+}) async {
+  await tester.binding.setSurfaceSize(const Size(1000, 800));
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+  await tester.pumpWidget(
+    ShadApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.bottomLeft,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: SizedBox(
+              width: compact ? 36 : 260,
+              child: AccountConnectionMenu(
+                controller: c,
+                compact: compact,
+                onManageAccounts: onManage,
+                onModels: onModels ?? () {},
+                onLogin: onLogin,
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
   );
+  await tester.pumpAndSettle();
+}
+
+Finder get trigger => find.byKey(const ValueKey('account-connection-menu'));
+Finder get panel => find.byKey(const ValueKey('account-menu-panel'));
+
+void main() {
   test('account labels are masked and authorization does not imply health', () {
     expect(maskedAccountLabel('demo@example.test'), 'de***@example.test');
     expect(maskedAccountLabel('abcdef0123456789'), 'ab…6789');
@@ -76,230 +112,217 @@ void main() {
       isFalse,
     );
   });
+
+  test('only connected providers are listed, those needing login first', () {
+    final linked = linkedAccountProviders(hostProviders());
+    expect(linked.map((p) => p['id']), ['devin', 'openai-codex']);
+    expect(
+      linkedAccountProviders(hostProviders(attention: false))
+          .map((p) => p['id']),
+      ['openai-codex', 'devin'],
+    );
+    expect(linkedAccountProviders(hostProviders().take(6).toList()), isEmpty);
+  });
+
+  testWidgets('without a connected account the entry opens settings directly', (
+    tester,
+  ) async {
+    final c = DesktopController(MemoryPreferences())
+      ..subscriptionAccounts = hostProviders().take(6).toList();
+    final opened = <String?>[];
+    await pumpMenu(tester, c, onManage: opened.add);
+    expect(find.text('登录订阅账号'), findsOneWidget);
+    await tester.tap(trigger);
+    await tester.pumpAndSettle();
+    expect(opened, [null]);
+    expect(panel, findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
   for (final compact in [false, true]) {
     testWidgets(
-      'account menu stays available without authorization compact=$compact',
+      'panel lists linked accounts above the trigger compact=$compact',
       (tester) async {
-        final c = DesktopController(MemoryPreferences());
-        var selected = '';
-        await tester.pumpWidget(
-          ShadApp(
-            home: Scaffold(
-              body: Align(
-                alignment: Alignment.bottomLeft,
-                child: SizedBox(
-                  width: compact ? 48 : 260,
-                  child: AccountConnectionMenu(
-                    controller: c,
-                    compact: compact,
-                    settingsShortcut: 'Ctrl+,',
-                    onAccounts: () => selected = 'accounts',
-                    onModels: () => selected = 'models',
-                    onSettings: () => selected = 'settings',
-                  ),
-                ),
-              ),
-            ),
-          ),
+        final c = DesktopController(MemoryPreferences())
+          ..subscriptionAccounts = hostProviders();
+        final managed = <String?>[], logins = <String>[];
+        var models = 0;
+        await pumpMenu(
+          tester,
+          c,
+          compact: compact,
+          onManage: managed.add,
+          onModels: () => models++,
+          onLogin: logins.add,
+        );
+        if (!compact) {
+          expect(find.text('订阅账号'), findsOneWidget);
+          expect(find.text('需重新登录'), findsOneWidget);
+        }
+        await tester.tap(trigger);
+        await tester.pumpAndSettle();
+        expect(panel, findsOneWidget);
+        // Never-used providers stay in settings, not in this panel.
+        for (final unused in ['COPILOT', 'NOUS', 'XAI-OAUTH']) {
+          expect(find.text(unused), findsNothing);
+        }
+        expect(find.text('ChatGPT / Codex'), findsOneWidget);
+        expect(find.text('Devin'), findsOneWidget);
+        expect(find.text('de***@example.test'), findsOneWidget);
+        expect(find.text('re***@example.test'), findsOneWidget);
+        expect(find.textContaining('demo@example.test'), findsNothing);
+        final panelRect = tester.getRect(panel);
+        final triggerRect = tester.getRect(trigger);
+        expect(panelRect.bottom, lessThanOrEqualTo(triggerRect.top));
+        expect(panelRect.left, closeTo(triggerRect.left, 8));
+        expect(
+          (Offset.zero & const Size(1000, 800)).contains(panelRect.topLeft),
+          isTrue,
+        );
+        // Devin needs a new sign-in, which starts from the panel itself.
+        expect(
+          find.byKey(const ValueKey('account-relogin-openai-codex')),
+          findsNothing,
+        );
+        await tester.tap(find.byKey(const ValueKey('account-relogin-devin')));
+        await tester.pumpAndSettle();
+        expect(logins, ['devin']);
+        expect(panel, findsNothing);
+        await tester.tap(trigger);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('account-provider-openai-codex')),
         );
         await tester.pumpAndSettle();
-        expect(find.byTooltip('账号与连接'), findsOneWidget);
-        await tester.tap(find.byKey(const ValueKey('account-connection-menu')));
+        expect(managed, ['openai-codex']);
+        await tester.tap(trigger);
         await tester.pumpAndSettle();
-        expect(find.text('尚未授权订阅账号'), findsOneWidget);
-        await tester.tap(find.text('API 连接与模型'));
+        await tester.tap(find.byKey(const ValueKey('account-menu-manage')));
         await tester.pumpAndSettle();
-        expect(selected, 'models');
-        await tester.tap(find.byKey(const ValueKey('account-connection-menu')));
+        expect(managed, ['openai-codex', null]);
+        await tester.tap(trigger);
         await tester.pumpAndSettle();
-        await tester.tap(find.text('设置'));
+        await tester.tap(find.byKey(const ValueKey('account-menu-models')));
         await tester.pumpAndSettle();
-        expect(selected, 'settings');
+        expect(models, 1);
+        await tester.tap(trigger);
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(panel, findsNothing);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
         c.dispose();
       },
     );
   }
-  testWidgets(
-    'Host change masks old account rows and blocks old menu actions',
-    (tester) async {
-      final c = DesktopController(MemoryPreferences())
-        ..subscriptionAccounts = [
-          {
-            'id': 'openai-codex',
-            'name': 'ChatGPT / Codex',
-            'signedIn': true,
-            'accounts': [
-              {
-                'label': 'demo@example.test',
-                'active': true,
-                'needsLogin': true,
-              },
-            ],
-          },
-        ];
-      var calls = 0;
-      await tester.pumpWidget(
-        ShadApp(
-          home: Scaffold(
-            body: AccountConnectionMenu(
-              controller: c,
-              settingsShortcut: 'Ctrl+,',
-              onAccounts: () => calls++,
-              onModels: () => calls++,
-              onSettings: () => calls++,
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('账号'), findsOneWidget);
-      expect(
-        tester.widget<DshTooltip>(find.byType(DshTooltip)).message,
-        contains('需重新登录'),
-      );
-      await tester.tap(find.byKey(const ValueKey('account-connection-menu')));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('de***@example.test'), findsOneWidget);
-      expect(find.textContaining('服务在线'), findsNothing);
-      c.host = HostInfo.fromJson({
-        'version': 'new',
-        'home': 'new',
-        'cwd': 'new',
-      });
-      c.emit();
-      await tester.pumpAndSettle();
-      expect(find.textContaining('de***@example.test'), findsNothing);
-      expect(find.text('连接已变化，请重新打开菜单'), findsOneWidget);
-      await tester.tap(find.text('管理订阅账号'));
-      await tester.pumpAndSettle();
-      expect(calls, 0);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-    },
-  );
-  for (final scale in [1.0, 2.0]) {
-    for (final accountCase in ['single', 'multiple', 'login-required']) {
-      testWidgets(
-        'account and Settings row heights match scale=$scale case=$accountCase',
-        (tester) async {
-          await tester.binding.setSurfaceSize(const Size(1440, 900));
-          tester.binding.platformDispatcher.textScaleFactorTestValue = scale;
-          addTearDown(() {
-            tester.binding.platformDispatcher.clearTextScaleFactorTestValue();
-            return tester.binding.setSurfaceSize(null);
-          });
-          final api = fixture.TabApi();
-          final c = fixture.TabController(api)
-            ..subscriptionAccounts = [
-              {
-                'id': 'openai-codex',
-                'name': 'ChatGPT / Codex',
-                'signedIn': true,
-                'accounts': [
-                  {
-                    'label': 'long-private-name@example.test',
-                    'active': true,
-                    'needsLogin': accountCase == 'login-required',
-                  },
-                ],
-              },
-              if (accountCase == 'multiple')
-                {
-                  'id': 'deepseek-account',
-                  'name': 'DeepSeek',
-                  'signedIn': true,
-                  'accounts': [
-                    {'label': 'second@example.test', 'active': true},
-                  ],
-                },
-            ];
-          await tester.pumpWidget(DesktopApp(controller: c));
-          await tester.pumpAndSettle();
-          final account = find.byKey(const ValueKey('account-connection-menu'));
-          final settings = find.byKey(const Key('open-settings-direct'));
-          final accountRect = tester.getRect(account);
-          final settingsRect = tester.getRect(settings);
-          expect(accountRect.height, closeTo(settingsRect.height, .01));
-          expect(accountRect.height, scale == 1 ? 36 : 58);
-          expect(accountRect.left, settingsRect.left);
-          expect(accountRect.width, settingsRect.width);
-          final rowText = tester.widget<Text>(
-            find.descendant(of: account, matching: find.byType(Text)),
-          );
-          expect(rowText.maxLines, 1);
-          expect(rowText.overflow, TextOverflow.ellipsis);
-          expect(rowText.data, '账号');
-          final tooltip = tester.widget<DshTooltip>(
-            find.ancestor(of: account, matching: find.byType(DshTooltip)),
-          );
-          expect(tooltip.message, contains('lo***@example.test'));
-          expect(tooltip.message, isNot(contains('long-private-name')));
-          expect(
-            tooltip.message,
-            contains(accountCase == 'login-required' ? '需重新登录' : '已授权'),
-          );
-          if (accountCase == 'multiple') {
-            expect(tooltip.message, contains('DeepSeek · se***@example.test'));
-          }
-          final mouse = await tester.createGesture(
-            kind: PointerDeviceKind.mouse,
-          );
-          await mouse.addPointer(location: Offset.zero);
-          await mouse.moveTo(accountRect.center);
-          await tester.pump(const Duration(milliseconds: 600));
-          await tester.pump(const Duration(milliseconds: 200));
-          expect(find.text(tooltip.message), findsOneWidget);
-          expect(find.textContaining('long-private-name'), findsNothing);
-          await mouse.removePointer();
-          await tester.pumpAndSettle();
-          await tester.tap(
-            find.byWidgetPredicate(
-              (widget) =>
-                  widget is DshIcon &&
-                  widget.icon == DshIcons.panelLeftClose.data,
-            ),
-          );
-          await tester.pumpAndSettle();
-          final compactAccountRect = tester.getRect(account);
-          final compactSettingsRect = tester.getRect(settings);
-          expect(compactAccountRect.height, compactSettingsRect.height);
-          expect(compactAccountRect.width, compactSettingsRect.width);
-          expect(compactAccountRect.size, const Size(36, 36));
-          expect(compactAccountRect.left, compactSettingsRect.left);
-          expect(tester.takeException(), isNull);
-          await tester.pumpWidget(const SizedBox());
-          c.dispose();
-          await api.close();
-        },
-      );
-    }
-  }
-  testWidgets('tools menu keeps knowledge and scheduled execution accessible', (
+
+  testWidgets('a Host change closes the panel and blocks its old actions', (
     tester,
   ) async {
-    var knowledge = 0, schedule = 0;
-    await tester.pumpWidget(
-      ShadApp(
-        home: Scaffold(
-          body: SidebarToolsMenu(
-            onKnowledge: () => knowledge++,
-            onSchedule: () => schedule++,
-          ),
-        ),
-      ),
+    final c = DesktopController(MemoryPreferences())
+      ..subscriptionAccounts = hostProviders();
+    var calls = 0;
+    await pumpMenu(
+      tester,
+      c,
+      onManage: (_) => calls++,
+      onLogin: (_) => calls++,
     );
-    await tester.tap(find.byKey(const Key('open-tools')));
+    await tester.tap(trigger);
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('open-knowledge')));
+    expect(find.text('re***@example.test'), findsOneWidget);
+    final staleRow = tester.widget<InkWell>(
+      find.byKey(const ValueKey('account-provider-devin')),
+    );
+    c.host = HostInfo.fromJson({'version': 'new', 'home': 'new', 'cwd': 'new'});
+    c.emit();
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('open-tools')));
+    expect(panel, findsNothing);
+    staleRow.onTap!();
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('open-schedule')));
+    expect(calls, 0);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  for (final scale in [1.0, 2.0]) {
+    testWidgets('sidebar footer keeps account and Settings in one row '
+        'scale=$scale', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1440, 900));
+      tester.binding.platformDispatcher.textScaleFactorTestValue = scale;
+      addTearDown(() {
+        tester.binding.platformDispatcher.clearTextScaleFactorTestValue();
+        return tester.binding.setSurfaceSize(null);
+      });
+      final api = fixture.TabApi();
+      final c = fixture.TabController(api)
+        ..subscriptionAccounts = hostProviders();
+      await tester.pumpWidget(DesktopApp(controller: c));
+      await tester.pumpAndSettle();
+      final settings = find.byKey(const Key('open-settings-direct'));
+      final accountRect = tester.getRect(trigger);
+      final settingsRect = tester.getRect(settings);
+      expect(accountRect.center.dy, closeTo(settingsRect.center.dy, .5));
+      expect(accountRect.right, lessThanOrEqualTo(settingsRect.left));
+      expect(accountRect.height, scale == 1 ? 36 : 58);
+      final title = tester.widget<Text>(
+        find.byKey(const ValueKey('account-connection-title')),
+      );
+      expect(title.maxLines, 1);
+      expect(title.overflow, TextOverflow.ellipsis);
+      expect(find.byTooltip('设置 · Ctrl+,'), findsOneWidget);
+      await tester.tap(settings);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<SettingsShell>(find.byType(SettingsShell)).initialPage,
+        'general',
+      );
+      Navigator.pop(tester.element(find.byType(SettingsShell)));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is DshIcon && widget.icon == DshIcons.panelLeftClose.data,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final compactAccount = tester.getRect(trigger);
+      final compactSettings = tester.getRect(settings);
+      expect(compactAccount.size, const Size(36, 36));
+      expect(compactAccount.size, compactSettings.size);
+      expect(compactAccount.left, compactSettings.left);
+      expect(compactAccount.bottom, lessThanOrEqualTo(compactSettings.top));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+      await api.close();
+    });
+  }
+
+  testWidgets('a provider row opens its own entry in account settings', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1440, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final api = fixture.TabApi();
+    final c = fixture.TabController(api)
+      ..subscriptionAccounts = hostProviders();
+    await tester.pumpWidget(DesktopApp(controller: c));
     await tester.pumpAndSettle();
-    expect(knowledge, 1);
-    expect(schedule, 1);
+    await tester.tap(trigger);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('account-provider-devin')));
+    await tester.pumpAndSettle();
+    final shell = tester.widget<SettingsShell>(find.byType(SettingsShell));
+    expect(shell.initialPage, 'models');
+    expect(shell.initialModelTab, 'accounts');
+    expect(shell.initialAccountProvider, 'devin');
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    await api.close();
   });
 }

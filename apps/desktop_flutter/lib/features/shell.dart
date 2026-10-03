@@ -15,6 +15,7 @@ import '../design/breakpoints.dart';
 import '../design/error.dart';
 import '../l10n/zh.dart';
 import '../l10n/conversation_zh.dart';
+import '../l10n/plugin_settings_zh.dart';
 import 'command_palette.dart';
 import '../src/controller.dart';
 import '../src/preferences.dart';
@@ -23,11 +24,13 @@ import 'conversation/feedback_controller.dart';
 import 'conversation/session_log_export.dart';
 import 'settings/settings_shell.dart';
 import 'settings/plugin_page.dart';
+import 'settings/models_page.dart' show AccountLoginDialog;
 import 'workbench/workbench_panel.dart';
 import 'workbench/plan_preview.dart';
 import '../src/resource_diagnostics.dart';
 import 'workspace_tree_row.dart';
 import 'sidebar_entries.dart';
+import 'row_menu.dart';
 import 'workspace_source_dialog.dart';
 import 'knowledge/knowledge_page.dart';
 import 'schedule/schedule_page.dart';
@@ -652,7 +655,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         id: 'schedule',
         group: DshZh.pagesGroup,
         title: DshShellZh.scheduledTasks,
-        icon: DshIcons.clock.data,
+        icon: DshIcons.alarmClock.data,
         onInvoke: () => openPanel('schedule'),
       ),
       DshCommand(
@@ -911,6 +914,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                               ),
                               if (mainPanel == 'schedule')
                                 Positioned.fill(
+                                  // Clears the floating sidebar button.
+                                  top: wide ? 0 : 48,
                                   child: SchedulePage(
                                     key: ValueKey((
                                       c.client,
@@ -926,6 +931,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                                 ),
                               if (mainPanel == 'knowledge')
                                 Positioned.fill(
+                                  // Clears the floating sidebar button.
+                                  top: wide ? 0 : 48,
                                   child: KnowledgePage(
                                     key: ValueKey((c.client, 'knowledge-page')),
                                     controller: c,
@@ -934,10 +941,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                                 ),
                               if (mainPanel == 'plugins')
                                 Positioned.fill(
+                                  // Clears the floating sidebar button.
+                                  top: wide ? 0 : 48,
                                   child: PluginPage(
                                     key: ValueKey((c.client, 'plugins-page')),
                                     controller: c,
                                     onOpenPlugin: openPlugin,
+                                    onClose: closePanel,
                                   ),
                                 ),
                               if (!wide)
@@ -1062,7 +1072,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     },
   );
 
-  Future<void> accountSettings() => showDialog<void>(
+  Future<void> accountSettings({String? provider}) => showDialog<void>(
     context: context,
     animationStyle: AnimationStyle(
       duration: DshMotion.duration(context, DshMotion.dialog),
@@ -1074,8 +1084,27 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       controller: c,
       initialPage: 'models',
       initialModelTab: 'accounts',
+      initialAccountProvider: provider,
     ),
   );
+
+  /// Signs in again from the sidebar without a detour through settings.
+  Future<void> accountLogin(String provider) async {
+    final api = c.client;
+    if (api == null || !c.connected) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AccountLoginDialog(
+        api: api,
+        provider: provider,
+        onComplete: () async {
+          if (!identical(api, c.client)) return;
+          await c.loadAccounts();
+          if (identical(api, c.client)) await c.loadCatalogs();
+        },
+      ),
+    );
+  }
 
   Widget headerMoreMenu() {
     final api = c.client, session = c.selectedId;
@@ -1210,12 +1239,19 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   Widget accountEntries({bool compact = false}) => AccountConnectionMenu(
     controller: c,
     compact: compact,
-    onlyWhenAuthorized: true,
-    showSettingsAction: false,
-    settingsShortcut: shortcutLabel(configuredShortcuts(c)['settings']!),
-    onAccounts: () => unawaited(accountSettings()),
+    onManageAccounts: (provider) =>
+        unawaited(accountSettings(provider: provider)),
     onModels: () => unawaited(settings('models')),
-    onSettings: () => unawaited(settings()),
+    onLogin: (provider) => unawaited(accountLogin(provider)),
+  );
+
+  Widget settingsButton() => DshIcon(
+    DshIcons.settings.data,
+    key: const Key('open-settings-direct'),
+    label: shortcutHint('settings', DshShellZh.settings),
+    size: 36,
+    color: DshColors(context).text,
+    onPressed: () => settings(),
   );
 
   Widget sidebarNavigationContent(
@@ -1365,13 +1401,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           ),
           const Spacer(),
           accountEntries(compact: true),
-          DshIcon(
-            DshIcons.settings.data,
-            key: const Key('open-settings-direct'),
-            label: shortcutHint('settings', DshShellZh.settings),
-            size: 36,
-            onPressed: () => settings(),
-          ),
+          const SizedBox(height: 4),
+          settingsButton(),
           const SizedBox(height: 12),
         ],
       ),
@@ -1450,6 +1481,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
               setGroupExpanded(id, true);
             },
             toggleKey: ValueKey('workspace-toggle-$id'),
+            menuKey: ValueKey('workspace-more-$id'),
             onToggle: () => toggleGroupExpansion(id),
             onMenu: (position) => workspaceMenu(workspace, position),
           ),
@@ -1677,22 +1709,19 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                     itemBuilder: (_, i) => rows[i],
                   ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                accountEntries(),
-                sidebarNavigation(
-                  key: const Key('open-settings-direct'),
-                  icon: DshIcons.settings.data,
-                  title: DshShellZh.settings,
-                  tooltip: shortcutHint('settings', DshShellZh.settings),
-                  trailing: shortcutBadge('settings'),
-                  onPressed: () => settings(),
-                ),
-              ],
+          DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: colors.border)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+              child: Row(
+                children: [
+                  Expanded(child: accountEntries()),
+                  const SizedBox(width: 4),
+                  settingsButton(),
+                ],
+              ),
             ),
           ),
         ],
@@ -1700,81 +1729,89 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     );
   }
 
-  Widget sessionRow(SessionSummary session) => Padding(
-    padding: const EdgeInsets.only(bottom: 2),
-    child: Material(
-      color: mainPanel == null && c.selectedId == session.id
-          ? DshColors(context).selected
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(7),
-      child: InkWell(
-        key: ValueKey('session-${session.id}'),
-        borderRadius: BorderRadius.circular(7),
-        hoverColor: mainPanel == null && c.selectedId == session.id
+  Widget sessionRow(SessionSummary session) => HoverRowActions(
+    builder: (context, revealed) => Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Material(
+        color: mainPanel == null && c.selectedId == session.id
             ? DshColors(context).selected
-            : DshColors(context).hover,
-        onTap: () => unawaited(openConversation(session.id)),
-        onSecondaryTapDown: (d) => sessionMenu(session, d.globalPosition),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(28, 5, 7, 5),
-          child: Row(
-            children: [
-              Expanded(
-                child: Tooltip(
-                  message: session.displayTitle,
-                  child: Text(
-                    session.displayTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: DshTypography.sizeBody),
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(7),
+        child: InkWell(
+          key: ValueKey('session-${session.id}'),
+          borderRadius: BorderRadius.circular(7),
+          hoverColor: mainPanel == null && c.selectedId == session.id
+              ? DshColors(context).selected
+              : DshColors(context).hover,
+          onTap: () => unawaited(openConversation(session.id)),
+          onSecondaryTapDown: (d) => sessionMenu(session, d.globalPosition),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(28, 5, 7, 5),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Tooltip(
+                    message: session.displayTitle,
+                    child: Text(
+                      session.displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: DshTypography.sizeBody),
+                    ),
                   ),
                 ),
-              ),
-              if (syncingSessions.contains(session.id))
-                const Tooltip(
-                  message: DshZh.syncing,
-                  child: SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                if (syncingSessions.contains(session.id))
+                  const Tooltip(
+                    message: DshZh.syncing,
+                    child: SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                    ),
                   ),
-                ),
-              if (syncFailures.containsKey(session.id))
-                DshIcon(
-                  DshIcons.rotateCcw.data,
-                  label: DshZh.syncFailure(session.displayTitle),
-                  onPressed: () => showSyncFailure(session),
-                ),
-              if (session.running)
-                const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(strokeWidth: 1.4),
-                ),
-              if (c.archivedSessionIds.contains(session.id))
-                Tooltip(
-                  message: DshShellZh.archived,
-                  child: DshGlyph(
-                    DshIcons.archive.data,
+                if (syncFailures.containsKey(session.id))
+                  DshIcon(
+                    DshIcons.rotateCcw.data,
+                    label: DshZh.syncFailure(session.displayTitle),
+                    onPressed: () => showSyncFailure(session),
+                  ),
+                if (session.running)
+                  const SizedBox(
+                    width: 10,
+                    height: 10,
+                    child: CircularProgressIndicator(strokeWidth: 1.4),
+                  ),
+                if (c.archivedSessionIds.contains(session.id))
+                  Tooltip(
+                    message: DshShellZh.archived,
+                    child: DshGlyph(
+                      DshIcons.archive.data,
+                      size: 13,
+                      color: DshColors(context).muted,
+                    ),
+                  ),
+                if (c.pending.values.any((f) => f.sessionId == session.id))
+                  DshGlyph(
+                    DshIcons.circleHelp.data,
                     size: 13,
-                    color: DshColors(context).muted,
+                    color: DshTokens.of(context).warning.foreground,
                   ),
-                ),
-              if (c.pending.values.any((f) => f.sessionId == session.id))
-                DshGlyph(
-                  DshIcons.circleHelp.data,
-                  size: 13,
-                  color: DshTokens.of(context).warning.foreground,
-                ),
-              if (!session.blank && session.updatedAt > 0)
-                Text(
-                  relativeSessionAge(session.updatedAt),
-                  style: TextStyle(
-                    fontSize: DshTypography.sizeCaption,
-                    color: DshColors(context).muted,
+                if (revealed)
+                  RowMoreButton(
+                    key: ValueKey('session-more-${session.id}'),
+                    label: DshShellZh.sessionActions,
+                    onMenu: (position) => sessionMenu(session, position),
+                  )
+                else if (!session.blank && session.updatedAt > 0)
+                  Text(
+                    relativeSessionAge(session.updatedAt),
+                    style: TextStyle(
+                      fontSize: DshTypography.sizeCaption,
+                      color: DshColors(context).muted,
+                    ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1782,28 +1819,43 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   );
   Future<void> sessionMenu(SessionSummary session, Offset pos) async {
     final ownerScope = connectionScope;
-    final action = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
-      items: [
-        const PopupMenuItem(
-          value: 'copy-id',
-          child: Text(DshShellZh.copySessionId),
+    final action = await showRowMenu<String>(context, pos, [
+      PopupMenuItem(
+        value: 'rename',
+        child: rowMenuLabel(context, DshIcons.pencil.data, DshShellZh.rename),
+      ),
+      PopupMenuItem(
+        value: 'fork',
+        child: rowMenuLabel(context, DshIcons.gitBranch.data, DshShellZh.fork),
+      ),
+      PopupMenuItem(
+        value: 'copy-id',
+        child: rowMenuLabel(
+          context,
+          DshIcons.copy.data,
+          DshShellZh.copySessionId,
         ),
-        const PopupMenuItem(value: 'rename', child: Text(DshShellZh.rename)),
-        const PopupMenuItem(value: 'fork', child: Text(DshShellZh.fork)),
-        if (c.archivedSessionIds.contains(session.id))
-          const PopupMenuItem(
-            value: 'restore',
-            child: Text(DshShellZh.restoreArchive),
-          )
-        else
-          const PopupMenuItem(
-            value: 'archive',
-            child: Text(DshShellZh.archive),
+      ),
+      const PopupMenuDivider(),
+      if (c.archivedSessionIds.contains(session.id))
+        PopupMenuItem(
+          value: 'restore',
+          child: rowMenuLabel(
+            context,
+            DshIcons.rotateCcw.data,
+            DshShellZh.restoreArchive,
           ),
-      ],
-    );
+        )
+      else
+        PopupMenuItem(
+          value: 'archive',
+          child: rowMenuLabel(
+            context,
+            DshIcons.archive.data,
+            DshShellZh.archive,
+          ),
+        ),
+    ]);
     if (!mounted || connectionScope != ownerScope) return;
     if (action == 'copy-id') {
       await Clipboard.setData(ClipboardData(text: session.id));
@@ -1905,24 +1957,34 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     final ownerScope = connectionScope;
     final api = c.client;
     if (api == null) return;
-    final action = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
-      items: [
-        const PopupMenuItem(
-          value: 'rename',
-          child: Text(DshShellZh.renameWorkspace),
+    final action = await showRowMenu<String>(context, pos, [
+      PopupMenuItem(
+        value: 'rename',
+        child: rowMenuLabel(
+          context,
+          DshIcons.pencil.data,
+          DshShellZh.renameWorkspace,
         ),
-        const PopupMenuItem(
-          value: 'open',
-          child: Text(DshShellZh.openInFileManager),
+      ),
+      PopupMenuItem(
+        value: 'open',
+        child: rowMenuLabel(
+          context,
+          DshIcons.folderOpen.data,
+          DshShellZh.openInFileManager,
         ),
-        const PopupMenuItem(
-          value: 'delete',
-          child: Text(DshShellZh.deleteWorkspace),
+      ),
+      const PopupMenuDivider(),
+      PopupMenuItem(
+        value: 'delete',
+        child: rowMenuLabel(
+          context,
+          DshIcons.trash2.data,
+          DshShellZh.deleteWorkspace,
+          destructive: true,
         ),
-      ],
-    );
+      ),
+    ]);
     if (!mounted || connectionScope != ownerScope) return;
     if (action == 'delete') {
       final confirmed = await confirmAction(
@@ -2122,18 +2184,27 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     ),
   );
 
+  /// Host entry ids are assigned per installation ("artifacts", "clock",
+  /// …); the module name is what identifies the plugin's own view.
   void openPlugin(Json row) {
-    final id = '${row['id'] ?? row['entryId'] ?? row['name'] ?? ''}';
+    final module = DshPluginSettingsZh.canonical(
+      '${row['moduleName'] ?? row['id'] ?? row['entryId'] ?? ''}',
+    );
+    if (module == 'dsh-schedule') {
+      openPanel('schedule');
+      return;
+    }
     closePanel();
-    if (id.contains('workbench') || id.contains('sidebar')) {
-      openDock('start');
-    } else if (id.contains('context')) {
-      conversationViewRequest.value = 'user-message-rail';
-    } else if (id == 'dsh-artifacts') {
-      conversationViewRequest.value = 'artifacts';
-    } else {
-      conversationViewRequest.value = 'conversation';
-      c.composerFocus.value++;
+    switch (module) {
+      case 'dsh-better-sidebar' || 'dsh-sidebar-workbench-suite':
+        openDock('start');
+      case 'dsh-context-jump':
+        conversationViewRequest.value = 'user-message-rail';
+      case 'dsh-artifacts':
+        conversationViewRequest.value = 'artifacts';
+      default:
+        conversationViewRequest.value = 'conversation';
+        c.composerFocus.value++;
     }
   }
 

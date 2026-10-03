@@ -111,7 +111,8 @@ void main() {
         ),
       );
       final button = find.byType(VoiceInputButton);
-      expect(tester.getSize(button), const Size(28, 28));
+      // The same quiet 32 px target as the other composer actions.
+      expect(tester.getSize(button), const Size(32, 32));
       final pointer = await tester.startGesture(tester.getCenter(button));
       await tester.pump();
       expect(starts, 1);

@@ -74,7 +74,7 @@ void main() {
     },
   );
   testWidgets(
-    'native close saves the unnamed draft before debounce and destroy',
+    'native close saves the unnamed draft before handing the close to Windows',
     (tester) async {
       final order = <String>[];
       final writes = <Json>[];
@@ -94,10 +94,11 @@ void main() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         windowChannel,
         (call) async {
-          order.add(call.method);
-          if (call.method == 'setPreventClose') {
-            expect(call.arguments, {'isPreventClose': true});
-          }
+          order.add(
+            call.method == 'setPreventClose'
+                ? 'setPreventClose:${object(call.arguments)['isPreventClose']}'
+                : call.method,
+          );
           return null;
         },
       );
@@ -115,7 +116,7 @@ void main() {
       c.setDraft('关闭前最后输入的草稿');
       await nativeClose(tester);
       await tester.pump();
-      expect(order, ['setPreventClose', 'save']);
+      expect(order, ['setPreventClose:true', 'save']);
       expect(object(writes.single['drafts'])[c.unnamedDraftKey], '关闭前最后输入的草稿');
       final closing = binding.requestClose();
       expect(binding.requestClose(), same(closing));
@@ -123,11 +124,21 @@ void main() {
       expect(writes, hasLength(1));
       saved.complete();
       await closing;
-      expect(order, ['setPreventClose', 'save', 'destroy']);
+      // Windows destroys the window inside its message loop; window_manager's
+      // destroy() left teardown to process exit, which crashed the engine.
+      expect(order, [
+        'setPreventClose:true',
+        'save',
+        'setPreventClose:false',
+        'close',
+      ]);
+      expect(order, isNot(contains('destroy')));
       expect(c.stopCalls, 0);
       expect(c.sessions.single.running, isTrue);
+      // The close Windows echoes back must not start another save.
       await nativeClose(tester);
-      expect(order.where((method) => method == 'destroy'), hasLength(1));
+      expect(order.where((method) => method == 'close'), hasLength(1));
+      expect(writes, hasLength(1));
       c.dispose();
     },
   );
@@ -172,14 +183,14 @@ void main() {
       expect(c.preferences.drafts['session'], '保留这份草稿');
       await binding.requestClose();
       expect(saves, 2);
-      expect(methods, ['setPreventClose', 'destroy']);
+      expect(methods, ['setPreventClose', 'setPreventClose', 'close']);
       expect(c.stopCalls, 0);
       c.dispose();
     },
   );
 
   testWidgets(
-    'edits made during a pending save are flushed before window destruction',
+    'edits made during a pending save are flushed before the window closes',
     (tester) async {
       final writes = <Json>[];
       final pending = Completer<void>();
@@ -195,7 +206,7 @@ void main() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         windowChannel,
         (call) async {
-          if (call.method == 'destroy') destroyed = true;
+          if (call.method == 'close') destroyed = true;
           return null;
         },
       );
@@ -238,7 +249,7 @@ void main() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         windowChannel,
         (call) async {
-          if (call.method == 'destroy') {
+          if (call.method == 'close') {
             destroys++;
             if (destroys == 1) await destroying.future;
           }

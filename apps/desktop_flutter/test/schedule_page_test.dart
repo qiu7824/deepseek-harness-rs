@@ -385,6 +385,7 @@ void main() {
       await pumpWidth(120);
       expect(find.text('定时任务'), findsNothing);
       expect(tester.takeException(), isNull);
+      // Large text that fits neither layout wraps instead of hiding labels.
       await pumpWidth(240, scale: 2);
       expect(find.text('定时任务'), findsOneWidget);
       expect(
@@ -462,7 +463,43 @@ class UnsupportedScheduleApi extends ScheduleApi {
   }
 }
 
+class RejectingScheduleApi extends ScheduleApi {
+  RejectingScheduleApi() : super(DshClient('http://127.0.0.1:9'));
+  @override
+  Future<Json> call(
+    String operation, [
+    Json body = const {},
+    RequestScope? scope,
+  ]) async =>
+      // What the client SDK raises when an older Host answers a bare 405.
+      throw DshException('unsupported', '本机服务版本较旧，不支持此功能');
+}
+
 void unsupportedHostTests() {
+  testWidgets('an older Host explains the update instead of a bare failure', (
+    tester,
+  ) async {
+    final c = controllerWithSessions();
+    await tester.pumpWidget(
+      ShadApp(
+        home: Scaffold(
+          body: SchedulePage(
+            controller: c,
+            api: RejectingScheduleApi(),
+            onClose: () {},
+            onOpenSession: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('本机服务不支持定时任务'), findsWidgets);
+    expect(find.textContaining('服务请求失败'), findsNothing);
+    expect(find.textContaining('http-405'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
   testWidgets(
     'a Host without scheduled tasks ends the watch instead of spinning',
     (tester) async {

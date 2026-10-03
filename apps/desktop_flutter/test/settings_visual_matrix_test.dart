@@ -111,7 +111,7 @@ class SettingsVisualClient extends DshClient {
               'moduleName': item.$2,
               'name': item.$2,
               'enabled': item.$3,
-            'fiberPhase': item.$3 ? 'active' : null,
+              'fiberPhase': item.$3 ? 'active' : null,
             },
         ],
       },
@@ -225,9 +225,7 @@ void main() {
             if (page == 'plugins') {
               expect(find.text('dsh-skin-center'), findsNothing);
               expect(find.text('active'), findsNothing);
-              final toggle = find.byKey(
-                const ValueKey('plugin-config-toggle-clock'),
-              );
+              final toggle = find.byKey(const ValueKey('plugin-row-clock'));
               final list = find
                   .descendant(
                     of: find.byType(SettingsResourcePage),

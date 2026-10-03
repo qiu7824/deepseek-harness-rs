@@ -613,12 +613,12 @@ class _SchedulePageState extends State<SchedulePage> {
       if (!current()) return null;
       if (request == _fetchRevision) {
         setState(
-          () => error = e is DshException && e.code == 'http-404'
+          () => error = isUnsupportedHost(e)
               ? DshScheduleZh.unsupportedHost
               : '$e',
         );
       }
-      if (e is DshException && e.code == 'http-404') return null;
+      if (isUnsupportedHost(e)) return null;
       rethrow;
     }
   }

@@ -32,7 +32,23 @@ abstract final class DshPluginSettingsZh {
   static String description(String name, String fallback) =>
       descriptions[canonical(name)] ?? fallback;
   static bool retired(String name) => canonical(name) == 'dsh-skin-center';
-  static String configured(bool enabled) => enabled ? '已启用' : '未启用';
+
+  /// Plugins with a page or view of their own in the desktop client.
+  static const openable = {
+    'dsh-artifacts',
+    'dsh-context-jump',
+    'dsh-better-sidebar',
+    'dsh-sidebar-workbench-suite',
+    'dsh-voice-input',
+    'dsh-schedule',
+  };
+  static String open(String title) => '打开$title';
+  static const disabled = '未启用';
+
+  /// Enablement and runtime phase read as one state: a disabled plugin is
+  /// not described by whatever its runtime last reported.
+  static String state(bool enabled, Object? phase) =>
+      enabled ? runtime(phase) : disabled;
   static String runtime(Object? phase) => switch (phase) {
     'active' => '运行中',
     'pending' => '等待依赖',
@@ -42,10 +58,10 @@ abstract final class DshPluginSettingsZh {
     null || '' => '未运行',
     _ => '状态未知',
   };
-  static String runtimeStatus(Object? phase) => '运行状态：${runtime(phase)}';
   static String toggle(String title) => '启用$title';
   static const pageHint = '管理插件与配置，为工作区扩展能力。';
   static const addPlugin = '添加插件';
+  static const backToSession = '返回会话';
   static const currentHost = '当前服务';
   static const searchPlugins = '搜索插件';
   static const experimental = '实验性';

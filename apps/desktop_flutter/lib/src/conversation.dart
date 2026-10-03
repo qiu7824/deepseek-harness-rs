@@ -1631,21 +1631,31 @@ class _ConversationState extends State<Conversation>
               ],
             ),
           ),
-        Container(
-          key: const ValueKey('composer-card'),
-          decoration: BoxDecoration(
-            color: colors.dark ? const Color(0xff2c2c2e) : colors.base,
-            border: Border.all(color: colors.border),
-            borderRadius: BorderRadius.circular(22),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(
-                  alpha: colors.dark ? 0.12 : 0.04,
-                ),
-                blurRadius: 14,
-                offset: const Offset(0, 3),
+        ListenableBuilder(
+          listenable: focus,
+          builder: (context, child) => AnimatedContainer(
+            key: const ValueKey('composer-card'),
+            duration: DshMotion.duration(context, DshMotion.quick),
+            curve: DshMotion.curve,
+            decoration: BoxDecoration(
+              color: colors.dark ? const Color(0xff2c2c2e) : colors.base,
+              border: Border.all(
+                color: focus.hasFocus
+                    ? colors.blue.withValues(alpha: colors.dark ? .7 : .45)
+                    : colors.border,
               ),
-            ],
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(
+                    alpha: colors.dark ? 0.16 : (focus.hasFocus ? .07 : .04),
+                  ),
+                  blurRadius: focus.hasFocus ? 18 : 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: child,
           ),
           child: Padding(
             padding: const EdgeInsets.only(top: 10),
@@ -1792,25 +1802,22 @@ class _ConversationState extends State<Conversation>
                             ComposerAction(
                               DshIcons.plus.data,
                               asset: 'assets/icons/composer-command.svg',
-                              glyphSize: 14,
                               label: DshConversationZh.commands,
                               onPressed: c.selectedId == null
                                   ? null
                                   : commandMenu,
                             ),
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 2),
                             ComposerAction(
                               DshIcons.link.data,
                               asset: 'assets/icons/composer-reference.svg',
-                              glyphSize: 14,
                               label: DshConversationZh.insertSession,
                               onPressed: referenceMenu,
                             ),
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 2),
                             ComposerAction(
                               DshIcons.attach.data,
                               asset: 'assets/icons/composer-attachment.svg',
-                              glyphSize: 18,
                               label: DshConversationZh.uploadFiles,
                               onPressed: pickFiles,
                             ),
@@ -1907,7 +1914,9 @@ class _ConversationState extends State<Conversation>
                                           width: 40,
                                           height: 40,
                                           padding: EdgeInsets.zero,
-                                          backgroundColor: colors.blue,
+                                          backgroundColor: canSend
+                                              ? colors.blue
+                                              : colors.layer,
                                           decoration: ShadDecoration(
                                             border: ShadBorder.all(
                                               radius: BorderRadius.circular(20),
@@ -1917,8 +1926,11 @@ class _ConversationState extends State<Conversation>
                                             c.sending
                                                 ? DshIcons.loaderCircle.data
                                                 : DshIcons.send.data,
-                                            size: 18,
-                                            color: colors.onAccent,
+                                            size: 16,
+                                            color: canSend
+                                                ? colors.onAccent
+                                                : DshTokens.of(context)
+                                                      .disabled,
                                           ),
                                         );
                                       },
@@ -2129,15 +2141,20 @@ class ComposerAction extends StatelessWidget {
         padding: EdgeInsets.zero,
         onPressed: onPressed,
         enabled: onPressed != null,
-        backgroundColor: backgroundColor ?? DshColors(context).layer,
+        backgroundColor: backgroundColor,
+        hoverBackgroundColor: DshColors(context).hover,
         decoration: ShadDecoration(
-          border: ShadBorder.all(radius: BorderRadius.circular(8), width: 0),
+          border: ShadBorder.all(radius: BorderRadius.circular(10), width: 0),
         ),
         child: DshGlyph(
           icon,
           asset: asset,
           size: glyphSize,
-          color: color ?? DshColors(context).text,
+          color:
+              color ??
+              (onPressed == null
+                  ? DshTokens.of(context).disabled
+                  : DshColors(context).muted),
         ),
       ),
     ),

@@ -18,6 +18,12 @@ import 'model_editor_widgets.dart';
 import 'task_models_page.dart';
 export 'task_models_page.dart' show TaskModelsPage;
 import '../../src/controller.dart';
+import '../account_menu.dart'
+    show
+        accountNeedsLogin,
+        activeAccount,
+        linkedAccountProviders,
+        maskedAccountLabel;
 
 import 'package:dsh_desktop/design/typography.dart';
 
@@ -53,11 +59,13 @@ class ModelsPage extends StatefulWidget {
     required this.controller,
     required this.onSettingsChanged,
     this.initialTab = 'api',
+    this.initialAccountProvider,
     this.onDirtyChanged,
   });
   final DesktopController controller;
   final Future<void> Function() onSettingsChanged;
   final String initialTab;
+  final String? initialAccountProvider;
   final ValueChanged<bool>? onDirtyChanged;
   @override
   State<ModelsPage> createState() => _ModelsPageState();
@@ -103,7 +111,9 @@ class _ModelsPageState extends State<ModelsPage> {
   final changes = <String, Json>{};
   final manual = <Json>[];
   final removed = <String>{};
-  final expandedAccounts = <String>{};
+  late final expandedAccounts = <String>{?widget.initialAccountProvider};
+  final focusedAccount = GlobalKey();
+  bool focusedAccountShown = false;
   late String tab = widget.initialTab;
   bool busy = false;
   bool accountLogoutOpen = false;
@@ -1360,8 +1370,332 @@ class _ModelsPageState extends State<ModelsPage> {
     );
   }
 
+  Future<void> login(Json account) => showDialog<void>(
+    context: context,
+    builder: (_) => AccountLoginDialog(
+      api: api,
+      provider: '${account['id']}',
+      onComplete: refreshAccountState,
+    ),
+  );
+
+  Widget accountStatus(Json account) {
+    final colors = DshColors(context);
+    final tokens = DshTokens.of(context);
+    final attention = accountNeedsLogin(account);
+    final signedIn = account['signedIn'] == true;
+    final tone = attention
+        ? tokens.warning
+        : signedIn
+        ? tokens.success
+        : null;
+    final label = attention
+        ? DshSettingsZh.loginRequired
+        : signedIn
+        ? DshSettingsZh.connected
+        : DshSettingsZh.disconnected;
+    return Container(
+      key: ValueKey('account-status-${account['id']}'),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: tone?.background,
+        border: Border.all(color: tone?.border ?? colors.border),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        '$label${account['scope'] == 'subagent' ? DshSettingsZh.subagentSuffix : ''}',
+        style: TextStyle(
+          fontSize: DshTypography.sizeCaption,
+          color: tone?.foreground ?? colors.muted,
+        ),
+      ),
+    );
+  }
+
+  Widget accountTile(Json account) {
+    final colors = DshColors(context);
+    final id = '${account['id']}';
+    final attention = accountNeedsLogin(account);
+    final signedIn = account['signedIn'] == true;
+    final label = signedIn || attention
+        ? maskedAccountLabel(activeAccount(account)?['label'])
+        : '';
+    final unavailable = account['installed'] == false;
+    // The one action a row needs stays visible without expanding it.
+    final inline = unavailable || (signedIn && !attention)
+        ? null
+        : DshButton(
+            key: ValueKey('account-inline-login-$id'),
+            outline: true,
+            height: 30,
+            fontSize: DshTypography.sizeAuxiliary,
+            onPressed: busy ? null : () => login(account),
+            child: Text(
+              attention ? DshSettingsZh.reloginShort : DshSettingsZh.login,
+            ),
+          );
+    final tile = Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: colors.border)),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          key: PageStorageKey('account-$id'),
+          initiallyExpanded: expandedAccounts.contains(id),
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(left: 28, bottom: 16),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          minTileHeight: 60,
+          controlAffinity: ListTileControlAffinity.leading,
+          leading: AnimatedRotation(
+            turns: expandedAccounts.contains(id) ? .25 : 0,
+            duration: DshMotion.duration(context, DshMotion.quick),
+            curve: DshMotion.curve,
+            child: DshGlyph(DshIcons.chevronRight.data, size: 16),
+          ),
+          onExpansionChanged: (open) => setState(() {
+            if (open) {
+              expandedAccounts.add(id);
+            } else {
+              expandedAccounts.remove(id);
+            }
+          }),
+          textColor: colors.text,
+          collapsedTextColor: colors.text,
+          title: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  '${account['name'] ?? account['id']}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: DshTypography.sizeBody,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              accountStatus(account),
+            ],
+          ),
+          subtitle: label.isEmpty
+              ? null
+              : Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: DshTypography.sizeCaption,
+                    color: colors.muted,
+                  ),
+                ),
+          trailing: inline,
+          children: [
+            if (account['error'] != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '${account['error']}',
+                  style: TextStyle(
+                    color: DshTokens.of(context).error.foreground,
+                    fontSize: DshTypography.sizeCaption,
+                  ),
+                ),
+              ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (signedIn)
+                  DshButton(
+                    outline: true,
+                    height: 32,
+                    fontSize: DshTypography.sizeAuxiliary,
+                    onPressed: busy || unavailable
+                        ? null
+                        : () => run(() async {
+                            await api.request(
+                              '/provider-auth/connect',
+                              body: {'provider': account['id']},
+                              mutation: true,
+                              scope: scope,
+                            );
+                            await refreshAccountState();
+                          }),
+                    child: Text(
+                      account['scope'] == 'subagent'
+                          ? DshSettingsZh.refresh
+                          : DshSettingsZh.reconnect,
+                    ),
+                  ),
+                if (signedIn && account['scope'] != 'subagent') ...[
+                  DshButton(
+                    outline: true,
+                    height: 32,
+                    fontSize: DshTypography.sizeAuxiliary,
+                    onPressed: busy || unavailable
+                        ? null
+                        : () => login(account),
+                    child: const Text(DshSettingsZh.loginAnotherAccount),
+                  ),
+                  DshButton(
+                    outline: true,
+                    destructive: true,
+                    height: 32,
+                    fontSize: DshTypography.sizeAuxiliary,
+                    onPressed: busy ? null : () => removeAccount(account),
+                    child: const Text(DshSettingsZh.signOut),
+                  ),
+                ],
+                if (!signedIn && !unavailable)
+                  DshButton(
+                    outline: true,
+                    height: 32,
+                    fontSize: DshTypography.sizeAuxiliary,
+                    onPressed: busy ? null : () => login(account),
+                    child: const Text(DshSettingsZh.login),
+                  ),
+                if (unavailable &&
+                    (account['installUrl'] is String ||
+                        account['docsUrl'] is String))
+                  DshButton(
+                    onPressed: () async {
+                      final uri = Uri.tryParse(
+                        '${account['installUrl'] ?? account['docsUrl']}',
+                      );
+                      if (uri != null && uri.scheme == 'https') {
+                        await launchUrl(
+                          uri,
+                          mode: LaunchMode.externalApplication,
+                        );
+                      }
+                    },
+                    child: const Text(DshSettingsZh.installClient),
+                  ),
+              ],
+            ),
+            if (account['scope'] != 'subagent')
+              for (final saved in objects(account['accounts']))
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: Text(
+                    maskedAccountLabel(
+                      saved['label'] ??
+                          saved['accountId'] ??
+                          saved['accountScope'],
+                    ),
+                    style: const TextStyle(
+                      fontSize: DshTypography.sizeAuxiliary,
+                    ),
+                  ),
+                  subtitle: saved['needsLogin'] == true
+                      ? const Text(
+                          DshSettingsZh.loginRequired,
+                          style: TextStyle(fontSize: DshTypography.sizeCaption),
+                        )
+                      : null,
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      DshButton(
+                        height: 30,
+                        fontSize: DshTypography.sizeCaption,
+                        onPressed:
+                            busy ||
+                                saved['active'] == true ||
+                                saved['needsLogin'] == true
+                            ? null
+                            : () => run(() async {
+                                await api.request(
+                                  '/provider-auth/switch',
+                                  body: {
+                                    'provider': account['id'],
+                                    'accountScope': saved['accountScope'],
+                                  },
+                                  mutation: true,
+                                  scope: scope,
+                                );
+                                await refreshAccounts();
+                                await api.request(
+                                  '/provider-auth/refresh',
+                                  body: {'provider': account['id']},
+                                  mutation: true,
+                                  scope: scope,
+                                );
+                                await refreshAccountState();
+                              }),
+                        child: Text(
+                          saved['active'] == true
+                              ? DshSettingsZh.currentAccount
+                              : DshSettingsZh.switchAccount,
+                        ),
+                      ),
+                      DshIcon(
+                        DshIcons.trash2.data,
+                        label: DshSettingsZh.removeAccount,
+                        onPressed: busy
+                            ? null
+                            : () => removeAccount(account, saved),
+                      ),
+                    ],
+                  ),
+                ),
+          ],
+        ),
+      ),
+    );
+    return id == widget.initialAccountProvider
+        ? KeyedSubtree(key: focusedAccount, child: tile)
+        : tile;
+  }
+
+  Widget accountSection(String title, List<Json> rows) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Padding(
+        padding: const EdgeInsets.only(top: 16, bottom: 2),
+        child: Text(
+          '$title · ${rows.length}',
+          style: TextStyle(
+            fontSize: DshTypography.sizeCaption,
+            color: DshColors(context).muted,
+          ),
+        ),
+      ),
+      for (final account in rows) accountTile(account),
+    ],
+  );
+
   Widget accountsView() {
     final colors = DshColors(context);
+    final linked = linkedAccountProviders(accounts);
+    final linkedIds = {for (final row in linked) row['id']};
+    final available = [
+      for (final row in accounts)
+        if (!linkedIds.contains(row['id'])) row,
+    ];
+    final focus = widget.initialAccountProvider;
+    if (!focusedAccountShown &&
+        focus != null &&
+        accounts.any((row) => row['id'] == focus)) {
+      focusedAccountShown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final target = focusedAccount.currentContext;
+        if (mounted && target != null) {
+          unawaited(
+            // Scrolls only when the provider is below the fold.
+            Scrollable.ensureVisible(
+              target,
+              alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+              duration: DshMotion.duration(context, DshMotion.quick),
+            ),
+          );
+        }
+      });
+    }
     return ListView(
       children: [
         Container(
@@ -1371,7 +1705,7 @@ class _ModelsPageState extends State<ModelsPage> {
             borderRadius: BorderRadius.circular(12),
           ),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Row(
                 children: [
@@ -1380,11 +1714,18 @@ class _ModelsPageState extends State<ModelsPage> {
                     style: TextStyle(fontSize: DshTypography.sizeBody),
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    '${accounts.where((a) => a['signedIn'] == true).length} / ${accounts.length}',
-                    style: TextStyle(
-                      fontSize: DshTypography.sizeCaption,
-                      color: colors.muted,
+                  Expanded(
+                    child: Text(
+                      DshSettingsZh.connectedCount(
+                        linked.length,
+                        accounts.length,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: DshTypography.sizeCaption,
+                        color: colors.muted,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1397,7 +1738,7 @@ class _ModelsPageState extends State<ModelsPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               Text(
                 DshSettingsZh.subscriptionLoginHint,
                 style: TextStyle(
@@ -1406,234 +1747,10 @@ class _ModelsPageState extends State<ModelsPage> {
                   color: colors.muted,
                 ),
               ),
-              const SizedBox(height: 8),
-              for (final account in accounts)
-                Container(
-                  decoration: BoxDecoration(
-                    border: Border(bottom: BorderSide(color: colors.border)),
-                  ),
-                  child: Theme(
-                    data: Theme.of(context)
-                        .copyWith(dividerColor: Colors.transparent),
-                    child: ExpansionTile(
-                      key: PageStorageKey('account-${account['id']}'),
-                      tilePadding: EdgeInsets.zero,
-                      childrenPadding: const EdgeInsets.only(bottom: 16),
-                      minTileHeight: 74,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      leading: AnimatedRotation(
-                        turns: expandedAccounts.contains('${account['id']}')
-                            ? .25
-                            : 0,
-                        duration: DshMotion.duration(context, DshMotion.quick),
-                        curve: DshMotion.curve,
-                        child: DshGlyph(DshIcons.chevronRight.data, size: 16),
-                      ),
-                      onExpansionChanged: (open) => setState(() {
-                        if (open) {
-                          expandedAccounts.add('${account['id']}');
-                        } else {
-                          expandedAccounts.remove('${account['id']}');
-                        }
-                      }),
-                      textColor: colors.text,
-                      collapsedTextColor: colors.text,
-                      title: Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              '${account['name'] ?? account['id']}',
-                              style: const TextStyle(
-                                fontSize: DshTypography.sizeBody,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              border: Border.all(color: colors.border),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              '${account['signedIn'] == true ? DshSettingsZh.connected : DshSettingsZh.disconnected}${account['scope'] == 'subagent' ? DshSettingsZh.subagentSuffix : ''}',
-                              style: TextStyle(
-                                fontSize: DshTypography.sizeCaption,
-                                color: colors.muted,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      children: [
-                        if (account['error'] != null)
-                          Text(
-                            '${account['error']}',
-                            style: TextStyle(
-                              color: DshTokens.of(context).error.foreground,
-                              fontSize: DshTypography.sizeCaption,
-                            ),
-                          ),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            DshButton(
-                              outline: true,
-                              height: 32,
-                              fontSize: DshTypography.sizeAuxiliary,
-                              onPressed: busy || account['installed'] == false
-                                  ? null
-                                  : account['signedIn'] == true
-                                  ? () => run(() async {
-                                      await api.request(
-                                        '/provider-auth/connect',
-                                        body: {'provider': account['id']},
-                                        mutation: true,
-                                        scope: scope,
-                                      );
-                                      await refreshAccountState();
-                                    })
-                                  : () => showDialog<void>(
-                                      context: context,
-                                      builder: (_) => AccountLoginDialog(
-                                        api: api,
-                                        provider: '${account['id']}',
-                                        onComplete: refreshAccountState,
-                                      ),
-                                    ),
-                              child: Text(
-                                account['signedIn'] == true
-                                    ? account['scope'] == 'subagent'
-                                          ? DshSettingsZh.refresh
-                                          : DshSettingsZh.reconnect
-                                    : DshSettingsZh.login,
-                              ),
-                            ),
-                            if (account['signedIn'] == true &&
-                                account['scope'] != 'subagent') ...[
-                              DshButton(
-                                outline: true,
-                                height: 32,
-                                fontSize: DshTypography.sizeAuxiliary,
-                                onPressed: busy || account['installed'] == false
-                                    ? null
-                                    : () => showDialog<void>(
-                                        context: context,
-                                        builder: (_) => AccountLoginDialog(
-                                          api: api,
-                                          provider: '${account['id']}',
-                                          onComplete: refreshAccountState,
-                                        ),
-                                      ),
-                                child: const Text(
-                                  DshSettingsZh.loginAnotherAccount,
-                                ),
-                              ),
-                              DshButton(
-                                outline: true,
-                                destructive: true,
-                                height: 32,
-                                fontSize: DshTypography.sizeAuxiliary,
-                                onPressed: busy
-                                    ? null
-                                    : () => removeAccount(account),
-                                child: const Text(DshSettingsZh.signOut),
-                              ),
-                            ],
-                            if (account['installed'] == false &&
-                                (account['installUrl'] is String ||
-                                    account['docsUrl'] is String))
-                              DshButton(
-                                onPressed: () async {
-                                  final uri = Uri.tryParse(
-                                    '${account['installUrl'] ?? account['docsUrl']}',
-                                  );
-                                  if (uri != null && uri.scheme == 'https') {
-                                    await launchUrl(
-                                      uri,
-                                      mode: LaunchMode.externalApplication,
-                                    );
-                                  }
-                                },
-                                child: const Text(DshSettingsZh.installClient),
-                              ),
-                          ],
-                        ),
-                        if (account['scope'] != 'subagent')
-                          for (final saved in objects(account['accounts']))
-                            ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              dense: true,
-                              title: Text(
-                                '${saved['label'] ?? saved['accountId'] ?? saved['accountScope']}',
-                                style: const TextStyle(
-                                  fontSize: DshTypography.sizeAuxiliary,
-                                ),
-                              ),
-                              subtitle: saved['needsLogin'] == true
-                                  ? const Text(
-                                      DshSettingsZh.loginRequired,
-                                      style: TextStyle(
-                                        fontSize: DshTypography.sizeCaption,
-                                      ),
-                                    )
-                                  : null,
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  DshButton(
-                                    height: 30,
-                                    fontSize: DshTypography.sizeCaption,
-                                    onPressed:
-                                        busy ||
-                                            saved['active'] == true ||
-                                            saved['needsLogin'] == true
-                                        ? null
-                                        : () => run(() async {
-                                            await api.request(
-                                              '/provider-auth/switch',
-                                              body: {
-                                                'provider': account['id'],
-                                                'accountScope':
-                                                    saved['accountScope'],
-                                              },
-                                              mutation: true,
-                                              scope: scope,
-                                            );
-                                            await refreshAccounts();
-                                            await api.request(
-                                              '/provider-auth/refresh',
-                                              body: {'provider': account['id']},
-                                              mutation: true,
-                                              scope: scope,
-                                            );
-                                            await refreshAccountState();
-                                          }),
-                                    child: Text(
-                                      saved['active'] == true
-                                          ? DshSettingsZh.currentAccount
-                                          : DshSettingsZh.switchAccount,
-                                    ),
-                                  ),
-                                  DshIcon(
-                                    DshIcons.trash2.data,
-                                    label: DshSettingsZh.removeAccount,
-                                    onPressed: busy
-                                        ? null
-                                        : () => removeAccount(account, saved),
-                                  ),
-                                ],
-                              ),
-                            ),
-                      ],
-                    ),
-                  ),
-                ),
+              if (linked.isNotEmpty)
+                accountSection(DshSettingsZh.linkedAccounts, linked),
+              if (available.isNotEmpty)
+                accountSection(DshSettingsZh.availableAccounts, available),
             ],
           ),
         ),

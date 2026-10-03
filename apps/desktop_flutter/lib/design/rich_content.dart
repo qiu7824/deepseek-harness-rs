@@ -113,12 +113,32 @@ class _DshMarkdownState extends State<DshMarkdown> {
           color: colors.text,
           backgroundColor: colors.layer,
         ),
-        codeblockDecoration: BoxDecoration(
-          color: colors.layer,
-          borderRadius: BorderRadius.circular(10),
+        // NativeCodeBlock draws its own frame; a second panel around it
+        // doubled the border.
+        codeblockDecoration: const BoxDecoration(),
+        codeblockPadding: EdgeInsets.zero,
+        // Tables read as a quiet grid: rounded outline, a tinted header row
+        // and lighter inner rules instead of a heavy HTML-style lattice.
+        tableBorder: TableBorder(
+          top: BorderSide(color: colors.border),
+          bottom: BorderSide(color: colors.border),
+          left: BorderSide(color: colors.border),
+          right: BorderSide(color: colors.border),
+          horizontalInside: BorderSide(
+            color: colors.border.withValues(alpha: .55),
+          ),
+          verticalInside: BorderSide(
+            color: colors.border.withValues(alpha: .55),
+          ),
+          borderRadius: BorderRadius.circular(8),
         ),
-        tableBorder: TableBorder.all(color: colors.border),
-        tableCellsPadding: const EdgeInsets.all(8),
+        tableHead: const TextStyle(fontWeight: FontWeight.w600),
+        tableHeadAlign: TextAlign.start,
+        tableHeadCellsDecoration: BoxDecoration(color: colors.layer),
+        tableCellsPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 8,
+        ),
         listIndent: full ? 18 : 24,
         listBulletPadding: full ? EdgeInsets.zero : null,
         blockquoteDecoration: BoxDecoration(
@@ -555,6 +575,7 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
   Widget build(BuildContext context) {
     final colors = DshColors(context);
     final mermaid = widget.language == 'mermaid';
+    final shown = widget.code.replaceFirst(RegExp(r'\s+$'), '');
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
@@ -598,21 +619,24 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                     DshIcons.wrapText.data,
                     label: DshConversationZh.wrapLines,
                     active: wrap,
+                    size: 28,
+                    glyphSize: 14,
                     onPressed: () => setState(() => wrap = !wrap),
                   ),
                 DshIcon(
                   DshIcons.copy.data,
                   label: DshConversationZh.copyCode,
-                  size: 25,
+                  size: 28,
+                  glyphSize: 14,
                   onPressed: () =>
                       Clipboard.setData(ClipboardData(text: widget.code)),
                 ),
               ],
             ),
           ),
-          const Divider(height: 1),
+          Divider(height: 1, color: colors.border.withValues(alpha: .7)),
           Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
             child: mermaid && !source && widget.code.length < 32768
                 ? MermaidDiagram(
                     code: widget.code,
@@ -635,13 +659,13 @@ class _NativeCodeBlockState extends State<NativeCodeBlock> {
                   )
                 : wrap
                 ? Text(
-                    widget.code,
+                    shown,
                     style: DshTypography.code.copyWith(color: colors.text),
                   )
                 : SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Text(
-                      widget.code,
+                      shown,
                       style: DshTypography.code.copyWith(color: colors.text),
                     ),
                   ),

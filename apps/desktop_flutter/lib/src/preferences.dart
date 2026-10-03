@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dsh_client/dsh_client.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 
 import 'desktop_paths.dart';
@@ -15,7 +16,12 @@ class DesktopPreferences {
     this.sessionId,
     this.dark = false,
     Future<void> Function(String content)? writer,
-  }) : _writer = writer ?? _writeFile;
+  }) : _writer = writer ?? debugDefaultWriter ?? _writeFile;
+
+  /// Replaces the default destination; the test runner points it away from
+  /// the real per-user preferences file.
+  @visibleForTesting
+  static Future<void> Function(String content)? debugDefaultWriter;
   final Future<void> Function(String content) _writer;
   String address, executable;
   String? sessionId;
@@ -34,7 +40,12 @@ class DesktopPreferences {
     Future<void> Function(String content)? writer,
   }) async {
     final source = fromFile ?? file;
-    final prefs = DesktopPreferences(writer: writer);
+    // Preferences read from an explicit file are saved back to that file.
+    final prefs = DesktopPreferences(
+      writer:
+          writer ??
+          (fromFile == null ? null : (content) => _writeTo(fromFile, content)),
+    );
     if (await source.exists()) {
       final data = object(jsonDecode(await source.readAsString()));
       prefs.address = data['address'] as String? ?? prefs.address;
@@ -77,11 +88,13 @@ class DesktopPreferences {
     });
   }
 
-  static Future<void> _writeFile(String content) async {
-    await file.parent.create(recursive: true);
-    final temporary = File('${file.path}.${newRequestId()}.tmp');
+  static Future<void> _writeFile(String content) => _writeTo(file, content);
+
+  static Future<void> _writeTo(File target, String content) async {
+    await target.parent.create(recursive: true);
+    final temporary = File('${target.path}.${newRequestId()}.tmp');
     await temporary.writeAsString(content, flush: true);
-    await temporary.rename(file.path);
+    await temporary.rename(target.path);
   }
 }
 

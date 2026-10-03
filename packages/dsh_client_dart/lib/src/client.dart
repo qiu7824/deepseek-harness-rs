@@ -197,15 +197,30 @@ class DshClient {
             bytes.takeBytes(),
             allowMalformed: true,
           );
-          String message = '服务请求失败';
+          String message = '服务请求失败（HTTP ${response.statusCode}）';
           Json details = const {};
+          var structured = false;
           try {
             final decoded = object(jsonDecode(errorBody));
             message = '${decoded['message'] ?? decoded['error'] ?? message}';
             // Routes report machine codes such as COMPUTER_USE_MANUAL_CONTROL
             // in the body; the status alone cannot distinguish them.
             details = decoded;
+            structured = true;
           } catch (_) {}
+          // Older Hosts answer routes and RPC methods they do not have with a
+          // bare 404/405; name the missing feature instead of a generic error.
+          if (!structured &&
+              (response.statusCode == 404 || response.statusCode == 405)) {
+            final feature = uri.path.startsWith('/api/')
+                ? uri.path.substring('/api/'.length)
+                : uri.path;
+            throw DshException(
+              'unsupported',
+              '本机服务版本较旧，不支持此功能（$feature）。请更新 DeepSeek Harness 服务后重试。',
+              details: {'status': response.statusCode, 'path': uri.path},
+            );
+          }
           throw DshException(
             'http-${response.statusCode}',
             message,

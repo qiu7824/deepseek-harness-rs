@@ -1,19 +1,18 @@
 abstract final class DshAccountMenuZh {
-  static const account = '账号';
-  static const title = '账号与连接';
-  static const add = '添加模型服务';
   static const subscription = '订阅账号';
-  static const manageAccounts = '管理订阅账号';
+  static const signIn = '登录订阅账号';
+  static const signInHint = '登录订阅账号，或配置 API 连接';
+  static const manageAccounts = '添加或管理订阅账号';
   static const apiModels = 'API 连接与模型';
-  static const noAccounts = '尚未授权订阅账号';
-  static const authorized = '已授权';
+  static const connected = '已连接';
   static const expired = '需重新登录';
-  static const notAuthorized = '未授权';
-  static const settings = '设置';
-  static const tools = '工具';
-  static const knowledge = '知识库';
-  static const schedule = '定时任务';
-  static const loginNeeded = '有账号需重新登录';
-  static const changed = '连接已变化，请重新打开菜单';
-  static String summary(int count) => '$count 项订阅服务已授权';
+  static const relogin = '重新登录';
+  static String providerDetails(String name) => '查看 $name 的账号';
+  static String reloginProvider(String name) => '重新登录 $name';
+
+  /// One short line for the trigger tooltip; account names stay in the panel.
+  static String summary(int linked, int attention) => [
+    if (linked - attention > 0) '${linked - attention} 个已连接',
+    if (attention > 0) '$attention 个需重新登录',
+  ].join(' · ');
 }

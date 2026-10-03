@@ -157,6 +157,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(PluginPage), findsOneWidget);
     expect(find.byKey(const Key('open-settings-direct')), findsOneWidget);
+    // Like knowledge and schedule, the plugin page returns to the session.
+    await tester.tap(find.byKey(const ValueKey('plugin-page-back')));
+    await tester.pumpAndSettle();
+    expect(find.byType(PluginPage), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

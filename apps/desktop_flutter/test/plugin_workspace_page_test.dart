@@ -156,9 +156,10 @@ void main() {
       expect(find.text('自动审批'), findsOneWidget);
       expect(find.text('example-plugin'), findsOneWidget);
       expect(find.text('自定义服务连接'), findsOneWidget);
-      expect(find.text('运行状态：未运行'), findsOneWidget);
-      expect(find.text('运行状态：状态未知'), findsOneWidget);
-      expect(find.text('运行状态：运行中'), findsNothing);
+      expect(find.text('未运行'), findsOneWidget);
+      expect(find.text('未启用'), findsOneWidget);
+      expect(find.text('状态未知'), findsNothing);
+      expect(find.text('运行中'), findsNothing);
       expect(find.text('实验性'), findsOneWidget);
       expect(find.text('官方'), findsNothing);
       expect(find.text('dsh-skin-center'), findsNothing);
@@ -202,6 +203,9 @@ void main() {
         scroll.position.jumpTo(5000);
         await tester.pumpAndSettle();
         expect(find.text('example-0'), findsNothing);
+        // The search field scrolls with the heading.
+        scroll.position.jumpTo(0);
+        await tester.pumpAndSettle();
         await tester.enterText(_search(), 'missing');
         await tester.pumpAndSettle();
         expect(_interval(), findsNothing);

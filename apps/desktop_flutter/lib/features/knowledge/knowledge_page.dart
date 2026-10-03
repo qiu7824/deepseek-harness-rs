@@ -186,7 +186,7 @@ class _KnowledgePageState extends State<KnowledgePage> {
     } catch (e) {
       if (current()) {
         setState(
-          () => error = e is DshException && e.code == 'http-404'
+          () => error = isUnsupportedHost(e)
               ? DshKnowledgeZh.unsupportedHost
               : '$e',
         );

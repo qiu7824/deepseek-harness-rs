@@ -209,7 +209,10 @@ ProductVisualController productVisualFixture(bool dark) {
             '- 下一步检查日志导出和资源管理。',
       ),
     ]
+    // The Host lists every supported provider; only two were ever used.
     ..subscriptionAccounts = [
+      for (final id in ['copilot', 'qwen-oauth', 'nous', 'xai-oauth'])
+        {'id': id, 'name': 'Unused $id', 'signedIn': false, 'accounts': []},
       {
         'id': 'openai-codex',
         'name': 'ChatGPT / Codex',
@@ -829,10 +832,9 @@ void main() {
           final accountRect = tester.getRect(account);
           final settingsRect = tester.getRect(settings);
           expect(accountRect.height, viewport.scale == 1 ? 36 : 58);
-          expect(accountRect.size, settingsRect.size);
-          expect(accountRect.left, settingsRect.left);
-          expect(find.text('账号'), findsOneWidget);
-          expect(accountRect.bottom, lessThanOrEqualTo(settingsRect.top));
+          expect(accountRect.center.dy, closeTo(settingsRect.center.dy, .5));
+          expect(accountRect.right, lessThanOrEqualTo(settingsRect.left));
+          expect(find.text('订阅账号'), findsOneWidget);
           if (viewport.size.width < 900) {
             await exportProductFrame(tester, boundary, '$prefix-sidebar');
           }
@@ -855,14 +857,24 @@ void main() {
           expect(schedule.hitTestable(), findsOneWidget);
           await tester.tap(account);
           await tester.pumpAndSettle();
+          final accountPanel = find.byKey(const ValueKey('account-menu-panel'));
+          expect(accountPanel, findsOneWidget);
+          expect(
+            tester.getRect(accountPanel).bottom,
+            lessThanOrEqualTo(tester.getRect(account).top),
+            reason: 'The account panel opens above its trigger',
+          );
           expect(find.text('ChatGPT / Codex'), findsOneWidget);
-          expect(find.textContaining('de***@example.test'), findsOneWidget);
-          expect(find.textContaining('re***@example.test'), findsOneWidget);
-          expect(find.text('de***@example.test · 已授权'), findsOneWidget);
-          expect(find.text('re***@example.test · 需重新登录'), findsOneWidget);
-          expect(find.text('管理订阅账号'), findsOneWidget);
+          expect(find.text('Claude'), findsOneWidget);
+          expect(find.textContaining('Unused'), findsNothing);
+          expect(find.text('de***@example.test'), findsOneWidget);
+          expect(find.text('re***@example.test'), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('account-relogin-anthropic')),
+            findsOneWidget,
+          );
+          expect(find.text('添加或管理订阅账号'), findsOneWidget);
           expect(find.text('API 连接与模型'), findsOneWidget);
-          expect(find.text('设置'), findsOneWidget);
           expect(find.text('demo@example.test'), findsNothing);
           expect(find.text('review@example.test'), findsNothing);
           expect(tester.takeException(), isNull);
@@ -874,7 +886,9 @@ void main() {
           controller.subscriptionAccounts = [];
           controller.emit();
           await tester.pumpAndSettle();
-          expect(account, findsNothing);
+          // Signing in stays one click away when nothing is connected.
+          expect(account, findsOneWidget);
+          expect(find.text('登录订阅账号'), findsOneWidget);
           expect(settings, findsOneWidget);
           expect(schedule, findsOneWidget);
           expect(settings.hitTestable(), findsOneWidget);
@@ -907,10 +921,10 @@ void main() {
           await exportProductFrame(tester, boundary, '$prefix-plugins');
           final pluginList = find
               .descendant(
-                of: find.byType(PluginPage),
+                of: find.byKey(const ValueKey('plugin-inventory-list')),
                 matching: find.byType(Scrollable),
               )
-              .last;
+              .first;
           final lastPlugin = find.byKey(const ValueKey('plugin-row-voice'));
           await tester.scrollUntilVisible(
             lastPlugin,

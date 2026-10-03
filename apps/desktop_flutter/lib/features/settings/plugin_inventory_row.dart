@@ -47,15 +47,15 @@ class PluginInventoryRow extends StatelessWidget {
       '${entry['description'] ?? ''}',
     );
     final phase = entry['fiberPhase'];
-    final active = phase == 'active';
+    final enabled = entry['enabled'] == true;
     final onTap = onConfigure ?? onOpen;
-    final radius = BorderRadius.circular(12);
+    final radius = BorderRadius.circular(10);
     final tone = switch (canonical) {
       'dsh-auto-review' || 'dsh-experimental-auto-review' => colors.success,
       'dsh-time-context' || 'dsh-schedule' => colors.info,
       _ => colors.muted,
     };
-    return Material(
+    final row = Material(
       color: Colors.transparent,
       borderRadius: radius,
       child: InkWell(
@@ -64,19 +64,19 @@ class PluginInventoryRow extends StatelessWidget {
         hoverColor: colors.hover,
         focusColor: colors.hover,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Container(
-                width: 48,
-                height: 48,
+                width: 40,
+                height: 40,
                 decoration: BoxDecoration(
                   color: tone.withValues(alpha: colors.dark ? .13 : .06),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: colors.border),
                 ),
-                child: DshGlyph(iconFor(canonical).data, size: 24, color: tone),
+                child: DshGlyph(iconFor(canonical).data, size: 20, color: tone),
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -128,52 +128,95 @@ class PluginInventoryRow extends StatelessWidget {
                       ),
                     ],
                     const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 3,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        Text(
-                          DshPluginSettingsZh.configured(
-                            entry['enabled'] == true,
-                          ),
-                          style: DshTypography.caption.copyWith(
-                            color: colors.muted,
-                          ),
-                        ),
-                        Text(
-                          DshPluginSettingsZh.runtimeStatus(phase),
-                          style: DshTypography.caption.copyWith(
-                            color: active ? colors.success : colors.muted,
-                          ),
-                        ),
-                      ],
+                    _PluginState(
+                      key: ValueKey('plugin-state-$canonical'),
+                      label: DshPluginSettingsZh.state(enabled, phase),
+                      color: !enabled
+                          ? colors.muted
+                          : switch (phase) {
+                              'active' => colors.success,
+                              'failed' => DshTokens.of(
+                                context,
+                              ).error.foreground,
+                              'pending' ||
+                              'loading' ||
+                              'unloading' => colors.warning,
+                              _ => colors.muted,
+                            },
                     ),
                   ],
                 ),
               ),
               const SizedBox(width: 12),
               if (onTap != null) ...[
-                DshGlyph(
-                  onConfigure != null && expanded
-                      ? DshIcons.chevronUp.data
-                      : DshIcons.chevronRight.data,
-                  color: colors.muted,
-                  size: 14,
+                DshTooltip(
+                  message: onConfigure != null
+                      ? (expanded
+                            ? DshPluginSettingsZh.collapseConfiguration
+                            : DshPluginSettingsZh.expandConfiguration)
+                      : DshPluginSettingsZh.open(title),
+                  child: DshGlyph(
+                    onConfigure == null
+                        ? DshIcons.chevronRight.data
+                        : expanded
+                        ? DshIcons.chevronUp.data
+                        : DshIcons.chevronDown.data,
+                    color: colors.muted,
+                    size: 14,
+                  ),
                 ),
                 const SizedBox(width: 12),
               ],
               Semantics(
                 label: DshPluginSettingsZh.toggle(title),
-                child: DshSwitch(
-                  value: entry['enabled'] == true,
-                  onChanged: onEnabledChanged,
-                ),
+                child: DshSwitch(value: enabled, onChanged: onEnabledChanged),
               ),
             ],
           ),
         ),
       ),
     );
+    return Semantics(
+      hint: onConfigure != null
+          ? DshPluginSettingsZh.configuration
+          : onOpen != null
+          ? DshPluginSettingsZh.open(title)
+          : null,
+      // Hairline separators keep the rows reading as one list.
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: colors.border.withValues(alpha: .6)),
+          ),
+        ),
+        child: Padding(padding: const EdgeInsets.only(bottom: 1), child: row),
+      ),
+    );
   }
+}
+
+class _PluginState extends StatelessWidget {
+  const _PluginState({super.key, required this.label, required this.color});
+  final String label;
+  final Color color;
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(
+        width: 6,
+        height: 6,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
+      const SizedBox(width: 6),
+      Flexible(
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: DshTypography.caption.copyWith(color: color),
+        ),
+      ),
+    ],
+  );
 }

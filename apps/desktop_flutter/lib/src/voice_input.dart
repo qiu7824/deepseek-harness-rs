@@ -174,7 +174,7 @@ class VoiceInputButton extends StatefulWidget {
 class _VoiceInputButtonState extends State<VoiceInputButton> {
   final focus = FocusNode();
   int? pointer;
-  bool held = false, focused = false;
+  bool held = false, focused = false, hovered = false;
   bool get enabled =>
       widget.supported && widget.onStart != null && !widget.stopping;
   void begin() {
@@ -266,26 +266,35 @@ class _VoiceInputButtonState extends State<VoiceInputButton> {
               onPointerCancel: (event) {
                 if (event.pointer == pointer) end();
               },
-              child: Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  color: widget.listening
-                      ? const Color(0x1fd92d20)
-                      : DshColors(context).layer,
-                  border: focused
-                      ? Border.all(color: DshColors(context).blue)
-                      : null,
-                ),
-                child: DshGlyph(
-                  DshIcons.mic.data,
-                  asset: 'assets/icons/voice-mic.svg',
-                  size: 16,
-                  color: widget.listening
-                      ? const Color(0xffd92d20)
-                      : DshColors(context).text
-                            .withValues(alpha: enabled ? 1 : .45),
+              // A quiet icon button like the other composer actions; the
+              // surface appears on hover and while listening.
+              child: MouseRegion(
+                onEnter: (_) => setState(() => hovered = true),
+                onExit: (_) => setState(() => hovered = false),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    color: widget.listening
+                        ? DshTokens.of(context).error.background
+                        : hovered && enabled
+                        ? DshColors(context).hover
+                        : Colors.transparent,
+                    border: focused
+                        ? Border.all(color: DshColors(context).focus)
+                        : null,
+                  ),
+                  child: DshGlyph(
+                    DshIcons.mic.data,
+                    asset: 'assets/icons/voice-mic.svg',
+                    size: 16,
+                    color: widget.listening
+                        ? DshTokens.of(context).error.foreground
+                        : enabled
+                        ? DshColors(context).muted
+                        : DshTokens.of(context).disabled,
+                  ),
                 ),
               ),
             ),

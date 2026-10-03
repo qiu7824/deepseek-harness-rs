@@ -62,9 +62,9 @@ class WindowLifecycleBinding with WindowListener {
   /// Repeated native close events share one attempt, including while the
   /// native destroy call is still pending. A failed attempt can be retried.
   Future<void> requestClose() {
-    if (_disposed || _closed) return Future.value();
     final existing = _closeAttempt;
     if (existing != null) return existing;
+    if (_disposed || _closed) return Future.value();
     final completion = Completer<void>();
     _closeAttempt = completion.future;
     unawaited(
@@ -93,8 +93,22 @@ class WindowLifecycleBinding with WindowListener {
       }
       if (_disposed) return;
       saved = true;
-      await windowManager.destroy();
+      // Hand the close back to Windows so the window is destroyed inside the
+      // message loop like any closing window. destroy() only posts a quit
+      // message and leaves teardown to process exit, where flutter_windows.dll
+      // faulted and Windows Error Reporting held the window for seconds.
       _closed = true;
+      try {
+        await windowManager.setPreventClose(false);
+        await windowManager.close();
+      } catch (_) {
+        _closed = false;
+        // The next close attempt must still save first.
+        try {
+          await windowManager.setPreventClose(true);
+        } catch (_) {}
+        rethrow;
+      }
     } catch (error) {
       if (!_disposed) {
         final detail = DshError.describe(error).message;

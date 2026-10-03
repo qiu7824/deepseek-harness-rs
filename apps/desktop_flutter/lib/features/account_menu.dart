@@ -1,8 +1,10 @@
-import 'dart:math' as math;
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../design/primitives.dart';
 import '../design/typography.dart';
@@ -32,35 +34,69 @@ bool accountNeedsLogin(Json provider) {
   );
 }
 
+String accountProviderName(Json provider) =>
+    '${provider['name'] ?? provider['id'] ?? ''}';
+
+Json? activeAccount(Json provider) {
+  final records = objects(provider['accounts']);
+  return records.where((row) => row['active'] == true).firstOrNull ??
+      records.firstOrNull;
+}
+
+/// Providers the person has connected, those needing a new sign-in first.
+/// Providers that were never used stay in the settings catalog.
+List<Json> linkedAccountProviders(List<Json> providers) {
+  final attention = <Json>[], healthy = <Json>[];
+  for (final provider in providers) {
+    if (accountNeedsLogin(provider)) {
+      attention.add(provider);
+    } else if (provider['signedIn'] == true) {
+      healthy.add(provider);
+    }
+  }
+  return [...attention, ...healthy];
+}
+
+/// The sidebar account entry. With nothing connected it opens settings
+/// directly; otherwise it anchors a short panel above itself that lists only
+/// connected providers and offers a direct re-login where one is needed.
 class AccountConnectionMenu extends StatefulWidget {
   const AccountConnectionMenu({
     super.key,
     required this.controller,
-    required this.onAccounts,
+    required this.onManageAccounts,
     required this.onModels,
-    required this.onSettings,
-    required this.settingsShortcut,
+    this.onLogin,
     this.compact = false,
-    this.onlyWhenAuthorized = false,
-    this.showSettingsAction = true,
   });
   final DesktopController controller;
-  final VoidCallback onAccounts, onModels, onSettings;
-  final String settingsShortcut;
+
+  /// Opens subscription settings, focused on one provider when given.
+  final ValueChanged<String?> onManageAccounts;
+  final VoidCallback onModels;
+
+  /// Starts a new sign-in for one provider; settings open when absent.
+  final ValueChanged<String>? onLogin;
   final bool compact;
-  final bool onlyWhenAuthorized, showSettingsAction;
   @override
   State<AccountConnectionMenu> createState() => _AccountConnectionMenuState();
 }
 
 class _AccountConnectionMenuState extends State<AccountConnectionMenu> {
-  Object? menuScope;
+  final popover = ShadPopoverController();
+  final trigger = FocusNode(debugLabel: 'account-trigger');
+  final panelFocus = FocusNode(debugLabel: 'account-panel');
+  Object? openedScope;
+  bool keyboardActive = false;
+  double triggerWidth = 0;
+
+  DesktopController get c => widget.controller;
   Object get scope => (
-    widget.controller,
-    widget.controller.client,
-    widget.controller.host,
+    c,
+    c.client,
+    c.host,
     jsonEncode([
-      for (final provider in widget.controller.subscriptionAccounts)
+      for (final provider in c.subscriptionAccounts)
         [
           provider['id'],
           provider['signedIn'],
@@ -75,261 +111,509 @@ class _AccountConnectionMenuState extends State<AccountConnectionMenu> {
         ],
     ]),
   );
+
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
-    builder: (context, _) {
-      final colors = DshColors(context);
-      final providers = widget.controller.subscriptionAccounts;
-      final authorized = providers
-          .where((provider) => provider['signedIn'] == true)
-          .length;
-      final needsLogin = providers.any(accountNeedsLogin);
-      if (widget.onlyWhenAuthorized && authorized == 0 && !needsLogin) {
-        return const SizedBox.shrink();
+  void initState() {
+    super.initState();
+    c.addListener(changed);
+    popover.addListener(syncKeyboard);
+  }
+
+  @override
+  void didUpdateWidget(AccountConnectionMenu oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, c)) {
+      oldWidget.controller.removeListener(changed);
+      c.addListener(changed);
+      changed();
+    }
+  }
+
+  @override
+  void dispose() {
+    c.removeListener(changed);
+    popover.removeListener(syncKeyboard);
+    if (keyboardActive) {
+      FocusManager.instance.removeEarlyKeyEventHandler(handleKey);
+    }
+    popover.dispose();
+    trigger.dispose();
+    panelFocus.dispose();
+    super.dispose();
+  }
+
+  void changed() {
+    if (!mounted) return;
+    // Rows belong to the connection and accounts they were opened for.
+    if (popover.isOpen && openedScope != scope) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) popover.hide();
+      });
+    }
+    setState(() {});
+  }
+
+  void syncKeyboard() {
+    if (popover.isOpen == keyboardActive) return;
+    keyboardActive = popover.isOpen;
+    if (keyboardActive) {
+      FocusManager.instance.addEarlyKeyEventHandler(handleKey);
+    } else {
+      FocusManager.instance.removeEarlyKeyEventHandler(handleKey);
+    }
+  }
+
+  KeyEventResult handleKey(KeyEvent event) {
+    if (!mounted ||
+        !popover.isOpen ||
+        event is! KeyDownEvent ||
+        event.logicalKey != LogicalKeyboardKey.escape ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return KeyEventResult.ignored;
+    }
+    close();
+    return KeyEventResult.handled;
+  }
+
+  void close({bool restoreFocus = true}) {
+    popover.hide();
+    if (!restoreFocus) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && ModalRoute.of(context)?.isCurrent != false) {
+        trigger.requestFocus();
       }
-      final accountDetails = [
-        DshAccountMenuZh.title,
-        for (final provider in providers)
-          [
-            '${provider['name'] ?? provider['id'] ?? ''}',
-            maskedAccountLabel(
-              (objects(provider['accounts'])
-                      .where((row) => row['active'] == true)
-                      .firstOrNull ??
-                  objects(provider['accounts']).firstOrNull)?['label'],
+    });
+  }
+
+  void toggle() {
+    if (popover.isOpen) {
+      close();
+      return;
+    }
+    if (linkedAccountProviders(c.subscriptionAccounts).isEmpty) {
+      widget.onManageAccounts(null);
+      return;
+    }
+    openedScope = scope;
+    popover.show();
+  }
+
+  /// Runs a panel action only for the accounts the panel was opened with.
+  void act(VoidCallback action) {
+    if (!popover.isOpen || openedScope != scope) return;
+    close(restoreFocus: false);
+    action();
+  }
+
+  Widget row({
+    required Key key,
+    required Widget child,
+    required VoidCallback onTap,
+    String? tooltip,
+  }) {
+    final colors = DshColors(context);
+    final radius = BorderRadius.circular(DshTokens.of(context).radiusControl);
+    final body = Material(
+      color: Colors.transparent,
+      borderRadius: radius,
+      child: InkWell(
+        key: key,
+        onTap: onTap,
+        borderRadius: radius,
+        hoverColor: colors.hover,
+        focusColor: colors.hover,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+          child: child,
+        ),
+      ),
+    );
+    return tooltip == null ? body : DshTooltip(message: tooltip, child: body);
+  }
+
+  Widget providerRow(Json provider) {
+    final colors = DshColors(context);
+    final tokens = DshTokens.of(context);
+    final id = '${provider['id'] ?? ''}';
+    final name = accountProviderName(provider);
+    final attention = accountNeedsLogin(provider);
+    final label = maskedAccountLabel(activeAccount(provider)?['label']);
+    return row(
+      key: ValueKey('account-provider-$id'),
+      tooltip: DshAccountMenuZh.providerDetails(name),
+      onTap: () => act(() => widget.onManageAccounts(id)),
+      child: Row(
+        children: [
+          _ProviderMark(name: name),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DshTypography.body.copyWith(color: colors.text),
+                ),
+                Text(
+                  label.isEmpty
+                      ? (attention
+                            ? DshAccountMenuZh.expired
+                            : DshAccountMenuZh.connected)
+                      : label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DshTypography.caption.copyWith(color: colors.muted),
+                ),
+              ],
             ),
-            accountNeedsLogin(provider)
-                ? DshAccountMenuZh.expired
-                : provider['signedIn'] == true
-                ? DshAccountMenuZh.authorized
-                : DshAccountMenuZh.notAuthorized,
-          ].where((part) => part.isNotEmpty).join(' · '),
-      ].join('\n');
-      return DshTooltip(
-        message: accountDetails,
-        child: PopupMenuButton<String>(
-          key: const ValueKey('account-connection-menu'),
-          tooltip: '',
-          borderRadius: BorderRadius.circular(
-            DshTokens.of(context).radiusControl,
           ),
-          position: PopupMenuPosition.over,
-          constraints: BoxConstraints(
-            maxWidth: math.min(380, MediaQuery.sizeOf(context).width - 32),
+          const SizedBox(width: 8),
+          if (attention)
+            DshButton(
+              key: ValueKey('account-relogin-$id'),
+              outline: true,
+              height: 28,
+              fontSize: DshTypography.sizeCaption,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              tooltip: DshAccountMenuZh.reloginProvider(name),
+              onPressed: () => act(() {
+                final login = widget.onLogin;
+                if (login == null) {
+                  widget.onManageAccounts(id);
+                } else {
+                  login(id);
+                }
+              }),
+              child: Text(
+                DshAccountMenuZh.relogin,
+                style: TextStyle(color: tokens.warning.foreground),
+              ),
+            )
+          else
+            Semantics(
+              label: DshAccountMenuZh.connected,
+              child: _StatusDot(color: tokens.success.foreground),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget actionRow(Key key, IconData icon, String title, VoidCallback onTap) {
+    final colors = DshColors(context);
+    return row(
+      key: key,
+      onTap: () => act(onTap),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 28,
+            child: DshGlyph(icon, size: 16, color: colors.muted),
           ),
-          onOpened: () {
-            Tooltip.dismissAllToolTips();
-            menuScope = scope;
-          },
-          onSelected: (value) {
-            if (menuScope != scope) return;
-            switch (value) {
-              case 'accounts':
-                widget.onAccounts();
-              case 'models':
-                widget.onModels();
-              case 'settings':
-                widget.onSettings();
-            }
-          },
-          itemBuilder: (context) {
-            final capturedScope = scope;
-            return [
-              PopupMenuItem<String>(
-                enabled: false,
-                child: Text(
-                  DshAccountMenuZh.subscription,
-                  style: TextStyle(
-                    fontSize: DshTypography.sizeCaption,
-                    color: colors.muted,
-                  ),
-                ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: DshTypography.body.copyWith(color: colors.text),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget panel(BuildContext context) {
+    if (!popover.isOpen || openedScope != scope) {
+      return const SizedBox.shrink();
+    }
+    final colors = DshColors(context);
+    final size = MediaQuery.sizeOf(context);
+    final linked = linkedAccountProviders(c.subscriptionAccounts);
+    // Large text widens the panel before names start to truncate.
+    final scale = MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.4);
+    final width = math.min(
+      math.max(120.0, size.width - 24),
+      math
+          .max(widget.compact ? 280.0 : triggerWidth, 248.0 * scale)
+          .clamp(0, 360),
+    );
+    return DefaultTextStyle(
+      style: DshTypography.body.copyWith(color: colors.text),
+      child: Shortcuts(
+        shortcuts: const {
+          SingleActivator(LogicalKeyboardKey.arrowDown): NextFocusIntent(),
+          SingleActivator(LogicalKeyboardKey.arrowUp): PreviousFocusIntent(),
+        },
+        child: Focus(
+          focusNode: panelFocus,
+          autofocus: true,
+          child: FocusTraversalGroup(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: math.max(160, math.min(440, size.height - 120)),
               ),
-              if (providers.isEmpty)
-                const PopupMenuItem<String>(
-                  enabled: false,
-                  child: Text(DshAccountMenuZh.noAccounts),
-                ),
-              for (final provider in providers)
-                PopupMenuItem<String>(
-                  enabled: false,
-                  child: ListenableBuilder(
-                    listenable: widget.controller,
-                    builder: (context, _) {
-                      if (capturedScope != scope) {
-                        return const Text(DshAccountMenuZh.changed);
-                      }
-                      final records = objects(provider['accounts']);
-                      final active = records
-                          .where((row) => row['active'] == true)
-                          .firstOrNull;
-                      final label = maskedAccountLabel(
-                        (active ?? records.firstOrNull)?['label'],
-                      );
-                      final state = accountNeedsLogin(provider)
-                          ? DshAccountMenuZh.expired
-                          : provider['signedIn'] == true
-                          ? DshAccountMenuZh.authorized
-                          : DshAccountMenuZh.notAuthorized;
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '${provider['name'] ?? provider['id'] ?? ''}',
-                              style: TextStyle(
-                                color: colors.text,
-                                fontSize: DshTypography.sizeBody,
-                              ),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              [if (label.isNotEmpty) label, state].join(' · '),
-                              style: TextStyle(
-                                color: colors.muted,
-                                fontSize: DshTypography.sizeCaption,
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'accounts',
-                child: Text(DshAccountMenuZh.manageAccounts),
-              ),
-              const PopupMenuItem(
-                value: 'models',
-                child: Text(DshAccountMenuZh.apiModels),
-              ),
-              if (widget.showSettingsAction) const PopupMenuDivider(),
-              if (widget.showSettingsAction)
-                PopupMenuItem(
-                  value: 'settings',
-                  child: Wrap(
-                    spacing: 16,
-                    runSpacing: 4,
+              child: SizedBox(
+                key: const ValueKey('account-menu-panel'),
+                width: width.toDouble(),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text(DshAccountMenuZh.settings),
-                      Text(
-                        widget.settingsShortcut,
-                        style: TextStyle(
-                          color: colors.muted,
-                          fontSize: DshTypography.sizeCaption,
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+                        child: Text(
+                          DshAccountMenuZh.subscription,
+                          style: DshTypography.caption.copyWith(
+                            color: colors.muted,
+                          ),
                         ),
+                      ),
+                      for (final provider in linked) providerRow(provider),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Divider(height: 1, color: colors.border),
+                      ),
+                      actionRow(
+                        const ValueKey('account-menu-manage'),
+                        DshIcons.users.data,
+                        DshAccountMenuZh.manageAccounts,
+                        () => widget.onManageAccounts(null),
+                      ),
+                      actionRow(
+                        const ValueKey('account-menu-models'),
+                        DshIcons.database.data,
+                        DshAccountMenuZh.apiModels,
+                        widget.onModels,
                       ),
                     ],
                   ),
                 ),
-            ];
-          },
-          child: SizedBox(
-            width: widget.compact ? DshTokens.of(context).controlMinimum : null,
-            height: widget.compact
-                ? DshTokens.of(context).controlMinimum
-                : DshTokens.of(context).controlHeight(context),
-            child: Padding(
-              padding: EdgeInsets.symmetric(
-                horizontal: widget.compact ? 6 : 12,
-              ),
-              child: Row(
-                mainAxisSize: widget.compact
-                    ? MainAxisSize.min
-                    : MainAxisSize.max,
-                children: [
-                  DshGlyph(
-                    DshIcons.users.data,
-                    size: 16,
-                    color: needsLogin ? colors.warning : colors.text,
-                  ),
-                  if (!widget.compact) ...[
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        DshAccountMenuZh.account,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: DshTypography.body.copyWith(color: colors.text),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    DshGlyph(
-                      DshIcons.chevronUp.data,
-                      size: 14,
-                      color: colors.muted,
-                    ),
-                  ],
-                ],
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget triggerButton(BuildContext context) {
+    final colors = DshColors(context);
+    final tokens = DshTokens.of(context);
+    final linked = linkedAccountProviders(c.subscriptionAccounts);
+    final attention = linked.where(accountNeedsLogin).length;
+    final dot = linked.isEmpty
+        ? null
+        : attention > 0
+        ? tokens.warning.foreground
+        : tokens.success.foreground;
+    final tooltip = linked.isEmpty
+        ? DshAccountMenuZh.signInHint
+        : '${DshAccountMenuZh.subscription}：'
+              '${DshAccountMenuZh.summary(linked.length, attention)}';
+    final mark = SizedBox(
+      width: 20,
+      height: 20,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Center(
+            child: DshGlyph(
+              DshIcons.users.data,
+              size: 16,
+              color: linked.isEmpty ? colors.muted : colors.text,
+            ),
+          ),
+          if (dot != null)
+            Positioned(
+              right: -1,
+              top: -1,
+              child: _StatusDot(color: dot, ring: colors.sidebar),
+            ),
+        ],
+      ),
+    );
+    if (widget.compact) {
+      // Icon-only like the other rail buttons; text scale does not grow it.
+      return Semantics(
+        label: tooltip,
+        button: true,
+        child: SizedBox.square(
+          key: const ValueKey('account-connection-menu'),
+          dimension: 36,
+          child: DshButton(
+            focusNode: trigger,
+            tooltip: tooltip,
+            width: 36,
+            height: 36,
+            padding: EdgeInsets.zero,
+            active: popover.isOpen,
+            onPressed: toggle,
+            child: mark,
+          ),
+        ),
+      );
+    }
+    final title = linked.isEmpty
+        ? DshAccountMenuZh.signIn
+        : linked.length == 1
+        ? accountProviderName(linked.single)
+        : DshAccountMenuZh.subscription;
+    // Large text keeps the title; the status dot and tooltip still carry
+    // the sign-in warning.
+    final roomy = MediaQuery.textScalerOf(context).scale(1) < 1.5;
+    final Widget? trailing = attention > 0 && roomy
+        ? Text(
+            DshAccountMenuZh.expired,
+            maxLines: 1,
+            style: DshTypography.caption.copyWith(
+              color: tokens.warning.foreground,
+            ),
+          )
+        : linked.length > 1
+        ? _CountBadge(count: linked.length)
+        : linked.isNotEmpty
+        ? DshGlyph(DshIcons.chevronUp.data, size: 14, color: colors.muted)
+        : null;
+    return Semantics(
+      label: tooltip,
+      button: true,
+      child: DshButton(
+        key: const ValueKey('account-connection-menu'),
+        focusNode: trigger,
+        tooltip: tooltip,
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        active: popover.isOpen,
+        onPressed: toggle,
+        child: Expanded(
+          child: Row(
+            children: [
+              mark,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  key: const ValueKey('account-connection-title'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.start,
+                  style: DshTypography.body.copyWith(
+                    color: linked.isEmpty ? colors.muted : colors.text,
+                  ),
+                ),
+              ),
+              if (trailing != null) ...[const SizedBox(width: 6), trailing],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      if (constraints.maxWidth.isFinite) triggerWidth = constraints.maxWidth;
+      return ShadPopover(
+        controller: popover,
+        padding: const EdgeInsets.all(6),
+        // Above the trigger, aligned with its left edge; never covering it.
+        anchor: const ShadAnchorAuto(
+          targetAnchor: Alignment.topLeft,
+          followerAnchor: Alignment.topRight,
+          offset: Offset(0, -6),
+          fallback: ShadAnchorAuto(
+            targetAnchor: Alignment.bottomLeft,
+            followerAnchor: Alignment.bottomRight,
+            offset: Offset(0, 6),
+          ),
+        ),
+        popover: panel,
+        child: triggerButton(context),
       );
     },
   );
 }
 
-class SidebarToolsMenu extends StatelessWidget {
-  const SidebarToolsMenu({
-    super.key,
-    required this.onKnowledge,
-    required this.onSchedule,
-    this.compact = false,
-    this.showSchedule = true,
-  });
-  final VoidCallback onKnowledge, onSchedule;
-  final bool compact;
-  final bool showSchedule;
+class _ProviderMark extends StatelessWidget {
+  const _ProviderMark({required this.name});
+  final String name;
   @override
-  Widget build(BuildContext context) => PopupMenuButton<String>(
-    key: const Key('open-tools'),
-    tooltip: DshAccountMenuZh.tools,
-    onSelected: (value) => value == 'knowledge' ? onKnowledge() : onSchedule(),
-    itemBuilder: (_) => [
-      const PopupMenuItem(
-        key: Key('open-knowledge'),
-        value: 'knowledge',
-        child: Text(DshAccountMenuZh.knowledge),
-      ),
-      if (showSchedule)
-        const PopupMenuItem(
-          key: Key('open-schedule'),
-          value: 'schedule',
-          child: Text(DshAccountMenuZh.schedule),
-        ),
-    ],
-    child: Container(
-      constraints: BoxConstraints(
-        minHeight: DshTokens.of(context).controlHeight(context),
-        minWidth: 36,
-      ),
-      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
+  Widget build(BuildContext context) {
+    final colors = DshColors(context);
+    final initial = name.trim().isEmpty
+        ? '?'
+        : name.trim().characters.first.toUpperCase();
+    return Container(
+      width: 28,
+      height: 28,
+      alignment: Alignment.center,
       decoration: BoxDecoration(
-        border: Border.all(color: DshColors(context).border),
+        color: colors.layer,
         borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.border),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          DshGlyph(
-            DshIcons.wrench.data,
-            size: 16,
-            color: DshColors(context).text,
+      // A decorative initial; the provider name beside it carries the text.
+      child: ExcludeSemantics(
+        child: Text(
+          initial,
+          textScaler: TextScaler.noScaling,
+          style: DshTypography.auxiliary.copyWith(
+            color: colors.text,
+            fontWeight: FontWeight.w600,
+            height: 1,
           ),
-          if (!compact) ...[
-            const SizedBox(width: 7),
-            const Text(
-              DshAccountMenuZh.tools,
-              style: TextStyle(fontSize: DshTypography.sizeAuxiliary),
-            ),
-          ],
-        ],
+        ),
       ),
+    );
+  }
+}
+
+class _CountBadge extends StatelessWidget {
+  const _CountBadge({required this.count});
+  final int count;
+  @override
+  Widget build(BuildContext context) {
+    final colors = DshColors(context);
+    return Container(
+      key: const ValueKey('account-connection-count'),
+      constraints: const BoxConstraints(minWidth: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      decoration: BoxDecoration(
+        color: colors.layer,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colors.border),
+      ),
+      child: Text(
+        '$count',
+        textAlign: TextAlign.center,
+        style: DshTypography.caption.copyWith(
+          color: colors.muted,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusDot extends StatelessWidget {
+  const _StatusDot({required this.color, this.ring});
+  final Color color;
+  final Color? ring;
+  @override
+  Widget build(BuildContext context) => Container(
+    width: ring == null ? 8 : 9,
+    height: ring == null ? 8 : 9,
+    decoration: BoxDecoration(
+      color: color,
+      shape: BoxShape.circle,
+      border: ring == null ? null : Border.all(color: ring!, width: 1.5),
     ),
   );
 }
