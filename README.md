@@ -6,7 +6,7 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：[`0.1.3-alpha.38-r2`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r2)，完整变更见 [alpha.38 发布说明](release/notes/v0.1.3-alpha.38.md)。源码版本与安装包身份可通过 `--build-info` 和包内构建清单核对。
+当前发布线：[`0.1.3-alpha.38-r3`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r3)，完整变更见 [alpha.38 发布说明](release/notes/v0.1.3-alpha.38.md)。源码版本与安装包身份可通过 `--build-info` 和包内构建清单核对。
 
 文件隔离、执行回执、手动技能版本与消息恢复的实现及验证范围见[可靠性对照记录](docs/hermes-agent-reliability-review-20260928.zh.md)。该记录保留 alpha.37 的历史测试，任务验收与样本验证机制已在 alpha.38 退役。
 
@@ -23,7 +23,7 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 - **模型协议兼容**：Devin / Claude 请求使用兼容的工具输入结构，修复根级组合结构被拒绝的问题；本地继续按原始工具规则校验参数，Devin 错误保留实际协议错误码。
 - **Office 与文件整理**：`office_read` 原生读取 DOCX 段落、表格和 XLSX 单元格，`office_write` 直接生成真实 DOCX/XLSX；覆盖与文件整理需人工批准。结构检查不替代内容核对或视觉验收。
 - **文件隔离与执行**：按会话隔离私有目录、附件和受管临时文件；原生沙箱支持精确读取根与 Windows 长路径。人工审批等待不消耗执行预算，重复环境启动失败形成有界停止。
-- **执行流程简化**：退役任务契约、任务验收接口、完成门禁和自动验收续接；目标、计划、后台作业及定时任务继续独立运行，技能版本由用户手动管理。
+- **执行流程简化**：退役项目任务板、任务契约、任务验收接口、完成门禁和自动验收续接；目标、计划、后台作业及定时任务继续独立运行，技能版本由用户手动管理。
 
 桌面实际验证范围见[平台矩阵](docs/desktop-platforms.zh.md)与[体验升级记录](docs/desktop-fidelity/flutter-upgrade-2026-09-29.md)。旧版变更保留在 [alpha.36](release/notes/v0.1.3-alpha.36.md)、[alpha.31](release/notes/v0.1.3-alpha.31.md)及 [alpha.22](release/notes/v0.1.3-alpha.22.md) 发布说明中。
 
@@ -42,10 +42,10 @@ Windows x86_64 完整包：
 
 | 版本 | 安装包 | 便携包 |
 |---|---|---|
-| Flutter 桌面版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web 核心版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r2/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter 桌面版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r3/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r3/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web 核心版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r3/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r3/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Linux、macOS 及 SHA-256 校验文件见 [alpha.38 发布页](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r2)的 **Assets**；请以实际上传的资产为准。源码 ZIP 不含编译后的运行程序。
+Linux、macOS 及 SHA-256 校验文件见 [alpha.38 发布页](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r3)的 **Assets**；请以实际上传的资产为准。源码 ZIP 不含编译后的运行程序。
 
 完整包包含 Rust Host、`web/dist`、`config/agent-presets`、随附 Web 插件、Node 与 ripgrep 运行时及安全说明；Flutter 桌面包还包含客户端、Flutter 运行库和资源，并在 `host` 子目录中附带完整 Host。保留整个安装或解压目录，避免缺失资源与随附运行时。
 

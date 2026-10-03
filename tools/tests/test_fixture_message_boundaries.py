@@ -6,7 +6,7 @@ import json
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from e2e_image_generation import fixture_user_index
-from e2e_productivity import project_tool_results
+from e2e_productivity import memory_tool_results
 from e2e_approval_interactions import ApprovalFixture
 
 
@@ -32,11 +32,12 @@ class FixtureMessageBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "missing explicit"):
             fixture_user_index([{"role": "user", "content": "Current runtime context."}])
 
-    def test_only_the_fixture_task_result_completes_the_project_tool_round(self):
-        result = {"role": "tool", "tool_call_id": "tasks-one", "content": "TASK_FIXTURE"}
-        messages = [{"role": "tool", "tool_call_id": "other-one", "content": "unrelated"}, result,
+    def test_only_the_fixture_memory_result_completes_the_memory_tool_round(self):
+        result = {"role": "tool", "tool_call_id": "memory-call-one", "content": "USER_EDIT_MEMORY_FIXTURE"}
+        messages = [{"role": "tool", "tool_call_id": "other-one", "content": "unrelated"},
+                    {"role": "tool", "tool_call_id": "memory-discovery-one", "content": "memory schema"}, result,
                     {"role": "user", "content": "Current runtime context."}]
-        self.assertEqual(project_tool_results(messages), [result])
+        self.assertEqual(memory_tool_results(messages), [result])
 
     def test_approval_summary_requests_cannot_emit_unadvertised_tools(self):
         request = {"messages": [{"role": "user", "content": 'Summarize: approval-e2e:{"tool":"read","path":"project/.env","marker":"fixture"}'}]}

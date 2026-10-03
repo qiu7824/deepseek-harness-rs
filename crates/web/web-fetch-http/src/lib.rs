@@ -852,6 +852,20 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_preempts_a_pending_fetch() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (received, arrived) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 1024];
+            assert!(socket.read(&mut buffer).await.unwrap() > 0);
+            received.send(()).unwrap();
+            // Keep the connection open without returning response headers.
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
         let cancelled = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancelled);
         let provider = HttpFetchProvider::new(HttpFetchLimits {
@@ -859,19 +873,21 @@ mod tests {
             ..Default::default()
         });
         let task = tokio::spawn(async move {
-            provider
-                .fetch(
-                    WebFetchRequest {
-                        url: "https://1.1.1.1:81/".into(),
-                    },
-                    Arc::new(move || flag.load(Ordering::SeqCst)),
-                )
-                .await
+            let url = Url::parse(&format!("http://{address}/pending")).unwrap();
+            let cancelled: Cancelled = Arc::new(move || flag.load(Ordering::SeqCst));
+            // Exercise the in-flight transport directly; public-address guards
+            // remain covered separately and reject loopback fetch destinations.
+            provider.request_once(&url, &[address], &cancelled).await
         });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        cancelled.store(true, Ordering::SeqCst);
-        let error = tokio::time::timeout(Duration::from_secs(1), task)
+        tokio::time::timeout(Duration::from_secs(5), arrived)
             .await
+            .expect("fixture must receive the request before cancellation")
+            .unwrap();
+        cancelled.store(true, Ordering::SeqCst);
+        let result = tokio::time::timeout(Duration::from_secs(1), task).await;
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        let error = result
             .expect("cancelled fetch should settle")
             .unwrap()
             .unwrap_err();
