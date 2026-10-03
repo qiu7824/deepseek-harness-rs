@@ -138,6 +138,7 @@ class FlutterReleaseTests(unittest.TestCase):
         self.assertIn(package.FLUTTER_REVISION, workflow)
         # The pinned SDK's Bash entry also dispatches to flutter.bat on Windows.
         commands = workflow.replace('bash "$RUNNER_TEMP/flutter-sdk/bin/flutter"', 'flutter')
+        commands = commands.replace('"$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter"', 'flutter')
         for marker in ["flutter test", "flutter analyze", "flutter build ${{ matrix.platform }}", "tools/package_flutter_release.py", "tools/verify_flutter_installer.py", "--enforce-lockfile"]:
             self.assertIn(marker, commands)
 

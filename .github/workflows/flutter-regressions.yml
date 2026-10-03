@@ -48,6 +48,11 @@ jobs:
               for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
                   stream.write(f'{key}={root}\n')
           PY
+          DSH_TEST_BASH="$BASH"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            DSH_TEST_BASH="$(cygpath -w "$BASH")"
+          fi
+          echo "DSH_TEST_BASH=$DSH_TEST_BASH" >> "$GITHUB_ENV"
       - name: 固定测试 Node 运行时
         timeout-minutes: 5
         shell: bash
@@ -81,7 +86,7 @@ jobs:
         shell: bash
         run: |
           cd apps/desktop_flutter
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-golden-machine.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" test test/design_icon_golden_test.dart --machine
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-golden-machine.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test test/design_icon_golden_test.dart --machine
       - name: 发布独立的合成图标差异证据
         if: always()
         timeout-minutes: 5
@@ -113,6 +118,11 @@ jobs:
               for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
                   stream.write(f'{key}={root}\n')
           PY
+          DSH_TEST_BASH="$BASH"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            DSH_TEST_BASH="$(cygpath -w "$BASH")"
+          fi
+          echo "DSH_TEST_BASH=$DSH_TEST_BASH" >> "$GITHUB_ENV"
       - name: 固定测试 Node 运行时
         timeout-minutes: 5
         shell: bash
@@ -151,7 +161,7 @@ jobs:
         shell: bash
         run: |
           cd packages/dsh_client_dart
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/dart" test
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/dart" test
       - name: 锁定 Flutter 客户端依赖
         id: flutter_pub
         if: ${{ !cancelled() && steps.flutter_config.outcome == 'success' }}
@@ -166,14 +176,14 @@ jobs:
         shell: bash
         run: |
           cd apps/desktop_flutter
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test-machine.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" test --machine
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test-machine.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test --machine
       - name: Flutter 静态检查
         if: ${{ !cancelled() && steps.flutter_pub.outcome == 'success' }}
         timeout-minutes: 10
         shell: bash
         run: |
           cd apps/desktop_flutter
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" analyze
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" analyze
       - name: macOS 正式客户端构建
         if: ${{ !cancelled() && steps.flutter_pub.outcome == 'success' }}
         timeout-minutes: 40
@@ -181,7 +191,7 @@ jobs:
         run: |
           VERSION="$(python tools/verify_release_version.py --print-version)"
           cd apps/desktop_flutter
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" build macos --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" build macos --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
       - name: 保存 Flutter 诊断日志
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

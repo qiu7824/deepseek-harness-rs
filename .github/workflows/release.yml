@@ -59,6 +59,11 @@ jobs:
               for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
                   stream.write(f'{key}={root}\n')
           PY
+          DSH_TEST_BASH="$BASH"
+          if [[ '${{ matrix.platform }}' == 'windows' ]]; then
+            DSH_TEST_BASH="$(cygpath -w "$BASH")"
+          fi
+          echo "DSH_TEST_BASH=$DSH_TEST_BASH" >> "$GITHUB_ENV"
       - name: Linux 原生图形依赖
         if: matrix.platform == 'linux'
         run: |
@@ -337,13 +342,13 @@ jobs:
         run: |
           flutter config --no-analytics
           flutter --version
-          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/dart" test)
+          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/dart" test)
           cd apps/desktop_flutter
           flutter pub get --enforce-lockfile
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" analyze
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" test --machine
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" analyze
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test --machine
           VERSION="${{ steps.release.outputs.version }}"
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- bash "$RUNNER_TEMP/flutter-sdk/bin/flutter" build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
       - name: 组装并核验 Flutter 完整包
         if: ${{ !cancelled() && steps.flutter_build.outcome == 'success' }}
         timeout-minutes: 10
