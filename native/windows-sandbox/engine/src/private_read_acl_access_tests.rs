@@ -342,6 +342,55 @@ mod navigation_behavior {
         Ok(())
     }
 
+    fn boundary_ace_evidence(
+        path: &Path,
+        account_a: &LocalSid,
+        account_b: &LocalSid,
+        group: &LocalSid,
+    ) -> Result<String> {
+        let (dacl, descriptor) = unsafe { crate::acl::fetch_dacl_handle(path)? };
+        let _descriptor = Local(descriptor);
+        let mut records = Vec::new();
+        for index in 0..unsafe { (*dacl).AceCount } {
+            let mut ace = std::ptr::null_mut();
+            ensure!(unsafe { GetAce(dacl, index as u32, &mut ace) } != 0);
+            let header = unsafe { &*(ace as *const ACE_HEADER) };
+            let raw =
+                unsafe { std::slice::from_raw_parts(ace as *const u8, header.AceSize as usize) };
+            let hash = format!("{:x}", Sha256::digest(raw));
+            if !matches!(header.AceType, 0 | 1) {
+                records.push(format!(
+                    "{index}:t{}:f{:02x}:unknown:{}",
+                    header.AceType,
+                    header.AceFlags,
+                    &hash[..8]
+                ));
+                continue;
+            }
+            let entry = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+            let sid = std::ptr::addr_of!(entry.SidStart).cast_mut().cast();
+            let principal = if unsafe { EqualSid(sid, account_a.as_ptr()) } != 0 {
+                "A"
+            } else if unsafe { EqualSid(sid, account_b.as_ptr()) } != 0 {
+                "B"
+            } else if unsafe { EqualSid(sid, group.as_ptr()) } != 0 {
+                "G"
+            } else {
+                "host"
+            };
+            let signature = unsafe { has_navigation_signature(dacl, sid) }?;
+            records.push(format!(
+                "{index}:t{}:f{:02x}:m{:x}:{principal}:sig{}:{}",
+                header.AceType,
+                header.AceFlags,
+                entry.Mask,
+                u8::from(signature),
+                &hash[..8]
+            ));
+        }
+        Ok(records.join(";"))
+    }
+
     #[test]
     fn owned_navigation_allows_real_access_without_listing_private_ancestors() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -646,13 +695,35 @@ mod navigation_behavior {
         sync("state-a", &account_a, std::slice::from_ref(&owned_a))?;
         let new_foreign = foreign.join("created-after-reconciliation.txt");
         std::fs::write(&new_foreign, b"private")?;
-        for _ in 0..2 {
+        for round in 0..2 {
             for (state, account, owned, token, file) in [
                 ("state-a", &account_a, &owned_a, &token_a, &file_a),
                 ("state-b", &account_b, &owned_b, &token_b, &file_b),
             ] {
+                let journal: State = serde_json::from_slice(&std::fs::read(
+                    temp.path()
+                        .join(state)
+                        .join(".sandbox/private_read_acl_state.json"),
+                )?)?;
+                let stored = journal.migrated.get(&key(&private));
+                let before = unsafe { root_stamp(&private, &[account.as_ptr()], group.as_ptr()) }?;
+                let before_aces = boundary_ace_evidence(&private, &account_a, &account_b, &group)?;
+                let visited = sync(state, account, std::slice::from_ref(owned))?;
+                if visited > 12 {
+                    let after =
+                        unsafe { root_stamp(&private, &[account.as_ptr()], group.as_ptr()) }?;
+                    let after_aces =
+                        boundary_ace_evidence(&private, &account_a, &account_b, &group)?;
+                    let mut diagnostic = format!(
+                        "interleaved slots must keep bounded warm reconciliation: round={round} state={state} visited={visited} limit=12; stored={stored:?}; before={before:?}; after={after:?}; beforeACEs=[{before_aces}]; afterACEs=[{after_aces}]"
+                    );
+                    // Every field is ASCII; keep this single failure record
+                    // inside the wrapper's 4KB tail alongside the test summary.
+                    diagnostic.truncate(1900);
+                    anyhow::bail!("{diagnostic}");
+                }
                 ensure!(
-                    sync(state, account, std::slice::from_ref(owned))? <= 12,
+                    visited <= 12,
                     "interleaved slots must keep bounded warm reconciliation"
                 );
                 navigation_without_listing(token, &[private.clone(), common.clone()])?;

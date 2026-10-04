@@ -59,28 +59,32 @@ jobs:
           with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
               stream.write(f'{node}\n')
           PY
-      - name: 构建当前 debug Host
-        id: host_build
-        timeout-minutes: 45
-        shell: bash
-        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/host-build.log" -- cargo build --locked -p dsh-host-cli --bin dsh
       - name: 构建并核验当前真实 Windows 沙箱 SDK
         id: native_build
         timeout-minutes: 35
         shell: bash
         run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-build-wrapper.log" -- python tools/build_native_sandbox.py --target-dir native/windows-sandbox/target
       - name: Windows 原生沙箱强回归
+        id: native_tests
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         timeout-minutes: 20
         shell: bash
         run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-tests.log" -- cargo test --locked --release -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir native/windows-sandbox/target
       - name: Windows engine 私有读取 ACL 安全回归
-        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        id: native_acl_tests
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.native_tests.outcome == 'success' }}
         timeout-minutes: 20
         shell: bash
         run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-private-read-acl-tests.log" -- cargo test --locked --release -p codex-windows-sandbox --manifest-path native/windows-sandbox/Cargo.toml --target-dir native/windows-sandbox/target --lib private_read_acl::tests -- --test-threads=1
+      - name: 构建当前 debug Host
+        id: host_build
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.native_tests.outcome == 'success' && steps.native_acl_tests.outcome == 'success' }}
+        timeout-minutes: 45
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/host-build.log" -- cargo build --locked -p dsh-host-cli --bin dsh
       - name: 固化 debug Host 资源与真实 SDK 身份
         id: stage
-        if: ${{ !cancelled() && steps.host_build.outcome == 'success' && steps.native_build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.host_build.outcome == 'success' && steps.native_build.outcome == 'success' && steps.native_tests.outcome == 'success' && steps.native_acl_tests.outcome == 'success' }}
         shell: bash
         run: |
           python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/web-stage.log" -- python tools/stage_release_web.py --target target/debug/web/dist
