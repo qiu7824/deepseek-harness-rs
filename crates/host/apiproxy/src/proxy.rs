@@ -796,6 +796,10 @@ async fn retire_idle_agent(
 mod control_agent_admission_tests;
 
 #[cfg(test)]
+#[path = "host_identity_api_tests.rs"]
+mod host_identity_api_tests;
+
+#[cfg(test)]
 #[path = "command_activity_api_tests.rs"]
 mod command_activity_api_tests;
 #[cfg(test)]
@@ -2148,12 +2152,15 @@ impl ApiProxyService {
             .as_ref()
             .map(|probe| probe())
             .unwrap_or_else(|| self.defaults.open_path.is_some());
+        let (process_id, instance_id) = crate::api::host::host_process_identity();
         ok(
             request.rpc_id,
             HostDescribeResult {
                 home: self.defaults.dsh_home.clone(),
                 version: HOST_VERSION.to_string(),
                 cwd: self.defaults.cwd.clone(),
+                process_id: Some(process_id),
+                instance_id: Some(instance_id),
                 provider: Some(selection.provider),
                 model: Some(selection.model),
                 attached_sessions,

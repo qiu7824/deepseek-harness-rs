@@ -155,6 +155,8 @@ abstract final class DshShellZh {
   static const add = '添加';
   static const localService = '本机服务';
   static const installedConfiguration = '使用已安装版本的配置';
+  static const automaticLocalService = '自动启动本机服务';
+  static const automaticPortHint = '端口由本机服务自动分配，无需手动设置。';
   static const hostExecutable = 'Host 程序位置';
   static const chooseExecutable = '选择程序';
   static const executable = '程序';

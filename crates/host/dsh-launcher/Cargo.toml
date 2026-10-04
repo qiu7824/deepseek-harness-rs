@@ -20,6 +20,7 @@ tar = "0.4"
 flate2 = "1"
 aes = "0.8"
 url = "2"
+uuid = { workspace = true }
 ureq = { version = "3.1", features = ["json"] }
 zsui = { path = "../../vendor/zsui", default-features = false, features = ["window", "button", "icon", "label", "toggle"] }
 

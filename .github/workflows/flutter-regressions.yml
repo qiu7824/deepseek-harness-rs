@@ -7,6 +7,7 @@ on:
       - .github/workflows/flutter-regressions.yml
       - tools/run_flutter_test_diagnostics.py
       - tools/publish_flutter_golden_evidence.py
+      - crates/host/dsh-cli/src/web_stdio.rs
       - apps/desktop_flutter/lib/**
       - apps/desktop_flutter/test/**
       - apps/desktop_flutter/pubspec.*
@@ -39,6 +40,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        if: matrix.platform == 'windows'
+        with: { toolchain: 1.97.1 }
+      - name: Windows 后台 Host 标准输出句柄回归
+        if: matrix.platform == 'windows'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          rustc --edition=2024 --test crates/host/dsh-cli/src/web_stdio.rs -o "$RUNNER_TEMP/dsh-web-stdio-tests.exe"
+          "$RUNNER_TEMP/dsh-web-stdio-tests.exe" --test-threads=1
       - name: 隔离并规范测试临时目录
         shell: bash
         run: |
@@ -92,7 +103,7 @@ jobs:
         run: |
           (cd packages/dsh_client_dart && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/dart" test)
           cd apps/desktop_flutter
-          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-desktop-regressions.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test test/error_presentation_test.dart test/account_menu_test.dart test/typography_test.dart test/schedule_page_test.dart test/desktop_interaction_upgrade_test.dart test/workbench_error_recovery_test.dart test/tool_message_test.dart --machine
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-desktop-regressions.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test test/error_presentation_test.dart test/account_menu_test.dart test/typography_test.dart test/schedule_page_test.dart test/desktop_interaction_upgrade_test.dart test/workbench_error_recovery_test.dart test/tool_message_test.dart test/dynamic_host_startup_test.dart test/launcher_test.dart --machine
       - name: 四个严格图标金图与失败诊断
         timeout-minutes: 10
         shell: bash

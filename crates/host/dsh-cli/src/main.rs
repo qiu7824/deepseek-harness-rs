@@ -175,7 +175,28 @@ async fn async_main() {
                     .await
                     .map_err(|error| format!("failed to wait for Ctrl+C: {error}"))
             }));
-            let mut runtime_args = invocation.args.clone();
+            let (mut runtime_args, mut ready_file, stdio_log) =
+                match dsh_host_cli::web_readiness::take_ready_file(
+                    &invocation.profile,
+                    &invocation.args,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                };
+            let _owned_stdio = match stdio_log {
+                Some(path) => match dsh_host_cli::web_stdio::redirect(&path) {
+                    Ok(file) => Some(file),
+                    Err(error) => {
+                        eprintln!("dsh: desktop stdio redirection failed: {error}");
+                        std::process::exit(1);
+                    }
+                },
+                None => None,
+            };
+            let managed_readiness = ready_file.is_some();
             loop {
                 let home = selected_home();
                 let handle = match run_profile_with_interrupt(
@@ -183,7 +204,7 @@ async fn async_main() {
                         profile: invocation.profile.clone(),
                         patches: invocation.patches.clone(),
                         args: runtime_args.clone(),
-                        home,
+                        home: home.clone(),
                         telemetry_env: std::env::var("DSH_TELEMETRY_DISABLED").ok(),
                         install_anchor: std::env::var_os("DSH_INSTALL_ANCHOR")
                             .map(std::path::PathBuf::from)
@@ -215,6 +236,17 @@ async fn async_main() {
                 };
                 let mut restart = false;
                 if let Some(url) = handle.readiness_url() {
+                    if let Some(path) = ready_file.take()
+                        && let Err(error) = dsh_host_cli::web_readiness::publish(
+                            &path,
+                            &url,
+                            handle.readiness_home().expect("ready Host has a data root"),
+                        )
+                    {
+                        let _ = handle.shutdown().await;
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
                     if let Some(index) = runtime_args.iter().position(|arg| arg == "--port")
                         && runtime_args
                             .get(index + 1)
@@ -228,7 +260,9 @@ async fn async_main() {
                             "WARNING: dsh web is listening on all network interfaces without transport authentication. Any machine that can reach this port can control this Harness instance; use a trusted network and firewall."
                         );
                     }
-                    println!("dsh web: {url}");
+                    if !managed_readiness {
+                        println!("dsh web: {url}");
+                    }
                     tokio::select! {
                         result = interrupt.waiter() => {
                             if let Err(error) = result {

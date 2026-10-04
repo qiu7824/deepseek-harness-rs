@@ -121,6 +121,10 @@ impl RunProfileHandle {
         })
     }
 
+    pub fn readiness_home(&self) -> Option<&std::path::Path> {
+        self.host.as_ref().map(|host| host.data_root())
+    }
+
     pub fn exposes_network(&self) -> bool {
         self.host
             .as_ref()

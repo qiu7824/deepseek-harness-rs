@@ -1,3 +1,5 @@
+- id: reminder-boundary
+  name: '@deepseek-ai/dsh-exclude-reminder-tools'
 - id: tool-pwsh
   name: '@deepseek-ai/dsh-tool-pwsh'
 - id: tool-fs

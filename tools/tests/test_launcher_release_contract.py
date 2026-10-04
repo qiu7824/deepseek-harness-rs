@@ -38,7 +38,7 @@ class LauncherReleaseContractTests(unittest.TestCase):
             "TRAY_CHECK_UPDATE_COMMAND",
             ".icon_path(icon_path)",
             "launcher_icon_path()",
-            "dsh_home_paths::default_dsh_home",
+            "dsh_home_paths::resolve_dsh_home",
             "LauncherCommand::SetAutostart",
             "LauncherCommand::CheckUpdate",
             "CARGO_PKG_VERSION",

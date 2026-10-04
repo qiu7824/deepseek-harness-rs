@@ -2524,6 +2524,7 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
   late final exe = TextEditingController(
     text: widget.controller.preferences.executable,
   );
+  late bool automaticHost = widget.controller.preferences.automaticHost;
   bool busy = false;
   String? error;
   @override
@@ -2536,11 +2537,20 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
   Future<void> submit(bool start) async {
     setState(() => busy = true);
     try {
-      localHostUri(address.text);
+      if (!automaticHost) {
+        final uri = localHostUri(address.text);
+        if (uri.port == 0) {
+          throw const FormatException(DshShellZh.portInvalid);
+        }
+      }
       final c = widget.controller;
-      c.preferences.address = address.text;
+      if (automaticHost != c.preferences.automaticHost) {
+        c.preferences.ownedHost = null;
+      }
+      c.preferences.automaticHost = automaticHost;
+      if (!automaticHost) c.preferences.address = address.text;
       c.preferences.executable = exe.text;
-      if (start) {
+      if (start || automaticHost) {
         await c.startHost();
       } else {
         await c.connect(address.text);
@@ -2564,7 +2574,32 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          DshField(controller: address, hint: 'http://127.0.0.1:58080'),
+          Row(
+            children: [
+              DshSwitch(
+                key: const Key('automatic-host'),
+                value: automaticHost,
+                onChanged: busy ? null : (value) => setState(() => automaticHost = value),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(child: Text(DshShellZh.automaticLocalService)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (automaticHost)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                DshShellZh.automaticPortHint,
+                style: DshTypography.caption.copyWith(color: DshColors(context).muted),
+              ),
+            )
+          else
+            DshField(
+              key: const Key('manual-host-address'),
+              controller: address,
+              hint: 'http://127.0.0.1:58080',
+            ),
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerLeft,
@@ -2573,9 +2608,9 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
               onPressed: busy
                   ? null
                   : () {
-                      address.text = 'http://127.0.0.1:58080';
+                      setState(() => automaticHost = true);
                       exe.text = HostLauncher.discover();
-                      submit(false);
+                      submit(true);
                     },
               child: const Text(DshShellZh.installedConfiguration),
             ),
@@ -2626,7 +2661,7 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
         onPressed: busy ? null : () => Navigator.pop(context),
         child: const Text(DshZh.cancel),
       ),
-      DshButton(
+      if (!automaticHost) DshButton(
         onPressed: busy ? null : () => submit(true),
         outline: true,
         child: const Text(DshShellZh.startAndConnect),
@@ -2634,7 +2669,7 @@ class _ConnectionDialogState extends State<_ConnectionDialog> {
       DshButton(
         onPressed: busy ? null : () => submit(false),
         primary: true,
-        child: const Text(DshShellZh.connect),
+        child: Text(automaticHost ? DshShellZh.startAndConnect : DshShellZh.connect),
       ),
     ],
   );

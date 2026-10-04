@@ -12,7 +12,7 @@ Implementation and verification scope for file isolation, execution receipts, ma
 
 See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and [development plan](docs/plans/更新计划.md) for cross-version adaptation and remaining work.
 
-The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records confirmed coverage, protocol differences and P0/P1 acceptance criteria. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [current Windows Flutter source fixes (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) passed Windows regressions; real desktop fonts and model service behavior still need verification. Existing r6 packages correspond to the original tagged source.
+The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records confirmed coverage, protocol differences and P0/P1 acceptance criteria. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [Windows Flutter source progress (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) records earlier UI regression results and the new managed desktop ports, safe Devin diagnostics and reminder permission boundaries. New CI and packages are pending; real desktop fonts and external model services still need verification. Existing r6 packages correspond to the original tagged source.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
@@ -68,7 +68,9 @@ Linux/macOS: ./dsh-launcher
 Confined Shell commands and native terminals on Linux use the system `bubblewrap` sandbox. DEB packages declare this dependency; portable installations should install `bubblewrap` through the distribution's package manager. Confined execution fails explicitly when the sandbox is missing or unavailable.
 Ubuntu systems that restrict user namespaces may need an administrator to configure the distribution's recommended [bwrap AppArmor profile](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007). The application does not change system protection policies automatically.
 
-The default URL is:
+In current source, managed desktop Hosts use local ports assigned by the operating system, and clients connect to the actual readiness address. Manual connections to external Hosts remain available. Host reuse records follow data-directory migrations, and persistent logs keep parent-window exits from disrupting the background Host. The upgrade logic migrates the bundled Host's legacy default address to automatic management; select a fixed address manually in Settings when needed. New CI and release-package verification are still pending.
+
+Existing r6 packages use this default URL:
 
 ```text
 http://127.0.0.1:58080/

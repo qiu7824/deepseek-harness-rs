@@ -72,6 +72,368 @@ async fn toggle(host: &HostSpine, enabled: bool) {
         .unwrap();
 }
 
+fn reminder_names(host: &HostSpine, agent: &dyn dsh_agent::Agent) -> Vec<String> {
+    host.tools
+        .schemas(Some(agent.scope_key()))
+        .into_iter()
+        .filter(|tool| tool.name.starts_with("schedule_"))
+        .map(|tool| tool.name)
+        .collect()
+}
+
+async fn execute_schedule_tool(
+    host: &HostSpine,
+    agent: Arc<dyn dsh_agent::Agent>,
+    name: &str,
+    arguments: Value,
+) -> Arc<dsh_tools::ToolExecutionResult> {
+    host.tools
+        .execute(dsh_tools::ToolExecutionInput {
+            call_id: dsh_llm::call_id(uuid::Uuid::new_v4().to_string()),
+            root_call_id: None,
+            name: name.into(),
+            arguments,
+            agent: Some(agent),
+            parent: None,
+            signal: Arc::new(|| false),
+        })
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reminder_boundary_follows_real_presets_switch_cold_restore_and_plugin_enablement() {
+    let home =
+        std::env::temp_dir().join(format!("host-reminder-boundary-{}", uuid::Uuid::new_v4()));
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    // Test executables have no packaged resources beside deps/. Supply the
+    // actual shipped compositions through normal user-root discovery.
+    for preset in ["standard", "minimal", "blank", "cordis", "code"] {
+        let target = home.join(".agent-presets").join(preset);
+        std::fs::create_dir_all(&target).unwrap();
+        for name in ["preset.yml", "agent.cordis.yml"] {
+            std::fs::copy(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../config/agent-presets")
+                    .join(preset)
+                    .join(name),
+                target.join(name),
+            )
+            .unwrap();
+        }
+    }
+    let ctx = Context::root();
+    let host = compose_persistent_host_at(&ctx, &home, Some("web")).unwrap();
+    let created = rpc(
+        &host,
+        "session.create",
+        json!({"cwd":workspace,"agentPreset":"standard"}),
+    )
+    .await;
+    let id = dsh_session::session_id(created["sessionId"].as_str().unwrap());
+    let agent = host.agents.get(&id).unwrap();
+    assert!(
+        reminder_names(&host, agent.as_ref()).is_empty(),
+        "reminders remain opt-in"
+    );
+    let built_in_names = host
+        .tools
+        .schemas(Some(agent.scope_key()))
+        .into_iter()
+        .filter(|tool| tool.name.starts_with("scheduled_task_"))
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert_eq!(built_in_names.len(), 4);
+    // Both built-in scheduled task kinds continue to work in Minimal.
+    rpc(
+        &host,
+        "agentPreset.select",
+        json!({"sessionId":id,"agentPreset":"minimal"}),
+    )
+    .await;
+    for selector in [
+        json!({"after_seconds":86400}),
+        json!({"every_seconds":86400}),
+    ] {
+        let mut args = selector;
+        args["prompt"] = json!("Built-in task fixture");
+        let result =
+            execute_schedule_tool(&host, agent.clone(), "scheduled_task_create", args).await;
+        assert!(!result.is_error, "{:?}", result.error);
+    }
+    let built_in =
+        execute_schedule_tool(&host, agent.clone(), "scheduled_task_list", json!({})).await;
+    assert!(!built_in.is_error, "{:?}", built_in.error);
+    let built_in_value = built_in.value.as_ref().expect("built-in task list output");
+    let built_in_tasks = built_in_value["tasks"]
+        .as_array()
+        .expect("task array")
+        .clone();
+    assert_eq!(built_in_tasks.len(), 2);
+    let mut last_list_time = chrono::DateTime::parse_from_rfc3339(
+        built_in_value["now"]
+            .as_str()
+            .expect("catalog current time"),
+    )
+    .expect("catalog time must be RFC 3339");
+    assert_eq!(last_list_time.offset().local_minus_utc(), 0);
+    toggle(&host, true).await;
+    let mut frozen_reminder_schema = None;
+    for preset in ["minimal", "blank", "standard", "cordis", "code", "minimal"] {
+        rpc(
+            &host,
+            "agentPreset.select",
+            json!({"sessionId":id,"agentPreset":preset}),
+        )
+        .await;
+        assert_eq!(
+            host.agent_presets.composed_preset(agent.ctx()).as_deref(),
+            Some(preset)
+        );
+        let expected = if matches!(preset, "minimal" | "blank") {
+            0
+        } else {
+            4
+        };
+        assert_eq!(
+            reminder_names(&host, agent.as_ref()).len(),
+            expected,
+            "{preset}"
+        );
+        let assembly = dsh_system_prompt::AssembleContext {
+            scope: Some(agent.scope_key().clone()),
+            fields: serde_json::from_value(json!({"sessionId":id,"cwd":workspace})).unwrap(),
+        };
+        let prompt = host
+            .system_prompt
+            .assemble(agent.ctx(), &assembly)
+            .await
+            .unwrap();
+        if expected == 0 {
+            assert!(
+                prompt
+                    .tools
+                    .iter()
+                    .all(|tool| !tool.name.starts_with("schedule_"))
+            );
+            for (name, args) in [
+                (
+                    "schedule_create",
+                    json!({"title":"Denied","prompt":"Fixture","after_seconds":86400}),
+                ),
+                ("schedule_list", json!({})),
+                ("schedule_update", json!({"id":"missing","title":"Denied"})),
+                ("schedule_delete", json!({"id":"missing"})),
+            ] {
+                let result = execute_schedule_tool(&host, agent.clone(), name, args).await;
+                assert!(
+                    result.is_error,
+                    "{preset}: {name} bypassed composition visibility"
+                );
+            }
+            if let Some(schema) = frozen_reminder_schema.clone() {
+                let result = host
+                    .tools
+                    .execute_bound(
+                        dsh_tools::ToolExecutionInput {
+                            call_id: dsh_llm::call_id(uuid::Uuid::new_v4().to_string()),
+                            root_call_id: None,
+                            name: "schedule_list".into(),
+                            arguments: json!({}),
+                            agent: Some(agent.clone()),
+                            parent: None,
+                            signal: Arc::new(|| false),
+                        },
+                        schema,
+                    )
+                    .await;
+                assert!(
+                    result.is_error,
+                    "an earlier SDK binding cannot bypass the new preset fence"
+                );
+            }
+        } else if preset == "code" {
+            assert_eq!(
+                prompt
+                    .tools
+                    .iter()
+                    .map(|tool| tool.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["run_code"],
+                "the real PTC model surface must use the code transport"
+            );
+            assert!(prompt.tools.iter().any(|tool| tool.name == "run_code"));
+            assert!(
+                host.tools
+                    .get("schedule_list", Some(agent.scope_key()))
+                    .is_some(),
+                "PTC SDK retains reminder bindings"
+            );
+            let direct =
+                execute_schedule_tool(&host, agent.clone(), "schedule_list", json!({})).await;
+            assert!(
+                direct.is_error,
+                "PTC reminder calls must use their SDK binding"
+            );
+        } else {
+            frozen_reminder_schema = host
+                .tools
+                .schemas(Some(agent.scope_key()))
+                .into_iter()
+                .find(|schema| schema.name == "schedule_list");
+            let result =
+                execute_schedule_tool(&host, agent.clone(), "schedule_list", json!({})).await;
+            assert!(!result.is_error, "{preset}: {:?}", result.error);
+            assert_eq!(result.value, Some(json!([])));
+            if preset == "standard" {
+                let parent = agent.clone();
+                let presets = host.agent_presets.clone();
+                let child = host
+                    .agent_loop
+                    .create_agent(
+                        agent.ctx(),
+                        CreateAgentOptions {
+                            meta: Some(dsh_session::CreateSessionMeta {
+                                cwd: Some(workspace.to_string_lossy().into_owned()),
+                                origin: Some("subagent".into()),
+                                parent_session: Some(id.clone()),
+                                agent_preset: Some("standard".into()),
+                                ..Default::default()
+                            }),
+                            setup: Some(Arc::new(move |child_ctx, _| {
+                                let child_ctx = child_ctx.clone();
+                                let parent = parent.clone();
+                                let presets = presets.clone();
+                                Box::pin(async move {
+                                    presets.compose_from(&child_ctx, parent.ctx()).ok_or_else(
+                                        || {
+                                            "the child must join the parent's actual preset"
+                                                .to_owned()
+                                        },
+                                    )?;
+                                    dsh_subagent::apply_child_composition(
+                                        &child_ctx,
+                                        parent.as_ref(),
+                                        &Default::default(),
+                                    )?;
+                                    Ok(None)
+                                })
+                            })),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    reminder_names(&host, child.agent.as_ref()).is_empty(),
+                    "Host setup must retain the permanent child fence"
+                );
+                for enabled in [false, true] {
+                    toggle(&host, enabled).await;
+                    assert_eq!(
+                        reminder_names(&host, agent.as_ref()).len(),
+                        if enabled { 4 } else { 0 }
+                    );
+                    assert!(
+                        reminder_names(&host, child.agent.as_ref()).is_empty(),
+                        "copied child catalogs stay hidden while the optional plugin toggles"
+                    );
+                    let denied = execute_schedule_tool(
+                        &host,
+                        child.agent.clone(),
+                        "schedule_create",
+                        json!({"title":"Denied","prompt":"Child fixture","after_seconds":86400}),
+                    )
+                    .await;
+                    assert!(denied.is_error);
+                }
+                child.dispose.await;
+                drop(child.agent);
+            }
+        }
+    }
+    assert_eq!(
+        agent.session().header().agent_preset.as_deref(),
+        Some("standard"),
+        "the original header must not be mistaken for the live composition"
+    );
+    assert!(host.sessions.flush(agent.session()).await.unwrap());
+    let lease = host
+        .api_proxy
+        .resolve_control_agent(id.as_str())
+        .await
+        .unwrap();
+    drop(lease);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while host.agents.get(&id).is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the real controller must retire the idle owner");
+    drop(agent);
+    let restored = host
+        .api_proxy
+        .resolve_control_agent(id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        host.agent_presets
+            .composed_preset(restored.agent.ctx())
+            .as_deref(),
+        Some("minimal")
+    );
+    assert!(reminder_names(&host, restored.agent.as_ref()).is_empty());
+    let denied =
+        execute_schedule_tool(&host, restored.agent.clone(), "schedule_list", json!({})).await;
+    assert!(
+        denied.is_error,
+        "cold resume must honor the latest selected preset"
+    );
+    for enabled in [false, true] {
+        toggle(&host, enabled).await;
+        assert!(reminder_names(&host, restored.agent.as_ref()).is_empty());
+        assert_eq!(
+            host.tools
+                .schemas(Some(restored.agent.scope_key()))
+                .into_iter()
+                .filter(|tool| tool.name.starts_with("scheduled_task_"))
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>(),
+            built_in_names
+        );
+        let current = execute_schedule_tool(
+            &host,
+            restored.agent.clone(),
+            "scheduled_task_list",
+            json!({}),
+        )
+        .await;
+        assert!(!current.is_error, "{:?}", current.error);
+        let current_value = current.value.as_ref().expect("built-in task list output");
+        assert_eq!(
+            current_value["tasks"].as_array().expect("task array"),
+            &built_in_tasks,
+            "optional reminder enablement must retain both built-in tasks"
+        );
+        let current_time = chrono::DateTime::parse_from_rfc3339(
+            current_value["now"].as_str().expect("catalog current time"),
+        )
+        .expect("catalog time must be RFC 3339");
+        assert_eq!(current_time.offset().local_minus_utc(), 0);
+        assert!(
+            current_time >= last_list_time,
+            "successive catalog timestamps must not go backwards"
+        );
+        last_list_time = current_time;
+    }
+    drop(restored);
+    host.shutdown().await.unwrap();
+    drop(host);
+    drop(ctx);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn production_schedule_plugin_is_opt_in_and_delivers_overdue_cold_session_after_restart() {
     let root = std::env::temp_dir().join(format!("host-schedule-plugin-{}", uuid::Uuid::new_v4()));

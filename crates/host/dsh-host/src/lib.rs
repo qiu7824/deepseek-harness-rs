@@ -5058,6 +5058,10 @@ fn compose_host_in_fiber(
             ..Default::default()
         },
     );
+    let _schedule_boundaries = futures::executor::block_on(
+        dsh_schedule::host_boundary::install_host_schedule_tool_boundaries(ctx),
+    )
+    .map_err(|error| format!("schedule-boundaries: {error}"))?;
     let schedule = dsh_schedule::host_service::ScheduleService::install(
         ctx,
         api_proxy.schedule_session_controller(),
@@ -5066,6 +5070,10 @@ fn compose_host_in_fiber(
         .get_typed::<Arc<dsh_cordis_loader::LoaderService>>("loader", false)
         .map(|slot| slot.as_ref().clone())
         .ok_or_else(|| "loader service missing after install".to_string())?;
+    loader.core.register(
+        "@deepseek-ai/dsh-exclude-reminder-tools",
+        Arc::new(dsh_schedule::host_boundary::ExcludeReminderToolsPlugin),
+    );
     loader.core.register(
         "dsh-schedule",
         Arc::new(dsh_schedule::host_plugin::HostSchedulePlugin::new(

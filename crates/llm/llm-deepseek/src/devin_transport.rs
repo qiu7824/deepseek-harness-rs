@@ -4,6 +4,9 @@ use bytes::{Buf, BytesMut};
 use serde_json::{Value, json};
 use std::io::Write;
 
+#[path = "devin_diagnostics.rs"]
+mod diagnostics;
+
 #[cfg(test)]
 #[path = "devin_tests.rs"]
 mod tests;
@@ -279,6 +282,7 @@ pub(crate) async fn request(
     let cascade = devin::prepare_replay(&mut chat, options, &scope);
     let body = devin::chat_request(&chat, token, jwt, &cascade)
         .map_err(|e| failure(e, "INVALID_REQUEST"))?;
+    let request_bytes = body.len();
     let body = {
         let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         gzip.write_all(&body)
@@ -286,6 +290,7 @@ pub(crate) async fn request(
         gzip.finish()
             .map_err(|_| failure("Devin request compression failed", "INVALID_REQUEST"))?
     };
+    let compressed_bytes = body.len();
     let mut envelope = Vec::with_capacity(body.len() + 5);
     envelope.push(1);
     envelope.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -315,7 +320,19 @@ pub(crate) async fn request(
     let status = response.status();
     if !status.is_success() {
         let bytes = read_owned(response, 1024 * 1024, sender, &cancelled).await?;
-        return Err(safe_error(status, &bytes, &[token, jwt]));
+        let details = (bytes.len() <= 16 * 1024)
+            .then(|| serde_json::from_slice::<Value>(&bytes).ok())
+            .flatten();
+        return Err(diagnostics::attach(
+            safe_error(status, &bytes, &[token, jwt]),
+            &chat,
+            "chat-http",
+            (request_bytes, compressed_bytes),
+            details
+                .as_ref()
+                .map(|value| value.get("error").unwrap_or(value)),
+            None,
+        ));
     }
     let mut response = response;
     let mut buffer = BytesMut::new();
@@ -361,7 +378,18 @@ pub(crate) async fn request(
                 let trailer: Value = serde_json::from_slice(&payload)
                     .map_err(|_| failure("Invalid Devin stream trailer", "MALFORMED_RESPONSE"))?;
                 if let Some(error) = trailer.get("error").filter(|e| !e.is_null()) {
-                    return Err(connect_error(error, &[token, jwt]));
+                    let failure = connect_error(error, &[token, jwt]);
+                    // Only connect_error's known, already-redacted native-code
+                    // suffix may be moved after the bounded request evidence.
+                    let native_code = error["code"].as_str().filter(|_| failure.status.is_some());
+                    return Err(diagnostics::attach(
+                        failure,
+                        &chat,
+                        "chat-connect",
+                        (request_bytes, compressed_bytes),
+                        Some(error),
+                        native_code,
+                    ));
                 }
                 ended = true;
                 break;

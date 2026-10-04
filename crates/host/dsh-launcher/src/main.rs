@@ -1,10 +1,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod readiness;
 mod updater;
 
 use std::fs;
 use std::io;
-use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,8 +47,8 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow},
 };
 
-const DEFAULT_PORT: u16 = 58080;
-const ADDRESS: &str = "http://127.0.0.1:58080/";
+#[cfg(test)]
+const LEGACY_PORT: u16 = 58080;
 const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const UPDATE_RELEASES_API: &str =
     "https://api.github.com/repos/qiu7824/deepseek-harness-rs/releases?per_page=20";
@@ -219,6 +219,8 @@ struct LauncherStateFile {
     executable: PathBuf,
     home: PathBuf,
     port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
     started_at_ms: u64,
 }
 
@@ -231,15 +233,21 @@ impl LauncherStateFile {
             executable,
             home,
             port,
+            instance_id: None,
             started_at_ms: now_unix_millis(),
         }
     }
 
     fn matches_process(&self, process: &ProcessIdentity) -> bool {
         self.version == LAUNCHER_STATE_VERSION
+            && self.port > 0
             && self.pid == process.pid
             && self.creation_time == process.creation_time
             && same_executable(&self.executable, &process.executable)
+    }
+
+    fn address(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
     }
 }
 
@@ -252,7 +260,9 @@ fn launcher_state_path_in_runtime_root(runtime_root: &Path) -> PathBuf {
 }
 
 fn launcher_runtime_root(root: &Path) -> PathBuf {
-    let home = active_home(root);
+    // Keep launcher metadata anchored to the configured home across data
+    // migrations; the journal itself records the Host's actual resolved home.
+    let home = configured_home();
     if home == root {
         root.to_path_buf()
     } else {
@@ -303,11 +313,71 @@ fn write_launcher_state_at(path: &Path, state: &LauncherStateFile) -> io::Result
 }
 
 fn remove_launcher_state(root: &Path) -> io::Result<()> {
-    match fs::remove_file(launcher_state_path(root)) {
+    remove_launcher_state_at(&launcher_state_path(root))
+}
+
+fn remove_launcher_state_at(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+fn owned_process_at(
+    path: &Path,
+    executable: &Path,
+    home: &Path,
+) -> Option<(LauncherStateFile, ProcessIdentity)> {
+    let state = match read_launcher_state_at(path) {
+        Ok(Some(state)) => state,
+        Ok(None) => return None,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            let _ = remove_launcher_state_at(path);
+            return None;
+        }
+        Err(_) => return None,
+    };
+    if !same_executable(&state.executable, executable)
+        || state.port == 0
+        || !readiness::same_home(&state.home, home)
+    {
+        let _ = remove_launcher_state_at(path);
+        return None;
+    }
+    match inspect_process(state.pid) {
+        Ok(process) if state.matches_process(&process) => Some((state, process)),
+        Ok(_) => {
+            // A recycled PID belongs to a different process. Forget metadata
+            // only; never signal it or block a fresh dynamically-bound Host.
+            let _ = remove_launcher_state_at(path);
+            None
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let _ = remove_launcher_state_at(path);
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+fn host_report_matches(state: &LauncherStateFile, result: &serde_json::Value) -> bool {
+    let home_matches = result["home"]
+        .as_str()
+        .is_some_and(|home| readiness::same_home(Path::new(home), &state.home));
+    let report_matches = match state.instance_id.as_deref() {
+        Some(instance) => {
+            result["processId"].as_u64() == Some(u64::from(state.pid))
+                && result["instanceId"].as_str() == Some(instance)
+                && result["version"].as_str() == Some(PRODUCT_VERSION)
+        }
+        // Legacy journals pin OS creation time and executable. API alone can
+        // never establish ownership, including when old Hosts omit these fields.
+        None => result["processId"]
+            .as_u64()
+            .is_none_or(|pid| pid == u64::from(state.pid)),
+    };
+    home_matches && report_matches
 }
 
 fn now_unix_millis() -> u64 {
@@ -356,11 +426,13 @@ fn wait_for_process_identity(pid: u32, expected_executable: &Path) -> io::Result
     Err(last_error.unwrap_or_else(|| io::Error::other("process identity unavailable")))
 }
 
+fn configured_home() -> PathBuf {
+    dsh_home_paths::resolve_dsh_home(None, &|name| std::env::var(name).ok())
+}
+
 fn active_home(_root: &Path) -> PathBuf {
-    std::env::var_os("DSH_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(dsh_home_paths::default_dsh_home)
+    let configured = configured_home();
+    dsh_home_paths::resolve_redirect(&configured).unwrap_or(configured)
 }
 
 fn stop_process(identity: &ProcessIdentity) -> io::Result<()> {
@@ -706,7 +778,7 @@ fn chinese_copy() -> Copy {
         last_action: "最近操作",
         done: "操作完成",
         missing_host: "未找到主程序",
-        foreign_port: "58080 已由外部进程占用；启动器不会停止不属于它的进程",
+        foreign_port: "服务身份不匹配；启动器不会接管或停止外部进程",
         start_failed: "启动失败",
         stop_failed: "停止失败",
         wait_failed: "等待进程退出失败",
@@ -743,7 +815,7 @@ fn english_copy() -> Copy {
         last_action: "Last action",
         done: "Operation completed",
         missing_host: "Host executable was not found",
-        foreign_port: "Port 58080 is owned by another process; the launcher will not stop it",
+        foreign_port: "Service identity differs; the launcher will not take over or stop an external process",
         start_failed: "Start failed",
         stop_failed: "Stop failed",
         wait_failed: "Waiting for process exit failed",
@@ -1070,13 +1142,22 @@ impl ServiceController {
     fn ownership(&mut self) -> ServiceOwnership {
         if let Some(child) = self.child.as_mut() {
             match child.try_wait() {
-                Ok(None) => return ServiceOwnership::ManagedRunning,
+                Ok(None) => {}
                 Ok(Some(_)) | Err(_) => self.child = None,
             }
         }
         if self.owned_process().is_some() {
             ServiceOwnership::ManagedRunning
-        } else if port_is_open(DEFAULT_PORT) {
+        } else if self.child.is_some()
+            || match read_launcher_state(&self.root) {
+                Ok(Some(state)) => match inspect_process(state.pid) {
+                    Ok(_) => true,
+                    Err(error) => error.kind() != io::ErrorKind::NotFound,
+                },
+                Ok(None) => false,
+                Err(_) => true,
+            }
+        {
             ServiceOwnership::ForeignPort
         } else {
             ServiceOwnership::Stopped
@@ -1084,32 +1165,19 @@ impl ServiceController {
     }
 
     fn owned_process(&self) -> Option<(LauncherStateFile, ProcessIdentity)> {
-        let state = match read_launcher_state(&self.root) {
-            Ok(Some(state)) => state,
-            Ok(None) => return None,
-            Err(_) => {
-                let _ = remove_launcher_state(&self.root);
-                return None;
-            }
-        };
-        if !same_executable(&state.executable, &self.executable)
-            || state.port != DEFAULT_PORT
-            || !same_executable(&state.home, &active_home(&self.root))
-        {
-            return None;
-        }
-        match inspect_process(state.pid) {
-            Ok(process) if state.matches_process(&process) => Some((state, process)),
-            Ok(_) | Err(_) => {
-                let _ = remove_launcher_state(&self.root);
-                None
-            }
-        }
+        owned_process_at(
+            &launcher_state_path(&self.root),
+            &self.executable,
+            &active_home(&self.root),
+        )
     }
 
     fn start(&mut self) -> Result<(), String> {
         match self.ownership() {
-            ServiceOwnership::ManagedRunning => return Ok(()),
+            ServiceOwnership::ManagedRunning => {
+                let (state, _) = self.owned_process().ok_or(self.copy.foreign_port)?;
+                return self.verify_host(&state);
+            }
             ServiceOwnership::ForeignPort => return Err(self.copy.foreign_port.to_string()),
             ServiceOwnership::Stopped => {}
         }
@@ -1127,9 +1195,15 @@ impl ServiceController {
         let stderr =
             fs::File::create(log_dir.join("dsh.err.log")).map_err(|error| error.to_string())?;
         let home = active_home(&self.root);
+        dsh_home_paths::resolve_redirect(&home)?;
+        let ready_directory =
+            readiness::ReadyDirectory::create(&launcher_runtime_root(&self.root).join("run"))
+                .map_err(|error| format!("{}: {error}", self.copy.start_failed))?;
+        let ready_path = ready_directory.path();
         let mut command = Command::new(&self.executable);
         command
-            .args(["web", "--port", &DEFAULT_PORT.to_string()])
+            .args(["web", "--host", "127.0.0.1", "--port", "0", "--ready-file"])
+            .arg(&ready_path)
             .env("DSH_HOME", &home)
             .current_dir(&self.root)
             .stdin(Stdio::null())
@@ -1149,59 +1223,89 @@ impl ServiceController {
                 return Err(format!("{}: {error}", self.copy.start_failed));
             }
         };
-        let state = LauncherStateFile::owned(
+        let ready = match readiness::wait_owned(
+            &mut child,
+            &identity,
+            &home,
+            &ready_path,
+            Duration::from_secs(30),
+        ) {
+            Ok(ready) => ready,
+            Err(error) => {
+                return Err(format!("{}: {error}", self.copy.start_failed));
+            }
+        };
+        let mut state = LauncherStateFile::owned(
             identity.pid,
             identity.creation_time,
             identity.executable,
-            home,
-            DEFAULT_PORT,
+            ready.home,
+            ready.port,
         );
+        state.instance_id = Some(ready.instance_id);
+        if let Err(error) = self.verify_host(&state) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{}: {error}", self.copy.start_failed));
+        }
         if let Err(error) = write_launcher_state(&self.root, &state) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("{}: {error}", self.copy.start_failed));
         }
         self.child = Some(child);
-        for _ in 0..80 {
-            if port_is_open(DEFAULT_PORT) {
-                return Ok(());
-            }
-            if self
-                .child
-                .as_mut()
-                .and_then(|child| child.try_wait().ok())
-                .flatten()
-                .is_some()
-            {
-                self.child = None;
-                let _ = remove_launcher_state(&self.root);
-                let error = fs::read_to_string(launcher_log_dir(&self.root).join("dsh.err.log"))
-                    .unwrap_or_default();
-                let detail = error.lines().last().unwrap_or(self.copy.start_failed);
-                return Err(format!("{}: {detail}", self.copy.start_failed));
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        Ok(())
+    }
+
+    fn verify_host(&self, state: &LauncherStateFile) -> Result<(), String> {
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(3)))
+                .build(),
+        );
+        let address = state.address();
+        let mut response = agent
+            .post(format!("{address}/api/host.describe"))
+            .header("Origin", &address)
+            .header("Sec-Fetch-Site", "same-origin")
+            .send_json(serde_json::json!({"type":"client-request","rpcId":"launcher-ready","method":"host.describe","payload":{}}))
+            .map_err(|error| error.to_string())?;
+        let value: serde_json::Value = response
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024)
+            .read_json()
+            .map_err(|error| error.to_string())?;
+        if value["result"]["ok"] != true {
+            return Err(self.copy.foreign_port.into());
         }
-        Err(format!(
-            "{}: 58080 readiness timeout",
-            self.copy.start_failed
-        ))
+        if !host_report_matches(state, &value["result"]["value"])
+            || !inspect_process(state.pid).is_ok_and(|identity| state.matches_process(&identity))
+        {
+            return Err(self.copy.foreign_port.into());
+        }
+        Ok(())
+    }
+
+    fn address(&self) -> Option<String> {
+        self.owned_process().map(|(state, _)| state.address())
     }
 
     fn stop(&mut self) -> Result<(), String> {
-        if let Some(mut child) = self.child.take() {
-            let pid = child.id();
+        if let Some(pid) = self.child.as_ref().map(Child::id) {
             let state = read_launcher_state(&self.root)
                 .map_err(|error| format!("{}: {error}", self.copy.stop_failed))?;
             let identity = inspect_process(pid)
                 .map_err(|error| format!("{}: {error}", self.copy.stop_failed))?;
-            let owned = state
-                .as_ref()
-                .is_some_and(|state| state.matches_process(&identity));
+            let owned = state.as_ref().is_some_and(|state| {
+                state.matches_process(&identity)
+                    && same_executable(&state.executable, &self.executable)
+                    && readiness::same_home(&state.home, &active_home(&self.root))
+            });
             if !owned {
-                self.child = Some(child);
                 return Err(self.copy.foreign_port.to_string());
             }
+            let mut child = self.child.take().expect("validated child is still present");
             #[cfg(windows)]
             child
                 .kill()
@@ -1225,7 +1329,7 @@ impl ServiceController {
                 .map_err(|error| format!("{}: {error}", self.copy.stop_failed))?;
             return Ok(());
         }
-        if port_is_open(DEFAULT_PORT) {
+        if self.ownership() == ServiceOwnership::ForeignPort {
             return Err(self.copy.foreign_port.to_string());
         }
         Ok(())
@@ -1238,13 +1342,8 @@ impl ServiceController {
 
     fn open_web(&mut self) -> Result<(), String> {
         self.start()?;
-        for _ in 0..80 {
-            if port_is_open(DEFAULT_PORT) {
-                return open_target(ADDRESS, self.copy);
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Err(self.copy.start_failed.into())
+        let address = self.address().ok_or(self.copy.start_failed)?;
+        open_target(&address, self.copy)
     }
 
     fn ensure_update_idle(&mut self) -> Result<(), String> {
@@ -1253,6 +1352,9 @@ impl ServiceController {
             ServiceOwnership::ForeignPort => return Err(self.copy.foreign_port.into()),
             ServiceOwnership::ManagedRunning => {}
         }
+        let (state, _) = self.owned_process().ok_or(self.copy.foreign_port)?;
+        self.verify_host(&state)?;
+        let address = state.address();
         let request = serde_json::json!({"type":"client-request","rpcId":"launcher-update","method":"session.list","payload":{}});
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
@@ -1260,8 +1362,8 @@ impl ServiceController {
                 .build(),
         );
         let mut response = agent
-            .post("http://127.0.0.1:58080/api/session.list")
-            .header("Origin", "http://127.0.0.1:58080")
+            .post(format!("{address}/api/session.list"))
+            .header("Origin", &address)
             .header("Sec-Fetch-Site", "same-origin")
             .send_json(request)
             .map_err(|e| e.to_string())?;
@@ -1412,6 +1514,7 @@ struct LauncherJobs {
     controller: Arc<Mutex<ServiceController>>,
     copy: Copy,
     status: Arc<Mutex<String>>,
+    address: Arc<Mutex<String>>,
     ownership: SharedOwnership,
     busy: Arc<AtomicBool>,
     invalidation: UiInvalidationHandle,
@@ -1436,6 +1539,11 @@ impl LauncherJobs {
             .map(|mut controller| controller.ownership())
             .unwrap_or(ServiceOwnership::ForeignPort);
         let status = ownership_label(copy, ownership).to_string();
+        let address = controller
+            .lock()
+            .ok()
+            .and_then(|controller| controller.address())
+            .unwrap_or_else(|| copy.stopped.to_string());
         let mirror_file = controller
             .lock()
             .ok()
@@ -1448,6 +1556,7 @@ impl LauncherJobs {
             controller,
             copy,
             status: Arc::new(Mutex::new(status)),
+            address: Arc::new(Mutex::new(address)),
             ownership: SharedOwnership::new(ownership),
             busy: Arc::new(AtomicBool::new(false)),
             invalidation,
@@ -1464,6 +1573,13 @@ impl LauncherJobs {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
+    fn address_text(&self) -> String {
+        self.address
+            .lock()
+            .map(|address| address.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
     fn set_status(&self, status: String) {
         if let Ok(mut guard) = self.status.lock() {
             *guard = status;
@@ -1475,12 +1591,15 @@ impl LauncherJobs {
     }
 
     fn refresh_snapshot(&self) {
-        let ownership = self
+        let (ownership, address) = self
             .controller
             .lock()
-            .map(|mut controller| controller.ownership())
-            .unwrap_or(ServiceOwnership::ForeignPort);
+            .map(|mut controller| (controller.ownership(), controller.address()))
+            .unwrap_or((ServiceOwnership::ForeignPort, None));
         self.ownership.set(ownership);
+        if let Ok(mut current) = self.address.lock() {
+            *current = address.unwrap_or_else(|| self.copy.stopped.to_string());
+        }
     }
 
     fn dispatch(&self, command: LauncherCommand) -> bool {
@@ -1713,7 +1832,7 @@ fn view(state: &State) -> ViewNode<Message> {
                             text_style(TextRole::BodyLarge, status_color, TextWeight::Semibold),
                         ),
                         styled_text(
-                            ADDRESS,
+                            state.jobs.address_text(),
                             text_style(
                                 TextRole::Monospace,
                                 ColorRole::SecondaryText,
@@ -1835,19 +1954,6 @@ fn update(state: &mut State, message: Message, _cx: &mut AppCx) {
             state.dispatch(LauncherCommand::Refresh);
         }
     }
-}
-
-fn port_is_open(port: u16) -> bool {
-    ("127.0.0.1", port)
-        .to_socket_addrs()
-        .ok()
-        .into_iter()
-        .flatten()
-        .any(|address| {
-            TcpStream::connect_timeout(&address, Duration::from_millis(150))
-                .and_then(|stream| stream.peer_addr())
-                .is_ok()
-        })
 }
 
 fn core_executable_name() -> &'static str {
@@ -2078,10 +2184,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        DEFAULT_PORT, Dp, LAUNCHER_ACTION_GAP, LAUNCHER_CONTENT_PADDING, LAUNCHER_SECTION_GAP,
-        LAUNCHER_WINDOW_HEIGHT, LAUNCHER_WINDOW_MIN_HEIGHT, LAUNCHER_WINDOW_WIDTH, LauncherAction,
-        LauncherCommand, LauncherJobs, LauncherStateFile, MenuItemSpec, MenuSpec, PRIMARY_ACTIONS,
-        ProcessIdentity, SECONDARY_ACTIONS, ServiceController, ServiceOwnership,
+        Dp, LAUNCHER_ACTION_GAP, LAUNCHER_CONTENT_PADDING, LAUNCHER_SECTION_GAP,
+        LAUNCHER_WINDOW_HEIGHT, LAUNCHER_WINDOW_MIN_HEIGHT, LAUNCHER_WINDOW_WIDTH, LEGACY_PORT,
+        LauncherAction, LauncherCommand, LauncherJobs, LauncherStateFile, MenuItemSpec, MenuSpec,
+        PRIMARY_ACTIONS, ProcessIdentity, SECONDARY_ACTIONS, ServiceController, ServiceOwnership,
         TRAY_RESTART_COMMAND, TRAY_START_COMMAND, TRAY_STOP_COMMAND, UiInvalidationHandle,
         chinese_copy, core_executable_name, english_copy, is_newer_version, now_unix_millis,
         parse_version, tray_menu_spec, update_status_from,
@@ -2411,7 +2517,7 @@ mod tests {
             7_654_321,
             PathBuf::from(r"C:\Program Files\DeepSeek Harness-rs\deepseek-harness-rs.exe"),
             PathBuf::from(r"C:\Users\Administrator\AppData\Local\DeepSeek Harness"),
-            DEFAULT_PORT,
+            LEGACY_PORT,
         );
         super::write_launcher_state_at(&state_path, &state).expect("write launcher state");
         let restored = super::read_launcher_state_at(&state_path)
@@ -2428,7 +2534,7 @@ mod tests {
             7_654_321,
             PathBuf::from(r"C:\Harness\deepseek-harness-rs.exe"),
             PathBuf::from(r"C:\HarnessHome"),
-            DEFAULT_PORT,
+            LEGACY_PORT,
         );
         let observed = ProcessIdentity {
             pid: 4242,
@@ -2436,6 +2542,154 @@ mod tests {
             executable: PathBuf::from(r"C:\Harness\deepseek-harness-rs.exe"),
         };
         assert!(!state.matches_process(&observed));
+    }
+
+    #[test]
+    fn recycled_pid_journal_is_forgotten_without_signalling_the_unrelated_live_process() {
+        let root = unique_test_root("recycled-pid");
+        let path = super::launcher_state_path_in_runtime_root(&root);
+        let identity = super::inspect_process(std::process::id()).unwrap();
+        let home = std::env::temp_dir();
+        let mut state = LauncherStateFile::owned(
+            identity.pid,
+            identity.creation_time + 1,
+            identity.executable.clone(),
+            home.clone(),
+            LEGACY_PORT,
+        );
+        super::write_launcher_state_at(&path, &state).unwrap();
+        assert!(super::owned_process_at(&path, &identity.executable, &home).is_none());
+        assert!(
+            !path.exists(),
+            "a reused PID must not permanently block a fresh start"
+        );
+        assert_eq!(super::inspect_process(identity.pid).unwrap(), identity);
+        state.creation_time = identity.creation_time;
+        state.port = 41321;
+        state.instance_id = Some("new-instance".into());
+        super::write_launcher_state_at(&path, &state).unwrap();
+        assert_eq!(
+            super::owned_process_at(&path, &identity.executable, &home)
+                .unwrap()
+                .0,
+            state
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_journal_survives_valid_home_redirect_but_cannot_claim_a_different_home() {
+        let root = unique_test_root("redirect-journal");
+        let source = root.join("source");
+        let target = root.join("target with spaces");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("settings.json"), "{}").unwrap();
+        std::fs::write(
+            source.join(".dsh-home-redirect.json"),
+            serde_json::to_vec(&serde_json::json!({"target":target})).unwrap(),
+        )
+        .unwrap();
+        let path = super::launcher_state_path_in_runtime_root(&root);
+        let identity = super::inspect_process(std::process::id()).unwrap();
+        let state = LauncherStateFile::owned(
+            identity.pid,
+            identity.creation_time,
+            identity.executable.clone(),
+            source,
+            LEGACY_PORT,
+        );
+        super::write_launcher_state_at(&path, &state).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!String::from_utf8(bytes).unwrap().contains("instance_id"));
+        assert_eq!(
+            super::owned_process_at(&path, &identity.executable, &target)
+                .unwrap()
+                .0,
+            state
+        );
+        let description = serde_json::json!({"home":target,"version":"old"});
+        assert!(super::host_report_matches(&state, &description));
+        assert!(
+            super::owned_process_at(&path, &identity.executable, &std::env::temp_dir()).is_none()
+        );
+        assert!(!path.exists());
+        assert_eq!(super::inspect_process(identity.pid).unwrap(), identity);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_journal_and_zero_port_cannot_establish_ownership() {
+        let root = unique_test_root("invalid-journal");
+        let path = super::launcher_state_path_in_runtime_root(&root);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{").unwrap();
+        let identity = super::inspect_process(std::process::id()).unwrap();
+        let home = std::env::temp_dir();
+        assert!(super::owned_process_at(&path, &identity.executable, &home).is_none());
+        let state = LauncherStateFile::owned(
+            identity.pid,
+            identity.creation_time,
+            identity.executable.clone(),
+            home.clone(),
+            0,
+        );
+        super::write_launcher_state_at(&path, &state).unwrap();
+        assert!(super::owned_process_at(&path, &identity.executable, &home).is_none());
+        assert!(!path.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_verification_uses_the_recorded_port_origin_and_instance_identity() {
+        for (pid_delta, instance) in [
+            (0, "expected-instance"),
+            (1, "expected-instance"),
+            (0, "other-instance"),
+        ] {
+            let server = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = server.local_addr().unwrap().port();
+            let identity = super::inspect_process(std::process::id()).unwrap();
+            let home = std::env::temp_dir();
+            let mut state = LauncherStateFile::owned(
+                identity.pid,
+                identity.creation_time,
+                identity.executable.clone(),
+                home.clone(),
+                port,
+            );
+            state.instance_id = Some("expected-instance".into());
+            let pid = identity.pid + pid_delta;
+            let body = serde_json::json!({"type":"server-response","rpcId":"launcher-ready","result":{"ok":true,"value":{"processId":pid,"instanceId":instance,"home":home,"version":super::PRODUCT_VERSION}}}).to_string();
+            let worker = thread::spawn(move || {
+                let (mut stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                String::from_utf8(request).unwrap()
+            });
+            let controller = ServiceController {
+                root: home,
+                executable: identity.executable,
+                child: None,
+                copy: english_copy(),
+            };
+            assert_eq!(
+                controller.verify_host(&state).is_ok(),
+                pid_delta == 0 && instance == "expected-instance"
+            );
+            let request = worker.join().unwrap().to_lowercase();
+            assert!(request.starts_with("post /api/host.describe "));
+            assert!(request.contains(&format!("origin: http://127.0.0.1:{port}\r\n")));
+        }
     }
 
     #[cfg(unix)]

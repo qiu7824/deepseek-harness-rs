@@ -394,6 +394,15 @@ jobs:
         timeout-minutes: 40
         shell: bash
         run: |
+          DSH_TEST_BINARY="$GITHUB_WORKSPACE/dist/${{ steps.release.outputs.prefix }}-core/deepseek-harness-rs"
+          [[ '${{ matrix.platform }}' == 'windows' ]] && DSH_TEST_BINARY="$DSH_TEST_BINARY.exe"
+          DSH_HOME="$RUNNER_TEMP/launcher-fixture"
+          mkdir -p "$DSH_HOME"
+          if [[ '${{ matrix.platform }}' == 'windows' ]]; then
+            DSH_TEST_BINARY="$(cygpath -w "$DSH_TEST_BINARY")"
+            DSH_HOME="$(cygpath -w "$DSH_HOME")"
+          fi
+          export DSH_TEST_BINARY DSH_HOME
           cd apps/desktop_flutter
           python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test --machine
       - name: Flutter 正式客户端构建

@@ -122,23 +122,7 @@ fn canonical_target(path: &Path) -> Result<PathBuf, String> {
 }
 
 pub fn resolve_redirect(root: &Path) -> Result<PathBuf, String> {
-    let mut root = canonical_target(root)?;
-    let mut visited = std::collections::HashSet::new();
-    for _ in 0..16 {
-        if !visited.insert(root.clone()) {
-            return Err("数据目录重定向形成循环".into());
-        }
-        let marker = read_json(&root.join(REDIRECT))?;
-        let Some(target) = marker.get("target").and_then(Value::as_str) else {
-            return Ok(root);
-        };
-        let next = canonical_target(Path::new(target))?;
-        if !next.join("settings.json").is_file() {
-            return Err("迁移后的数据目录不可用，原数据仍保留".into());
-        }
-        root = next;
-    }
-    Err("数据目录重定向层数过多".into())
+    dsh_home_paths::resolve_redirect(root)
 }
 
 fn hash(path: &Path) -> Result<Vec<u8>, String> {

@@ -2,6 +2,7 @@ import '../l10n/runtime_zh.dart';
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Directory;
 
 import 'package:flutter/foundation.dart';
 import 'package:dsh_client/dsh_client.dart';
@@ -48,7 +49,13 @@ class DesktopController extends ChangeNotifier {
   DesktopController(
     this.preferences, {
     DshClient Function(String)? clientFactory,
-  }) : _clientFactory = clientFactory ?? ((address) => DshClient(address)) {
+    @visibleForTesting HostProcessStarter? hostProcessStarter,
+    @visibleForTesting String? Function()? bundledHostFinder,
+    @visibleForTesting Directory? hostLogDirectory,
+  }) : _clientFactory = clientFactory ?? ((address) => DshClient(address)),
+       _hostProcessStarter = hostProcessStarter,
+       _bundledHostFinder = bundledHostFinder ?? HostLauncher.bundled,
+       _hostLogDirectory = hostLogDirectory {
     messageChanges.addListener(() {
       _lastConversationState = _conversationState();
     });
@@ -94,6 +101,9 @@ class DesktopController extends ChangeNotifier {
   }
 
   final DshClient Function(String) _clientFactory;
+  final HostProcessStarter? _hostProcessStarter;
+  final String? Function() _bundledHostFinder;
+  final Directory? _hostLogDirectory;
   DshClient? _client;
   DshClient? get client => _client;
   HostInfo? host;
@@ -236,13 +246,17 @@ class DesktopController extends ChangeNotifier {
   String? _draftHostAddress;
   String? _provisionalDraftScope;
   bool _explicitDraftWorkspace = false;
-  static const unnamedDraftPrefix = '__dsh_unnamed_draft_v1__:';
+  static const unnamedDraftPrefix = DesktopPreferences.unnamedDraftPrefix;
 
   /// A reserved preferences entry; it is never sent as a Host session id.
   String get unnamedDraftKey => _unnamedDraftKey(workspaceId);
 
   String _unnamedDraftKey(String? workspace) {
-    final address = _draftHostAddress ?? preferences.address;
+    // Auto-started Hosts share the same desktop data home even when a restart
+    // receives a different port. Keep their unsent drafts across that change.
+    final address = preferences.automaticHost
+        ? DesktopPreferences.automaticAddress
+        : _draftHostAddress ?? preferences.address;
     final uri = Uri.tryParse(address);
     final hostKey =
         uri != null &&
@@ -625,31 +639,20 @@ class DesktopController extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
-    final included = HostLauncher.bundled();
-    if (included != null) {
+    final included = _bundledHostFinder();
+    preferences.migrateBundledDefaults(included);
+    if (included != null && preferences.automaticHost) {
       preferences.executable = included;
     } else if (preferences.executable.isEmpty) {
       preferences.executable = HostLauncher.discover();
     }
     await run(() async {
-      if (included == null) {
+      if (preferences.automaticHost) {
+        await startHost();
+      } else {
+        // Explicit addresses, including legacy preferences, belong to the
+        // user. Never start or replace a service simply by probing its port.
         await connect(preferences.address);
-        return;
-      }
-      // A short probe: a refused loopback connect costs about two seconds on
-      // Windows, which the bundled Host would otherwise pay before starting.
-      final running = await HostLauncher.live(preferences.address);
-      if (running == null) {
-        await HostLauncher.start(included, preferences.address);
-      }
-      await connect(preferences.address);
-      final bundled = HostLauncher.packagedVersion(included);
-      if (running != null && bundled != null && running.version != bundled) {
-        error = hostVersionMismatch(
-          preferences.address,
-          running.version,
-          bundled,
-        );
       }
     });
   }
@@ -672,8 +675,9 @@ class DesktopController extends ChangeNotifier {
     });
   }
 
-  Future<void> connect(String address) async {
+  Future<void> connect(String address, {bool desktopOwned = false}) async {
     if (_disposed) return;
+    preferences.automaticHost = desktopOwned;
     readingPositions.clear();
     _clearCommandActivity();
     final next = _clientFactory(address);
@@ -751,9 +755,23 @@ class DesktopController extends ChangeNotifier {
       _client = next;
       published = true;
       emit();
-      final description = await next.describe();
+      final HostInfo description;
+      LocalHostProcess? checkedOwned;
+      if (desktopOwned) {
+        final owned = preferences.ownedHost;
+        final data = await next.call('host.describe');
+        if (owned == null || owned.address != HostLauncher.readyUri(address).origin ||
+            !HostLauncher.matchesOwned(owned, data)) {
+          throw const FormatException(DshRuntimeZh.hostReadinessInvalid);
+        }
+        description = HostInfo.fromJson(data);
+        checkedOwned = owned.withReportedHome(description.home);
+      } else {
+        description = await next.describe();
+      }
       if (!current()) return;
       host = description;
+      if (checkedOwned != null) preferences.ownedHost = checkedOwned;
       preferences.address = address;
       await preferences.save();
       if (!current()) return;
@@ -798,6 +816,10 @@ class DesktopController extends ChangeNotifier {
         channel.start();
       }
     } catch (_) {
+      if (desktopOwned && current() && host == null && identical(_client, next)) {
+        _client = null;
+        published = false;
+      }
       if (current()) rethrow;
     } finally {
       // Once published, ownership transfers to the next connect/dispose call.
@@ -860,10 +882,22 @@ class DesktopController extends ChangeNotifier {
     }
   }
 
-  Future<void> startHost() async {
-    final running = await HostLauncher.live(preferences.address);
+  Future<void>? _hostLaunch;
+
+  Future<void> startHost() => _hostLaunch ??=
+      _startHost().whenComplete(() => _hostLaunch = null);
+
+  Future<void> _startHost() async {
+    final automatic = preferences.automaticHost;
+    final owned = preferences.ownedHost;
+    final running = automatic
+        ? await HostLauncher.reusable(owned, preferences.executable)
+        : await HostLauncher.live(preferences.address);
     if (running != null) {
-      await connect(preferences.address);
+      await connect(
+        automatic ? owned!.address : preferences.address,
+        desktopOwned: automatic,
+      );
       final selected = HostLauncher.packagedVersion(preferences.executable);
       if (selected != null && running.version != selected) {
         error = hostVersionMismatch(
@@ -878,8 +912,18 @@ class DesktopController extends ChangeNotifier {
     connecting = true;
     emit();
     try {
-      await HostLauncher.start(preferences.executable, preferences.address);
-      await connect(preferences.address);
+      final started = await HostLauncher.start(
+        preferences.executable,
+        automatic ? DesktopPreferences.automaticAddress : preferences.address,
+        processStarter: _hostProcessStarter,
+        logDirectory: _hostLogDirectory,
+      );
+      // Save ownership before connecting so a transient client failure does
+      // not orphan a successfully started background Host on the next open.
+      preferences.ownedHost = started;
+      preferences.address = started.address;
+      await preferences.save();
+      await connect(started.address, desktopOwned: automatic);
     } finally {
       connecting = false;
       emit();

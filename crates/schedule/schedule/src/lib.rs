@@ -11,6 +11,7 @@
 
 pub mod calendar;
 pub mod domain;
+pub mod host_boundary;
 mod host_driver;
 pub mod host_history;
 pub mod host_plugin;

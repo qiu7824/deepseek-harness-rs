@@ -8,3 +8,4 @@ description = "Shared filesystem path helpers for DeepSeek Harness user data: Ru
 [dependencies]
 dirs = { workspace = true }
 tokio = { workspace = true }
+serde_json = { workspace = true }

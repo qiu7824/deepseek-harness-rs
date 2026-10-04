@@ -12,7 +12,7 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 跨版本适配与未完成项见 [v0.1.7-rc.2 评估](docs/upstream-v0.1.7-rc.2-evaluation.zh.md)及[更新计划](docs/plans/更新计划.md)。
 
-官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[Windows Flutter 本轮源码修复](docs/windows-flutter-regressions-2026-10-04.zh.md)已通过 Windows 回归，实机字体和模型服务复验待完成；现有 r6 安装包仍对应原始标签源码。
+官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[Windows Flutter 源码进展](docs/windows-flutter-regressions-2026-10-04.zh.md)记录此前通过的 UI 回归，以及本轮自管桌面动态端口、Devin 安全诊断和提醒权限边界；新增 CI 与新包待完成，实机字体和外部模型服务仍需复验。现有 r6 安装包对应原始标签源码。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
@@ -69,7 +69,9 @@ Linux/macOS: ./dsh-launcher
 Linux 的受限 Shell 与原生终端使用系统 `bubblewrap` 沙箱；DEB 包声明该依赖，使用便携包时请通过发行版包管理器安装 `bubblewrap`。缺少沙箱或系统不允许创建沙箱时，受限执行会明确失败。
 启用用户命名空间限制的 Ubuntu 系统可能需要管理员配置发行版推荐的 [bwrap AppArmor 规则](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)，程序不会自动修改系统防护策略。
 
-默认地址：
+当前源码的自管桌面 Host 由系统分配本机端口，客户端使用实际就绪地址；手动连接外部 Host 保留。数据目录迁移后更新 Host 复用记录，持久日志避免父窗口退出影响后台 Host。本轮升级逻辑将随附 Host 的旧默认地址迁移为自动管理，需要固定地址时可在设置中手动指定。此改动仍待新 CI 与发行包验证。
+
+现有 r6 发行包的默认地址：
 
 ```text
 http://127.0.0.1:58080/

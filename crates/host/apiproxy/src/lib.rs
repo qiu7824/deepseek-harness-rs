@@ -49,7 +49,7 @@ pub use api::goals::{
 pub use api::host::{
     DirectoryEntry, DirectoryListing, HostApi, HostCreateDirectoryRequest,
     HostCreateDirectoryResult, HostDescribeResult, HostListDirectoryRequest, HostOpenPathRequest,
-    HostOpenPathResult, HostPickDirectoryResult,
+    HostOpenPathResult, HostPickDirectoryResult, host_process_identity,
 };
 pub use api::jobs::{JobStatus, JobView};
 pub use api::llm::{

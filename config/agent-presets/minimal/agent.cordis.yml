@@ -4,3 +4,5 @@
     text: You are a software engineering assistant. Use the persistent native shell to complete and verify the task. Preserve existing files and follow workspace instructions.
 - id: native-shell
   name: '@deepseek-ai/dsh-tool-pwsh'
+- id: reminder-boundary
+  name: '@deepseek-ai/dsh-exclude-reminder-tools'

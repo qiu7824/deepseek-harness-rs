@@ -2241,6 +2241,7 @@ name = "dsh-home-paths"
 version = "0.1.0-rc.8"
 dependencies = [
  "dirs 6.0.0",
+ "serde_json",
  "tokio",
 ]
 
@@ -2731,6 +2732,7 @@ dependencies = [
  "tar",
  "ureq",
  "url",
+ "uuid",
  "windows-sys 0.61.2",
  "winresource",
  "zip",

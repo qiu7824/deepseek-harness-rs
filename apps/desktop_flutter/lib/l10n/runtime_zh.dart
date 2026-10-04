@@ -28,7 +28,7 @@ abstract final class DshRuntimeZh {
   static const interactionAlreadyHandled = '此请求已经结束或已在其他客户端处理。';
   static const preferencesDirectoryUnknown =
       '无法确定用户设置目录，请配置 DSH_DESKTOP_PREFERENCES。';
-  static const fixedPortRequired = '请指定大于 0 的固定端口';
+  static const hostReadinessInvalid = '服务启动信息无效或进程身份不匹配，请重新启动本机服务。';
   static const localServiceAddressRequired = '启动本机服务时请使用 http://127.0.0.1:端口';
   static const hostNotExecutable = '所选服务程序没有执行权限。';
   static const invalidClipboardImage = '剪贴板图片尺寸无效';
@@ -68,6 +68,8 @@ abstract final class DshRuntimeZh {
       '请选择完整安装目录中的 $name';
   static String hostNotReady({required int processId}) =>
       '服务进程 $processId 尚未就绪，请检查服务日志或端口占用。';
+  static String hostExitedBeforeReady(int exitCode) =>
+      '本机服务在启动完成前退出（退出码 $exitCode），请检查服务日志。';
   static String voiceStartFailed({required Object? error}) => '无法启动语音识别：$error';
   static String voiceRecognizerUnavailable({required Object? detail}) =>
       'Windows 语音识别不可用，请检查麦克风和语音语言包（$detail）。';

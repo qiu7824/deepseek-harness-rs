@@ -83,14 +83,22 @@ void main() {
     'launches an isolated Host and waits for readiness',
     () async {
       expect(home, contains('launcher-fixture'));
-      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final port = socket.port;
-      await socket.close();
-      final address = 'http://127.0.0.1:$port';
-      final pid = await HostLauncher.start(executable!, address);
-      final client = DshClient(address);
+      final process = await HostLauncher.start(
+        executable!, DesktopPreferences.automaticAddress,
+        logDirectory: Directory('$home/desktop-host-logs'),
+      );
+      final client = DshClient(process.address);
       try {
         final host = await client.describe();
+        final identity = await client.call('host.describe');
+        expect(identity['processId'], process.pid);
+        expect(identity['instanceId'], process.instanceId);
+        expect(Uri.parse(process.address).port, greaterThan(0));
+        expect(process.logFile, isNotNull);
+        expect(await File(process.logFile!).length(), greaterThan(0));
+        expect(await HostLauncher.reusable(
+          LocalHostProcess.fromSaved(process.toJson()), executable!,
+        ), isNotNull);
         expect(
           host.home.replaceAll('\\', '/').replaceFirst('//?/', ''),
           home!.replaceAll('\\', '/').replaceFirst('//?/', ''),
@@ -98,7 +106,7 @@ void main() {
         expect(await client.sessions(), isEmpty);
       } finally {
         await client.close();
-        Process.killPid(pid);
+        await process.stopStartedProcess();
       }
     },
     skip: executable == null

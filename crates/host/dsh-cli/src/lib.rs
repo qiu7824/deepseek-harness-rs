@@ -10,6 +10,8 @@ pub mod native_plugin;
 pub mod profile_boot;
 pub mod run_profile;
 pub mod sdk_stdio;
+pub mod web_readiness;
+pub mod web_stdio;
 
 pub use run_profile::{
     ProfileInterrupt, ProfileInterruptLatch, ProfileSurface, RunProfileHandle, RunProfileRequest,

@@ -366,9 +366,24 @@ fn provider_errors_never_echo_session_credentials() {
 const THIRD_PARTY_MODEL_FAILURE: &str = "The third-party model provider is experiencing issues and is currently not available. Please try this model again later. (trace ID: 00112233445566778899aabbccddeeff)";
 
 async fn native_service_failure(trailer: bool, code: &str, message: &str) -> LlmFailure {
+    native_service_failure_with_request(
+        trailer,
+        json!({"error":{"code":code,"message":message}}),
+        json!({"model":"claude-opus-5-5","messages":[{"role":"user","content":"check"}]}),
+    )
+    .await
+}
+
+async fn native_service_failure_with_request(
+    trailer: bool,
+    error: Value,
+    chat: Value,
+) -> LlmFailure {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let error = json!({"error":{"code":code,"message":message}}).to_string();
+    let error = error.to_string();
+    let expected_model = chat["model"].as_str().unwrap().to_owned();
+    let expected_tool_count = chat["tools"].as_array().map_or(0, Vec::len);
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let (header, _) = read_request(&mut socket).await;
@@ -384,7 +399,17 @@ async fn native_service_failure(trailer: bool, code: &str, message: &str) -> Llm
         assert_eq!(body[0], 1);
         let request = uncompress(&body[5..]).unwrap();
         let request = Message::parse(&request).unwrap();
-        assert_eq!(request.text(21).unwrap(), "claude-opus-5-5");
+        assert_eq!(request.text(21).unwrap(), expected_model);
+        let tools = request.repeated(10).unwrap();
+        assert_eq!(tools.len(), expected_tool_count);
+        for tool in tools {
+            let tool = Message::parse(tool).unwrap();
+            let schema: Value = serde_json::from_str(tool.text(3).unwrap()).unwrap();
+            assert_eq!(schema["type"], "object");
+            for key in ["oneOf", "anyOf", "allOf"] {
+                assert!(schema.get(key).is_none());
+            }
+        }
         let (status, body) = if trailer {
             ("200 OK", frame(2, error.as_bytes()))
         } else {
@@ -404,11 +429,11 @@ async fn native_service_failure(trailer: bool, code: &str, message: &str) -> Llm
     });
     let (sender, _receiver) = tokio::sync::mpsc::channel(32);
     let mut options = options();
-    options.model = "claude-opus-5-5".into();
+    options.model = chat["model"].as_str().unwrap().into();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         request(
-            &json!({"model":"claude-opus-5-5","messages":[{"role":"user","content":"check"}]}),
+            &chat,
             &options,
             &connection(format!("http://{address}")),
             "test-token",
@@ -421,6 +446,117 @@ async fn native_service_failure(trailer: bool, code: &str, message: &str) -> Llm
     .unwrap_err();
     server.await.unwrap();
     result
+}
+
+fn bad_request_detail(paths: &[&str], description: &str) -> Value {
+    use base64::Engine;
+    let mut detail = Encoder::default();
+    for path in paths {
+        let mut violation = Encoder::default();
+        violation.text(1, path);
+        violation.text(2, description);
+        detail.bytes(1, &violation.0);
+    }
+    json!({"type":"google.rpc.BadRequest", "value":base64::engine::general_purpose::STANDARD.encode(detail.0),
+        "debug":{"fieldViolations":[{"field":"debug-secret", "description":description}]}})
+}
+
+fn diagnostic(error: &LlmFailure) -> Value {
+    let start = error.message.find("\n[devin-diagnostic:").unwrap() + "\n[devin-diagnostic:".len();
+    let end = error.message[start..].rfind(']').unwrap() + start;
+    // The native code remains outside the JSON appendix, at the original end.
+    let end = error.message[start..end]
+        .rfind("] [")
+        .map_or(end, |index| start + index);
+    serde_json::from_str(&error.message[start..end]).unwrap()
+}
+
+#[tokio::test]
+async fn rejection_diagnostics_locate_model_and_schema_fields_without_payloads() {
+    use sha2::Digest;
+    let private = "PRIVATE-PROMPT-ATTACHMENT-TOOL-SCHEMA";
+    let chat = json!({"model":"claude-opus-5-5", "messages":[
+        {"role":"system","content":private}, {"role":"user","content":private}
+    ], "tools":[{"type":"function","function":{"name":private,"description":private,
+        "parameters":{"oneOf":[
+            {"type":"object","properties":{"action":{"type":"string","const":"read","description":private}},"required":["action"]},
+            {"type":"object","properties":{"action":{"type":"string","const":"write","description":private}},"required":["action"]}
+        ]}}}]});
+    for field in ["chat_model_uid", "tools[0].input_schema"] {
+        let result = native_service_failure_with_request(
+            true,
+            json!({"error":{"code":"invalid_argument","message":THIRD_PARTY_MODEL_FAILURE,
+                "details":[bad_request_detail(&[field], private)]}}),
+            chat.clone(),
+        )
+        .await;
+        assert_eq!(result.code, "INVALID_REQUEST");
+        assert_eq!(result.status, Some(400));
+        assert!(result.message.starts_with(THIRD_PARTY_MODEL_FAILURE));
+        assert!(result.message.ends_with(" [invalid_argument]"));
+        let summary = diagnostic(&result);
+        assert_eq!(summary["phase"], "chat-connect");
+        assert_eq!(
+            summary["modelUidHash"],
+            format!("{:x}", sha2::Sha256::digest(b"claude-opus-5-5"))
+        );
+        assert_eq!(summary["toolCount"], 1);
+        assert_eq!(summary["messageCount"], 1);
+        assert_eq!(summary["schema"]["objectRoots"], 1);
+        assert_eq!(summary["schema"]["rootCombinators"], 0);
+        assert!(
+            summary["requestBytes"].as_u64().unwrap()
+                > summary["compressedBytes"].as_u64().unwrap()
+        );
+        assert_eq!(summary["badRequestFields"], json!([{"path":field}]));
+        for forbidden in [
+            private,
+            "claude-opus-5-5",
+            "test-token",
+            "user-jwt",
+            "debug-secret",
+        ] {
+            assert!(
+                !result.message.contains(forbidden),
+                "diagnostics exposed {forbidden}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn diagnostic_details_cannot_promote_http_bad_requests_or_echo_arbitrary_fields() {
+    let result = native_service_failure_with_request(false,
+        json!({"error":{"code":"unavailable","message":THIRD_PARTY_MODEL_FAILURE,"details":[
+            bad_request_detail(&["tools[0].input_schema.properties.test-token", "configuration.temperature"], "prompt secret user-jwt")
+        ]}}), json!({"model":"user supplied private model", "messages":[{"role":"user","content":"attachment secret"}]})).await;
+    assert_eq!(result.code, "INVALID_REQUEST");
+    assert_eq!(result.status, Some(400));
+    assert!(!dsh_llm::DEFAULT_RETRYABLE_CODES.contains(&result.code.as_str()));
+    let summary = diagnostic(&result);
+    assert_eq!(summary["phase"], "chat-http");
+    assert!(summary["badRequestFields"][0].get("path").is_none());
+    assert_eq!(
+        summary["badRequestFields"][0]["pathHash"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(
+        summary["badRequestFields"][1]["path"],
+        "configuration.temperature"
+    );
+    for forbidden in [
+        "test-token",
+        "user-jwt",
+        "user supplied private model",
+        "attachment secret",
+        "prompt secret",
+        "debug-secret",
+    ] {
+        assert!(!result.message.contains(forbidden));
+    }
 }
 
 #[tokio::test]
@@ -471,7 +607,11 @@ async fn http_bad_requests_with_outage_text_are_not_promoted_to_retries() {
     let result = native_service_failure(false, "unavailable", THIRD_PARTY_MODEL_FAILURE).await;
     assert_eq!(result.status, Some(400));
     assert_eq!(result.code, "INVALID_REQUEST");
-    assert_eq!(result.message, THIRD_PARTY_MODEL_FAILURE);
+    assert_eq!(
+        result.message.split('\n').next(),
+        Some(THIRD_PARTY_MODEL_FAILURE)
+    );
+    assert_eq!(diagnostic(&result)["phase"], "chat-http");
     assert!(!dsh_llm::DEFAULT_RETRYABLE_CODES.contains(&result.code.as_str()));
 }
 

@@ -181,6 +181,90 @@ fn catalog(tools: &ToolRuntime, agent: &dyn Agent) -> Vec<String> {
         .map(|schema| schema.name)
         .collect()
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_child_fence_covers_existing_new_and_copied_tools_across_optional_reload() {
+    let fixture = Fixture::new();
+    let root = FixtureAgent::new(&fixture.ctx, "boundary-root", None);
+    let agent: Arc<dyn Agent> = root.clone();
+    let root_detach = fixture.agents.enter(agent.clone(), None).unwrap();
+    fixture.agents.announce(&agent).await.unwrap();
+    let first = apply_host_schedule(&fixture.ctx, fixture.service.clone(), Config::default())
+        .await
+        .unwrap();
+    let child = FixtureAgent::new(&fixture.ctx, "existing-child", Some(root.key.clone()));
+    let child_agent: Arc<dyn Agent> = child.clone();
+    fixture
+        .tools
+        .inherit_visible(child.ctx(), &fixture.tools, root.scope_key())
+        .unwrap();
+    let child_detach = fixture
+        .agents
+        .enter(child_agent.clone(), Some(agent.clone()))
+        .unwrap();
+    fixture.agents.announce(&child_agent).await.unwrap();
+    assert_eq!(catalog(&fixture.tools, child.as_ref()), expected());
+    let boundary = dsh_schedule::host_boundary::install_host_schedule_tool_boundaries(&fixture.ctx)
+        .await
+        .unwrap();
+    assert!(catalog(&fixture.tools, child.as_ref()).is_empty());
+    assert_eq!(catalog(&fixture.tools, root.as_ref()), expected());
+    let mut optional = Some(first);
+    for enabled in [false, true, false] {
+        if enabled {
+            optional = Some(
+                apply_host_schedule(&fixture.ctx, fixture.service.clone(), Config::default())
+                    .await
+                    .unwrap(),
+            );
+        } else {
+            optional.take().unwrap()().await;
+        }
+        assert!(catalog(&fixture.tools, child.as_ref()).is_empty());
+        let result = fixture
+            .tools
+            .execute(ToolExecutionInput {
+                call_id: dsh_llm::call_id(format!("child-denied-{enabled}")),
+                root_call_id: None,
+                name: "schedule_create".into(),
+                arguments: json!({"title":"Forbidden","prompt":"Child","after_seconds":60}),
+                agent: Some(child_agent.clone()),
+                parent: None,
+                signal: Arc::new(|| false),
+            })
+            .await;
+        assert!(
+            result.is_error,
+            "copied definitions cannot bypass the child fence"
+        );
+    }
+    let late = FixtureAgent::new(&fixture.ctx, "late-child", Some(root.key.clone()));
+    let late_agent: Arc<dyn Agent> = late.clone();
+    let late_detach = fixture
+        .agents
+        .enter(late_agent.clone(), Some(agent.clone()))
+        .unwrap();
+    fixture.agents.announce(&late_agent).await.unwrap();
+    fixture
+        .tools
+        .inherit_visible(late.ctx(), &fixture.tools, root.scope_key())
+        .unwrap();
+    let last = apply_host_schedule(&fixture.ctx, fixture.service.clone(), Config::default())
+        .await
+        .unwrap();
+    assert!(catalog(&fixture.tools, late.as_ref()).is_empty());
+    assert_eq!(catalog(&fixture.tools, root.as_ref()), expected());
+    assert!(fixture.service.catalog().await.unwrap().is_empty());
+    child_detach().await;
+    late_detach().await;
+    root_detach().await;
+    (child.scope.dispose)().await;
+    (late.scope.dispose)().await;
+    (root.scope.dispose)().await;
+    last().await;
+    boundary().await;
+    fixture.finish().await;
+}
 fn expected() -> Vec<String> {
     [
         "schedule_create",
