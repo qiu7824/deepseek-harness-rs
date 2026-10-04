@@ -117,6 +117,73 @@ void main() {
     );
     expect(requests, 1);
   });
+  test('HTTP provider envelopes retain message and status without retry', () async {
+    var requests = 0;
+    const message =
+        'The third-party model provider is currently not available. '
+        '(trace ID: provider-trace)';
+    server.listen((request) async {
+      requests++;
+      await request.drain<void>();
+      request.response.statusCode = 400;
+      request.response.write(jsonEncode({
+        'kind': 'error',
+        'error': {'message': message, 'code': 'INVALID_REQUEST', 'status': 400},
+      }));
+      await request.response.close();
+    });
+    await expectLater(
+      client.request('/provider/test'),
+      throwsA(isA<DshException>()
+          .having((e) => e.code, 'transport code', 'http-400')
+          .having((e) => e.message, 'provider message', message)
+          .having((e) => e.details['httpStatus'], 'HTTP status', 400)
+          .having((e) => object(e.details['error'])['code'], 'provider code',
+              'INVALID_REQUEST')),
+    );
+    expect(requests, 1);
+  });
+  test('RPC errors retain top-level status and trace with business details', () async {
+    server.listen((request) async {
+      final body = object(jsonDecode(await utf8.decoder.bind(request).join()));
+      request.response.write(jsonEncode({
+        'type': 'server-response',
+        'rpcId': body['rpcId'],
+        'result': {
+          'ok': false,
+          'error': {
+            'code': 'UNAVAILABLE',
+            'message': 'provider unavailable',
+            'status': 503,
+            'traceId': 'provider-trace',
+            'details': {'reason': 'upstream'},
+          },
+        },
+      }));
+      await request.response.close();
+    });
+    await expectLater(
+      client.call('host.describe'),
+      throwsA(isA<DshException>()
+          .having((e) => e.code, 'code', 'UNAVAILABLE')
+          .having((e) => e.details['status'], 'status', 503)
+          .having((e) => e.details['traceId'], 'trace', 'provider-trace')
+          .having((e) => e.details['reason'], 'business detail', 'upstream')),
+    );
+  });
+  test('successful business JSON is returned intact', () async {
+    final business = {'message': 'normal result', 'code': 'INVALID_REQUEST', 'status': 400};
+    server.listen((request) async {
+      final body = object(jsonDecode(await utf8.decoder.bind(request).join()));
+      request.response.write(jsonEncode({
+        'type': 'server-response',
+        'rpcId': body['rpcId'],
+        'result': {'ok': true, 'value': business},
+      }));
+      await request.response.close();
+    });
+    expect(await client.call('host.describe'), business);
+  });
   test('approval response echoes server rpcId and validates receipt', () async {
     server.listen((request) async {
       final body = object(jsonDecode(await utf8.decoder.bind(request).join()));

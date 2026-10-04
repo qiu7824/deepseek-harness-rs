@@ -292,10 +292,10 @@ class _AccountConnectionMenuState extends State<AccountConnectionMenu> {
                 style: TextStyle(color: tokens.warning.foreground),
               ),
             )
-          else
-            Semantics(
-              label: DshAccountMenuZh.connected,
-              child: _StatusDot(color: tokens.success.foreground),
+          else if (label.isNotEmpty)
+            Text(
+              DshAccountMenuZh.connected,
+              style: DshTypography.caption.copyWith(color: colors.muted),
             ),
         ],
       ),
@@ -407,11 +407,7 @@ class _AccountConnectionMenuState extends State<AccountConnectionMenu> {
     final tokens = DshTokens.of(context);
     final linked = linkedAccountProviders(c.subscriptionAccounts);
     final attention = linked.where(accountNeedsLogin).length;
-    final dot = linked.isEmpty
-        ? null
-        : attention > 0
-        ? tokens.warning.foreground
-        : tokens.success.foreground;
+    final dot = attention > 0 ? tokens.warning.foreground : null;
     final tooltip = linked.isEmpty
         ? DshAccountMenuZh.signInHint
         : '${DshAccountMenuZh.subscription}：'

@@ -23,7 +23,7 @@
 
 ## 字体与内容
 
-界面字体角色为 12／13／14／15／16／18／22／26。对话默认 15／24，输入区 16／24，代码字体角色为 13／20；终端和部分紧凑日志使用 12—13 号等宽字。Windows 使用 Segoe UI、微软雅黑回退；macOS 使用系统字体、PingFang SC；Linux 使用 Noto Sans 与 CJK 回退。等宽字体分别使用 Cascadia Mono／Consolas、SF Mono／Menlo、DejaVu Sans Mono，并保留中文和通用等宽回退。
+界面字体角色为 12／13／14／15／16／18／22／26。对话默认 15／24，输入区 16／24，代码字体角色为 13／20；终端和部分紧凑日志使用 12—13 号等宽字。Windows 使用 Segoe UI、微软雅黑回退；macOS 使用系统字体、PingFang SC；Linux 使用 Noto Sans 与 CJK 回退。等宽字体分别使用 Consolas／Cascadia Mono、SF Mono／Menlo、DejaVu Sans Mono，并保留中文和通用等宽回退。
 
 对话 Markdown 标题采用 22／30、18／26、16／24，四至六级标题采用 15／24；随用户正文偏好等比派生。独立文档从 26／32 开始。代码、表格、公式和图表保留独立布局边界。
 

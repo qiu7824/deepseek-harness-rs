@@ -22,8 +22,8 @@ abstract final class DshTypography {
   static List<String> fallbackFor(TargetPlatform platform) =>
       switch (platform) {
         TargetPlatform.windows => const [
-          'Microsoft YaHei UI',
           'Microsoft YaHei',
+          'Microsoft YaHei UI',
           'Segoe UI Symbol',
           'Segoe UI Emoji',
           'Noto Sans CJK SC',
@@ -45,13 +45,13 @@ abstract final class DshTypography {
       };
 
   static String monospaceFor(TargetPlatform platform) => switch (platform) {
-    TargetPlatform.windows => 'Cascadia Mono',
+    TargetPlatform.windows => 'Consolas',
     TargetPlatform.macOS || TargetPlatform.iOS => 'SF Mono',
     _ => 'DejaVu Sans Mono',
   };
 
   static List<String> monospaceFallbackFor(TargetPlatform platform) => [
-    if (platform == TargetPlatform.windows) 'Consolas',
+    if (platform == TargetPlatform.windows) 'Cascadia Mono',
     if (platform == TargetPlatform.macOS || platform == TargetPlatform.iOS)
       'Menlo',
     'DejaVu Sans Mono',

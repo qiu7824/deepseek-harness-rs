@@ -1,6 +1,7 @@
 library;
 
 export 'src/client.dart';
+export 'src/error_info.dart';
 export 'src/models.dart';
 export 'src/transcript.dart';
 export 'src/tool_presentation.dart';

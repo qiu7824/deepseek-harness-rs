@@ -20,40 +20,89 @@ class DshError {
     required this.message,
     required this.details,
     this.code,
+    this.status,
+    this.traceId,
     this.cancelled = false,
     this.outcomeUnknown = false,
   });
 
   final String title, message, details;
   final String? code;
+  final int? status;
+  final String? traceId;
   final bool cancelled, outcomeUnknown;
-  bool get retryable => !cancelled && !outcomeUnknown;
+  bool get retryable => !cancelled && !outcomeUnknown && status != 400;
 
   static DshError describe(Object error, {String? operation}) {
     if (error is DshError) return error;
     final structured = error is DshException ? error : null;
     final raw = error.toString();
+    final failure =
+        DshErrorInfo.tryParse(structured?.message ?? error) ??
+        (structured == null
+            ? null
+            : DshErrorInfo.tryParse({
+                'code': structured.code,
+                'message': structured.message,
+                'details': structured.details,
+              }, errorObject: true));
     // Legacy state stores exceptions as strings; retain their error code while
     // new callers keep the exception itself.
     final code =
         structured?.code ??
-        RegExp(r'\(([a-z][a-z0-9-]+)\)(?=；|\s|$)').firstMatch(raw)?.group(1);
+        failure?.code ??
+        RegExp(r'\(([A-Za-z][A-Za-z0-9_-]+)\)(?=；|\s|$)')
+            .firstMatch(raw)?.group(1);
+    final status =
+        DshErrorInfo.statusFrom(structured?.details['httpStatus']) ??
+        DshErrorInfo.statusFrom(
+          RegExp(r'^http-(\d{3})$')
+              .firstMatch(structured?.code ?? code ?? '')?.group(1),
+        ) ??
+        failure?.status;
+    final traceId = failure?.traceId;
+    final sourceMessage = failure?.message ?? structured?.message ?? raw;
+    var serializedJson = false;
+    if (error is String) {
+      if (raw.length <= 65536) {
+        try {
+          jsonDecode(raw);
+          serializedJson = true;
+        } on FormatException {
+          // A plain failure message remains suitable for human presentation.
+        }
+      } else {
+        serializedJson = RegExp(r'^\s*[\[{"]').hasMatch(raw);
+      }
+    }
+    final plainError = structured != null || (error is String && !serializedJson);
+    final providerUnavailable =
+        (failure != null || plainError) &&
+        !const {'timeout', 'TIMEOUT', 'http-408', 'http-504'}.contains(code) &&
+        RegExp(
+          r'\b(?:third-party )?model provider\b.*\b(?:not available|unavailable)\b',
+          caseSensitive: false,
+          dotAll: true,
+        ).hasMatch(sourceMessage);
     final unknown =
         structured?.outcomeUnknown == true || raw.contains('操作结果尚未确认');
     final cancelled = const {
       'cancelled',
       'canceled',
       'request-cancelled',
+      'CANCELLED',
     }.contains(code);
     var message = unknown
         ? DshZh.outcomeUnknown
         : cancelled
         ? DshZh.operationCancelled
+        : providerUnavailable
+        ? '模型提供方返回暂不可用，本次请求未完成。请稍后再试，或切换其他模型。'
         : switch (code) {
             'transport' ||
             'connection' ||
             'connection-closed' => DshZh.connectionFailure,
-            'timeout' || 'http-408' || 'http-504' => DshZh.requestTimeout,
+            'timeout' || 'TIMEOUT' || 'http-408' || 'http-504' => DshZh.requestTimeout,
             'conflict' ||
             'revision-conflict' ||
             'title-conflict' ||
@@ -68,8 +117,8 @@ class DshError {
                   ? DshZh.requestTimeout
                   : error is SocketException
                   ? DshZh.connectionFailure
-                  : structured != null
-                  ? redact(structured.message)
+                  : failure != null || structured != null
+                  ? redact(sourceMessage)
                   : error is FormatException
                   ? redact(error.message)
                   : error is StateError &&
@@ -83,7 +132,7 @@ class DshError {
                   ? redact(raw)
                   : DshZh.unknownError,
           };
-    final businessMessage = redact(structured?.message ?? raw);
+    final businessMessage = redact(sourceMessage);
     if (!unknown &&
         !cancelled &&
         code != null &&
@@ -99,11 +148,15 @@ class DshError {
           : DshZh.operationFailed(operation),
       message: message,
       code: code,
+      status: status,
+      traceId: traceId,
       cancelled: cancelled,
       outcomeUnknown: unknown,
       details: redact(
         [
           if (code != null) 'code: $code',
+          if (status != null) 'status: $status',
+          if (traceId != null) 'trace ID: $traceId',
           raw,
           if (structured != null && structured.details.isNotEmpty)
             const JsonEncoder.withIndent('  ').convert(structured.details),

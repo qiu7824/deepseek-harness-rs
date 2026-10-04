@@ -7,8 +7,12 @@ on:
       - .github/workflows/flutter-regressions.yml
       - tools/run_flutter_test_diagnostics.py
       - tools/publish_flutter_golden_evidence.py
-      - apps/desktop_flutter/test/design_icon_golden_test.dart
-      - apps/desktop_flutter/test/goldens/**
+      - apps/desktop_flutter/lib/**
+      - apps/desktop_flutter/test/**
+      - apps/desktop_flutter/pubspec.*
+      - packages/dsh_client_dart/lib/**
+      - packages/dsh_client_dart/test/**
+      - packages/dsh_client_dart/pubspec.*
   workflow_dispatch:
 
 permissions:
@@ -81,6 +85,14 @@ jobs:
           (cd packages/dsh_client_dart && dart pub get --enforce-lockfile)
           cd apps/desktop_flutter
           flutter pub get --enforce-lockfile
+      - name: Windows 会话错误与侧栏交互回归
+        if: matrix.platform == 'windows'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          (cd packages/dsh_client_dart && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/dart" test)
+          cd apps/desktop_flutter
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-desktop-regressions.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test test/error_presentation_test.dart test/account_menu_test.dart test/typography_test.dart test/schedule_page_test.dart test/desktop_interaction_upgrade_test.dart test/workbench_error_recovery_test.dart test/tool_message_test.dart --machine
       - name: 四个严格图标金图与失败诊断
         timeout-minutes: 10
         shell: bash
@@ -98,7 +110,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: flutter-golden-logs-${{ matrix.platform }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/flutter-golden-machine.log
+          path: |
+            ${{ runner.temp }}/flutter-golden-machine.log
+            ${{ runner.temp }}/dart-client-test.log
+            ${{ runner.temp }}/flutter-desktop-regressions.log
           if-no-files-found: warn
   build:
     runs-on: macos-14

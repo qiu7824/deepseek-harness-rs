@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 import '../design/primitives.dart';
@@ -25,9 +23,8 @@ class SidebarEntry {
   final bool active;
 }
 
-/// Global entries sharing one row at equal widths. A label sits beside its
-/// icon when there is room and under it when it is not. Large text that fits
-/// neither wraps onto further rows; ordinary text keeps icons with tooltips.
+/// Global entries sharing one row at equal widths. When the sidebar is too
+/// narrow for their labels they collapse to icons with tooltips.
 class SidebarEntryRow extends StatelessWidget {
   const SidebarEntryRow({super.key, required this.entries});
   final List<SidebarEntry> entries;
@@ -41,99 +38,72 @@ class SidebarEntryRow extends StatelessWidget {
       const gap = 6.0;
       if (entries.isEmpty) return const SizedBox.shrink();
       final scaler = MediaQuery.textScalerOf(context);
-      final style = DshTypography.body.copyWith(
-        fontSize: DshTypography.sizeAuxiliary,
-      );
-      var widest = 0.0;
-      var lineHeight = 0.0;
+      final largeText = scaler.scale(1) >= 1.5;
+      var requiredWidth = labelWidth;
       for (final entry in entries) {
         final painter = TextPainter(
-          text: TextSpan(text: entry.label, style: style),
+          text: TextSpan(
+            text: entry.label,
+            style: DshTypography.body.copyWith(
+              fontSize: DshTypography.sizeAuxiliary,
+            ),
+          ),
           textDirection: Directionality.of(context),
           textScaler: scaler,
           maxLines: 1,
         )..layout();
-        widest = math.max(widest, painter.width);
-        lineHeight = math.max(lineHeight, painter.height);
+        final width = painter.width + 44;
+        if (width > requiredWidth) requiredWidth = width;
         painter.dispose();
       }
-      final cell = (box.maxWidth - gap * (entries.length - 1)) / entries.length;
-      final beside = cell >= math.max(labelWidth, widest + 44);
-      final stacked = !beside && cell >= widest + 16;
-      final wrap = !beside && !stacked && scaler.scale(1) >= 1.5;
+      final columns = largeText
+          ? (box.maxWidth >= requiredWidth * 2 + gap && entries.length > 1
+                ? 2
+                : 1)
+          : entries.length;
+      final cell = (box.maxWidth - gap * (columns - 1)) / columns;
+      final showLabel = largeText || cell >= requiredWidth;
       final colors = DshColors(context);
-      final tokens = DshTokens.of(context);
-      final height = stacked
-          ? math.max(tokens.controlHeight(context), lineHeight + 16 + 4 + 14)
-          : 36.0;
-      Text label(SidebarEntry entry) => Text(
-        entry.label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: DshTypography.sizeAuxiliary),
-      );
       Widget button(SidebarEntry entry) => DshTooltip(
         message: entry.fullLabel,
         child: Semantics(
           label: entry.fullLabel,
           button: true,
           selected: entry.active,
-          // Borderless navigation tiles: hover gives the surface, the open
-          // page reads in the accent colour.
           child: DshButton(
             key: entry.key,
-            height: height,
+            height: 36,
             width: double.infinity,
+            outline: true,
             active: entry.active,
-            activeBackgroundColor: colors.selected,
+            activeBorderColor: colors.blue,
             padding: const EdgeInsets.symmetric(horizontal: 6),
-            icon: stacked ? null : entry.icon,
-            iconColor: entry.active ? colors.blue : colors.muted,
-            textColor: entry.active ? colors.blue : null,
+            icon: entry.icon,
             onPressed: entry.onPressed,
-            child: wrap
+            child: showLabel
                 ? Flexible(
                     child: Text(
                       entry.label,
+                      maxLines: largeText ? null : 1,
+                      overflow: largeText
+                          ? TextOverflow.visible
+                          : TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: DshTypography.sizeAuxiliary,
                       ),
                     ),
                   )
-                : stacked
-                ? Flexible(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        DshGlyph(
-                          entry.icon,
-                          size: 16,
-                          color: entry.active ? colors.blue : colors.muted,
-                        ),
-                        const SizedBox(height: 4),
-                        label(entry),
-                      ],
-                    ),
-                  )
-                : beside
-                ? Flexible(child: label(entry))
                 : const SizedBox.shrink(),
           ),
         ),
       );
-      if (wrap) {
-        final columns =
-            box.maxWidth >= (widest + 44) * 2 + gap && entries.length > 1
-            ? 2
-            : 1;
-        final width = (box.maxWidth - gap * (columns - 1)) / columns;
+      if (largeText) {
         return Wrap(
           spacing: gap,
           runSpacing: 8,
           children: [
             for (final entry in entries)
-              SizedBox(width: width, child: button(entry)),
+              SizedBox(width: cell, child: button(entry)),
           ],
         );
       }

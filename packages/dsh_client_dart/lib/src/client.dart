@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'models.dart';
 import 'resources.dart';
 import 'display_path.dart';
+import 'error_info.dart';
 
 class DshException implements Exception {
   DshException(
@@ -202,10 +203,16 @@ class DshClient {
           var structured = false;
           try {
             final decoded = object(jsonDecode(errorBody));
-            message = '${decoded['message'] ?? decoded['error'] ?? message}';
+            final failure = DshErrorInfo.tryParse(decoded, errorObject: true);
+            message = failure?.message ??
+                (decoded['message'] is String
+                    ? decoded['message'] as String
+                    : decoded['error'] is String
+                    ? decoded['error'] as String
+                    : message);
             // Routes report machine codes such as COMPUTER_USE_MANUAL_CONTROL
             // in the body; the status alone cannot distinguish them.
-            details = decoded;
+            details = {...decoded, 'httpStatus': response.statusCode};
             structured = true;
           } catch (_) {}
           // Older Hosts answer routes and RPC methods they do not have with a
@@ -334,10 +341,18 @@ class DshClient {
     final result = object(response['result']);
     if (result['ok'] == false) {
       final error = object(result['error']);
+      final failure = DshErrorInfo.tryParse(error, errorObject: true);
       throw DshException(
-        error['code'] as String? ?? 'unknown',
-        error['message'] as String? ?? '服务拒绝了请求',
-        details: object(error['details']),
+        failure?.code ??
+            (error['code'] is String ? error['code'] as String : 'unknown'),
+        failure?.message ?? '服务拒绝了请求',
+        details: failure?.details ??
+            {
+              ...object(error['details']),
+              for (final entry in error.entries)
+                if (!const {'code', 'message', 'details'}.contains(entry.key))
+                  entry.key: entry.value,
+            },
       );
     }
     if (result['ok'] != true) {

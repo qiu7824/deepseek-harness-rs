@@ -2693,11 +2693,7 @@ class MessageCard extends StatelessWidget {
                   ),
                 )
               else if (item.kind == 'error')
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  color: Colors.red.withValues(alpha: .05),
-                  child: body,
-                )
+                DshErrorView(error: item.text)
               else
                 body,
             ],

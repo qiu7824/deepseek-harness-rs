@@ -107,6 +107,58 @@ fn safe_error(status: reqwest::StatusCode, bytes: &[u8], secrets: &[&str]) -> Ll
     error
 }
 
+fn connect_error(error: &Value, secrets: &[&str]) -> LlmFailure {
+    // A streaming Connect error arrives inside an HTTP 200 end-stream frame.
+    // Its code, not the enclosing HTTP status or message text, identifies the
+    // failure. Follow Connect's code-to-HTTP mapping rather than inventing a
+    // bad request for every service-side failure.
+    // https://connectrpc.com/docs/protocol#error-codes
+    let code = error.get("code").and_then(Value::as_str);
+    let status = match code {
+        Some("canceled") => Some(499),
+        Some("unknown" | "internal" | "data_loss") => Some(500),
+        Some("invalid_argument" | "failed_precondition" | "out_of_range") => Some(400),
+        Some("deadline_exceeded") => Some(504),
+        Some("not_found") => Some(404),
+        Some("already_exists" | "aborted") => Some(409),
+        Some("permission_denied") => Some(403),
+        Some("resource_exhausted") => Some(429),
+        Some("unimplemented") => Some(501),
+        Some("unavailable") => Some(503),
+        Some("unauthenticated") => Some(401),
+        _ => None,
+    };
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Devin service request failed");
+    let body = json!({"error":{"message":message}}).to_string();
+    let mut failure = safe_error(
+        reqwest::StatusCode::from_u16(status.unwrap_or(400)).unwrap(),
+        body.as_bytes(),
+        secrets,
+    );
+    // Only known protocol codes reach display. Append after credential
+    // redaction and message truncation so the diagnostic code cannot be lost.
+    if let (Some(code), Some(_)) = (code, status) {
+        failure.message.push_str(&format!(" [{code}]"));
+    }
+    match code {
+        Some("canceled") => failure.code = "CANCELLED".into(),
+        Some("deadline_exceeded") => failure.code = "TIMEOUT".into(),
+        // Unsupported RPCs are permanent despite their standard 501 status.
+        Some("unimplemented") => failure.code = "HTTP_ERROR".into(),
+        _ if status.is_none() => {
+            // An absent or unrecognized code is not evidence of malformed
+            // model arguments or a retryable outage. Do not synthesize either.
+            failure.code = "UNKNOWN".into();
+            failure.status = None;
+        }
+        _ => {}
+    }
+    failure
+}
+
 async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     while let Some(bytes) = response
@@ -309,31 +361,7 @@ pub(crate) async fn request(
                 let trailer: Value = serde_json::from_slice(&payload)
                     .map_err(|_| failure("Invalid Devin stream trailer", "MALFORMED_RESPONSE"))?;
                 if let Some(error) = trailer.get("error").filter(|e| !e.is_null()) {
-                    let code = error["code"].as_str();
-                    let status = match code {
-                        Some("unauthenticated") => 401,
-                        Some("permission_denied") => 403,
-                        Some("resource_exhausted") => 429,
-                        _ => 400,
-                    };
-                    // Devin describes rejected arguments with the same text as
-                    // an unavailable model; the Connect code tells them apart.
-                    let annotated = match code {
-                        Some(code @ ("invalid_argument" | "failed_precondition")) => {
-                            let message = error["message"]
-                                .as_str()
-                                .unwrap_or("Devin service request failed");
-                            json!({"error":{"message":format!("{message} [{code}]")}})
-                                .to_string()
-                                .into_bytes()
-                        }
-                        _ => payload.to_vec(),
-                    };
-                    return Err(safe_error(
-                        reqwest::StatusCode::from_u16(status).unwrap(),
-                        &annotated,
-                        &[token, jwt],
-                    ));
+                    return Err(connect_error(error, &[token, jwt]));
                 }
                 ended = true;
                 break;

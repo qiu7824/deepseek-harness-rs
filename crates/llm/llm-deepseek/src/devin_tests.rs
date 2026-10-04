@@ -363,6 +363,148 @@ fn provider_errors_never_echo_session_credentials() {
     );
 }
 
+const THIRD_PARTY_MODEL_FAILURE: &str = "The third-party model provider is experiencing issues and is currently not available. Please try this model again later. (trace ID: 00112233445566778899aabbccddeeff)";
+
+async fn native_service_failure(trailer: bool, code: &str, message: &str) -> LlmFailure {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let error = json!({"error":{"code":code,"message":message}}).to_string();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (header, _) = read_request(&mut socket).await;
+        assert!(header.starts_with(&format!("POST {} ", devin::AUTH_PATH)));
+        let mut auth = Encoder::default();
+        auth.text(1, "user-jwt");
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/proto\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",auth.0.len()).as_bytes()).await.unwrap();
+        socket.write_all(&auth.0).await.unwrap();
+        drop(socket);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (header, body) = read_request(&mut socket).await;
+        assert!(header.starts_with(&format!("POST {} ", devin::CHAT_PATH)));
+        assert_eq!(body[0], 1);
+        let request = uncompress(&body[5..]).unwrap();
+        let request = Message::parse(&request).unwrap();
+        assert_eq!(request.text(21).unwrap(), "claude-opus-5-5");
+        let (status, body) = if trailer {
+            ("200 OK", frame(2, error.as_bytes()))
+        } else {
+            ("400 Bad Request", error.into_bytes())
+        };
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.write_all(&body).await.unwrap();
+    });
+    let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+    let mut options = options();
+    options.model = "claude-opus-5-5".into();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        request(
+            &json!({"model":"claude-opus-5-5","messages":[{"role":"user","content":"check"}]}),
+            &options,
+            &connection(format!("http://{address}")),
+            "test-token",
+            &sender,
+            None,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    server.await.unwrap();
+    result
+}
+
+#[tokio::test]
+async fn connect_error_codes_distinguish_model_failures_from_request_rejections() {
+    // Identical service text can describe either a rejected request or an
+    // unavailable third-party model. Exercise real HTTP 200 end-stream frames;
+    // no account or external service is contacted.
+    for (native, status, class, retryable) in [
+        ("unavailable", 503, "SERVER", true),
+        ("internal", 500, "SERVER", true),
+        ("unknown", 500, "SERVER", true),
+        ("data_loss", 500, "SERVER", true),
+        ("deadline_exceeded", 504, "TIMEOUT", true),
+        ("invalid_argument", 400, "INVALID_REQUEST", false),
+        ("failed_precondition", 400, "INVALID_REQUEST", false),
+        ("out_of_range", 400, "INVALID_REQUEST", false),
+        ("canceled", 499, "CANCELLED", false),
+        ("not_found", 404, "HTTP_ERROR", false),
+        ("already_exists", 409, "HTTP_ERROR", false),
+        ("aborted", 409, "HTTP_ERROR", false),
+        ("unimplemented", 501, "HTTP_ERROR", false),
+        ("unauthenticated", 401, "AUTH", false),
+        ("permission_denied", 403, "AUTH", false),
+        ("resource_exhausted", 429, "RATE_LIMIT", true),
+    ] {
+        let result = native_service_failure(
+            true,
+            native,
+            &format!("{THIRD_PARTY_MODEL_FAILURE} test-token user-jwt"),
+        )
+        .await;
+        assert_eq!(result.status, Some(status), "{native}");
+        assert_eq!(result.code, class, "{native}");
+        assert!(result.message.contains(THIRD_PARTY_MODEL_FAILURE));
+        assert!(result.message.ends_with(&format!(" [{native}]")));
+        assert!(!result.message.contains("test-token"));
+        assert!(!result.message.contains("user-jwt"));
+        assert_eq!(
+            dsh_llm::DEFAULT_RETRYABLE_CODES.contains(&result.code.as_str()),
+            retryable,
+            "normal retry eligibility follows the protocol code, not the message: {native}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn http_bad_requests_with_outage_text_are_not_promoted_to_retries() {
+    let result = native_service_failure(false, "unavailable", THIRD_PARTY_MODEL_FAILURE).await;
+    assert_eq!(result.status, Some(400));
+    assert_eq!(result.code, "INVALID_REQUEST");
+    assert_eq!(result.message, THIRD_PARTY_MODEL_FAILURE);
+    assert!(!dsh_llm::DEFAULT_RETRYABLE_CODES.contains(&result.code.as_str()));
+}
+
+#[test]
+fn unknown_connect_codes_do_not_invent_bad_requests_or_outages() {
+    for code in [Value::Null, json!(17), json!("future_protocol_code")] {
+        let result = connect_error(
+            &json!({"code":code,"message":THIRD_PARTY_MODEL_FAILURE}),
+            &[],
+        );
+        assert_eq!(result.status, None);
+        assert_eq!(result.code, "UNKNOWN");
+        assert_eq!(result.message, THIRD_PARTY_MODEL_FAILURE);
+        assert!(!dsh_llm::DEFAULT_RETRYABLE_CODES.contains(&result.code.as_str()));
+    }
+}
+
+#[test]
+fn connect_code_diagnostics_survive_long_redacted_messages() {
+    let token = "s".repeat(3000);
+    let result = connect_error(
+        &json!({"code":"unavailable","message":format!("{THIRD_PARTY_MODEL_FAILURE} {token} user-jwt {}", "x".repeat(3000))}),
+        &[&token, "user-jwt"],
+    );
+    assert_eq!(result.code, "SERVER");
+    assert_eq!(result.status, Some(503));
+    assert!(result.message.contains(THIRD_PARTY_MODEL_FAILURE));
+    assert!(!result.message.contains(&"s".repeat(32)));
+    assert!(!result.message.contains("user-jwt"));
+    assert!(result.message.ends_with(" [unavailable]"));
+    assert!(result.message.chars().count() <= 2048 + " [unavailable]".len());
+}
+
 #[test]
 fn account_quota_is_distinct_from_invalid_input_and_transient_rate_limits() {
     for (period, status) in [
