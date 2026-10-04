@@ -41,9 +41,9 @@
 
 上游 `dsh-v0.2.1-alpha.1` 的源码对照、开发优先级和验收要求见 [上游评估](upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)。源码修复的验证状态和新安装包是否已经发布应分别核对；r6 安装包不会随 main 的源码修改而改变。
 
-## r7 修订的实现与验证
+## r8 修订的实现与验证
 
-r7 纳入 `483b9963` 的 UI/错误分类修复和 `ae7bf6a8` 的相关说明，并追加桌面启动、Devin 诊断、提醒权限、草稿与连接切换修复。README 对应 r7 发行线，旧 r6 包保持原标签源码；源码验证与正式发行包身份分别核对。
+r8 纳入 `483b9963` 的 UI/错误分类修复和 `ae7bf6a8` 的相关说明，以及 r6 之后的桌面启动、Devin 诊断、提醒权限、草稿与连接切换修复。r7 正式 Windows 回归失败，未公开发布，标签保留 `41ddc4155309e73bd801d8209153c6a5613507f6`；后续修复采用 r8。README 对应 r8 发行线，旧 r6 包保持原标签源码；新增验证和正式包身份分别核对。
 
 自管桌面 Host 现在以 `--port 0` 交给系统绑定端口，不再先探测空闲端口再启动。CLI 用一次性私有就绪报告返回实际地址、PID、实例 UUID 和实际数据根；launcher/Flutter 核对所属进程及探测到的 Host 身份，接受经过验证的数据目录重定向。同一 Host 进程由数据根 A 迁移到 B 后，复用时更新保存的数据根。标准输出与错误持续写入日志文件，避免父窗口退出后 Rust `println!`/`eprintln!` 因管道断开触发 panic。保留原始子进程句柄，启动失败时终止并等待所属进程退出；无法取得可靠句柄时不能接管其他服务。手动连接外部 Host 的入口保留。
 
@@ -55,13 +55,13 @@ Devin 本轮只增加 `google.rpc.BadRequest` 字段的安全定位和请求形�
 
 可选提醒工具 `schedule_*` 在 Minimal、blank 和子代理中同时受目录与直接调用边界限制；自定义模式沿用组合所继承的能力。内置持久任务 `scheduled_task_*` 及其他既有工具保持合同。这是提醒权限修复，不是完整上游自动化协议替换。
 
-当前本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项及独立 stdio 3 项测试。正式发行 Python 合同组合运行 164 项，163 项通过，1 项因本地 Linux 环境跳过 Windows 安装器控制流程；该组合包含此前的 48 项，不能相加为独立测试数。日志为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/full-release-contract-tests.log`。缺失 `glib.pc` 的问题已通过工作区隔离开发 sysroot 解决，原生 launcher 41 项测试实际全部通过。
+r7 准备期间本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项及独立 stdio 3 项测试。Python 发行合同组合运行 164 项，163 项通过，1 项因本地 Linux 环境跳过 Windows 安装器控制流程；该组合包含此前的 48 项，不能相加为独立测试数。日志为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/full-release-contract-tests.log`。缺失 `glib.pc` 的问题通过工作区隔离开发 sysroot 解决，当时原生 launcher 41 项本地测试全部通过。这些保留为历史结果，不代表 r8 新增修复或 Windows 门禁已通过。
 
 源码 `c8add2ef2a7220b2ff2b3a431bac101cb2c1b140` 的 debug Rust Host 已通过隔离开发 smoke：核对 `--port 0` 的实际 URL、PID、实例 nonce、数据根及 RPC；删除 ready 临时目录、关闭父管道后，Host 内部重启保留同一 PID、nonce 和端口，`RuntimePaths` 实例更新，持久日志仍可读。该环境复用已验证的 r6 核心资源并加载当前 Minimal/blank 预设，验证记录保存在 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/real-host-smoke/verification.json`。这是隔离开发验证，不能替代正式新包和跨端桥接验证；定点工作流因环境跳过的真实 Rust Host 步骤不计为通过。
 
 早前 `7c12e0b2eaa3e40b5909a23ca5d2fc92b7a6f298` 的[回归运行](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37189619840)中，定点回归和严格金图通过，但 ARM 完整套件暴露首次草稿 scope 不可见及新增 lint。后续修复产品逻辑并补充连接竞争测试，原失败草稿测试保持原文；该次失败不改写为成功。
 
-源码 `f99bb89c765c34a2e32cf4e43b14fed1fd21b61a` 的[本轮 Flutter CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37191213764)四个作业全部成功，实际步骤如下：
+前序源码 `f99bb89c765c34a2e32cf4e43b14fed1fd21b61a` 的[Flutter CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37191213764)四个作业全部成功，实际步骤如下：
 
 | 验证范围 | 结果与耗时 |
 | --- | --- |
@@ -71,6 +71,18 @@ Devin 本轮只增加 `google.rpc.BadRequest` 字段的安全定位和请求形�
 | ARM 完整 Dart / Flutter / Analyze / 正式客户端构建 | 全部通过，分别 19 / 353 / 27 / 160 秒 |
 | ARM / Intel Mac 严格金图 | 全部通过，分别 25 / 74 秒 |
 
-终态记录保存在 `/workspace/artifacts/v0.1.3-alpha.38-r7/monitoring/f99-final-report.json`。本地没有 Flutter SDK，当前 Flutter 结论来自这次远程 CI；此前 `483b9963` 结果仅作历史证据。定点运行的真实 Rust Host fixture 仍因环境跳过，不能据此宣称真实 Host 与 Dart 桥接已通过。
+终态记录保存在 `/workspace/artifacts/v0.1.3-alpha.38-r7/monitoring/f99-final-report.json`。本地没有 Flutter SDK，上述 Flutter 结论来自该次远程 CI；此前 `483b9963` 结果也保留其历史来源。定点运行的真实 Rust Host fixture 因环境跳过，不能据此宣称真实 Host 与 Dart 桥接已通过。
+
+### r7 正式回归失败
+
+[r7 正式运行](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37192360300/job/111407050868)的 Windows“Host 与启动器回归”步骤失败。公开日志明确为 `tests::host_verification_uses_the_recorded_port_origin_and_instance_identity`：该启动器测试组 39 项通过、1 项失败，原本应为真的身份验证得到 false。生产包构建和公开发布受此门禁阻止，r7 未公开发布。
+
+原假 HTTP 夹具只读取请求头后关闭带 POST 正文的连接，存在触发 RST 的风险；原断言又通过 `is_ok()` 隐藏了具体验证错误。源码补修完整消费有界 Content-Length 的 POST/RPC JSON 后再响应，增加有界 accept/read/write，并保留成功、错 PID、错 nonce 三组原强断言和原始验证错误诊断。潜在 RST 仍不能表述为已确认的该次失败根因。
+
+独立产品边界改为对现存程序路径作 Windows canonicalize 比对，支持普通及合法 verbatim 盘符/UNC，拒绝设备命名空间；不手动剥离路径前缀，不削弱 PID 创建时间与实例 nonce。新增回归核对真实 canonical/current_exe/系统进程身份及错 PID、时间、程序路径，和原精确失败夹具分别验证。新增 [Windows 启动器定点工作流](../.github/workflows/launcher-regressions.yml)运行完整 launcher bin 测试并保存日志，不筛选、忽略或删除原失败用例。
+
+上述补修已提交为 `64d353d3e35bbf3aa790750a3f51b435c4d7b083`。该源码在本地 Linux 完整 launcher 测试中 41 项通过，launcher/runtime Python 合同 31 项通过，`cargo fmt --all --check` 通过；新增两项 Windows 专属边界测试未在 Linux 执行。
+
+同一源码的[Windows 定点作业](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37194868952/job/111414532428)全部成功。完整命令为 `cargo test --locked -p dsh-launcher --bin dsh-launcher -- --test-threads=1`，测试步骤 131 秒，格式检查 9 秒，整个作业 223 秒。公开页面未展示成功 stdout，实际通过数量未知，不按源码统计推定实际通过数量。成功作业覆盖完整命令，包含原失败用例及 Windows 新边界用例；这不等同 r8 四平台正式回归或新包验证通过。
 
 正式发行要求四个平台完整回归、真实 Host 启动及跨端桥接、组包与摘要校验全部成功后发布；资产来源和公开下载另以正式运行与发行验证记录核对。用户机器的字体效果和 Devin / Opus 5.5 外部服务仍需分别复验。

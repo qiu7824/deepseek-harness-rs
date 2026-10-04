@@ -6,13 +6,13 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: [`0.1.3-alpha.38-r7`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
+Current release line: [`0.1.3-alpha.38-r8`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
 
 Implementation and verification scope for file isolation, execution receipts, manually managed skill versions, and message recovery is recorded in the [reliability review](docs/hermes-agent-reliability-review-20260928.zh.md). Its alpha.37 test history includes task acceptance and sample validation mechanisms that were retired in alpha.38.
 
 See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and [development plan](docs/plans/更新计划.md) for cross-version adaptation and remaining work.
 
-The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records confirmed coverage, protocol differences and P0/P1 acceptance criteria. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [r7 implementation and verification record (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) covers dynamic ports, drafts and connection changes, safe Devin diagnostics and reminder permissions. All four Flutter CI jobs succeeded, including the complete tests, static analysis and strict golden checks. Real desktop fonts and the external Devin / Opus 5.5 service still require verification.
+The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records coverage, protocol differences, P0/P1 criteria, actual npm compiled artifacts and a minimal session-list adaptation plan. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [revision implementation and verification record (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) covers dynamic ports, drafts and connection changes, safe Devin diagnostics and reminder permissions. All four earlier f99 Flutter CI jobs succeeded, but r7 failed formal Windows Host and launcher regressions and was not publicly released. The complete Windows launcher regression job for subsequent fix `64d353d3` succeeded; r8 retains the earlier fixes, while formal regressions on all four platforms and package verification remain required. Real desktop fonts and the external Devin / Opus 5.5 service still require verification.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
@@ -47,10 +47,10 @@ Complete Windows x86_64 packages:
 
 | Edition | Installer | Portable package |
 |---|---|---|
-| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
+Check **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8) for Linux, macOS and SHA-256 checksums. The links above depend on assets being publicly uploaded after the formal gates pass. Source ZIPs contain no compiled applications.
 
 Formal publication requires complete regressions, real Host startup, packaging and checksum verification to succeed on all four platforms. Confirm asset versions and source identity using the release page, packaged build manifests and `SHA256SUMS.txt`.
 

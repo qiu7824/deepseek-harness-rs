@@ -6,13 +6,13 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：[`0.1.3-alpha.38-r7`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7)，完整变更见 [alpha.38 发布说明](release/notes/v0.1.3-alpha.38.md)。源码版本与安装包身份可通过 `--build-info` 和包内构建清单核对。
+当前发布线：[`0.1.3-alpha.38-r8`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8)，完整变更见 [alpha.38 发布说明](release/notes/v0.1.3-alpha.38.md)。源码版本与安装包身份可通过 `--build-info` 和包内构建清单核对。
 
 文件隔离、执行回执、手动技能版本与消息恢复的实现及验证范围见[可靠性对照记录](docs/hermes-agent-reliability-review-20260928.zh.md)。该记录保留 alpha.37 的历史测试，任务验收与样本验证机制已在 alpha.38 退役。
 
 跨版本适配与未完成项见 [v0.1.7-rc.2 评估](docs/upstream-v0.1.7-rc.2-evaluation.zh.md)及[更新计划](docs/plans/更新计划.md)。
 
-官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[r7 实现与验证记录](docs/windows-flutter-regressions-2026-10-04.zh.md)记录动态端口、草稿与连接切换、Devin 安全诊断及提醒权限边界；本轮四个 Flutter CI 作业全部成功，包含完整测试、静态分析和严格金图。实机字体与 Devin / Opus 5.5 外部服务仍需复验。
+官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划，并补充实际 npm 编译产物与最小会话列表适配计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[修订实现与验证记录](docs/windows-flutter-regressions-2026-10-04.zh.md)记录动态端口、草稿与连接切换、Devin 安全诊断及提醒权限边界。前序 f99 的四个 Flutter CI 作业全部成功，但 r7 正式 Windows Host 与启动器回归失败，未公开发布。后续修复源码 `64d353d3` 的完整 Windows launcher 定点回归已通过；r8 纳入既有修复，四平台正式回归和发行包验证仍需完成。实机字体与 Devin / Opus 5.5 外部服务仍需复验。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
@@ -47,10 +47,10 @@ Windows x86_64 完整包：
 
 | 版本 | 安装包 | 便携包 |
 |---|---|---|
-| Flutter 桌面版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web 核心版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter 桌面版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web 核心版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r8/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Linux、macOS 及 SHA-256 校验文件见 [alpha.38 发布页](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7)的 **Assets**；请以实际上传的资产为准。源码 ZIP 不含编译后的运行程序。
+Linux、macOS 及 SHA-256 校验文件请到 [alpha.38 发布页](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8)的 **Assets** 查看；上述链接以正式门禁通过后实际公开上传的资产为准。源码 ZIP 不含编译后的运行程序。
 
 正式发行要求四个平台的完整回归、真实 Host 启动、组包和摘要校验全部成功后发布。资产版本与来源以发布页、包内构建清单和 `SHA256SUMS.txt` 为准。
 
