@@ -6,13 +6,13 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 > 当前版本仍是预发布版本。功能状态以本README的兼容矩阵和GitHub Release说明为准。
 
-当前发布线：[`0.1.3-alpha.38-r6`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r6)，完整变更见 [alpha.38 发布说明](release/notes/v0.1.3-alpha.38.md)。源码版本与安装包身份可通过 `--build-info` 和包内构建清单核对。
+当前发布线：[`0.1.3-alpha.38-r7`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7)，完整变更见 [alpha.38 发布说明](release/notes/v0.1.3-alpha.38.md)。源码版本与安装包身份可通过 `--build-info` 和包内构建清单核对。
 
 文件隔离、执行回执、手动技能版本与消息恢复的实现及验证范围见[可靠性对照记录](docs/hermes-agent-reliability-review-20260928.zh.md)。该记录保留 alpha.37 的历史测试，任务验收与样本验证机制已在 alpha.38 退役。
 
 跨版本适配与未完成项见 [v0.1.7-rc.2 评估](docs/upstream-v0.1.7-rc.2-evaluation.zh.md)及[更新计划](docs/plans/更新计划.md)。
 
-官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[Windows Flutter 源码进展](docs/windows-flutter-regressions-2026-10-04.zh.md)记录此前通过的 UI 回归，以及本轮自管桌面动态端口、Devin 安全诊断和提醒权限边界；新增 CI 与新包待完成，实机字体和外部模型服务仍需复验。现有 r6 安装包对应原始标签源码。
+官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[r7 实现与验证记录](docs/windows-flutter-regressions-2026-10-04.zh.md)记录动态端口、草稿与连接切换、Devin 安全诊断及提醒权限边界；本轮四个 Flutter CI 作业全部成功，包含完整测试、静态分析和严格金图。实机字体与 Devin / Opus 5.5 外部服务仍需复验。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
@@ -22,11 +22,13 @@ Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启
 
 - **Flutter 桌面体验**：统一深浅主题、文字缩放与语义图标，增加命令搜索、焦点和快捷键配置；保留工作区草稿、历史阅读位置，隐藏预览按需回收。模型与思考等级共用紧凑入口，分层菜单即时显示缓存并保留最后一次切换意图。
 - **桌面交互修复**：修复关闭窗口崩溃，关闭前保存草稿，后台 Host 与任务继续运行；账号入口、插件主页面和侧栏菜单重新整理。回合结束后在回复下方显示产物卡，可直接预览和操作文件。
+- **自管 Host 启动**：系统分配本机端口，客户端核对实际就绪地址和进程身份；数据目录迁移后更新复用记录，后台日志持续保存。首次设置或启动 Host 保留尚未归属 Host 的草稿，目标已有草稿优先；手动切换连接不会被较慢的旧启动操作覆盖。
 - **模型协议兼容**：Devin / Claude 请求使用兼容的工具输入结构，修复根级组合结构被拒绝的问题；本地继续按原始工具规则校验参数，Devin 错误保留实际协议错误码。
 - **Office 与文件整理**：`office_read` 原生读取 DOCX 段落、表格和 XLSX 单元格，`office_write` 直接生成真实 DOCX/XLSX；覆盖与文件整理需人工批准。结构检查不替代内容核对或视觉验收。
 - **图片生成与编辑**：生成与编辑结果以当前会话正式图片附件返回，可继续编辑或识图。明确仅支持文本的主模型接收图片引用和文字说明；视觉模型仍可读取原图。
 - **文件隔离与执行**：按会话隔离私有目录、附件和受管临时文件；原生沙箱支持精确读取根与 Windows 长路径。PowerShell 在受管执行副本中正确初始化当前目录，源项目保持只读保护。人工审批等待不消耗执行预算，重复环境启动失败形成有界停止。
 - **执行流程简化**：退役项目任务板、任务契约、任务验收接口、完成门禁和自动验收续接；目标、计划、后台作业及定时任务继续独立运行，技能版本由用户手动管理。
+- **提醒权限**：Minimal、blank 和子代理限制可选 `schedule_*` 提醒工具的发现及直接调用；自定义模式按组合继承能力，内置 `scheduled_task_*` 持久任务保持原合同。
 
 桌面实际验证范围见[平台矩阵](docs/desktop-platforms.zh.md)与[体验升级记录](docs/desktop-fidelity/flutter-upgrade-2026-09-29.md)。旧版变更保留在 [alpha.36](release/notes/v0.1.3-alpha.36.md)、[alpha.31](release/notes/v0.1.3-alpha.31.md)及 [alpha.22](release/notes/v0.1.3-alpha.22.md) 发布说明中。
 
@@ -45,10 +47,12 @@ Windows x86_64 完整包：
 
 | 版本 | 安装包 | 便携包 |
 |---|---|---|
-| Flutter 桌面版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web 核心版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter 桌面版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web 核心版 | [下载 EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [下载 ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Linux、macOS 及 SHA-256 校验文件见 [alpha.38 发布页](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r6)的 **Assets**；请以实际上传的资产为准。源码 ZIP 不含编译后的运行程序。
+Linux、macOS 及 SHA-256 校验文件见 [alpha.38 发布页](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7)的 **Assets**；请以实际上传的资产为准。源码 ZIP 不含编译后的运行程序。
+
+正式发行要求四个平台的完整回归、真实 Host 启动、组包和摘要校验全部成功后发布。资产版本与来源以发布页、包内构建清单和 `SHA256SUMS.txt` 为准。
 
 完整包包含 Rust Host、`web/dist`、`config/agent-presets`、随附 Web 插件、Node 与 ripgrep 运行时及安全说明；Flutter 桌面包还包含客户端、Flutter 运行库和资源，并在 `host` 子目录中附带完整 Host。保留整个安装或解压目录，避免缺失资源与随附运行时。
 
@@ -69,13 +73,7 @@ Linux/macOS: ./dsh-launcher
 Linux 的受限 Shell 与原生终端使用系统 `bubblewrap` 沙箱；DEB 包声明该依赖，使用便携包时请通过发行版包管理器安装 `bubblewrap`。缺少沙箱或系统不允许创建沙箱时，受限执行会明确失败。
 启用用户命名空间限制的 Ubuntu 系统可能需要管理员配置发行版推荐的 [bwrap AppArmor 规则](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)，程序不会自动修改系统防护策略。
 
-当前源码的自管桌面 Host 由系统分配本机端口，客户端使用实际就绪地址；手动连接外部 Host 保留。数据目录迁移后更新 Host 复用记录，持久日志避免父窗口退出影响后台 Host。本轮升级逻辑将随附 Host 的旧默认地址迁移为自动管理，需要固定地址时可在设置中手动指定。此改动仍待新 CI 与发行包验证。
-
-现有 r6 发行包的默认地址：
-
-```text
-http://127.0.0.1:58080/
-```
+自管桌面 Host 默认由系统分配本机端口，客户端使用实际就绪地址；手动连接外部 Host 保留。数据目录迁移后更新 Host 复用记录，持久日志避免父窗口退出影响后台 Host。升级逻辑将随附 Host 的旧默认 `localhost/127.0.0.1:58080` 配置迁移为自动管理，需要固定地址时可在设置中手动指定。命令行仍可显式使用 `web --port 58080`。
 
 启动器由固定 commit 的 ZSUI 构建，不依赖 CMD、PowerShell、WebView 或额外运行时；负责启动、停止、重启正式 `deepseek-harness-rs web` 进程以及打开网页、日志目录。Windows 安装器和启动器按系统 UI 语言自动显示简体中文或英文。 全新安装默认位于 `D:\Program Files (x86)\DeepSeek Harness-rs\<variant>`，升级沿用原安装位置；默认位置不可用时需选择其他目录。
 

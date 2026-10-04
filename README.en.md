@@ -6,13 +6,13 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: [`0.1.3-alpha.38-r6`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r6). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
+Current release line: [`0.1.3-alpha.38-r7`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7). See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md) for the full changes. Check `--build-info` and the packaged build manifests to confirm source and installer identity.
 
 Implementation and verification scope for file isolation, execution receipts, manually managed skill versions, and message recovery is recorded in the [reliability review](docs/hermes-agent-reliability-review-20260928.zh.md). Its alpha.37 test history includes task acceptance and sample validation mechanisms that were retired in alpha.38.
 
 See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and [development plan](docs/plans/更新计划.md) for cross-version adaptation and remaining work.
 
-The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records confirmed coverage, protocol differences and P0/P1 acceptance criteria. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [Windows Flutter source progress (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) records earlier UI regression results and the new managed desktop ports, safe Devin diagnostics and reminder permission boundaries. New CI and packages are pending; real desktop fonts and external model services still need verification. Existing r6 packages correspond to the original tagged source.
+The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records confirmed coverage, protocol differences and P0/P1 acceptance criteria. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [r7 implementation and verification record (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) covers dynamic ports, drafts and connection changes, safe Devin diagnostics and reminder permissions. All four Flutter CI jobs succeeded, including the complete tests, static analysis and strict golden checks. Real desktop fonts and the external Devin / Opus 5.5 service still require verification.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
@@ -22,11 +22,13 @@ Teams are available from the conversation header and Settings. Model search keep
 
 - **Flutter desktop experience**: consistent light/dark themes, text scaling and semantic icons; command search, focus navigation and configurable shortcuts. Workspace drafts and history reading positions persist, and hidden previews release resources. A compact model/reasoning entry uses layered menus, cached catalogs and the latest selection intent.
 - **Desktop interaction fixes**: fix the window-close crash and save drafts before closing while the background Host and tasks continue. Reorganize account access, the plugin page and sidebar menus. Settled replies show an artifact card with inline previews and file actions.
+- **Managed Host startup**: the operating system assigns local ports, and clients verify the actual readiness address and process identity. Reuse records follow data-directory migrations, and background logs persist. Initial Host configuration or startup preserves previously unassigned drafts, with existing destination drafts taking precedence; slower previous startup operations cannot overwrite a newer manual connection.
 - **Model protocol compatibility**: compatible tool input schemas prevent Devin / Claude from rejecting root-level composition. Local argument validation still uses the original tool rules, and Devin errors retain their actual protocol codes.
 - **Office and file management**: native `office_read` reads DOCX paragraphs/tables and XLSX cells; `office_write` produces real DOCX/XLSX files. Overwrites and file management require manual approval. Structural checks do not replace content or visual verification.
 - **Image generation and editing**: generated and edited images become session attachments for reuse. Explicitly text-only models receive references and descriptions; vision models retain the original images.
 - **File isolation and execution**: isolate private directories, attachments and managed temporary files by session. Native sandboxes support exact read roots and long Windows paths. PowerShell correctly initializes its working directory in managed execution copies while the source project remains protected as read-only. Approval waits do not consume execution budgets, and repeated environment startup failures stop within a bounded policy.
 - **Simplified execution flow**: retire the project task board, task contracts, task acceptance APIs, completion gates and automatic acceptance continuation. Goals, plans, background jobs and schedules continue independently; users manage skill versions manually.
+- **Reminder permissions**: restrict discovery and direct invocation of optional `schedule_*` reminders in Minimal, blank and subagents. Custom modes inherit capabilities through composition; built-in persistent `scheduled_task_*` tools retain their contract.
 
 Desktop verification scope is recorded in the [platform matrix](docs/desktop-platforms.zh.md) and [experience upgrade review](docs/desktop-fidelity/flutter-upgrade-2026-09-29.md). Historical changes remain in the [alpha.36](release/notes/v0.1.3-alpha.36.md), [alpha.31](release/notes/v0.1.3-alpha.31.md) and [alpha.22](release/notes/v0.1.3-alpha.22.md) release notes.
 
@@ -45,10 +47,12 @@ Complete Windows x86_64 packages:
 
 | Edition | Installer | Portable package |
 |---|---|---|
-| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r7/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r6); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
+Linux, macOS and SHA-256 checksums are listed under **Assets** on the [alpha.38 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r7); use the assets actually uploaded there. Source ZIPs contain no compiled applications.
+
+Formal publication requires complete regressions, real Host startup, packaging and checksum verification to succeed on all four platforms. Confirm asset versions and source identity using the release page, packaged build manifests and `SHA256SUMS.txt`.
 
 A complete package contains the Rust Host, `web/dist`, `config/agent-presets`, bundled Web plugins, Node and ripgrep runtimes, and security documentation. Flutter packages also contain the client, Flutter runtime libraries and assets, with a complete Host in the `host` subdirectory. Keep the entire installation or extracted directory so resources and bundled runtimes remain available.
 
@@ -68,13 +72,7 @@ Linux/macOS: ./dsh-launcher
 Confined Shell commands and native terminals on Linux use the system `bubblewrap` sandbox. DEB packages declare this dependency; portable installations should install `bubblewrap` through the distribution's package manager. Confined execution fails explicitly when the sandbox is missing or unavailable.
 Ubuntu systems that restrict user namespaces may need an administrator to configure the distribution's recommended [bwrap AppArmor profile](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007). The application does not change system protection policies automatically.
 
-In current source, managed desktop Hosts use local ports assigned by the operating system, and clients connect to the actual readiness address. Manual connections to external Hosts remain available. Host reuse records follow data-directory migrations, and persistent logs keep parent-window exits from disrupting the background Host. The upgrade logic migrates the bundled Host's legacy default address to automatic management; select a fixed address manually in Settings when needed. New CI and release-package verification are still pending.
-
-Existing r6 packages use this default URL:
-
-```text
-http://127.0.0.1:58080/
-```
+Managed desktop Hosts use local ports assigned by the operating system, and clients connect to the actual readiness address. Manual connections to external Hosts remain available. Host reuse records follow data-directory migrations, and persistent logs keep parent-window exits from disrupting the background Host. Upgrades migrate the bundled Host's legacy default `localhost/127.0.0.1:58080` configuration to automatic management; select a fixed address manually in Settings when needed. The CLI still supports an explicit `web --port 58080`.
 
 The launcher is built with ZSUI at a fixed commit and requires no CMD, PowerShell, WebView, or extra runtime. It starts, stops, and restarts the real `deepseek-harness-rs web` process and opens the Web UI or log directory. The Windows installer and launcher automatically use Simplified Chinese or English from the operating-system UI language.
 

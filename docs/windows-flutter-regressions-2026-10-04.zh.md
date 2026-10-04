@@ -41,13 +41,15 @@
 
 上游 `dsh-v0.2.1-alpha.1` 的源码对照、开发优先级和验收要求见 [上游评估](upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)。源码修复的验证状态和新安装包是否已经发布应分别核对；r6 安装包不会随 main 的源码修改而改变。
 
-## r7 候选的后续源码进展
+## r7 修订的实现与验证
 
-下一修订计划纳入 `483b9963` 的 UI/错误分类修复和 `ae7bf6a8` 的相关说明，并追加桌面启动、Devin 诊断及提醒权限边界。当前下载仍指向 r6；r7 尚待本轮 CI 与新包验收。
+r7 纳入 `483b9963` 的 UI/错误分类修复和 `ae7bf6a8` 的相关说明，并追加桌面启动、Devin 诊断、提醒权限、草稿与连接切换修复。README 对应 r7 发行线，旧 r6 包保持原标签源码；源码验证与正式发行包身份分别核对。
 
 自管桌面 Host 现在以 `--port 0` 交给系统绑定端口，不再先探测空闲端口再启动。CLI 用一次性私有就绪报告返回实际地址、PID、实例 UUID 和实际数据根；launcher/Flutter 核对所属进程及探测到的 Host 身份，接受经过验证的数据目录重定向。同一 Host 进程由数据根 A 迁移到 B 后，复用时更新保存的数据根。标准输出与错误持续写入日志文件，避免父窗口退出后 Rust `println!`/`eprintln!` 因管道断开触发 panic。保留原始子进程句柄，启动失败时终止并等待所属进程退出；无法取得可靠句柄时不能接管其他服务。手动连接外部 Host 的入口保留。
 
 旧版偏好没有记录默认 `localhost/127.0.0.1:58080` 是自动保存还是用户主动输入。发现随附 Host 时，本轮按旧版默认的自管行为将该配置迁移为自动管理；需要继续连接固定地址的用户可在设置中手动指定。其他手动地址保持原设置。草稿和用户数据继续保留。
+
+首次手动设置或启动 Host 时，将尚未归属 Host 的草稿迁移到目标作用域，目标已有草稿优先，原草稿键保留；已有 Host 归属的草稿不跨 Host 迁移。慢自动启动和归属设置保存若被新手动连接取代，旧操作只清理自己的子进程，不改写新连接。错误展示只识别有界 Rust 诊断后缀，将其移入折叠详情；真实 HTTP 400 的分类和重试语义不变。
 
 Devin 本轮只增加 `google.rpc.BadRequest` 字段的安全定位和请求形状摘要。协议字段路径采用允许列表；模型 UID 和工具 schema 仅提供哈希，另提供有界计数，不回显原请求、凭据或任意服务端字段描述。该证据用于后续定位被拒字段，不能证明 Opus 5.5 的服务端根因。温度等模型参数保持不变，也未使用用户账号重放请求。
 
@@ -55,6 +57,20 @@ Devin 本轮只增加 `google.rpc.BadRequest` 字段的安全定位和请求形�
 
 当前本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项及独立 stdio 3 项测试。正式发行 Python 合同组合运行 164 项，163 项通过，1 项因本地 Linux 环境跳过 Windows 安装器控制流程；该组合包含此前的 48 项，不能相加为独立测试数。日志为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/full-release-contract-tests.log`。缺失 `glib.pc` 的问题已通过工作区隔离开发 sysroot 解决，原生 launcher 41 项测试实际全部通过。
 
-源码 `c8add2ef2a7220b2ff2b3a431bac101cb2c1b140` 的 debug Rust Host 已通过隔离开发 smoke：核对 `--port 0` 的实际 URL、PID、实例 nonce、数据根及 RPC；删除 ready 临时目录、关闭父管道后，Host 内部重启保留同一 PID、nonce 和端口，`RuntimePaths` 实例更新，持久日志仍可读。该环境复用已验证的 r6 核心资源并加载当前 Minimal/blank 预设，验证记录保存在 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/real-host-smoke/verification.json`。这是隔离开发验证，尚未验证正式新包；四平台正式发行环境的真实 Host 启动用例仍未运行，旧定点工作流跳过的 real Host 步骤不计为通过。
+源码 `c8add2ef2a7220b2ff2b3a431bac101cb2c1b140` 的 debug Rust Host 已通过隔离开发 smoke：核对 `--port 0` 的实际 URL、PID、实例 nonce、数据根及 RPC；删除 ready 临时目录、关闭父管道后，Host 内部重启保留同一 PID、nonce 和端口，`RuntimePaths` 实例更新，持久日志仍可读。该环境复用已验证的 r6 核心资源并加载当前 Minimal/blank 预设，验证记录保存在 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/real-host-smoke/verification.json`。这是隔离开发验证，不能替代正式新包和跨端桥接验证；定点工作流因环境跳过的真实 Rust Host 步骤不计为通过。
 
-源码 `7c12e0b2eaa3e40b5909a23ca5d2fc92b7a6f298` 的[本轮 CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37189619840)中，Windows stdio、九组定点回归和严格金图通过，两种 Mac 架构的严格金图也通过。ARM 完整 Flutter 套件在步骤 10 失败，已定位首次草稿 scope 不可见及新增静态分析 lint，正在修复并等待完整套件复验。本地没有 Flutter SDK，不能以本地 Rust 结果或此前 `483b9963` CI 替代当前完整 Flutter 结果。实机字体、外部模型服务和最终新包公开下载仍分别验收；当前 r6 下载链接保持不变。
+早前 `7c12e0b2eaa3e40b5909a23ca5d2fc92b7a6f298` 的[回归运行](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37189619840)中，定点回归和严格金图通过，但 ARM 完整套件暴露首次草稿 scope 不可见及新增 lint。后续修复产品逻辑并补充连接竞争测试，原失败草稿测试保持原文；该次失败不改写为成功。
+
+源码 `f99bb89c765c34a2e32cf4e43b14fed1fd21b61a` 的[本轮 Flutter CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37191213764)四个作业全部成功，实际步骤如下：
+
+| 验证范围 | 结果与耗时 |
+| --- | --- |
+| Windows 后台 stdio | 通过，2 秒 |
+| Windows Dart 与十个定点测试文件 | 通过，60 秒；包含诊断折叠、草稿、定时界面及连接竞争 |
+| Windows 严格金图 | 通过，8 秒 |
+| ARM 完整 Dart / Flutter / Analyze / 正式客户端构建 | 全部通过，分别 19 / 353 / 27 / 160 秒 |
+| ARM / Intel Mac 严格金图 | 全部通过，分别 25 / 74 秒 |
+
+终态记录保存在 `/workspace/artifacts/v0.1.3-alpha.38-r7/monitoring/f99-final-report.json`。本地没有 Flutter SDK，当前 Flutter 结论来自这次远程 CI；此前 `483b9963` 结果仅作历史证据。定点运行的真实 Rust Host fixture 仍因环境跳过，不能据此宣称真实 Host 与 Dart 桥接已通过。
+
+正式发行要求四个平台完整回归、真实 Host 启动及跨端桥接、组包与摘要校验全部成功后发布；资产来源和公开下载另以正式运行与发行验证记录核对。用户机器的字体效果和 Devin / Opus 5.5 外部服务仍需分别复验。

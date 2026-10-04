@@ -6,7 +6,7 @@
 
 ## 此次变化的实际覆盖范围
 
-下表保留 r6 标签的对照基线；后续源码改造及尚待完成的验证见末尾“r7 候选源码进展”。
+下表保留 r6 标签的对照基线；后续实现及验证范围见末尾“r7 修订源码进展”。
 
 | 官方变化 | Rust 基线状态 | 证据与需要推进的部分 |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ Rust 已有 [`dsh-typert-protocol`](../crates/core/typert-protocol/src/lib.rs)�
 | **P1-B：部署与性能** | 统一 public URL/子路径；测并优化会话列表公平调度。 | 带路径代理下静态资源、HTTP、WebSocket、附件和登录流程均通；展示地址不扩大 trusted-host；列表优化有冷/热、并发/取消和损坏资料场景对照。 |
 | **P1-C：实验 Mods 可行性** | 给 hook/Host 操作/UI band 定义权限、取消、卸载和支持范围；选择一个受控示例验证。 | 生命周期映射、hook 超时、工具改写权限、存储隔离、卸载清理均有证据；未服务事件和缺失 Host 操作明确失败。通过单个示例仍只标实验子集。 |
 
-实际下一步是完成 **P0-A 的实机复核**、**P0-D 的当前源码 CI 与跨端启动验收**，并行整理 **P0-B 的实际产物清单**及提醒模式边界证据。桌面启动任务不受完整 RemoteGateway 里程碑阻塞。随后推进语义草稿，再交付插件创建入口等 P1 小功能。此计划不把全部上游包一次性纳入当前发布范围。
+实际下一步是完成 **P0-A 的实机复核**、**P0-D 的正式跨端启动验收**，并行整理 **P0-B 的实际产物清单**。桌面端口、提醒模式边界及首次连接草稿已独立推进，完整语义草稿合同仍需后续工作。桌面启动任务不受完整 RemoteGateway 里程碑阻塞；插件创建入口等 P1 小功能分别交付，此计划不把全部上游包一次性纳入当前发布范围。
 
 ## 证据入口与本轮状态
 
@@ -52,18 +52,22 @@ Rust 已有 [`dsh-typert-protocol`](../crates/core/typert-protocol/src/lib.rs)�
 - 官方部署、统计和性能：[public URL](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/bundle/web-app/src/public-url.ts)；[activity/usage](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/client/ui-chat/src/client/apply.ts)；[列表让出调度](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/api/session-controller/src/list.ts)；[登录网络提示](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/client/ui-settings-account/src/client/SignInDialog.tsx)。
 - Rust 基线：[创造预设](../config/agent-presets/cordis/preset.yml)、[Web 草稿和统计](../web/dist/plugins/ui-conversation.js)、[客户端发现](../crates/host/dsh-host/src/client_plugins.rs)、[纯 Web 安装边界](../crates/host/dsh-cli/src/native_plugin.rs)、[会话目录与元数据](../crates/session/session-persistence-jsonl/src/index.rs)、[投影缓存](../crates/session/session-projection-cache/src/index.rs)、[账号请求边界](../web/dist/plugins/ui-settings-models.js)。
 - 桌面与自动化：[官方 Desktop Host](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/apps/desktop-host/src/index.ts)、[官方 Web 组合](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/bundle/web-app/cordis.patch.yml)、[官方提醒子代理拒绝](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/schedule/tool-schedule/src/index.ts)；Rust [Flutter 端口配置/启动](../apps/desktop_flutter/lib/src/preferences.dart#L147)、[launcher 默认端口](../crates/host/dsh-launcher/src/main.rs#L50)、[可选提醒的注册和旧记录提示](../crates/schedule/schedule/src/host_plugin.rs#L90)、[默认停用配置](../crates/host/dsh-host/src/client_plugins.rs#L163)。
-- 本轮 [Windows Flutter 问题排查与源码修复](windows-flutter-regressions-2026-10-04.zh.md) 已完成 122 项后端测试、22 项产品/打包合同的本地验证；Windows CI 的完整 Dart 客户端、七组桌面回归及三个平台的严格图标金图通过；完整 Flutter 测试和静态分析也已通过。实机字体与真实模型服务复验仍待完成。r6 标签对应的安装包不会因后续 main 源码修改而更新。本次未使用账号凭据重放 Devin / Opus 5.5 请求，错误分类/显示修复不代表外部服务恢复。
+- 历史 `483b9963` 的 [Windows Flutter 问题排查与源码修复](windows-flutter-regressions-2026-10-04.zh.md) 已完成 122 项后端测试、22 项产品/打包合同的本地验证；对应 CI 的完整 Dart 客户端、七组桌面回归及三个平台的严格图标金图通过，完整 Flutter 测试和静态分析也通过。这些历史结果不代替后续修订验证。实机字体与真实模型服务复验仍待完成，r6 标签包不会因后续 main 源码修改而更新。本次未使用账号凭据重放 Devin / Opus 5.5 请求，错误分类/显示修复不代表外部服务恢复。
 
-## r7 候选源码进展
+## r7 修订源码进展
 
-本轮在 r6 之后推进独立的 P0-D 桌面启动和 P0-C 提醒权限子项；当前仍未发布新包，README 下载保持 r6。原始基线及上述历史 CI 不改写为新修订的结果。
+本轮在 r6 之后推进独立的 P0-D 桌面启动和 P0-C 提醒权限子项，README 对应 r7 发行线。原始 r6 基线和历史 CI 分别保留，正式发行包按其标签及源码身份核对。
 
 - **桌面端口和所有权**：launcher/Flutter 的自管 Host 使用 OS 分配端口，CLI 通过一次性私有报告返回实际 URL、PID、实例 UUID 和数据根。客户端核对实际 Host 身份及合法数据目录重定向，同一进程迁移数据根后更新复用记录；标准输出与错误写入持久日志，避免父窗口退出后断管道触发 panic。保留原始子进程句柄，启动失败时终止并等待所属进程退出；手动连接外部 Host 保留。旧版随附 Host 的默认 58080 配置迁移为自动管理，需要固定地址可在设置中手动指定。这是 Rust 启动协议的独立修复，不等同完整 RemoteGateway 或官方桌面 IPC 协议迁移。
 - **提醒模式边界**：Minimal、blank 和子代理限制可选 `schedule_*` 工具的目录与直接调用，自定义模式按组合继承已有能力；内置 `scheduled_task_*` 持久任务保持原合同。模式范围不由预设名称的允许列表推断，工具出现、直接调用及切换模式后的生命周期须分别验证。此进展不改变旧提醒记录需明确处理的迁移结论。
 - **Devin 诊断**：新增允许的 `BadRequest` 字段路径、计数及模型 UID/工具 schema 哈希，不回显原请求或任意服务端字段描述。温度等模型参数未改，未确认 Devin / Opus 5.5 外部服务故障的根因；该工作为定位提供证据，不能宣称供应商兼容问题已经解决。
+- **首次草稿与连接竞争**：首次手动配置或启动 Host 迁移尚未归属 Host 的草稿，目标已有草稿优先且保留原记录，已有归属不跨 Host 迁移；慢自动启动或归属设置保存被新手动连接取代时，旧操作仅清理所属子进程，不覆盖新连接。该修复不等同上游完整语义草稿迁移。
+- **错误展示**：只识别有界 Rust 诊断后缀并移入折叠详情；成功业务 JSON、普通文本和真实 HTTP 400 的重试语义保持原合同。
 
 本轮本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项及独立 stdio 3 项测试。完整发行 Python 合同组合 164 项中，163 项通过，1 项因本地 Linux 环境跳过 Windows 安装器控制流程；已涵盖此前 48 项，不能重复计数。日志为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/full-release-contract-tests.log`。`glib.pc` 缺失已通过工作区隔离开发 sysroot 解决，原生 launcher 41 项测试实际全部通过。
 
-`c8add2ef2a7220b2ff2b3a431bac101cb2c1b140` 的 debug Rust Host 在隔离开发 smoke 中通过实际端口、PID/nonce、数据根及 RPC 核对；移除 ready 目录并关闭父管道后，内部重启保持 PID/nonce/端口，更新 `RuntimePaths` 实例且持久日志仍可读。该环境使用已验证 r6 核心资源与当前 Minimal/blank 预设，记录为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/real-host-smoke/verification.json`。正式四平台发行环境的真实 Host 用例仍未运行，旧定点 real Host 的 skip 不作为通过，也不能将隔离开发结果称为正式新包验证。
+`c8add2ef2a7220b2ff2b3a431bac101cb2c1b140` 的 debug Rust Host 在隔离开发 smoke 中通过实际端口、PID/nonce、数据根及 RPC 核对；移除 ready 目录并关闭父管道后，内部重启保持 PID/nonce/端口，更新 `RuntimePaths` 实例且持久日志仍可读。该环境使用已验证 r6 核心资源与当前 Minimal/blank 预设，记录为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/real-host-smoke/verification.json`。定点 real Host 的环境 skip 不作为通过，隔离开发结果不替代正式新包与跨端桥接验收。
 
-候选 `7c12e0b2eaa3e40b5909a23ca5d2fc92b7a6f298` 的[本轮 CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37189619840)已通过 Windows stdio、九组定点回归和严格金图，以及 Intel/ARM Mac 严格金图；ARM 完整 Flutter 套件在步骤 10 失败，首次草稿 scope 不可见及新增 lint 正在修复，完整套件待修复后复验。本地没有 Flutter SDK，历史 `483b9963` CI 不替代本轮结果。源码实现、模式 E2E、跨端启动和公开下载分别留证；r6 下载保持原标签，新包尚未发布。
+早前 `7c12e0b2` 的完整套件暴露首次草稿 scope 与 lint 问题；产品修复保留原失败测试，并补充连接竞争及诊断折叠测试。源码 `f99bb89c765c34a2e32cf4e43b14fed1fd21b61a` 的[本轮 Flutter CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37191213764)四个作业全部成功：Windows stdio 2 秒、Dart 与十个定点文件 60 秒、严格金图 8 秒；ARM 完整 Dart/Flutter/Analyze/正式客户端构建分别 19/353/27/160 秒，ARM 与 Intel 严格金图分别 25/74 秒。终态记录为 `/workspace/artifacts/v0.1.3-alpha.38-r7/monitoring/f99-final-report.json`。本地没有 Flutter SDK，当前结论来自这次 CI，历史 `483b9963` 结果不替代本轮结果。
+
+正式发行要求四个平台完整回归、真实 Host 启动与跨端桥接、组包和摘要校验全部成功后发布；正式包来源及公开下载按对应运行与发行记录验收。实机字体、外部模型服务、完整 RemoteGateway 及其余上游能力仍按各自范围推进。
