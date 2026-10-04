@@ -106,8 +106,11 @@ Future<void> changeReportedHome(LocalHostProcess owner, String home) async {
 }
 
 LocalHostProcess changedIdentity(
-  LocalHostProcess original, {int? pid, String? instanceId, String? version},
-) => LocalHostProcess(
+  LocalHostProcess original, {
+  int? pid,
+  String? instanceId,
+  String? version,
+}) => LocalHostProcess(
   pid: pid ?? original.pid,
   instanceId: instanceId ?? original.instanceId,
   address: original.address,
