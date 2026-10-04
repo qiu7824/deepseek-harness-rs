@@ -468,6 +468,21 @@ jobs:
           for variant in ${{ steps.variants.outputs.variants }}; do
             python tools/verify_installer_package.py --platform windows --arch x86_64 --variant "$variant" --version "$VERSION"
           done
+      - name: Windows 生产安装版 GUI 与 Host 冷启动回归
+        if: matrix.platform == 'windows'
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseline = Join-Path $env:RUNNER_TEMP 'desktop-r6-conflict-owner'
+          New-Item -ItemType Directory -Path $baseline | Out-Null
+          $archive = Join-Path $baseline 'r6-core.zip'
+          Invoke-WebRequest -Uri 'https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r6/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'e2d2211e6ff343e32ad4c6f92d23dbd2260b59c42a0c54d57d125a5f37302153') { throw 'Published r6 Core checksum mismatch' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $baseline
+          $prefix = '${{ steps.release.outputs.prefix }}'
+          python tools/run_release_regression.py --log "$env:RUNNER_TEMP\desktop-installed-regressions.log" -- python tools/verify_windows_desktop_startup.py --installer "$env:GITHUB_WORKSPACE\dist\$prefix-flutter-setup.exe" --archive "$env:GITHUB_WORKSPACE\dist\$prefix-flutter-portable.zip" --workdir "$env:RUNNER_TEMP\desktop-installed-regressions" --conflict-binary "$baseline\deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core\deepseek-harness-rs.exe" --require-conflict-owner
+          if ($LASTEXITCODE -ne 0) { throw 'Production installed GUI/Host bootstrap regression failed' }
       - name: Linux DEB 安装包
         if: matrix.platform == 'linux'
         shell: bash
@@ -558,6 +573,10 @@ jobs:
             ${{ runner.temp }}/flutter-analyze.log
             ${{ runner.temp }}/flutter-test.log
             ${{ runner.temp }}/flutter-build.log
+            ${{ runner.temp }}/desktop-installed-regressions.log
+            ${{ runner.temp }}/desktop-installed-regressions/**/*.log
+            ${{ runner.temp }}/desktop-installed-regressions/**/*.json
+            ${{ runner.temp }}/desktop-installed-regressions/**/*.jsonl
           if-no-files-found: ignore
           retention-days: 7
       - name: 保留会话恢复失败证据
