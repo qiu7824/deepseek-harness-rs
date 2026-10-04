@@ -12,6 +12,93 @@ mod navigation_behavior {
     const SYNTHETIC_CAP_A: &str = "S-1-5-21-432-765-987-3001";
     const SYNTHETIC_CAP_B: &str = "S-1-5-21-432-765-987-3002";
 
+    #[repr(C)]
+    struct NtUnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+
+    #[repr(C)]
+    struct NtObjectAttributes {
+        length: u32,
+        root_directory: HANDLE,
+        object_name: *mut NtUnicodeString,
+        attributes: u32,
+        security_descriptor: *mut c_void,
+        security_quality_of_service: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct NtIoStatusBlock {
+        status: isize,
+        information: usize,
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtOpenFile(
+            file: *mut HANDLE,
+            access: u32,
+            attributes: *const NtObjectAttributes,
+            status: *mut NtIoStatusBlock,
+            sharing: u32,
+            options: u32,
+        ) -> i32;
+    }
+
+    fn nt_open_exact(path: &Path, access: u32) -> Result<(i32, HANDLE)> {
+        let extended = crate::winutil::to_wide_file_path(path)?;
+        let prefix = r"\\?\".encode_utf16().collect::<Vec<_>>();
+        ensure!(
+            extended.starts_with(&prefix),
+            "fixture path must use the extended DOS namespace"
+        );
+        let mut name = r"\??\".encode_utf16().collect::<Vec<_>>();
+        name.extend_from_slice(&extended[prefix.len()..]);
+        let mut unicode = NtUnicodeString {
+            length: u16::try_from((name.len() - 1) * 2)?,
+            maximum_length: u16::try_from(name.len() * 2)?,
+            buffer: name.as_mut_ptr(),
+        };
+        let attributes = NtObjectAttributes {
+            length: std::mem::size_of::<NtObjectAttributes>() as u32,
+            root_directory: 0,
+            object_name: &mut unicode,
+            attributes: 0x40, // OBJ_CASE_INSENSITIVE.
+            security_descriptor: std::ptr::null_mut(),
+            security_quality_of_service: std::ptr::null_mut(),
+        };
+        let mut io_status = NtIoStatusBlock {
+            status: 0,
+            information: 0,
+        };
+        let mut handle = 0;
+        let status = unsafe {
+            NtOpenFile(
+                &mut handle,
+                access,
+                &attributes,
+                &mut io_status,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                0, // No synchronous-I/O option or implicit additional desired rights.
+            )
+        };
+        Ok((status, handle))
+    }
+
+    fn open_exact(path: &Path, access: u32) -> Result<Handle> {
+        let (status, handle) = nt_open_exact(path, access)?;
+        let handle = (handle != 0 && handle != INVALID_HANDLE_VALUE).then(|| Handle(handle));
+        ensure!(
+            status == 0 && handle.is_some(),
+            "exact fixture open denied for {} (access {access:#x}, NTSTATUS {:#010x})",
+            path.display(),
+            status as u32
+        );
+        Ok(handle.unwrap())
+    }
+
     struct Impersonation;
 
     impl Impersonation {
@@ -92,6 +179,26 @@ mod navigation_behavior {
     }
 
     fn denied(token: &Handle, path: &Path, access: u32, disposition: u32) -> Result<()> {
+        if disposition == OPEN_EXISTING
+            && matches!(
+                access,
+                FILE_READ_ATTRIBUTES | NAVIGATION | FILE_LIST_DIRECTORY
+            )
+        {
+            return as_token(token, || {
+                let (status, handle) = nt_open_exact(path, access)?;
+                if handle != 0 && handle != INVALID_HANDLE_VALUE {
+                    drop(Handle(handle));
+                }
+                ensure!(
+                    status as u32 == 0xc0000022,
+                    "expected exact access denied for {} (access {access:#x}), got NTSTATUS {:#010x}",
+                    path.display(),
+                    status as u32
+                );
+                Ok(())
+            });
+        }
         let wide = crate::winutil::to_wide_file_path(path)?;
         as_token(token, || {
             let handle = unsafe {
@@ -124,14 +231,9 @@ mod navigation_behavior {
 
     fn directory_metadata(token: &Handle, path: &Path) -> Result<()> {
         as_token(token, || {
-            // An overlapped handle avoids an implicit SYNCHRONIZE requirement:
-            // this probe requests exactly the two navigation rights.
-            let handle = open(
-                path,
-                NAVIGATION,
-                OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-            )?;
+            // Query precisely the navigation rights. Win32 CreateFileW may
+            // add rights even when the handle is opened for overlapped I/O.
+            let handle = open_exact(path, NAVIGATION)?;
             let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
             ensure!(
                 unsafe { GetFileInformationByHandle(handle.0, &mut info) } != 0,
