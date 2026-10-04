@@ -680,6 +680,8 @@ def run(args):
             try:
                 result["cases"][name] = report
                 report["legacyPreferences"] = legacy
+                if long_temp and args.baseline_r8:
+                    raise RuntimeError("Published r8 unexpectedly passed long TEMP; the baseline defect was not reproduced")
             finally:
                 stop_gui(api, gui)
         if args.conflict_binary:
@@ -739,11 +741,18 @@ def run(args):
             result["cleanupError"] = "Installer created a registration but no owned scratch uninstaller; manual fixture recovery required"
             result["passed"] = False
         (root / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps(result, ensure_ascii=True))
+    print(json.dumps({"passed": result["passed"], "error": result.get("error"),
+        "cleanupError": result.get("cleanupError"), "cases": list(result["cases"]),
+        "resultFile": str(root / "result.json")}, ensure_ascii=True))
     return 0 if result["passed"] else 1
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installer", required=True, type=Path, help="Unmodified production Flutter setup EXE")
     parser.add_argument("--archive", required=True, type=Path, help="Matching production Flutter portable ZIP, inventory only")
