@@ -1,0 +1,52 @@
+name: Windows launcher 回归
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/launcher-regressions.yml
+      - crates/host/dsh-launcher/**
+      - crates/util/home-paths/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with: { toolchain: 1.97.1, components: rustfmt }
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          cache-on-failure: true
+      - name: 隔离并规范测试临时目录
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          root = (Path(os.environ['RUNNER_TEMP']) / 'dsh-tests').resolve()
+          root.mkdir(parents=True, exist_ok=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
+                  stream.write(f'{key}={root}\n')
+          PY
+      - name: Windows launcher 全部测试与公开失败摘要
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/launcher-regressions.log" -- cargo test --locked -p dsh-launcher --bin dsh-launcher -- --test-threads=1
+      - name: Rust 源码格式检查
+        shell: bash
+        run: cargo fmt --all -- --check
+      - name: 保存 launcher 回归日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: launcher-regressions-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/launcher-regressions.log
+          if-no-files-found: error

@@ -390,12 +390,53 @@ fn now_unix_millis() -> u64 {
 }
 
 fn same_executable(left: &Path, right: &Path) -> bool {
-    if cfg!(windows) {
-        left.to_string_lossy()
-            .eq_ignore_ascii_case(&right.to_string_lossy())
-    } else {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        if !supported_windows_file_namespace(left) || !supported_windows_file_namespace(right) {
+            return false;
+        }
+        // QueryFullProcessImageNameW reports Win32 paths, while canonicalize
+        // and the launcher location may use verbatim drive or UNC paths.
+        // Resolve existing files first rather than stripping arbitrary device
+        // prefixes or changing verbatim path semantics by hand.
+        let canonical = (fs::canonicalize(left), fs::canonicalize(right));
+        let (left, right) = match &canonical {
+            (Ok(left), Ok(right)) => (left.as_path(), right.as_path()),
+            _ => (left, right),
+        };
+        let fold_ascii = |unit: u16| {
+            if (u16::from(b'A')..=u16::from(b'Z')).contains(&unit) {
+                unit + u16::from(b'a' - b'A')
+            } else {
+                unit
+            }
+        };
+        left.as_os_str()
+            .encode_wide()
+            .map(fold_ascii)
+            .eq(right.as_os_str().encode_wide().map(fold_ascii))
+    }
+    #[cfg(not(windows))]
+    {
         left == right
     }
+}
+
+#[cfg(windows)]
+fn supported_windows_file_namespace(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+
+    path.is_absolute()
+        && matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix))
+                if matches!(
+                    prefix.kind(),
+                    Prefix::Disk(_) | Prefix::VerbatimDisk(_) | Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _)
+                )
+        )
 }
 
 fn inspect_process(pid: u32) -> io::Result<ProcessIdentity> {
@@ -2178,6 +2219,8 @@ fn main() -> Result<(), zsui::ZsuiError> {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    #[cfg(windows)]
+    use std::path::Path;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -2544,6 +2587,99 @@ mod tests {
         assert!(!state.matches_process(&observed));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_namespaces_keep_drive_unc_and_device_paths_distinct() {
+        for path in [
+            r"C:\Harness\dsh.exe",
+            r"\\?\C:\Harness\dsh.exe",
+            r"\\server\share\Harness\dsh.exe",
+            r"\\?\UNC\server\share\Harness\dsh.exe",
+        ] {
+            assert!(
+                super::supported_windows_file_namespace(Path::new(path)),
+                "{path}"
+            );
+        }
+        for path in [
+            r"C:dsh.exe",
+            r"\Harness\dsh.exe",
+            r"\\.\C:\Harness\dsh.exe",
+            r"\\.\pipe\dsh.exe",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\dsh.exe",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\dsh.exe",
+        ] {
+            assert!(
+                !super::supported_windows_file_namespace(Path::new(path)),
+                "{path}"
+            );
+            assert!(
+                !super::same_executable(Path::new(path), Path::new(path)),
+                "{path}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_canonical_executable_matches_the_live_win32_process_identity() {
+        use std::path::{Component, Prefix};
+
+        let executable = std::env::current_exe().unwrap();
+        let canonical = std::fs::canonicalize(&executable).unwrap();
+        let mut components = canonical.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            panic!("canonical executable must have a Windows prefix");
+        };
+        let mut win32 = match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                PathBuf::from(format!("{}:\\", char::from(drive)))
+            }
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                let mut path = PathBuf::from(r"\\");
+                path.push(server);
+                path.push(share);
+                path
+            }
+            other => panic!("unsupported executable prefix: {other:?}"),
+        };
+        for component in components {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(part) => win32.push(part),
+                other => panic!("unexpected canonical component: {other:?}"),
+            }
+        }
+        let identity = super::inspect_process(std::process::id()).unwrap();
+        assert!(super::same_executable(&win32, &canonical));
+        assert!(super::same_executable(&canonical, &identity.executable));
+        assert_eq!(
+            super::wait_for_process_identity(identity.pid, &canonical).unwrap(),
+            identity
+        );
+        for path in [win32, canonical] {
+            let state = LauncherStateFile::owned(
+                identity.pid,
+                identity.creation_time,
+                path,
+                std::env::temp_dir(),
+                LEGACY_PORT,
+            );
+            assert!(state.matches_process(&identity));
+            let mut recycled = identity.clone();
+            recycled.creation_time += 1;
+            assert!(!state.matches_process(&recycled));
+            let mut foreign = identity.clone();
+            foreign.pid += 1;
+            assert!(!state.matches_process(&foreign));
+            let mut other_executable = identity.clone();
+            other_executable
+                .executable
+                .set_extension("not-the-started-executable");
+            assert!(!state.matches_process(&other_executable));
+        }
+    }
+
     #[test]
     fn recycled_pid_journal_is_forgotten_without_signalling_the_unrelated_live_process() {
         let root = unique_test_root("recycled-pid");
@@ -2662,17 +2798,81 @@ mod tests {
             let pid = identity.pid + pid_delta;
             let body = serde_json::json!({"type":"server-response","rpcId":"launcher-ready","result":{"ok":true,"value":{"processId":pid,"instanceId":instance,"home":home,"version":super::PRODUCT_VERSION}}}).to_string();
             let worker = thread::spawn(move || {
-                let (mut stream, _) = server.accept().unwrap();
+                server.set_nonblocking(true).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let (mut stream, _) = loop {
+                    match server.accept() {
+                        Ok(connection) => break connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "Host verification did not connect to fixture"
+                            );
+                            thread::sleep(Duration::from_millis(25));
+                        }
+                        Err(error) => panic!("accept Host verification request: {error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let mut request = Vec::new();
                 let mut buffer = [0u8; 4096];
-                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let header_end = loop {
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        break end + 4;
+                    }
                     let count = stream.read(&mut buffer).unwrap();
                     assert!(count > 0);
                     request.extend_from_slice(&buffer[..count]);
+                    assert!(
+                        request.len() <= 64 * 1024,
+                        "fixture request headers exceed limit"
+                    );
+                };
+                let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+                let mut content_length = None;
+                for line in headers.lines().skip(1) {
+                    if let Some((name, value)) = line.split_once(':') {
+                        assert!(
+                            !name.eq_ignore_ascii_case("transfer-encoding"),
+                            "send_json fixture expects a length-delimited request"
+                        );
+                        if name.eq_ignore_ascii_case("content-length") {
+                            assert!(content_length.is_none(), "duplicate Content-Length");
+                            content_length = Some(value.trim().parse::<usize>().unwrap());
+                        }
+                    }
                 }
+                let content_length = content_length.expect("send_json must include Content-Length");
+                assert!(
+                    content_length <= 64 * 1024,
+                    "fixture request body exceeds limit"
+                );
+                let request_end = header_end + content_length;
+                // Consume the whole POST before closing: unread incoming body
+                // bytes can turn the fake response into a TCP reset on Windows.
+                while request.len() < request_end {
+                    let remaining = (request_end - request.len()).min(buffer.len());
+                    let count = stream.read(&mut buffer[..remaining]).unwrap();
+                    assert!(count > 0, "request body ended before Content-Length");
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                assert_eq!(
+                    request.len(),
+                    request_end,
+                    "unexpected trailing request bytes"
+                );
+                let rpc: serde_json::Value =
+                    serde_json::from_slice(&request[header_end..]).unwrap();
+                assert_eq!(
+                    rpc,
+                    serde_json::json!({"type":"client-request","rpcId":"launcher-ready","method":"host.describe","payload":{}})
+                );
                 write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
                 String::from_utf8(request).unwrap()
             });
@@ -2682,13 +2882,20 @@ mod tests {
                 child: None,
                 copy: english_copy(),
             };
-            assert_eq!(
-                controller.verify_host(&state).is_ok(),
-                pid_delta == 0 && instance == "expected-instance"
+            let verification = controller.verify_host(&state);
+            let fixture = worker.join();
+            assert!(
+                fixture.is_ok(),
+                "Host HTTP fixture failed; verification returned {verification:?}"
             );
-            let request = worker.join().unwrap().to_lowercase();
+            let request = fixture.unwrap().to_lowercase();
             assert!(request.starts_with("post /api/host.describe "));
             assert!(request.contains(&format!("origin: http://127.0.0.1:{port}\r\n")));
+            assert_eq!(
+                verification.is_ok(),
+                pid_delta == 0 && instance == "expected-instance",
+                "Host verification failed for pid_delta={pid_delta}, instance={instance}: {verification:?}"
+            );
         }
     }
 
