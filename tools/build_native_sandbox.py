@@ -11,6 +11,22 @@ import time
 from native_sandbox_identity import HELPERS, IDENTITY_FILE, checkout_identity, file_sha256, source_identity, verify_directory
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+LOG_TAIL_BYTES = 4096
+COMPILER_LINE_CHARS = 512
+
+
+def last_compiler_line(log_path: pathlib.Path) -> str | None:
+    """Read a bounded tail without scanning a growing compiler log."""
+    try:
+        with log_path.open("rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - LOG_TAIL_BYTES))
+            tail = log.read(LOG_TAIL_BYTES)
+    except OSError:
+        # Progress reporting must not change the child build's outcome.
+        return None
+    lines = tail.decode("utf-8", errors="replace").splitlines()
+    return next((line.strip()[-COMPILER_LINE_CHARS:] for line in reversed(lines) if line.strip()), None)
 
 
 def main() -> None:
@@ -30,7 +46,7 @@ def main() -> None:
         parser.error("release source is dirty; development builds require an explicit flag")
     target = args.target_dir.resolve()
     env = dict(os.environ, DSH_BUILD_SOURCE_ID=source["sha256"])
-    command = ["cargo", "build", "--locked", "--release", "--workspace", "--manifest-path",
+    command = ["cargo", "build", "--locked", "--release", "--workspace", "--timings", "--manifest-path",
                str(ROOT / "native/windows-sandbox/Cargo.toml"), "--target-dir", str(target)]
     if args.offline:
         command.append("--offline")
@@ -49,7 +65,8 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 if time.monotonic() - started < args.timeout_seconds:
                     print(json.dumps({"elapsedSeconds": round(time.monotonic() - started),
-                                      "logBytes": log_path.stat().st_size}), flush=True)
+                                      "logBytes": log_path.stat().st_size,
+                                      "lastCompilerLine": last_compiler_line(log_path)}), flush=True)
                     continue
                 # The still-live Popen object owns this PID; terminate only its build tree.
                 if process.poll() is None:

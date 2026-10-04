@@ -28,12 +28,16 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
         with:
           cache-on-failure: true
+          workspaces: |
+            . -> target
+            native/windows-sandbox -> target
       - name: 隔离测试临时目录并固定实际 Git Bash
         shell: bash
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
+          print(f"::notice title=Windows build resources::Logical CPUs: {os.cpu_count()}; Cargo build jobs: {os.environ['CARGO_BUILD_JOBS']}", flush=True)
           root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
           root.mkdir(parents=True, exist_ok=True)
           root = root.resolve(strict=True)
@@ -64,16 +68,16 @@ jobs:
         id: native_build
         timeout-minutes: 35
         shell: bash
-        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-build-wrapper.log" -- python tools/build_native_sandbox.py --target-dir target/native-windows-sandbox
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-build-wrapper.log" -- python tools/build_native_sandbox.py --target-dir native/windows-sandbox/target
       - name: Windows 原生沙箱强回归
         timeout-minutes: 20
         shell: bash
-        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-tests.log" -- cargo test --locked -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-tests.log" -- cargo test --locked --release -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir native/windows-sandbox/target
       - name: Windows engine 私有读取 ACL 安全回归
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         timeout-minutes: 20
         shell: bash
-        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-private-read-acl-tests.log" -- cargo test --locked -p codex-windows-sandbox --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox --lib private_read_acl::tests -- --test-threads=1
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/pwsh-regression-logs/native-private-read-acl-tests.log" -- cargo test --locked --release -p codex-windows-sandbox --manifest-path native/windows-sandbox/Cargo.toml --target-dir native/windows-sandbox/target --lib private_read_acl::tests -- --test-threads=1
       - name: 固化 debug Host 资源与真实 SDK 身份
         id: stage
         if: ${{ !cancelled() && steps.host_build.outcome == 'success' && steps.native_build.outcome == 'success' }}
@@ -86,7 +90,7 @@ jobs:
           root = Path.cwd().resolve()
           sys.path.insert(0, str(root / 'tools'))
           from native_sandbox_identity import HELPERS, IDENTITY_FILE, verify_directory
-          source = root / 'target/native-windows-sandbox/release'
+          source = root / 'native/windows-sandbox/target/release'
           verify_directory(root, source)
           target = root / 'target/debug'
           native = target / 'native-sandbox'
@@ -125,7 +129,8 @@ jobs:
           name: pwsh-regression-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/pwsh-regression-logs/
-            target/native-windows-sandbox/native-build.log
+            native/windows-sandbox/target/native-build.log
+            native/windows-sandbox/target/cargo-timings/
             ${{ runner.temp }}/dsh-scratch-context/**/model-requests.json
             ${{ runner.temp }}/dsh-scratch-context/**/model-management-host-scratch-context.log
             ${{ runner.temp }}/dsh-scratch-context/**/evidence.json

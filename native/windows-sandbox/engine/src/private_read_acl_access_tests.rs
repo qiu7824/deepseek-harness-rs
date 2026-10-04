@@ -7,8 +7,10 @@ mod navigation_behavior {
     const SYNTHETIC_ACCOUNT_A: &str = "S-1-5-21-678-901-234-1001";
     const SYNTHETIC_ACCOUNT_B: &str = "S-1-5-21-678-901-234-1002";
     const SYNTHETIC_GROUP: &str = "S-1-5-21-678-901-234-2001";
-    const SYNTHETIC_CAP_A: &str = "S-1-15-3-1024-678-901-234-1001";
-    const SYNTHETIC_CAP_B: &str = "S-1-15-3-1024-678-901-234-1002";
+    // The SDK's cap.rs uses random NT-account-shaped restricting identities,
+    // in a domain distinct from the dedicated account domain.
+    const SYNTHETIC_CAP_A: &str = "S-1-5-21-432-765-987-3001";
+    const SYNTHETIC_CAP_B: &str = "S-1-5-21-432-765-987-3002";
 
     struct Impersonation;
 
@@ -483,13 +485,20 @@ mod navigation_behavior {
         let common = private.join("scratch/content");
         let owned_a = common.join("owner-a/worktree");
         let owned_b = common.join("owner-b/worktree");
-        for path in [&owned_a, &owned_b] {
+        let source = private.join("source-project");
+        let foreign = private.join("unrelated-private");
+        for path in [&owned_a, &owned_b, &source, &foreign] {
             std::fs::create_dir_all(path)?;
+        }
+        for index in 0..80 {
+            std::fs::write(foreign.join(format!("{index}.txt")), b"foreign")?;
         }
         let file_a = owned_a.join("result.txt");
         let file_b = owned_b.join("result.txt");
+        let source_file = source.join("input.txt");
         std::fs::write(&file_a, b"initial")?;
         std::fs::write(&file_b, b"initial")?;
+        std::fs::write(&source_file, b"source")?;
         let account_a = LocalSid::from_string(SYNTHETIC_ACCOUNT_A)?;
         let account_b = LocalSid::from_string(SYNTHETIC_ACCOUNT_B)?;
         let group = LocalSid::from_string(SYNTHETIC_GROUP)?;
@@ -498,12 +507,21 @@ mod navigation_behavior {
         unsafe {
             crate::acl::ensure_allow_write_aces(&owned_a, &[cap_a.as_ptr()])?;
             crate::acl::ensure_allow_write_aces(&owned_b, &[cap_b.as_ptr()])?;
+            crate::acl::ensure_allow_mask_aces(
+                &source,
+                &[cap_a.as_ptr(), cap_b.as_ptr()],
+                FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            )?;
         }
         let sync = |state: &str, account: &LocalSid, writes: &[PathBuf]| unsafe {
             sync_private_read_acls(
                 &temp.path().join(state),
                 std::slice::from_ref(&private),
-                &[],
+                if writes.is_empty() {
+                    &[]
+                } else {
+                    std::slice::from_ref(&source)
+                },
                 writes,
                 &[account.as_ptr()],
                 group.as_ptr(),
@@ -521,6 +539,36 @@ mod navigation_behavior {
         }
         read_write_file(&token_a, &file_a)?;
         read_write_file(&token_b, &file_b)?;
+        // A new slot's actual allow records remain part of the boundary
+        // authority. Adopt that one-time change before testing warm reuse.
+        sync("state-a", &account_a, std::slice::from_ref(&owned_a))?;
+        let new_foreign = foreign.join("created-after-reconciliation.txt");
+        std::fs::write(&new_foreign, b"private")?;
+        for _ in 0..2 {
+            for (state, account, owned, token, file) in [
+                ("state-a", &account_a, &owned_a, &token_a, &file_a),
+                ("state-b", &account_b, &owned_b, &token_b, &file_b),
+            ] {
+                ensure!(
+                    sync(state, account, std::slice::from_ref(owned))? <= 12,
+                    "interleaved slots must keep bounded warm reconciliation"
+                );
+                navigation_without_listing(token, &[private.clone(), common.clone()])?;
+                read_write_file(token, file)?;
+                read_file(token, &source_file, b"source")?;
+                denied(token, &source_file, GENERIC_WRITE, OPEN_EXISTING)?;
+                private_directory_denied(token, &foreign)?;
+                denied(token, &foreign.join("0.txt"), GENERIC_READ, OPEN_EXISTING)?;
+                denied(
+                    token,
+                    &foreign.join("0.txt"),
+                    FILE_READ_ATTRIBUTES,
+                    OPEN_EXISTING,
+                )?;
+                denied(token, &new_foreign, GENERIC_READ, OPEN_EXISTING)?;
+                denied(token, &new_foreign, FILE_READ_ATTRIBUTES, OPEN_EXISTING)?;
+            }
+        }
         denied(&token_a, &file_b, GENERIC_READ, OPEN_EXISTING)?;
         denied(&token_b, &file_a, GENERIC_READ, OPEN_EXISTING)?;
 

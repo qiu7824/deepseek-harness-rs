@@ -44,14 +44,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with: { toolchain: 1.97.1, components: rustfmt }
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        if: matrix.platform != 'windows'
         with:
           cache-on-failure: true
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        if: matrix.platform == 'windows'
+        with:
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            native/windows-sandbox -> target
       - name: 隔离并规范测试临时目录
         shell: bash
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
+          if os.name == 'nt':
+              print(f"::notice title=Windows build resources::Logical CPUs: {os.cpu_count()}; Cargo build jobs: {os.environ['CARGO_BUILD_JOBS']}", flush=True)
           root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
           root.mkdir(parents=True, exist_ok=True)
           root = root.resolve(strict=True)
@@ -211,11 +221,11 @@ jobs:
       - name: Build Windows native sandbox
         if: matrix.platform == 'windows'
         run: |
-          python tools/build_native_sandbox.py --target-dir target/native-windows-sandbox
+          python tools/build_native_sandbox.py --target-dir native/windows-sandbox/target
           if ($LASTEXITCODE -ne 0) { throw 'Native sandbox build failed' }
-          cargo test --locked -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox
+          cargo test --locked --release -p dsh-windows-native --manifest-path native/windows-sandbox/Cargo.toml --target-dir native/windows-sandbox/target
           if ($LASTEXITCODE -ne 0) { throw 'Native sandbox protocol tests failed' }
-          cargo test --locked -p codex-windows-sandbox --manifest-path native/windows-sandbox/Cargo.toml --target-dir target/native-windows-sandbox --lib private_read_acl::tests -- --test-threads=1
+          cargo test --locked --release -p codex-windows-sandbox --manifest-path native/windows-sandbox/Cargo.toml --target-dir native/windows-sandbox/target --lib private_read_acl::tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Native sandbox private-directory access tests failed' }
       - name: Build Windows desktop controller binaries
         if: matrix.platform == 'windows'
@@ -250,7 +260,9 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ steps.release.outputs.version }}"
-          python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION"
+          NATIVE_ARGS=()
+          if [[ '${{ matrix.platform }}' == 'windows' ]]; then NATIVE_ARGS=(--native-dir native/windows-sandbox/target/release); fi
+          python tools/package_release.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --variant core --version "$VERSION" "${NATIVE_ARGS[@]}"
       - name: 核验便携包内容
         id: core_verify
         shell: bash
@@ -336,19 +348,61 @@ jobs:
           python tools/prepare_flutter_sdk.py --sdk "$SDK" --backup-dir "$RUNNER_TEMP/flutter-sdk-backup"
           echo "$SDK/bin" >> "$GITHUB_PATH"
           echo "PUB_CACHE=$RUNNER_TEMP/flutter-pub-cache" >> "$GITHUB_ENV"
-      - name: Flutter 客户端验证与构建
-        id: flutter_build
+      - name: Flutter 运行初始化
+        id: flutter_init
         if: ${{ !cancelled() && steps.flutter_sdk.outcome == 'success' }}
-        timeout-minutes: 40
+        timeout-minutes: 15
         shell: bash
         run: |
           flutter config --no-analytics
           flutter --version
-          (cd packages/dsh_client_dart && dart pub get --enforce-lockfile && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/dart" test)
+      - name: 锁定 Dart 客户端依赖
+        id: dart_pub
+        if: ${{ !cancelled() && steps.flutter_init.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          cd packages/dsh_client_dart
+          dart pub get --enforce-lockfile
+      - name: Dart 客户端回归
+        id: dart_tests
+        if: ${{ !cancelled() && steps.dart_pub.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          cd packages/dsh_client_dart
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/dart" test
+      - name: 锁定 Flutter 客户端依赖
+        id: flutter_pub
+        if: ${{ !cancelled() && steps.dart_tests.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
           cd apps/desktop_flutter
           flutter pub get --enforce-lockfile
+      - name: Flutter 静态检查
+        id: flutter_analyze
+        if: ${{ !cancelled() && steps.flutter_pub.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
           python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-analyze.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" analyze
+      - name: Flutter 全部测试与失败诊断
+        id: flutter_tests
+        if: ${{ !cancelled() && steps.flutter_analyze.outcome == 'success' }}
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
           python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-test.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test --machine
+      - name: Flutter 正式客户端构建
+        id: flutter_build
+        if: ${{ !cancelled() && steps.flutter_sdk.outcome == 'success' && steps.flutter_init.outcome == 'success' && steps.dart_pub.outcome == 'success' && steps.dart_tests.outcome == 'success' && steps.flutter_pub.outcome == 'success' && steps.flutter_analyze.outcome == 'success' && steps.flutter_tests.outcome == 'success' }}
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
           VERSION="${{ steps.release.outputs.version }}"
           python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-build.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" build ${{ matrix.platform }} --release --build-name="${VERSION%%-*}" --build-number="$GITHUB_RUN_NUMBER"
       - name: 组装并核验 Flutter 完整包
@@ -479,7 +533,22 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: build-timings-${{ matrix.platform }}-${{ matrix.arch }}
-          path: target/cargo-timings/*.html
+          path: |
+            target/cargo-timings/*.html
+            native/windows-sandbox/target/cargo-timings/*.html
+            native/windows-sandbox/target/native-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: 保留 Flutter 分阶段构建日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: flutter-build-logs-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/dart-client-test.log
+            ${{ runner.temp }}/flutter-analyze.log
+            ${{ runner.temp }}/flutter-test.log
+            ${{ runner.temp }}/flutter-build.log
           if-no-files-found: ignore
           retention-days: 7
       - name: 保留会话恢复失败证据

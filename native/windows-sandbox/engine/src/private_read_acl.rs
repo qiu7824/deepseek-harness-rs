@@ -1,6 +1,8 @@
 //! Account-scoped access to product-owned private trees. The caller holds the
 //! account's execution lease and the shared ACL update mutex until this returns.
-use crate::private_read_plan::{PrivateAccess, navigation_ancestor_keys, private_access};
+use crate::private_read_plan::{
+    MigrationAce, PrivateAccess, migration_ace_records, navigation_ancestor_keys, private_access,
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -355,9 +357,10 @@ impl Drop for Local {
 
 // A directory timestamp cannot prove that its ACL is still authoritative.
 // Bind the migration to the actual filesystem object, owner, protected DACL
-// flag and complete allow ACEs plus this slot/group's deny ACEs. Other slots
-// only add their own deny ACEs at these containers; those unrelated reductions
-// do not invalidate a completed migration for this slot.
+// flag and complete allow ACEs plus this slot/group's deny ACEs. Ignore other
+// slots' denial reductions and normalize only equivalent contiguous managed
+// blocks. New/removed allows, scopes, or movement across other ACEs still
+// invalidate a completed migration.
 unsafe fn root_stamp(
     path: &Path,
     accounts: &[*mut c_void],
@@ -434,6 +437,7 @@ unsafe fn root_stamp(
     digest.update(unsafe {
         std::slice::from_raw_parts(owner.cast::<u8>(), GetLengthSid(owner) as usize)
     });
+    let mut aces = Vec::new();
     for index in 0..unsafe { (*dacl).AceCount } {
         let mut ace = std::ptr::null_mut();
         ensure!(
@@ -455,9 +459,31 @@ unsafe fn root_stamp(
                 continue;
             }
         }
-        digest.update(unsafe {
-            std::slice::from_raw_parts(ace as *const u8, header.AceSize as usize)
+        let bytes =
+            unsafe { std::slice::from_raw_parts(ace as *const u8, header.AceSize as usize) }
+                .to_vec();
+        let navigation = if header.AceType == 0 && header.AceFlags == 0 {
+            let allowed = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+            let sid = std::ptr::addr_of!(allowed.SidStart).cast_mut().cast();
+            allowed.Mask == NAVIGATION_ACCESS
+                && unsafe { EqualSid(sid, group) } == 0
+                && accounts
+                    .iter()
+                    .any(|account| unsafe { EqualPrefixSid(sid, *account) } != 0)
+                && unsafe { has_navigation_signature(dacl, sid) }?
+        } else {
+            false
+        };
+        aces.push(if header.AceType == 1 {
+            MigrationAce::ManagedDeny(bytes)
+        } else if navigation {
+            MigrationAce::ManagedNavigationAllow(bytes)
+        } else {
+            MigrationAce::Ordered(bytes)
         });
+    }
+    for ace in migration_ace_records(aces) {
+        digest.update(ace);
     }
     Ok(RootStamp {
         volume: info.dwVolumeSerialNumber,
@@ -1119,6 +1145,7 @@ mod tests {
             "warm execution visits its current grant, not eighty unrelated files"
         );
         let other = LocalSid::from_string("S-1-5-21-22-33-44-1003")?;
+        let own_stamp = unsafe { root_stamp(&root, &[account.as_ptr()], group.as_ptr()) }?;
         unsafe {
             sync_private_read_acls(
                 &temp.path().join("other-slot"),
@@ -1129,6 +1156,11 @@ mod tests {
                 group.as_ptr(),
             )?;
         }
+        assert_eq!(
+            unsafe { root_stamp(&root, &[account.as_ptr()], group.as_ptr()) }?,
+            own_stamp,
+            "another slot may reorder managed denials without changing this slot's boundary authority"
+        );
         assert_eq!(
             sync()?,
             3,
