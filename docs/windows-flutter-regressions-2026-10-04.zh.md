@@ -53,4 +53,8 @@ Devin 本轮只增加 `google.rpc.BadRequest` 字段的安全定位和请求形�
 
 可选提醒工具 `schedule_*` 在 Minimal、blank 和子代理中同时受目录与直接调用边界限制；自定义模式沿用组合所继承的能力。内置持久任务 `scheduled_task_*` 及其他既有工具保持合同。这是提醒权限修复，不是完整上游自动化协议替换。
 
-当前本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项、Python 产品合同 48 项，以及独立 stdio 3 项测试。本地原生编译受缺失 `glib.pc` 阻塞，工作区内的系统头文件配置仍在处理。跨端真实 Host 启动 smoke 已加入正式发行环境，但尚未运行；本地没有 Flutter SDK，新增 Dart/Flutter CI 仍待推送。此前 `483b9963` 的成功结果仅为历史证据。实机字体、外部模型服务和最终新包公开下载分别验收。
+当前本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项及独立 stdio 3 项测试。正式发行 Python 合同组合运行 164 项，163 项通过，1 项因本地 Linux 环境跳过 Windows 安装器控制流程；该组合包含此前的 48 项，不能相加为独立测试数。日志为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/full-release-contract-tests.log`。缺失 `glib.pc` 的问题已通过工作区隔离开发 sysroot 解决，原生 launcher 41 项测试实际全部通过。
+
+源码 `c8add2ef2a7220b2ff2b3a431bac101cb2c1b140` 的 debug Rust Host 已通过隔离开发 smoke：核对 `--port 0` 的实际 URL、PID、实例 nonce、数据根及 RPC；删除 ready 临时目录、关闭父管道后，Host 内部重启保留同一 PID、nonce 和端口，`RuntimePaths` 实例更新，持久日志仍可读。该环境复用已验证的 r6 核心资源并加载当前 Minimal/blank 预设，验证记录保存在 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/real-host-smoke/verification.json`。这是隔离开发验证，尚未验证正式新包；四平台正式发行环境的真实 Host 启动用例仍未运行，旧定点工作流跳过的 real Host 步骤不计为通过。
+
+源码 `7c12e0b2eaa3e40b5909a23ca5d2fc92b7a6f298` 的[本轮 CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37189619840)中，Windows stdio、九组定点回归和严格金图通过，两种 Mac 架构的严格金图也通过。ARM 完整 Flutter 套件在步骤 10 失败，已定位首次草稿 scope 不可见及新增静态分析 lint，正在修复并等待完整套件复验。本地没有 Flutter SDK，不能以本地 Rust 结果或此前 `483b9963` CI 替代当前完整 Flutter 结果。实机字体、外部模型服务和最终新包公开下载仍分别验收；当前 r6 下载链接保持不变。

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -57,9 +58,9 @@ class HostFixture {
     processStarter: starter(mode: mode, fakePid: fakePid),
   );
 
-  HostProcessStarter starter({String mode = 'normal', int fakePid = 1}) =>
+  HostProcessStarter starter({String mode = 'normal', int fakePid = 1, int port = 0}) =>
     (executable, arguments, _) async {
-      expect(arguments.take(5), ['web', '--host', '127.0.0.1', '--port', '0']);
+      expect(arguments.take(5), ['web', '--host', '127.0.0.1', '--port', '$port']);
       final readyPath = arguments[arguments.indexOf('--ready-file') + 1];
       expect(await File(readyPath).exists(), isFalse);
       readinessPaths.add(readyPath);
@@ -347,6 +348,143 @@ void main() {
       second.dispose();
     });
 
+    test('first manual start carries unassigned workspace drafts to its actual URL', () async {
+      final hosts = await fixture();
+      final prefs = DesktopPreferences(
+        executable: hosts.executable,
+        writer: (_) async {},
+      );
+      final api = FakeClient()..handleCall = (_, _) async => {
+        'items': [{'workspaceId': 'one', 'path': hosts.directory.path}],
+        'archivedSessionIds': [],
+      };
+      final controller = DesktopController(
+        prefs,
+        hostProcessStarter: hosts.starter(port: 58080),
+        hostLogDirectory: Directory(p.join(hosts.directory.path, 'logs')),
+        clientFactory: (_) => api,
+      );
+      addTearDown(controller.dispose);
+      controller.targetWorkspace('one');
+      controller.setDraft('before choosing a manual service');
+      final originalKey = controller.draftScopeKey;
+      // Match the settings dialog's mutations before its Start action.
+      prefs.automaticHost = false;
+      prefs.address = 'http://127.0.0.1:58080';
+      await controller.startHost();
+      await Future<void>.delayed(Duration.zero);
+      controller.targetWorkspace('one');
+      expect(controller.draft, 'before choosing a manual service');
+      expect(controller.draftScopeKey, isNot(originalKey));
+      expect(prefs.drafts[originalKey], 'before choosing a manual service');
+      expect(prefs.ownedHost!.address, 'http://127.0.0.1:58080');
+      expect(prefs.automaticHost, isFalse);
+      expect(hosts.processes, hasLength(1));
+    });
+
+    test('a late automatic start cannot replace a completed manual connection', () async {
+      final hosts = await fixture();
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final starter = hosts.starter();
+      final prefs = DesktopPreferences(
+        executable: hosts.executable,
+        writer: (_) async {},
+      );
+      final api = FakeClient();
+      final controller = DesktopController(
+        prefs,
+        hostProcessStarter: (executable, arguments, directory) async {
+          entered.complete();
+          await release.future;
+          return starter(executable, arguments, directory);
+        },
+        hostLogDirectory: Directory(p.join(hosts.directory.path, 'logs')),
+        clientFactory: (_) => api,
+      );
+      addTearDown(controller.dispose);
+      final starting = controller.startHost();
+      await entered.future;
+      await controller.connect('http://127.0.0.1:61234');
+      controller.setDraft('the selected manual Host');
+      final key = controller.draftScopeKey;
+      release.complete();
+      await starting;
+      expect(controller.client, same(api));
+      expect(prefs.address, 'http://127.0.0.1:61234');
+      expect(prefs.automaticHost, isFalse);
+      expect(prefs.ownedHost, isNull);
+      expect(controller.connecting, isFalse);
+      expect(controller.draftScopeKey, key);
+      expect(controller.draft, 'the selected manual Host');
+      expect(hosts.processes, hasLength(1));
+      expect(await hosts.processes.single.exitCode.timeout(const Duration(seconds: 5)), isA<int>());
+    });
+
+    test('a manual connection during ownership save retires only the old child', () async {
+      final hosts = await fixture();
+      final saving = Completer<void>();
+      final release = Completer<void>();
+      var firstSave = true;
+      final prefs = DesktopPreferences(
+        executable: hosts.executable,
+        writer: (_) async {
+          if (!firstSave) return;
+          firstSave = false;
+          saving.complete();
+          await release.future;
+        },
+      );
+      final api = FakeClient();
+      final controller = DesktopController(
+        prefs,
+        hostProcessStarter: hosts.starter(),
+        hostLogDirectory: Directory(p.join(hosts.directory.path, 'logs')),
+        clientFactory: (_) => api,
+      );
+      addTearDown(controller.dispose);
+      final starting = controller.startHost();
+      await saving.future;
+      final connecting = controller.connect('http://127.0.0.1:61234');
+      await Future<void>.delayed(Duration.zero);
+      release.complete();
+      await Future.wait([starting, connecting]);
+      expect(controller.client, same(api));
+      expect(prefs.address, 'http://127.0.0.1:61234');
+      expect(prefs.automaticHost, isFalse);
+      expect(prefs.ownedHost, isNull);
+      expect(controller.connecting, isFalse);
+      expect(hosts.processes, hasLength(1));
+      expect(await hosts.processes.single.exitCode.timeout(const Duration(seconds: 5)), isA<int>());
+    });
+
+    test('fresh readiness still reports a failure of its final identity check', () async {
+      final hosts = await fixture();
+      final prefs = DesktopPreferences(
+        executable: hosts.executable,
+        writer: (_) async {},
+      );
+      final api = FakeClient()..handleCall = (_, _) async => {
+        'processId': prefs.ownedHost!.pid,
+        'instanceId': 'a-replacement-instance',
+        'version': prefs.ownedHost!.hostVersion,
+        'home': prefs.ownedHost!.home,
+      };
+      final controller = DesktopController(
+        prefs,
+        hostProcessStarter: hosts.starter(),
+        hostLogDirectory: Directory(p.join(hosts.directory.path, 'logs')),
+        clientFactory: (_) => api,
+      );
+      addTearDown(controller.dispose);
+      await expectLater(controller.startHost(), throwsFormatException);
+      expect(controller.host, isNull);
+      expect(controller.client, isNull);
+      expect(controller.connecting, isFalse);
+      expect(api.channels, isEmpty);
+      expect(await HostLauncher.reusable(prefs.ownedHost, hosts.executable), isNotNull);
+    });
+
     test('same identified process still cannot publish a relative home', () async {
       final hosts = await fixture();
       final original = await hosts.launch();
@@ -433,6 +571,40 @@ void main() {
       expect(controller.draft, 'keep this before the Host is ready');
     });
 
+  });
+
+  testWidgets('first manual connection from settings keeps its preconnection workspace draft', (tester) async {
+    final prefs = DesktopPreferences(writer: (_) async {});
+    final api = FakeClient()..handleCall = (_, _) async => {
+      'items': [{'workspaceId': 'one', 'path': 'E:/one'}],
+      'archivedSessionIds': [],
+    };
+    final controller = DesktopController(prefs, clientFactory: (_) => api);
+    addTearDown(controller.dispose);
+    controller.targetWorkspace('one');
+    controller.setDraft('typed before opening connection settings');
+    final originalKey = controller.draftScopeKey;
+    await tester.pumpWidget(ShadApp(home: Scaffold(body: Builder(
+      builder: (context) => DshButton(
+        onPressed: () => connectionSettings(context, controller),
+        child: const Text('open connection'),
+      ),
+    ))));
+    await tester.tap(find.text('open connection'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('automatic-host')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('manual-host-address')), 'http://127.0.0.1:61234');
+    await tester.tap(find.text('连接'));
+    await tester.pumpAndSettle();
+    expect(controller.client, same(api));
+    expect(prefs.automaticHost, isFalse);
+    expect(prefs.address, 'http://127.0.0.1:61234');
+    controller.targetWorkspace('one');
+    expect(controller.draft, 'typed before opening connection settings');
+    expect(controller.draftScopeKey, isNot(originalKey));
+    expect(prefs.drafts[originalKey], 'typed before opening connection settings');
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('connection settings preserve the explicit address when toggling auto', (tester) async {

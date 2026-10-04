@@ -19,7 +19,146 @@ Json providerReason({int status = 400, String code = 'INVALID_REQUEST'}) => {
   'error': {'message': providerMessage, 'code': code, 'status': status},
 };
 
+Json devinSummary() => {
+  'phase': 'chat-connect',
+  'modelUidHash': 'a'.padRight(64, 'a'),
+  'modelUidChars': 16,
+  'toolCount': 2,
+  'messageCount': 3,
+  'signedReplayCount': 1,
+  'requestBytes': 2000,
+  'compressedBytes': 800,
+  'schema': {
+    'objectRoots': 2,
+    'rootCombinators': 0,
+    'bytes': 640,
+    'sha256': 'b'.padRight(64, 'b'),
+  },
+  'badRequestFields': [
+    {'path': 'tools[0].input_schema'},
+    {'pathHash': 'c'.padRight(64, 'c')},
+  ],
+};
+
+const rejectionMessage = 'Request rejected (trace ID: fixture-trace)';
+String devinMessage({String primary = rejectionMessage, String nativeCode = 'invalid_argument'}) =>
+    '$primary\n[devin-diagnostic:${jsonEncode(devinSummary())}] [$nativeCode]';
+
 void main() {
+  test('live and reopened Devin failures fold only the diagnostic appendix', () {
+    final fullMessage = devinMessage();
+    final reason = {
+      'kind': 'error',
+      'error': {'message': fullMessage, 'code': 'INVALID_REQUEST', 'status': 400},
+    };
+    for (final live in [true, false]) {
+      final item = projectTranscript([
+        HistoryEvent.fromJson({
+          'seq': 3,
+          'type': 'turn/end',
+          'data': {'turn': 1, 'reason': reason},
+        }),
+      ], live: live).single;
+      final description = DshError.describe(item.text);
+      expect(description.message, '$rejectionMessage [invalid_argument]');
+      expect(description.message, isNot(contains('devin-diagnostic')));
+      expect(description.code, 'INVALID_REQUEST');
+      expect(description.status, 400);
+      expect(description.traceId, 'fixture-trace');
+      expect(description.retryable, isFalse);
+      expect(description.details, contains(jsonEncode(reason)));
+      expect(jsonDecode(item.clipboardText), reason);
+    }
+  });
+
+  test('RPC and long legacy exception text retain the real primary message', () {
+    final fullMessage = devinMessage();
+    final error = DshException('INVALID_REQUEST', fullMessage, details: {'status': 400});
+    final description = DshError.describe(error);
+    expect(description.message, '$rejectionMessage [invalid_argument]');
+    expect(description.status, 400);
+    expect(description.details, contains(fullMessage));
+    expect(description.traceId, 'fixture-trace');
+    final legacy = error.toString();
+    expect(legacy.length, greaterThan(500));
+    final reopened = DshError.describe(legacy);
+    expect(reopened.message, '$rejectionMessage [invalid_argument] (INVALID_REQUEST)');
+    expect(reopened.code, 'INVALID_REQUEST');
+    expect(reopened.details, contains(fullMessage));
+    final chinese = DshException('INVALID_REQUEST', devinMessage(primary: '模型请求未完成')).toString();
+    expect(DshError.describe(chinese).message, '模型请求未完成 [invalid_argument] (INVALID_REQUEST)');
+  });
+
+  test('folded Devin diagnostics preserve true HTTP status and terminal semantics', () {
+    final httpMessage = '$rejectionMessage\n[devin-diagnostic:${jsonEncode({...devinSummary(), 'phase': 'chat-http'})}]';
+    final http = DshError.describe(DshException('http-400', httpMessage, details: {
+      'httpStatus': 400,
+      'status': 503,
+    }));
+    expect(http.message, rejectionMessage);
+    expect(http.code, 'http-400');
+    expect(http.status, 400);
+    expect(http.retryable, isFalse);
+    expect(http.details, contains('devin-diagnostic'));
+    final cancelled = DshError.describe(DshException(
+      'CANCELLED', devinMessage(nativeCode: 'canceled'),
+    ));
+    expect(cancelled.message, DshZh.operationCancelled);
+    expect(cancelled.cancelled, isTrue);
+    expect(cancelled.retryable, isFalse);
+    expect(cancelled.details, contains('devin-diagnostic'));
+    final unknown = DshError.describe(DshException('transport', devinMessage(), outcomeUnknown: true));
+    expect(unknown.message, DshZh.outcomeUnknown);
+    expect(unknown.retryable, isFalse);
+    expect(unknown.details, contains('devin-diagnostic'));
+  });
+
+  test('unknown, nonterminal and oversized diagnostic literals remain intact', () {
+    final summary = devinSummary();
+    final invalid = <String>[
+      '$rejectionMessage\n[devin-diagnostic:{broken}] [invalid_argument]',
+      '$rejectionMessage\n[devin-diagnostic:${jsonEncode({...summary, 'phase': 'unknown'})}]',
+      '$rejectionMessage\n[devin-diagnostic:${jsonEncode({...summary, 'modelUidHash': 'not-a-hash'})}]',
+      '$rejectionMessage\n[devin-diagnostic:${jsonEncode({...summary, 'unexpected': 'provider text'})}]',
+      '$rejectionMessage\n[devin-diagnostic:${jsonEncode({...summary, 'toolCount': -1})}]',
+      '$rejectionMessage\n[devin-diagnostic:${jsonEncode({...summary, 'badRequestFields': List.filled(5, {'path': 'model'})})}]',
+      '$rejectionMessage\n[devin-diagnostic:${jsonEncode({...summary, 'badRequestFields': [{'path': 'tools[12345].input_schema'}]})}]',
+      '$rejectionMessage\n[devin-diagnostic:${const JsonEncoder.withIndent('  ').convert(summary)}]',
+      '$rejectionMessage\n[devin-diagnostic:${' '.padRight(4097)}${jsonEncode(summary)}]',
+      '${devinMessage()}\nprovider explanation continues',
+    ];
+    for (final literal in invalid) {
+      final description = DshError.describe(DshException('INVALID_REQUEST', literal));
+      expect(description.message, literal);
+      expect(description.details, contains('devin-diagnostic'));
+    }
+    final business = jsonEncode({'ok': true, 'message': devinMessage()});
+    expect(DshErrorInfo.tryParse(business), isNull);
+    final description = DshError.describe(business);
+    expect(description.message, isNot('$rejectionMessage [invalid_argument]'));
+    expect(description.details, contains(business));
+    final ordinary = jsonEncode({'ok': true, 'message': '[devin-diagnostic:{"phase":"chat-connect"}]'});
+    expect(DshError.describe(ordinary).message, ordinary);
+  });
+
+  testWidgets('Devin JSON appears only after diagnostic details are expanded', (tester) async {
+    final error = DshException('INVALID_REQUEST', devinMessage(), details: {'status': 400});
+    await tester.pumpWidget(ShadApp(home: Scaffold(body: DshErrorView(error: error))));
+    expect(find.text('$rejectionMessage [invalid_argument]'), findsOneWidget);
+    expect(find.textContaining('devin-diagnostic'), findsNothing);
+    expect(find.textContaining('modelUidHash'), findsNothing);
+    expect(find.byType(SelectableText), findsNothing);
+    await tester.tap(find.text(DshZh.details));
+    await tester.pumpAndSettle();
+    final details = tester.widget<SelectableText>(find.byType(SelectableText)).data!;
+    expect(details, contains(jsonEncode(devinSummary())));
+    expect(details, contains('code: INVALID_REQUEST'));
+    expect(details, contains('status: 400'));
+    expect(details, contains('trace ID: fixture-trace'));
+    expect(details, contains('[invalid_argument]'));
+    expect(tester.takeException(), isNull);
+  });
+
   test('live and reopened turn errors share the friendly presentation', () {
     for (final live in [true, false]) {
       final reason = providerReason();

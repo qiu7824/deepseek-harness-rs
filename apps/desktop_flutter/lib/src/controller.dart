@@ -49,13 +49,14 @@ class DesktopController extends ChangeNotifier {
   DesktopController(
     this.preferences, {
     DshClient Function(String)? clientFactory,
-    @visibleForTesting HostProcessStarter? hostProcessStarter,
+    this.hostProcessStarter,
     @visibleForTesting String? Function()? bundledHostFinder,
-    @visibleForTesting Directory? hostLogDirectory,
+    this.hostLogDirectory,
   }) : _clientFactory = clientFactory ?? ((address) => DshClient(address)),
-       _hostProcessStarter = hostProcessStarter,
        _bundledHostFinder = bundledHostFinder ?? HostLauncher.bundled,
-       _hostLogDirectory = hostLogDirectory {
+       _unassignedDraftTarget = preferences.automaticHost &&
+           preferences.address == DesktopPreferences.automaticAddress &&
+           preferences.ownedHost == null {
     messageChanges.addListener(() {
       _lastConversationState = _conversationState();
     });
@@ -101,9 +102,11 @@ class DesktopController extends ChangeNotifier {
   }
 
   final DshClient Function(String) _clientFactory;
-  final HostProcessStarter? _hostProcessStarter;
+  /// Optional launcher dependencies forwarded to the production startup path.
+  /// Tests provide an isolated child process and log destination through them.
+  final HostProcessStarter? hostProcessStarter;
   final String? Function() _bundledHostFinder;
-  final Directory? _hostLogDirectory;
+  final Directory? hostLogDirectory;
   DshClient? _client;
   DshClient? get client => _client;
   HostInfo? host;
@@ -244,6 +247,7 @@ class DesktopController extends ChangeNotifier {
 
   String? selectedId;
   String? _draftHostAddress;
+  bool _unassignedDraftTarget;
   String? _provisionalDraftScope;
   bool _explicitDraftWorkspace = false;
   static const unnamedDraftPrefix = DesktopPreferences.unnamedDraftPrefix;
@@ -277,6 +281,24 @@ class DesktopController extends ChangeNotifier {
             (preferences.drafts[provisional]?.isNotEmpty ?? false)
         ? provisional
         : null;
+  }
+
+  void _adoptUnassignedDrafts(String address) {
+    if (!_unassignedDraftTarget || _epoch != 0 || _draftHostAddress != null ||
+        preferences.ownedHost != null) {
+      return;
+    }
+    // Before the first Host has been chosen, :0 is an unassigned target.
+    // Keep existing target drafts, source slots and later Hosts independent.
+    final uri = Uri.tryParse(address);
+    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty) {
+      preferences.copyUnnamedDrafts(
+        DesktopPreferences.automaticAddress,
+        uri.origin,
+      );
+      _unassignedDraftTarget = false;
+    }
   }
 
   ModelCatalog? _catalog;
@@ -677,10 +699,12 @@ class DesktopController extends ChangeNotifier {
 
   Future<void> connect(String address, {bool desktopOwned = false}) async {
     if (_disposed) return;
+    final next = _clientFactory(address);
+    if (!desktopOwned) _adoptUnassignedDrafts(address);
+    _unassignedDraftTarget = false;
     preferences.automaticHost = desktopOwned;
     readingPositions.clear();
     _clearCommandActivity();
-    final next = _clientFactory(address);
     _draftHostAddress = address;
     final epoch = ++_epoch;
     final retiredSubscriptions = List<StreamSubscription<dynamic>>.of(
@@ -888,17 +912,34 @@ class DesktopController extends ChangeNotifier {
       _startHost().whenComplete(() => _hostLaunch = null);
 
   Future<void> _startHost() async {
+    final epoch = _epoch;
     final automatic = preferences.automaticHost;
+    final address = preferences.address;
+    final executable = preferences.executable;
+    var expectedAddress = address;
+    var connectingStartedHost = false;
+    bool current() => !_disposed &&
+        (_epoch == epoch || connectingStartedHost && _epoch == epoch + 1) &&
+        preferences.automaticHost == automatic &&
+        preferences.address == expectedAddress &&
+        preferences.executable == executable;
     final owned = preferences.ownedHost;
     final running = automatic
-        ? await HostLauncher.reusable(owned, preferences.executable)
-        : await HostLauncher.live(preferences.address);
+        ? await HostLauncher.reusable(owned, executable)
+        : await HostLauncher.live(address);
+    if (!current()) return;
     if (running != null) {
+      final target = automatic ? owned!.address : address;
       await connect(
-        automatic ? owned!.address : preferences.address,
+        target,
         desktopOwned: automatic,
       );
-      final selected = HostLauncher.packagedVersion(preferences.executable);
+      if (_disposed || _epoch != epoch + 1 ||
+          preferences.automaticHost != automatic ||
+          preferences.address != target || preferences.executable != executable) {
+        return;
+      }
+      final selected = HostLauncher.packagedVersion(executable);
       if (selected != null && running.version != selected) {
         error = hostVersionMismatch(
           preferences.address,
@@ -913,20 +954,43 @@ class DesktopController extends ChangeNotifier {
     emit();
     try {
       final started = await HostLauncher.start(
-        preferences.executable,
-        automatic ? DesktopPreferences.automaticAddress : preferences.address,
-        processStarter: _hostProcessStarter,
-        logDirectory: _hostLogDirectory,
+        executable,
+        automatic ? DesktopPreferences.automaticAddress : address,
+        processStarter: hostProcessStarter,
+        logDirectory: hostLogDirectory,
       );
+      if (!current()) {
+        await started.stopStartedProcess();
+        return;
+      }
+      if (automatic) {
+        _unassignedDraftTarget = false;
+      } else {
+        _adoptUnassignedDrafts(started.address);
+      }
       // Save ownership before connecting so a transient client failure does
       // not orphan a successfully started background Host on the next open.
       preferences.ownedHost = started;
       preferences.address = started.address;
+      expectedAddress = started.address;
       await preferences.save();
+      if (!current()) {
+        await started.stopStartedProcess();
+        if (identical(preferences.ownedHost, started)) {
+          preferences.ownedHost = null;
+          await preferences.save();
+        }
+        return;
+      }
+      connectingStartedHost = true;
       await connect(started.address, desktopOwned: automatic);
+    } catch (_) {
+      if (current()) rethrow;
     } finally {
-      connecting = false;
-      emit();
+      if (current()) {
+        connecting = false;
+        emit();
+      }
     }
   }
 

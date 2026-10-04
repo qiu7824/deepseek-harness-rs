@@ -86,16 +86,25 @@ class DesktopPreferences {
     if (uri == null || uri.scheme != 'http' ||
         !['127.0.0.1', 'localhost'].contains(uri.host) || uri.port != 58080 ||
         uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment ||
-        (uri.path.isNotEmpty && uri.path != '/')) return;
+        (uri.path.isNotEmpty && uri.path != '/')) {
+      return;
+    }
     // Legacy initialize always auto-started the bundled Host at this default
     // address. Preserve that behavior when upgrading a normal installation.
     automaticHost = true;
+    copyUnnamedDrafts(uri.origin, automaticAddress);
+  }
+
+  /// Preserve existing target drafts and keep the source slots available.
+  void copyUnnamedDrafts(String sourceOrigin, String targetOrigin) {
     for (final entry in drafts.entries.toList()) {
       if (!entry.key.startsWith(unnamedDraftPrefix)) continue;
       try {
         final scope = jsonDecode(entry.key.substring(unnamedDraftPrefix.length));
-        if (scope is! List || scope.length != 2 || scope[0] != uri.origin) continue;
-        final next = '$unnamedDraftPrefix${jsonEncode([automaticAddress, scope[1]])}';
+        if (scope is! List || scope.length != 2 || scope[0] != sourceOrigin) {
+          continue;
+        }
+        final next = '$unnamedDraftPrefix${jsonEncode([targetOrigin, scope[1]])}';
         drafts.putIfAbsent(next, () => entry.value);
       } catch (_) {
         // Keep unrelated or older draft formats verbatim.
@@ -151,13 +160,14 @@ class LocalHostProcess {
     required this.home,
     required this.hostVersion,
     this.logFile,
-    Process? process,
-  }) : _process = process;
+    this.process,
+  });
 
   final int pid;
   final String instanceId, address, executable, home, hostVersion;
   final String? logFile;
-  final Process? _process;
+  /// The original attached child handle; saved ownership records omit it.
+  final Process? process;
 
   LocalHostProcess withReportedHome(String actualHome) {
     if (!p.isAbsolute(actualHome)) {
@@ -171,17 +181,17 @@ class LocalHostProcess {
       home: HostLauncher._identityPath(actualHome),
       hostVersion: hostVersion,
       logFile: logFile,
-      process: _process,
+      process: process,
     );
   }
 
   /// Only fresh starts retain an OS child handle; saved records never grant
   /// permission to stop a process by its possibly reused PID.
   Future<void> stopStartedProcess() async {
-    final process = _process;
-    if (process == null) throw StateError('No original child process handle.');
-    process.kill();
-    await process.exitCode.timeout(const Duration(seconds: 5));
+    final child = process;
+    if (child == null) throw StateError('No original child process handle.');
+    child.kill();
+    await child.exitCode.timeout(const Duration(seconds: 5));
   }
 
   Json toJson() => {
@@ -207,7 +217,9 @@ class LocalHostProcess {
           instanceId is! String || instanceId.isEmpty || instanceId.length > 128 ||
           address is! String || executable is! String || home is! String ||
           version is! String || version.isEmpty ||
-          !p.isAbsolute(executable) || !p.isAbsolute(home)) return null;
+          !p.isAbsolute(executable) || !p.isAbsolute(home)) {
+        return null;
+      }
       HostLauncher.readyUri(address);
       return LocalHostProcess(
         pid: pid, instanceId: instanceId, address: address, executable: executable,
@@ -298,12 +310,14 @@ class HostLauncher {
     return p.normalize(result);
   }
 
+  /// [processStarter] and [logDirectory] are caller-supplied startup
+  /// dependencies, also used to isolate real-process regression fixtures.
   static Future<LocalHostProcess> start(
     String executable,
     String address, {
     Duration readinessTimeout = const Duration(seconds: 30),
-    @visibleForTesting HostProcessStarter? processStarter,
-    @visibleForTesting Directory? logDirectory,
+    HostProcessStarter? processStarter,
+    Directory? logDirectory,
   }) async {
     final uri = localHostUri(address);
     if (uri.scheme != 'http' || uri.host == '::1' || uri.port > 65535) {
@@ -452,7 +466,9 @@ class HostLauncher {
     LocalHostProcess? owned, String executable,
   ) async {
     if (owned == null ||
-        _identityPath(owned.executable) != _identityPath(executable)) return null;
+        _identityPath(owned.executable) != _identityPath(executable)) {
+      return null;
+    }
     final expected = packagedVersion(executable);
     if (expected != null && expected != owned.hostVersion) return null;
     final probe = _probe(owned.address);

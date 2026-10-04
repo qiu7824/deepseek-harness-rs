@@ -97,7 +97,7 @@ void main() {
         expect(process.logFile, isNotNull);
         expect(await File(process.logFile!).length(), greaterThan(0));
         expect(await HostLauncher.reusable(
-          LocalHostProcess.fromSaved(process.toJson()), executable!,
+          LocalHostProcess.fromSaved(process.toJson()), executable,
         ), isNotNull);
         expect(
           host.home.replaceAll('\\', '/').replaceFirst('//?/', ''),

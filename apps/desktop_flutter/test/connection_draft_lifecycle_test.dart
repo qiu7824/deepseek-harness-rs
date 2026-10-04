@@ -137,6 +137,79 @@ void main() {
     expect(c.draft, 'existing workspace draft');
   });
 
+  test(
+    'first manual target preserves unassigned drafts, existing target drafts and other Hosts',
+    () async {
+      final prefs = MemoryPreferences();
+      var api = RaceClient()..handleCall = (_, _) async => workspaceList;
+      final c = DesktopController(prefs, clientFactory: (_) => api);
+      addTearDown(c.dispose);
+      c.setDraft('before any Host is selected');
+      final unassigned = c.draftScopeKey;
+      c.targetWorkspace('one');
+      c.setDraft('unassigned workspace one');
+      final unassignedOne = c.draftScopeKey;
+      c.targetWorkspace('two');
+      c.setDraft('unassigned workspace two');
+      final unassignedTwo = c.draftScopeKey;
+      final existingOne =
+          '${DesktopController.unnamedDraftPrefix}${jsonEncode([address, 'one'])}';
+      prefs.drafts[existingOne] = 'saved for the chosen Host';
+      prefs.drafts['saved-session'] = 'saved session draft';
+
+      await c.connect(address);
+      await settle();
+      expect(prefs.automaticHost, isFalse);
+      expect(c.draft, 'before any Host is selected');
+      expect(c.draftScopeKey, isNot(unassigned));
+      c.targetWorkspace('one');
+      expect(c.draftScopeKey, existingOne);
+      expect(c.draft, 'saved for the chosen Host');
+      c.targetWorkspace('two');
+      expect(c.draft, 'unassigned workspace two');
+      expect(prefs.drafts[unassigned], 'before any Host is selected');
+      expect(prefs.drafts[unassignedOne], 'unassigned workspace one');
+      expect(prefs.drafts[unassignedTwo], 'unassigned workspace two');
+      expect(prefs.drafts['saved-session'], 'saved session draft');
+
+      api = RaceClient()..handleCall = (_, _) async => workspaceList;
+      await c.connect('http://127.0.0.1:59080');
+      await settle();
+      expect(c.draft, isEmpty);
+      c.targetWorkspace('two');
+      expect(c.draft, isEmpty);
+      c.setDraft('the other Host');
+
+      api = RaceClient()..handleCall = (_, _) async => workspaceList;
+      await c.connect(address);
+      await settle();
+      expect(c.draft, 'before any Host is selected');
+      c.targetWorkspace('two');
+      expect(c.draft, 'unassigned workspace two');
+      c.targetWorkspace('one');
+      expect(c.draft, 'saved for the chosen Host');
+    },
+  );
+
+  test(
+    'a previously assigned automatic Host does not donate drafts to a manual Host',
+    () async {
+      final prefs = MemoryPreferences()
+        ..address = 'http://127.0.0.1:61234';
+      final api = RaceClient()..handleCall = (_, _) async => workspaceList;
+      final c = DesktopController(prefs, clientFactory: (_) => api);
+      addTearDown(c.dispose);
+      c.targetWorkspace('one');
+      c.setDraft('automatic Host draft');
+      final automaticKey = c.draftScopeKey;
+      await c.connect(address);
+      await settle();
+      c.targetWorkspace('one');
+      expect(c.draft, isEmpty);
+      expect(prefs.drafts[automaticKey], 'automatic Host draft');
+    },
+  );
+
   test('explicit navigation before the late list stays isolated from provisional input', () async {
     final listed = Completer<Json>();
     final api = RaceClient()

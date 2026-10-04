@@ -61,7 +61,7 @@ class DshError {
         ) ??
         failure?.status;
     final traceId = failure?.traceId;
-    final sourceMessage = failure?.message ?? structured?.message ?? raw;
+    final originalMessage = failure?.message ?? structured?.message ?? raw;
     var serializedJson = false;
     if (error is String) {
       if (raw.length <= 65536) {
@@ -76,6 +76,13 @@ class DshError {
       }
     }
     final plainError = structured != null || (error is String && !serializedJson);
+    final recognizedFailure = failure != null || structured != null || (plainError && code != null);
+    final sourceMessage = recognizedFailure
+        ? _primaryDevinMessage(
+            originalMessage,
+            legacyCode: failure == null && structured == null ? code : null,
+          )
+        : originalMessage;
     final providerUnavailable =
         (failure != null || plainError) &&
         !const {'timeout', 'TIMEOUT', 'http-408', 'http-504'}.contains(code) &&
@@ -127,9 +134,9 @@ class DshError {
                             .hasMatch(error.message.toString())
                   ? redact(error.message.toString())
                   : error is String &&
-                        raw.length < 500 &&
-                        !RegExp(r'(^|\n)#\d+\s|Stack trace:').hasMatch(raw)
-                  ? redact(raw)
+                        sourceMessage.length < 500 &&
+                        !RegExp(r'(^|\n)#\d+\s|Stack trace:').hasMatch(sourceMessage)
+                  ? redact(sourceMessage)
                   : DshZh.unknownError,
           };
     final businessMessage = redact(sourceMessage);
@@ -163,6 +170,118 @@ class DshError {
         ].join('\n'),
       ),
     );
+  }
+
+  /// Only a bounded, complete Rust request-shape appendix is presentation-only.
+  /// The original exception/history text remains intact in folded details.
+  static String _primaryDevinMessage(String message, {String? legacyCode}) {
+    const marker = '\n[devin-diagnostic:';
+    var body = message;
+    var legacySuffix = '';
+    if (legacyCode != null && body.endsWith(' ($legacyCode)')) {
+      legacySuffix = ' ($legacyCode)';
+      body = body.substring(0, body.length - legacySuffix.length);
+    }
+    var nativeSuffix = '';
+    final native = RegExp(
+      r' \[(?:canceled|unknown|invalid_argument|deadline_exceeded|not_found|already_exists|permission_denied|resource_exhausted|failed_precondition|aborted|out_of_range|unimplemented|internal|unavailable|data_loss|unauthenticated)\]$',
+    ).firstMatch(body);
+    if (native != null) {
+      nativeSuffix = native.group(0)!;
+      body = body.substring(0, native.start);
+    }
+    final start = body.lastIndexOf(marker);
+    if (start <= 0 ||
+        !body.endsWith(']') ||
+        body.length - start - marker.length - 1 > 4096) {
+      return message;
+    }
+    final appendix = body.substring(start + marker.length, body.length - 1);
+    if (appendix.contains('\n') || appendix.contains('\r')) {
+      return message;
+    }
+    Object? summary;
+    try {
+      summary = jsonDecode(appendix);
+    } on FormatException {
+      return message;
+    }
+    if (summary is! Map || !_devinSummary(summary)) {
+      return message;
+    }
+    return '${body.substring(0, start)}$nativeSuffix$legacySuffix';
+  }
+
+  static bool _devinSummary(Map<dynamic, dynamic> summary) {
+    const requiredKeys = {
+      'phase',
+      'modelUidHash',
+      'modelUidChars',
+      'toolCount',
+      'messageCount',
+      'signedReplayCount',
+      'schema',
+      'requestBytes',
+      'compressedBytes',
+    };
+    if (!requiredKeys.every(summary.containsKey) ||
+        summary.keys.any(
+          (key) => !requiredKeys.contains(key) && key != 'badRequestFields',
+        ) ||
+        !const {'chat-http', 'chat-connect'}.contains(summary['phase'])) {
+      return false;
+    }
+    bool count(Object? value) => value is int && value >= 0;
+    bool hash(Object? value) =>
+        value is String && RegExp(r'^[0-9a-f]{64}$').hasMatch(value);
+    if (!hash(summary['modelUidHash']) ||
+        !const [
+          'modelUidChars',
+          'toolCount',
+          'messageCount',
+          'signedReplayCount',
+          'requestBytes',
+          'compressedBytes',
+        ].every((key) => count(summary[key]))) {
+      return false;
+    }
+    final schema = summary['schema'];
+    if (schema is! Map ||
+        schema.length != 4 ||
+        !const [
+          'objectRoots',
+          'rootCombinators',
+          'bytes',
+        ].every((key) => count(schema[key])) ||
+        !hash(schema['sha256'])) {
+      return false;
+    }
+    if (summary.containsKey('badRequestFields')) {
+      final fields = summary['badRequestFields'];
+      if (fields is! List || fields.length > 4) {
+        return false;
+      }
+      for (final field in fields) {
+        if (field is! Map || field.length != 1) {
+          return false;
+        }
+        if (field.containsKey('pathHash')) {
+          if (!hash(field['pathHash'])) {
+            return false;
+          }
+        } else {
+          final path = field['path'];
+          if (path is! String ||
+              path.length > 96 ||
+              !RegExp(
+                r'^(?:model|chat_model_uid|chatModelUid|configuration|tools|chat_message_prompts|chatMessagePrompts|prompt|metadata|tool_choice|toolChoice|system_prompt_cache_options|systemPromptCacheOptions)(?:\[[0-9]{1,4}\])?(?:\.[A-Za-z_][A-Za-z_0-9]*(?:\[[0-9]{1,4}\])?)*$',
+              ).hasMatch(path)) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
   }
 
   static String redact(String value) => value

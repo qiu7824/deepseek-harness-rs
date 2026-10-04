@@ -62,4 +62,8 @@ Rust 已有 [`dsh-typert-protocol`](../crates/core/typert-protocol/src/lib.rs)�
 - **提醒模式边界**：Minimal、blank 和子代理限制可选 `schedule_*` 工具的目录与直接调用，自定义模式按组合继承已有能力；内置 `scheduled_task_*` 持久任务保持原合同。模式范围不由预设名称的允许列表推断，工具出现、直接调用及切换模式后的生命周期须分别验证。此进展不改变旧提醒记录需明确处理的迁移结论。
 - **Devin 诊断**：新增允许的 `BadRequest` 字段路径、计数及模型 UID/工具 schema 哈希，不回显原请求或任意服务端字段描述。温度等模型参数未改，未确认 Devin / Opus 5.5 外部服务故障的根因；该工作为定位提供证据，不能宣称供应商兼容问题已经解决。
 
-本轮本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项、Python 产品合同 48 项及独立 stdio 3 项测试。本地原生编译的 `glib.pc` 缺失仍在处理；本地没有 Flutter SDK，新增 Dart/Flutter CI 待推送，正式发行环境中的跨端真实 Host 启动 smoke 尚未运行，新包验证也未完成。源码实现、模式 E2E、跨端启动和公开下载分别留证，历史 `483b9963` CI 不作为本轮新增行为的结果。
+本轮本地已通过 CLI Web 7 项、Host 模式综合 3 项、Host `runtime_paths` 16 项、完整 API 126 项、数据根 resolver 1 项、Devin 127 项、提醒生命周期 6 项及独立 stdio 3 项测试。完整发行 Python 合同组合 164 项中，163 项通过，1 项因本地 Linux 环境跳过 Windows 安装器控制流程；已涵盖此前 48 项，不能重复计数。日志为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/full-release-contract-tests.log`。`glib.pc` 缺失已通过工作区隔离开发 sysroot 解决，原生 launcher 41 项测试实际全部通过。
+
+`c8add2ef2a7220b2ff2b3a431bac101cb2c1b140` 的 debug Rust Host 在隔离开发 smoke 中通过实际端口、PID/nonce、数据根及 RPC 核对；移除 ready 目录并关闭父管道后，内部重启保持 PID/nonce/端口，更新 `RuntimePaths` 实例且持久日志仍可读。该环境使用已验证 r6 核心资源与当前 Minimal/blank 预设，记录为 `/workspace/artifacts/v0.1.3-alpha.38-r7/validation/real-host-smoke/verification.json`。正式四平台发行环境的真实 Host 用例仍未运行，旧定点 real Host 的 skip 不作为通过，也不能将隔离开发结果称为正式新包验证。
+
+候选 `7c12e0b2eaa3e40b5909a23ca5d2fc92b7a6f298` 的[本轮 CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37189619840)已通过 Windows stdio、九组定点回归和严格金图，以及 Intel/ARM Mac 严格金图；ARM 完整 Flutter 套件在步骤 10 失败，首次草稿 scope 不可见及新增 lint 正在修复，完整套件待修复后复验。本地没有 Flutter SDK，历史 `483b9963` CI 不替代本轮结果。源码实现、模式 E2E、跨端启动和公开下载分别留证；r6 下载保持原标签，新包尚未发布。
