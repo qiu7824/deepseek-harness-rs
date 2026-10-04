@@ -12,7 +12,7 @@ Implementation and verification scope for file isolation, execution receipts, ma
 
 See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and [development plan](docs/plans/更新计划.md) for cross-version adaptation and remaining work.
 
-The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records confirmed coverage, protocol differences and P0/P1 acceptance criteria. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [current Windows Flutter source fixes (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) await desktop validation; existing r6 packages still correspond to the original tagged source.
+The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records confirmed coverage, protocol differences and P0/P1 acceptance criteria. Experimental Claude Code Mods and upstream Web adaptation require further implementation. The [current Windows Flutter source fixes (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md) passed Windows regressions; real desktop fonts and model service behavior still need verification. Existing r6 packages correspond to the original tagged source.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 

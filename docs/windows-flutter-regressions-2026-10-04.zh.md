@@ -12,6 +12,8 @@
 
 已有 Claude 根级工具 schema 兼容修复在 r6 中仍存在。本轮没有使用账号凭据重放请求，旧错误记录也没有保留完整 Connect 码，无法确定这次 Opus 5.5 失败的服务端根因。修复错误展示和分类不代表外部模型服务已经恢复。
 
+后续应先获取保留原始协议码的新错误，再核对该账号目录返回的实际模型 UID。上游锁定的 `@earendil-works/pi-ai@0.87.1` 中，直连 Anthropic Opus 5.5 描述标记为不支持温度参数；Devin 则使用不同的 protobuf 请求，[公开协议定义](https://github.com/can1357/oh-my-pi/blob/v18.1.18/packages/ai/src/providers/devin/proto/exa/codeium_common_pb/codeium_common.proto#L1985)中的 `temperature` 和 `first_temperature` 是普通 double，现有客户端默认均为 0.4。尚无证据证明 Devin 如何转发或要求省略这些字段；省略 protobuf double 也不等于省略 Anthropic JSON 参数，因此本轮保持模型参数不变。
+
 ## 界面改动来源
 
 | 项目 | 历史提交与时间 | 可核实的变化 | 本次处理 |
@@ -32,5 +34,9 @@
 新增验证覆盖用户原始错误、HTTP/RPC 失败、成功业务 JSON、详情折叠、取消和操作结果未知；复用账号交互、侧栏窄窗口及大字号测试。Flutter 回归工作流现在也监听常规 UI 和 Dart 客户端源码、测试及依赖锁文件，并在 Windows 上运行错误展示、账号、字体和侧栏测试。
 
 本地 `cargo test --locked -p dsh-llm-deepseek --lib` 的 122 项测试通过，包括真实 HTTP 200 Connect 流结束帧的 16 种错误码、真实 HTTP 400、未知码、凭据脱敏、旧工具 schema 和限额规则。产品与打包相关的 22 项检查通过，YAML、测试文件引用及文档链接检查通过。当前环境没有可执行的 Flutter SDK，Dart/Flutter 的执行结果由远程 CI 验证，不能将上述本地检查算作 Flutter 测试通过。
+
+源码 `483b99637db0fe194e3510e00bb1a62b8857978c` 的 [Windows CI](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37183661041/job/111381072002) 已完整成功：完整 Dart 客户端及七个桌面测试文件的步骤通过，严格图标金图通过，日志保存与作业终态成功。同次运行的 Intel Mac 和 ARM Mac 严格金图也通过。此结论不包含用户机器的实际字体视觉复核，也不代表发布了新的安装包。
+
+同次 [完整 Flutter 回归](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37183661041/job/111381071926) 的 Dart 客户端测试、完整 Flutter 测试和静态分析均通过。
 
 上游 `dsh-v0.2.1-alpha.1` 的源码对照、开发优先级和验收要求见 [上游评估](upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)。源码修复的验证状态和新安装包是否已经发布应分别核对；r6 安装包不会随 main 的源码修改而改变。

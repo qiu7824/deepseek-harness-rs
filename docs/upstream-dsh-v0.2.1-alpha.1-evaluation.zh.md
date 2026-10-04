@@ -28,6 +28,8 @@ Rust 已有 [`dsh-typert-protocol`](../crates/core/typert-protocol/src/lib.rs)�
 
 因此官方网页、ui-chat、插件管理和 Mods UI 均不能作为“拷贝构建资源即可升级”的工作。P0 应从实际构建得到的模块入口、导出及 Remote 描述清单出发，与正式 Rust dispatch、事件流、取消、会话身份和错误信封对照；本轮未生成该清单，不报告推测出的精确端点数量。保留 Rust 的分页、阅读锚点、实时缓冲、附件所属会话、凭据隔离和源项目只读约束。
 
+知识库等 Rust 独有入口还需在新客户端中保留并适配，不能因官方界面没有同名模块而删除现有能力。
+
 ## 分阶段交付与验收
 
 | 优先级与阶段 | 可独立交付的工作 | 通过条件 |
@@ -48,6 +50,6 @@ Rust 已有 [`dsh-typert-protocol`](../crates/core/typert-protocol/src/lib.rs)�
 - 官方部署、统计和性能：[public URL](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/bundle/web-app/src/public-url.ts)；[activity/usage](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/client/ui-chat/src/client/apply.ts)；[列表让出调度](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/api/session-controller/src/list.ts)；[登录网络提示](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/client/ui-settings-account/src/client/SignInDialog.tsx)。
 - Rust 基线：[创造预设](../config/agent-presets/cordis/preset.yml)、[Web 草稿和统计](../web/dist/plugins/ui-conversation.js)、[客户端发现](../crates/host/dsh-host/src/client_plugins.rs)、[纯 Web 安装边界](../crates/host/dsh-cli/src/native_plugin.rs)、[会话目录与元数据](../crates/session/session-persistence-jsonl/src/index.rs)、[投影缓存](../crates/session/session-projection-cache/src/index.rs)、[账号请求边界](../web/dist/plugins/ui-settings-models.js)。
 - 桌面与自动化：[官方 Desktop Host](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/apps/desktop-host/src/index.ts)、[官方 Web 组合](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/bundle/web-app/cordis.patch.yml)、[官方提醒子代理拒绝](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/schedule/tool-schedule/src/index.ts)；Rust [Flutter 端口配置/启动](../apps/desktop_flutter/lib/src/preferences.dart#L147)、[launcher 默认端口](../crates/host/dsh-launcher/src/main.rs#L50)、[可选提醒的注册和旧记录提示](../crates/schedule/schedule/src/host_plugin.rs#L90)、[默认停用配置](../crates/host/dsh-host/src/client_plugins.rs#L163)。
-- 本轮 [Windows Flutter 问题排查与源码修复](windows-flutter-regressions-2026-10-04.zh.md) 已完成 122 项后端测试、22 项产品/打包合同的本地验证；Flutter CI、实机字体与真实模型服务复验仍待完成。r6 标签对应的安装包不会因后续 main 源码修改而更新。本次未使用账号凭据重放 Devin / Opus 5.5 请求，错误分类/显示修复不代表外部服务恢复。
+- 本轮 [Windows Flutter 问题排查与源码修复](windows-flutter-regressions-2026-10-04.zh.md) 已完成 122 项后端测试、22 项产品/打包合同的本地验证；Windows CI 的完整 Dart 客户端、七组桌面回归及三个平台的严格图标金图通过；完整 Flutter 测试和静态分析也已通过。实机字体与真实模型服务复验仍待完成。r6 标签对应的安装包不会因后续 main 源码修改而更新。本次未使用账号凭据重放 Devin / Opus 5.5 请求，错误分类/显示修复不代表外部服务恢复。
 
 桌面端口与自动化模式的独立源码审阅已补入；模式组合仍需 E2E，桌面端口仍需 Windows 实际验证。未来实现、编译验证、跨端交互及公开下载均需各自留证，评估文档不替代发布验收。

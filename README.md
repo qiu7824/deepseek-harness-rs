@@ -12,7 +12,7 @@ DeepSeek Harness Rust 是 DeepSeek Harness Host 的 Rust 迁移实现。它使�
 
 跨版本适配与未完成项见 [v0.1.7-rc.2 评估](docs/upstream-v0.1.7-rc.2-evaluation.zh.md)及[更新计划](docs/plans/更新计划.md)。
 
-官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[Windows Flutter 本轮源码修复](docs/windows-flutter-regressions-2026-10-04.zh.md)的桌面验证待完成，现有 r6 安装包仍对应原始标签源码。
+官方 [dsh-v0.2.1-alpha.1 源码评估](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)列明已覆盖范围、协议差异和 P0/P1 验收计划；实验 Claude Code Mods 与上游 Web 适配仍待分项开发。[Windows Flutter 本轮源码修复](docs/windows-flutter-regressions-2026-10-04.zh.md)已通过 Windows 回归，实机字体和模型服务复验待完成；现有 r6 安装包仍对应原始标签源码。
 
 Rust 版本独立维护分页、超长对话窗口、上下文跳转、原生启动器和主题效果。版本号标识 Rust 发布线，不表示与 Node 版本逐项或磁盘格式完全相同。
 
