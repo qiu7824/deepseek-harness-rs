@@ -142,8 +142,11 @@ void main() {
     });
     tearDown(() => HttpOverrides.global = previousHttpOverrides);
 
-    test('two starts allocate distinct ports while 58080 remains occupied', () async {
-      final occupied = await HttpServer.bind(InternetAddress.loopbackIPv4, 58080);
+    test('two starts allocate distinct ports while an unrelated service is listening', () async {
+      // Fixed ports can be unavailable on Windows. Bind a real foreign service
+      // on an OS-assigned port so this ownership test stays portable.
+      final occupied = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final foreignPort = occupied.port;
       occupied.listen((request) async {
         await request.drain<void>();
         request.response.write('foreign-service');
@@ -154,7 +157,7 @@ void main() {
       final launched = await Future.wait([hosts.launch(), hosts.launch()]);
       final ports = launched.map((host) => Uri.parse(host.address).port).toSet();
       expect(ports, hasLength(2));
-      expect(ports, isNot(contains(58080)));
+      expect(ports, isNot(contains(foreignPort)));
       expect(ports, isNot(contains(0)));
       expect(launched.map((host) => host.pid).toSet(),
           hosts.processes.map((process) => process.pid).toSet());
@@ -166,7 +169,7 @@ void main() {
       }
       final client = HttpClient();
       try {
-        final request = await client.getUrl(Uri.parse('http://127.0.0.1:58080'));
+        final request = await client.getUrl(Uri.parse('http://127.0.0.1:$foreignPort'));
         expect(await utf8.decoder.bind(await request.close()).join(), 'foreign-service');
       } finally {
         client.close(force: true);
@@ -467,6 +470,13 @@ void main() {
 
     test('first manual start carries unassigned workspace drafts to its actual URL', () async {
       final hosts = await fixture();
+      // Manual startup still requests an explicit nonzero port. Ask the OS for
+      // an allowed port instead of assuming the historical 58080 is bindable.
+      final reservation = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = reservation.port;
+      expect(port, greaterThan(0));
+      await reservation.close();
+      final address = 'http://127.0.0.1:$port';
       final prefs = DesktopPreferences(
         executable: hosts.executable,
         writer: (_) async {},
@@ -477,7 +487,7 @@ void main() {
       };
       final controller = DesktopController(
         prefs,
-        hostProcessStarter: hosts.starter(port: 58080),
+        hostProcessStarter: hosts.starter(port: port),
         hostLogDirectory: Directory(p.join(hosts.directory.path, 'logs')),
         clientFactory: (_) => api,
       );
@@ -487,14 +497,14 @@ void main() {
       final originalKey = controller.draftScopeKey;
       // Match the settings dialog's mutations before its Start action.
       prefs.automaticHost = false;
-      prefs.address = 'http://127.0.0.1:58080';
+      prefs.address = address;
       await controller.startHost();
       await Future<void>.delayed(Duration.zero);
       controller.targetWorkspace('one');
       expect(controller.draft, 'before choosing a manual service');
       expect(controller.draftScopeKey, isNot(originalKey));
       expect(prefs.drafts[originalKey], 'before choosing a manual service');
-      expect(prefs.ownedHost!.address, 'http://127.0.0.1:58080');
+      expect(prefs.ownedHost!.address, address);
       expect(prefs.automaticHost, isFalse);
       expect(hosts.processes, hasLength(1));
     });
