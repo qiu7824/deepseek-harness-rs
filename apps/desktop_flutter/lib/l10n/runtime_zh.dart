@@ -69,7 +69,18 @@ abstract final class DshRuntimeZh {
   static String hostNotReady({required int processId}) =>
       '服务进程 $processId 尚未就绪，请检查服务日志或端口占用。';
   static String hostExitedBeforeReady(int exitCode) =>
-      '本机服务在启动完成前退出（退出码 $exitCode），请检查服务日志。';
+      '本机服务在启动完成前退出（退出码 $exitCode）。';
+  static String hostStartupFailed(Object error) => '无法启动本机服务：$error';
+  static String hostStartupLogLocation(String path) => '服务日志路径：$path';
+  static const hostStartupHomeInUse =
+      '本机数据目录正在被其他 Harness 实例使用。请关闭对应的旧服务后重试。';
+  static const hostStartupPermissionDenied =
+      '本机服务无法读写启动所需的文件或目录，请检查当前用户的访问权限。';
+  static const hostStartupReadinessFailed =
+      '本机服务无法发布启动完成信息，请展开详情查看具体原因。';
+  static const hostStartupLogDetails = '服务日志中的原因：';
+  static const hostStartupStderrDetails = '启动错误输出：';
+  static const hostStartupStdoutDetails = '启动输出：';
   static String voiceStartFailed({required Object? error}) => '无法启动语音识别：$error';
   static String voiceRecognizerUnavailable({required Object? detail}) =>
       'Windows 语音识别不可用，请检查麦克风和语音语言包（$detail）。';

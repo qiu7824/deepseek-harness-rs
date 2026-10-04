@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/design/primitives.dart';
+import 'package:dsh_desktop/design/error.dart';
+import 'package:dsh_desktop/l10n/runtime_zh.dart';
 import 'package:dsh_desktop/src/app.dart';
 import 'package:dsh_desktop/src/controller.dart';
 import 'package:dsh_desktop/src/preferences.dart';
@@ -57,6 +59,15 @@ class HostFixture {
     logDirectory: Directory(p.join(directory.path, 'logs')),
     processStarter: starter(mode: mode, fakePid: fakePid),
   );
+
+  Future<HostStartupException> failure(String mode) async {
+    try {
+      await launch(mode: mode);
+    } on HostStartupException catch (error) {
+      return error;
+    }
+    throw StateError('The failing fixture unexpectedly became ready.');
+  }
 
   HostProcessStarter starter({String mode = 'normal', int fakePid = 1, int port = 0}) =>
     (executable, arguments, _) async {
@@ -187,7 +198,9 @@ void main() {
       final original = await hosts.launch();
       await expectLater(
         hosts.launch(mode: 'wrong-pid', fakePid: original.pid),
-        throwsFormatException,
+        throwsA(isA<HostStartupException>().having(
+          (error) => error.cause, 'cause', isA<FormatException>(),
+        )),
       );
       expect(await HostLauncher.reusable(original, hosts.executable), isNotNull);
       expect(await hosts.processes.last.exitCode.timeout(const Duration(seconds: 5)), isNotNull);
@@ -196,7 +209,11 @@ void main() {
     for (final mode in ['malformed', 'oversized', 'wrong-url', 'wrong-instance', 'rpc-wrong-pid']) {
       test('invalid readiness $mode fails and cleans up only its child', () async {
         final hosts = await fixture();
-        await expectLater(hosts.launch(mode: mode), throwsFormatException);
+        await expectLater(hosts.launch(mode: mode), throwsA(
+          isA<HostStartupException>().having(
+            (error) => error.cause, 'cause', isA<FormatException>(),
+          ),
+        ));
         expect(await hosts.processes.single.exitCode.timeout(const Duration(seconds: 5)), isNotNull);
         expect(await File(hosts.readinessPaths.single).parent.exists(), isFalse);
       });
@@ -206,7 +223,9 @@ void main() {
       final hosts = await fixture();
       await expectLater(
         hosts.launch(mode: 'timeout', timeout: const Duration(milliseconds: 300)),
-        throwsStateError,
+        throwsA(isA<HostStartupException>().having(
+          (error) => error.cause, 'cause', isA<StateError>(),
+        )),
       );
       expect(await hosts.processes.single.exitCode.timeout(const Duration(seconds: 5)), isNotNull);
       expect(await File(hosts.readinessPaths.single).parent.exists(), isFalse);
@@ -215,9 +234,107 @@ void main() {
     test('a child that exits before readiness fails promptly', () async {
       final hosts = await fixture();
       final watch = Stopwatch()..start();
-      await expectLater(hosts.launch(mode: 'exit'), throwsStateError);
+      final failure = await hosts.failure('exit');
+      expect(failure.exitCode, 23);
+      expect(failure.cause, isA<StateError>());
+      expect(failure.toString(), isNot(contains('Bad state:')));
+      expect(DshError.describe(failure).details, contains(failure.logFile));
       expect(watch.elapsed, lessThan(const Duration(seconds: 4)));
       expect(await hosts.processes.single.exitCode, 23);
+    });
+
+    test('early stderr is retained when the Host never creates its log', () async {
+      final hosts = await fixture();
+      final failure = await hosts.failure('early-stderr');
+      expect(failure.exitCode, 1);
+      expect(failure.diagnostics, contains('--ready-file parent directory'));
+      expect(failure.diagnostics, contains('路径错误中文🙂'));
+      for (final error in <Object>[failure, failure.toString()]) {
+        expect(DshError.describe(error).message, DshRuntimeZh.hostStartupReadinessFailed);
+      }
+      expect(p.isAbsolute(failure.logFile), isTrue);
+      expect(failure.logFile, startsWith(p.join(hosts.directory.path, 'logs')));
+      expect(await File(failure.logFile).exists(), isFalse);
+      expect(DshError.describe(failure.toString()).details, contains(failure.logFile));
+      expect(await File(hosts.readinessPaths.single).parent.exists(), isFalse);
+    });
+
+    test('early stdout also explains a child failure', () async {
+      final hosts = await fixture();
+      final failure = await hosts.failure('early-stdout');
+      expect(failure.diagnostics, contains('startup stdout-only failure 中文🙂'));
+      expect(DshError.describe(failure).message,
+          DshRuntimeZh.hostExitedBeforeReady(1));
+    });
+
+    test('ordinary stdout cannot become a trusted failure summary', () async {
+      final hosts = await fixture();
+      final failure = await hosts.failure('stdout-fake-home-lock');
+      for (final error in <Object>[failure, failure.toString()]) {
+        final description = DshError.describe(error);
+        expect(description.message, DshRuntimeZh.hostExitedBeforeReady(1));
+        expect(description.outcomeUnknown, isFalse);
+        expect(description.details, contains('该数据目录正在使用'));
+      }
+    });
+
+    test('an unreadable log preserves the original stderr and exit cause', () async {
+      final hosts = await fixture();
+      final failure = await hosts.failure('unreadable-log');
+      expect(failure.exitCode, 1);
+      expect(failure.cause, isA<StateError>());
+      expect(failure.diagnostics, contains('desktop stdio redirection failed'));
+      expect(failure.diagnostics, contains('Access is denied. (os error 5)'));
+      expect(DshError.describe(failure).details, contains(failure.logFile));
+      expect(DshError.describe(failure).message,
+          DshRuntimeZh.hostStartupPermissionDenied);
+      expect(await Directory(failure.logFile).exists(), isTrue);
+    });
+
+    test('redirected Host log has priority and includes supplementary stderr', () async {
+      final hosts = await fixture();
+      final failure = await hosts.failure('log-startup-error');
+      expect(failure.exitCode, 1);
+      expect(failure.diagnostics, contains('该数据目录正在使用'));
+      expect(failure.diagnostics, contains('additional startup stderr'));
+      expect(failure.diagnostics.indexOf('该数据目录正在使用'),
+          lessThan(failure.diagnostics.indexOf('additional startup stderr')));
+      for (final error in <Object>[failure, failure.toString()]) {
+        expect(DshError.describe(error).message, DshRuntimeZh.hostStartupHomeInUse);
+      }
+    });
+
+    for (final mode in ['exit-large-tail', 'log-large-tail', 'exit-malformed-tail']) {
+      test('$mode retains final Unicode evidence within the byte limit', () async {
+        final hosts = await fixture();
+        final failure = await hosts.failure(mode);
+        expect(failure.exitCode, 1);
+        expect(utf8.encode(failure.diagnostics).length,
+            lessThanOrEqualTo(HostLauncher.startupDiagnosticByteLimit));
+        expect(failure.diagnostics, isNot(contains('discard-')));
+        if (mode != 'exit-malformed-tail') {
+          expect(failure.diagnostics, isNot(contains('\uFFFD')));
+        }
+        expect(failure.diagnostics, contains(mode == 'log-large-tail'
+            ? '该数据目录正在使用'
+            : 'final stderr 中文🙂 after large output'));
+        if (mode == 'log-large-tail') {
+          expect(failure.diagnostics.length, greaterThan(500));
+          for (final error in <Object>[failure, failure.toString()]) {
+            expect(DshError.describe(error).message, DshRuntimeZh.hostStartupHomeInUse);
+            expect(DshError.describe(error).details, contains(failure.logFile));
+          }
+        }
+      });
+    }
+
+    test('exit diagnostics do not wait indefinitely for inherited pipes', () async {
+      final hosts = await fixture();
+      final watch = Stopwatch()..start();
+      final failure = await hosts.failure('exit-open-pipes');
+      expect(failure.exitCode, 1);
+      expect(failure.diagnostics, contains('descendant keeps pipes open'));
+      expect(watch.elapsed, lessThan(const Duration(seconds: 4)));
     });
 
     test('normal child remains available after its actual Dart parent exits', () async {

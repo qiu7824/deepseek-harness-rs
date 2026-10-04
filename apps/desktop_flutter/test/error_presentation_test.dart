@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/design/error.dart';
 import 'package:dsh_desktop/l10n/zh.dart';
+import 'package:dsh_desktop/l10n/runtime_zh.dart';
+import 'package:dsh_desktop/src/preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -44,7 +46,79 @@ const rejectionMessage = 'Request rejected (trace ID: fixture-trace)';
 String devinMessage({String primary = rejectionMessage, String nativeCode = 'invalid_argument'}) =>
     '$primary\n[devin-diagnostic:${jsonEncode(devinSummary())}] [$nativeCode]';
 
+class SerializedException implements Exception {
+  SerializedException(this.text);
+  final String text;
+  @override
+  String toString() => text;
+}
+
+HostStartupException startupFailure() => HostStartupException(
+  message: DshRuntimeZh.hostStartupHomeInUse,
+  cause: StateError(DshRuntimeZh.hostExitedBeforeReady(1)),
+  exitCode: 1,
+  logFile: r'C:\Users\中文 用户\AppData\Local\DeepSeek Harness Desktop\host-logs\startup.log',
+  diagnostics: '该数据目录正在使用，请先关闭其它 Harness 实例\n'
+      'api_key=private-startup-key\nAuthorization: Bearer private-startup-token\n'
+      'HTTP_PROXY=http://user:private-proxy-password@example.test\n'
+      '${jsonEncode({'startupRawDiagnostic': '长日志中文🙂' * 300})}',
+);
+
 void main() {
+  test('startup Exception objects and stored envelopes share a short actual cause', () {
+    final failure = startupFailure();
+    expect(failure.diagnostics.length, greaterThan(500));
+    expect(failure.cause, isA<StateError>());
+    final envelope = object(jsonDecode(failure.toString()));
+    expect(envelope['kind'], 'error');
+    expect(object(envelope['error'])['code'], 'host-startup');
+    for (final error in <Object>[failure, failure.toString()]) {
+      final description = DshError.describe(error);
+      expect(description.code, 'host-startup');
+      expect(description.message, DshRuntimeZh.hostStartupHomeInUse);
+      expect(description.message.length, lessThan(500));
+      expect(description.details, contains(failure.logFile));
+      expect(description.details, contains('startupRawDiagnostic'));
+      expect(description.details, contains('exit code: 1'));
+      expect(description.details, isNot(contains('private-startup-key')));
+      expect(description.details, isNot(contains('private-startup-token')));
+      expect(description.details, isNot(contains('private-proxy-password')));
+    }
+  });
+
+  test('Exception toString business JSON and malformed startup declarations stay untrusted', () {
+    for (final value in [
+      {'ok': true, 'message': 'ordinary result', 'code': 'host-startup'},
+      {'code': 'host-startup', 'message': 'ordinary direct object', 'details': {}},
+      {'kind': 'error', 'error': {
+        'code': 'host-startup', 'message': 'invalid startup details',
+        'details': {'logFile': 7, 'diagnostics': {}, 'exitCode': '1'},
+      }},
+    ]) {
+      final description = DshError.describe(SerializedException(jsonEncode(value)));
+      expect(description.message, DshZh.unknownError);
+      expect(description.code, isNull);
+    }
+  });
+
+  testWidgets('startup path and long redacted JSON are shown only in folded details', (tester) async {
+    final failure = startupFailure();
+    await tester.pumpWidget(ShadApp(home: Scaffold(body: DshErrorView(error: failure.toString()))));
+    expect(find.text(DshRuntimeZh.hostStartupHomeInUse), findsOneWidget);
+    expect(find.textContaining(failure.logFile), findsNothing);
+    expect(find.textContaining('startupRawDiagnostic'), findsNothing);
+    expect(find.byType(SelectableText), findsNothing);
+    await tester.tap(find.text(DshZh.details));
+    await tester.pumpAndSettle();
+    final details = tester.widget<SelectableText>(find.byType(SelectableText)).data!;
+    expect(details, contains(failure.logFile));
+    expect(details, contains('startupRawDiagnostic'));
+    expect(details, isNot(contains('private-startup-key')));
+    expect(details, isNot(contains('private-startup-token')));
+    expect(details, isNot(contains('private-proxy-password')));
+    expect(tester.takeException(), isNull);
+  });
+
   test('live and reopened Devin failures fold only the diagnostic appendix', () {
     final fullMessage = devinMessage();
     final reason = {

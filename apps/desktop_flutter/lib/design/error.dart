@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 import '../l10n/zh.dart';
+import '../l10n/runtime_zh.dart';
 import 'primitives.dart';
 import 'motion.dart';
 
@@ -39,6 +40,7 @@ class DshError {
     final raw = error.toString();
     final failure =
         DshErrorInfo.tryParse(structured?.message ?? error) ??
+        (error is Exception ? _startupExceptionEnvelope(raw) : null) ??
         (structured == null
             ? null
             : DshErrorInfo.tryParse({
@@ -46,6 +48,8 @@ class DshError {
                 'message': structured.message,
                 'details': structured.details,
               }, errorObject: true));
+    final startup = failure != null && _isStartupEnvelope(failure)
+        ? failure : null;
     // Legacy state stores exceptions as strings; retain their error code while
     // new callers keep the exception itself.
     final code =
@@ -77,13 +81,14 @@ class DshError {
     }
     final plainError = structured != null || (error is String && !serializedJson);
     final recognizedFailure = failure != null || structured != null || (plainError && code != null);
-    final sourceMessage = recognizedFailure
+    final sourceMessage = startup != null ? originalMessage : recognizedFailure
         ? _primaryDevinMessage(
             originalMessage,
             legacyCode: failure == null && structured == null ? code : null,
           )
         : originalMessage;
     final providerUnavailable =
+        startup == null &&
         (failure != null || plainError) &&
         !const {'timeout', 'TIMEOUT', 'http-408', 'http-504'}.contains(code) &&
         RegExp(
@@ -92,7 +97,8 @@ class DshError {
           dotAll: true,
         ).hasMatch(sourceMessage);
     final unknown =
-        structured?.outcomeUnknown == true || raw.contains('操作结果尚未确认');
+        structured?.outcomeUnknown == true ||
+        (startup == null && raw.contains('操作结果尚未确认'));
     final cancelled = const {
       'cancelled',
       'canceled',
@@ -164,12 +170,34 @@ class DshError {
           if (code != null) 'code: $code',
           if (status != null) 'status: $status',
           if (traceId != null) 'trace ID: $traceId',
-          raw,
+          if (startup == null) raw,
+          if (startup != null) ...[
+            startup.message,
+            if (startup.details['exitCode'] != null)
+              'exit code: ${startup.details['exitCode']}',
+            DshRuntimeZh.hostStartupLogLocation(startup.details['logFile'] as String),
+            startup.details['diagnostics'] as String,
+          ],
           if (structured != null && structured.details.isNotEmpty)
             const JsonEncoder.withIndent('  ').convert(structured.details),
         ].join('\n'),
       ),
     );
+  }
+
+  static bool _isStartupEnvelope(DshErrorInfo failure) =>
+      failure.envelope['kind'] == 'error' &&
+      failure.envelope['error'] is Map &&
+      failure.code == 'host-startup' &&
+      failure.details['logFile'] is String &&
+      failure.details['diagnostics'] is String &&
+      (failure.details['exitCode'] == null || failure.details['exitCode'] is int);
+
+  static DshErrorInfo? _startupExceptionEnvelope(String raw) {
+    // Exceptions may serialize the declared error envelope; do not interpret
+    // their arbitrary toString JSON as an error or promote business metadata.
+    final failure = DshErrorInfo.tryParse(raw);
+    return failure != null && _isStartupEnvelope(failure) ? failure : null;
   }
 
   /// Only a bounded, complete Rust request-shape appendix is presentation-only.

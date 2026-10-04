@@ -3,6 +3,7 @@ import '../l10n/runtime_zh.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
@@ -237,7 +238,163 @@ typedef HostProcessStarter = Future<Process> Function(
   String executable, List<String> arguments, String workingDirectory,
 );
 
+/// Retains the original startup failure and its bounded local evidence.
+class HostStartupException implements Exception {
+  const HostStartupException({
+    required this.message,
+    required this.cause,
+    required this.logFile,
+    required this.diagnostics,
+    this.exitCode,
+  });
+
+  final String message, logFile, diagnostics;
+  final Object cause;
+  final int? exitCode;
+
+  @override
+  String toString() => jsonEncode({
+    'kind': 'error',
+    'error': {
+      'code': 'host-startup',
+      'message': message,
+      'details': {
+        'logFile': logFile,
+        'diagnostics': diagnostics,
+        'exitCode': exitCode,
+      },
+    },
+  });
+}
+
+/// Fixed-size byte ring; stream chunks can be large or split UTF-8 characters.
+class _StartupByteTail {
+  _StartupByteTail(int capacity) : _bytes = Uint8List(capacity);
+  final Uint8List _bytes;
+  int _start = 0, _length = 0;
+
+  void add(List<int> chunk) {
+    final capacity = _bytes.length;
+    if (chunk.length >= capacity) {
+      _bytes.setRange(0, capacity, chunk, chunk.length - capacity);
+      _start = 0;
+      _length = capacity;
+      return;
+    }
+    final end = (_start + _length) % capacity;
+    final first = chunk.length < capacity - end
+        ? chunk.length : capacity - end;
+    _bytes.setRange(end, end + first, chunk);
+    _bytes.setRange(0, chunk.length - first, chunk, first);
+    final nextLength = _length + chunk.length;
+    if (nextLength > capacity) {
+      _start = (_start + nextLength - capacity) % capacity;
+      _length = capacity;
+    } else {
+      _length = nextLength;
+    }
+  }
+
+  String get text {
+    final ordered = Uint8List(_length);
+    final first = _length < _bytes.length - _start
+        ? _length : _bytes.length - _start;
+    ordered.setRange(0, first, _bytes, _start);
+    ordered.setRange(first, _length, _bytes);
+    // A byte bound may cut off the beginning of one UTF-8 code point.
+    var offset = 0;
+    while (offset < ordered.length && (ordered[offset] & 0xc0) == 0x80) {
+      offset++;
+    }
+    return utf8.decode(ordered.sublist(offset), allowMalformed: true);
+  }
+}
+
+class _StartupStreamCapture {
+  _StartupStreamCapture(Stream<List<int>> stream, int limit)
+      : _tail = _StartupByteTail(limit) {
+    stream.listen(
+      (chunk) => _tail?.add(chunk),
+      onError: (Object _) => _complete(),
+      onDone: _complete,
+    );
+  }
+  _StartupByteTail? _tail;
+  final _completed = Completer<void>();
+  Future<void> get done => _completed.future;
+  String get text => _tail?.text ?? '';
+  void discard() => _tail = null;
+  void _complete() {
+    if (!_completed.isCompleted) _completed.complete();
+  }
+}
+
 class HostLauncher {
+  @visibleForTesting
+  static const startupDiagnosticByteLimit = 8192;
+
+  static Future<String> _logTail(String path) async {
+    RandomAccessFile? reader;
+    try {
+      reader = await File(path).open();
+      final length = await reader.length();
+      await reader.setPosition(length > startupDiagnosticByteLimit
+          ? length - startupDiagnosticByteLimit : 0);
+      final tail = _StartupByteTail(startupDiagnosticByteLimit)
+        ..add(await reader.read(startupDiagnosticByteLimit));
+      return tail.text.replaceAll('dsh: desktop Host starting\n', '').trim();
+    } catch (_) {
+      return '';
+    } finally {
+      try { await reader?.close(); } catch (_) {}
+    }
+  }
+
+  static String _startupDiagnostics(String log, String stderr, String stdout) {
+    var remaining = startupDiagnosticByteLimit;
+    final sections = <String>[];
+    for (final entry in [
+      (DshRuntimeZh.hostStartupLogDetails, log),
+      (DshRuntimeZh.hostStartupStderrDetails, stderr),
+      (DshRuntimeZh.hostStartupStdoutDetails, stdout),
+    ]) {
+      final content = entry.$2.trim();
+      if (content.isEmpty) continue;
+      final header = '${sections.isEmpty ? '' : '\n\n'}${entry.$1}\n';
+      final headerBytes = utf8.encode(header).length;
+      if (remaining <= headerBytes) break;
+      final tail = _StartupByteTail(remaining - headerBytes)
+        ..add(utf8.encode(content));
+      final section = header + tail.text;
+      sections.add(section);
+      remaining -= utf8.encode(section).length;
+    }
+    return sections.join();
+  }
+
+  static String _startupMessage(Object error, String log, String stderr) {
+    // Only exact Host/native failure signatures from its log or stderr may
+    // become the summary. Ordinary stdout is retained solely as diagnostics.
+    final lines = [...log.split('\n'), ...stderr.split('\n')]
+        .map((line) => line.trim());
+    if (lines.any((line) => line == '该数据目录正在使用，请先关闭其它 Harness 实例')) {
+      return DshRuntimeZh.hostStartupHomeInUse;
+    }
+    final denied = RegExp(
+      r'^(?:(?:dsh: )?(?:desktop stdio redirection failed: |readiness publication failed: ).+|.*(?:settings\.json|\.runtime-paths\.json|\.dsh-home-redirect\.json): .+|Access is denied\.|Permission denied|拒绝访问。|权限被拒绝) \(os error (?:5|13)\)$',
+    );
+    if (lines.any(denied.hasMatch)) {
+      return DshRuntimeZh.hostStartupPermissionDenied;
+    }
+    if (lines.any((line) => line.startsWith('dsh: readiness publication failed: ') ||
+        line.startsWith('dsh: --ready-file '))) {
+      return DshRuntimeZh.hostStartupReadinessFailed;
+    }
+    return error is StateError ? error.message.toString()
+        : error is FormatException ? error.message.toString()
+        : DshRuntimeZh.hostStartupFailed(error);
+  }
+
   static String? bundledAt(String executableDir) {
     for (final host in DesktopPaths.bundledHostRoots(
       executableDir,
@@ -346,6 +503,7 @@ class HostLauncher {
     Process? process;
     Future<int>? exited;
     int? exitCode;
+    _StartupStreamCapture? stdout, stderr;
     // A first start prepares the plugin profile before listening, which can
     // take several seconds on slow disks; poll quickly within one deadline.
     try {
@@ -368,8 +526,8 @@ class HostLauncher {
         exitCode = value;
         return value;
       });
-      unawaited(process.stdout.drain<void>().catchError((Object _) {}));
-      unawaited(process.stderr.drain<void>().catchError((Object _) {}));
+      stdout = _StartupStreamCapture(process.stdout, startupDiagnosticByteLimit);
+      stderr = _StartupStreamCapture(process.stderr, startupDiagnosticByteLimit);
       final deadline = DateTime.now().add(readinessTimeout);
       while (DateTime.now().isBefore(deadline)) {
         if (exitCode != null) {
@@ -434,14 +592,35 @@ class HostLauncher {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
       throw StateError(DshRuntimeZh.hostNotReady(processId: process.pid));
-    } catch (_) {
+    } catch (error, stack) {
       // Use the original attached child's handle, never a decoded or saved PID.
       try {
         if (exitCode == null) process?.kill();
         await exited?.timeout(const Duration(seconds: 5));
       } catch (_) {}
-      rethrow;
+      // exitCode can arrive before the final pipe data. Descendants can also
+      // retain inherited pipes, so never wait for EOF without a short bound.
+      try {
+        await Future.wait([
+          if (stdout != null) stdout.done,
+          if (stderr != null) stderr.done,
+        ]).timeout(const Duration(milliseconds: 200));
+      } catch (_) {}
+      final logTail = await _logTail(logFile)
+          .timeout(const Duration(milliseconds: 250), onTimeout: () => '');
+      final diagnostics = _startupDiagnostics(
+        logTail, stderr?.text ?? '', stdout?.text ?? '',
+      );
+      final message = _startupMessage(error, logTail, stderr?.text ?? '');
+      Error.throwWithStackTrace(HostStartupException(
+        message: message, cause: error, logFile: logFile,
+        diagnostics: diagnostics, exitCode: exitCode,
+      ), stack);
     } finally {
+      // Continue consuming both pipes after readiness/failure, without storing
+      // normal runtime output or output from a descendant retaining a pipe.
+      stdout?.discard();
+      stderr?.discard();
       await directory.delete(recursive: true).catchError((Object _) => directory);
     }
   }
