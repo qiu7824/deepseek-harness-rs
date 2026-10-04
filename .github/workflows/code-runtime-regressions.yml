@@ -1,0 +1,99 @@
+name: Node CodeRuntime regression diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/code-runtime-regressions.yml
+      - crates/code-runtime/code-runtime-node/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: "2"
+      PYTHONDONTWRITEBYTECODE: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows
+            arch: x86_64
+          - os: macos-15-intel
+            platform: macos
+            arch: x86_64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with: { toolchain: 1.97.1, components: rustfmt }
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          cache-on-failure: true
+      - name: Canonical test resources and actual Bash
+        shell: bash
+        run: |
+          python tools/run_release_regression.py --log "$RUNNER_TEMP/code-runtime-regression-logs/test-resources.log" -- python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
+          root.mkdir(parents=True, exist_ok=True)
+          root = root.resolve(strict=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
+                  stream.write(f'{key}={root}\n')
+          print(json.dumps({'logicalCpus': os.cpu_count(), 'cargoBuildJobs': os.environ['CARGO_BUILD_JOBS'], 'testTempDir': str(root)}), flush=True)
+          PY
+          DSH_TEST_BASH="$BASH"
+          if [[ '${{ matrix.platform }}' == 'windows' ]]; then
+            DSH_TEST_BASH="$(cygpath -w "$BASH")"
+          fi
+          echo "DSH_TEST_BASH=$DSH_TEST_BASH" >> "$GITHUB_ENV"
+          printf 'DSH_TEST_BASH=%s\n' "$DSH_TEST_BASH" | tee -a "$RUNNER_TEMP/code-runtime-regression-logs/test-resources.log"
+      - name: Stage the pinned official Node 26.8.2 runtime
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python tools/run_release_regression.py --log "$RUNNER_TEMP/code-runtime-regression-logs/node-lock.log" -- python - <<'PY'
+          import json
+          from pathlib import Path
+          lock = json.loads(Path('tools/node_runtime_lock.json').read_text(encoding='utf-8'))
+          if lock['version'] != '26.8.2' or lock['baseUrl'] != 'https://nodejs.org/dist/v26.8.2/':
+              raise SystemExit('Node regression diagnostics require official Node 26.8.2')
+          print(json.dumps(lock, indent=2), flush=True)
+          PY
+          python tools/run_release_regression.py --log "$RUNNER_TEMP/code-runtime-regression-logs/node-stage.log" -- python tools/stage_node_runtime.py --stage "$RUNNER_TEMP/debug" --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --cache "$RUNNER_TEMP/dsh-node-cache"
+          python tools/run_release_regression.py --log "$RUNNER_TEMP/code-runtime-regression-logs/node-identity.log" -- python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root = (Path(os.environ['RUNNER_TEMP']) / 'debug/runtime/node').resolve(strict=True)
+          identity = json.loads((root / 'IDENTITY.json').read_text(encoding='utf-8'))
+          binary = root / ('node.exe' if os.name == 'nt' else 'node')
+          version = subprocess.check_output([str(binary), '--version'], text=True).strip()
+          if identity['version'] != '26.8.2' or version != 'v26.8.2':
+              raise SystemExit(f'Unexpected staged Node version: {version}; identity: {identity}')
+          with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
+              stream.write(f'{root}\n')
+          print(json.dumps({'nodePath': str(binary), 'nodeVersion': version, 'identity': identity}, indent=2), flush=True)
+          PY
+      - name: NodeRuntime library regressions
+        timeout-minutes: 25
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/code-runtime-regression-logs/node-library.log" -- cargo test --locked -p dsh-code-runtime-node --lib -- --test-threads=1
+      - name: Always preserve complete diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: code-runtime-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/code-runtime-regression-logs/
+            ${{ runner.temp }}/debug/runtime/node/IDENTITY.json
+          if-no-files-found: warn

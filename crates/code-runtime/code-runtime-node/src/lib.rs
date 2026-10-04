@@ -581,6 +581,42 @@ async fn run_one(
             })
         })
         .collect::<Vec<_>>();
+    // Prepare only trusted runtime state. Node process startup, Worker imports
+    // and parser initialization precede the model program's dispatch boundary.
+    write_frame(
+        &mut stdin,
+        &json!({
+            "type": "prepare",
+            "namespaces": namespaces,
+            "limits": {
+                "compute_ms": config.compute_ms,
+                "max_wall_ms": config.max_wall_ms,
+                "max_output_bytes": config.max_output_bytes,
+                "max_old_generation_size_mb": config.max_old_generation_size_mb,
+            },
+        }),
+    )
+    .await?;
+    let mut ready = Vec::new();
+    let read = (&mut reader)
+        .take(4097)
+        .read_until(b'\n', &mut ready)
+        .await
+        .map_err(|error| format!("code-runtime-node: readiness read failed: {error}"))?;
+    if read == 0 {
+        return Err(format!(
+            "code-runtime-node: runner exited before Worker readiness; {}",
+            stderr_tail(&child)
+        ));
+    }
+    if ready.len() > 4096 || !ready.ends_with(b"\n") {
+        return Err("code-runtime-node: invalid Worker readiness frame".into());
+    }
+    let ready: Value = serde_json::from_slice(&ready)
+        .map_err(|error| format!("code-runtime-node: invalid Worker readiness: {error}"))?;
+    if ready != json!({"type": "ready"}) {
+        return Err(format!("code-runtime-node: Worker startup failed: {ready}"));
+    }
     if request.signal.as_ref().is_some_and(|signal| signal()) {
         return Ok(failure(
             CodeRunFailureKind::Abort,
@@ -599,13 +635,6 @@ async fn run_one(
         &json!({
             "type": "run",
             "program": request.program,
-            "namespaces": namespaces,
-            "limits": {
-                "compute_ms": config.compute_ms,
-                "max_wall_ms": config.max_wall_ms,
-                "max_output_bytes": config.max_output_bytes,
-                "max_old_generation_size_mb": config.max_old_generation_size_mb,
-            },
         }),
     )
     .await?;

@@ -14,9 +14,30 @@ for (const name of ['process', 'require', 'module', 'Buffer']) {
 
 const pending = new Map();
 let nextId = 1;
+let workerPhase = 'preparing';
+let injected;
+const logs = [];
+const consoleShim = Object.freeze({ log: (...args) => logs.push(format(...args)) });
+
+function protocolFailure(message) {
+  workerPhase = 'failed';
+  parentPort.postMessage({ type: 'protocol_failure', message });
+}
 
 parentPort.on('message', (message) => {
-  if (message?.type !== 'binding_result') return;
+  if (message?.type === 'run') {
+    if (workerPhase !== 'ready' || typeof message.program !== 'string') {
+      protocolFailure('expected exactly one dispatched program');
+      return;
+    }
+    workerPhase = 'running';
+    execute(message.program).catch((error) => protocolFailure(String(error?.message ?? error)));
+    return;
+  }
+  if (message?.type !== 'binding_result' || workerPhase !== 'running') {
+    protocolFailure('unexpected worker input before or outside program dispatch');
+    return;
+  }
   const entry = pending.get(message.id);
   if (!entry) return;
   pending.delete(message.id);
@@ -135,14 +156,12 @@ function lossless(value) {
   return { has_value: true, value: cloneJson(value) };
 }
 
-(async () => {
-  const logs = [];
+async function execute(program) {
   try {
     const prefix = 'async function __dsh_program__() {\n';
     const suffix = '\n}';
-    const wrapped = stripTypeScriptTypes(prefix + workerData.program + suffix, { mode: 'strip' });
+    const wrapped = stripTypeScriptTypes(prefix + program + suffix, { mode: 'strip' });
     const code = wrapped.slice(prefix.length, wrapped.length - suffix.length);
-    const injected = bindings(workerData.namespaces);
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     const fn = new AsyncFunction(
       ...injected.globals,
@@ -150,10 +169,11 @@ function lossless(value) {
       'console',
       '\"use strict\";\n' + code,
     );
-    const consoleShim = Object.freeze({ log: (...args) => logs.push(format(...args)) });
     const value = await fn(...injected.values, ...injected.errorValues, consoleShim);
+    workerPhase = 'complete';
     parentPort.postMessage({ type: 'complete', ...lossless(value), logs, error: null });
   } catch (error) {
+    workerPhase = 'complete';
     parentPort.postMessage({
       type: 'complete', has_value: false, logs,
       error: {
@@ -162,18 +182,29 @@ function lossless(value) {
       },
     });
   }
-})().catch((error) => {
+}
+
+try {
+  injected = bindings(workerData.namespaces);
+  // Initialize the trusted TypeScript stripper without receiving or parsing
+  // model code before the Host's dispatch guard permits execution.
+  stripTypeScriptTypes('const __dsh_runtime_warmup__: number = 0;', { mode: 'strip' });
+  workerPhase = 'ready';
+  parentPort.postMessage({ type: 'ready' });
+} catch (error) {
+  workerPhase = 'failed';
   parentPort.postMessage({
-    type: 'complete', has_value: false, logs: [],
-    error: { kind: 'worker-exit', message: String(error?.message ?? error) },
+    type: 'worker_failure', message: String(error?.message ?? error),
   });
-});
+}
 `;
 
 let worker;
 let settled = false;
 let computeTimer;
 let wallTimer;
+let phase = 'unprepared';
+let computeBaseline;
 
 function updateWallBudget(paused, remaining) {
   clearTimeout(wallTimer);
@@ -219,27 +250,59 @@ function finish(message) {
 let limits;
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 input.on('line', (line) => {
+  if (settled) return;
   if (!line.trim()) return;
   let message;
   try { message = JSON.parse(line); }
   catch (error) { finish({ type: 'protocol_failure', message: String(error) }); return; }
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    finish({ type: 'protocol_failure', message: 'expected a protocol object' });
+    return;
+  }
   // Only the trusted Host stdin controls approval waits. Worker messages are
   // handled separately and cannot pause the budget; CPU limits stay active.
   if (message.type === 'approval_state') {
-    if (!worker || typeof message.paused !== 'boolean' || !Number.isSafeInteger(message.remaining_ms) || message.remaining_ms < 0 || message.remaining_ms > limits.max_wall_ms) {
+    if (phase !== 'running' || typeof message.paused !== 'boolean' || !Number.isSafeInteger(message.remaining_ms) || message.remaining_ms < 0 || message.remaining_ms > limits.max_wall_ms) {
       finish({ type: 'protocol_failure', message: 'invalid approval budget state' }); return;
     }
     if (!settled) updateWallBudget(message.paused, message.remaining_ms);
     return;
   }
   if (message.type === 'binding_result') {
-    worker?.postMessage(message);
+    if (phase !== 'running') {
+      finish({ type: 'protocol_failure', message: 'binding result before program dispatch' });
+      return;
+    }
+    worker.postMessage(message);
     return;
   }
-  if (message.type !== 'run' || worker) {
-    finish({ type: 'protocol_failure', message: 'expected exactly one run' });
+  if (message.type === 'run') {
+    if (phase !== 'ready' || typeof message.program !== 'string' || Object.keys(message).some((key) => !['type', 'program'].includes(key))) {
+      finish({ type: 'protocol_failure', message: 'expected exactly one run after readiness' });
+      return;
+    }
+    phase = 'running';
+    // Sample once at dispatch. Neither approval nor binding traffic can reset
+    // the baseline and hide compute performed by an unawaited busy loop.
+    computeBaseline = worker.performance.eventLoopUtilization();
+    updateWallBudget(false, limits.max_wall_ms);
+    computeTimer = setInterval(() => {
+      const utilization = worker.performance.eventLoopUtilization(computeBaseline);
+      if (utilization.active > limits.compute_ms) {
+        finish({
+          type: 'complete', has_value: false, logs: [],
+          error: { kind: 'timeout', message: 'compute budget exhausted' },
+        });
+      }
+    }, 25);
+    worker.postMessage({ type: 'run', program: message.program });
     return;
   }
+  if (message.type !== 'prepare' || phase !== 'unprepared' || !Array.isArray(message.namespaces) || !message.limits || typeof message.limits !== 'object' || Object.keys(message).some((key) => !['type', 'namespaces', 'limits'].includes(key))) {
+    finish({ type: 'protocol_failure', message: 'expected exactly one preparation without model code' });
+    return;
+  }
+  phase = 'preparing';
   limits = message.limits;
   // Node and the Windows AppContainer launcher need ambient OS coordinates at
   // process startup. Erase the complete environment before the untrusted
@@ -248,30 +311,31 @@ input.on('line', (line) => {
   for (const key of Object.keys(process.env)) delete process.env[key];
   worker = new Worker(WORKER_SOURCE, {
     eval: true,
-    workerData: { program: message.program, namespaces: message.namespaces },
+    workerData: { namespaces: message.namespaces },
     resourceLimits: {
       maxOldGenerationSizeMb: message.limits.max_old_generation_size_mb,
     },
   });
-  updateWallBudget(false, message.limits.max_wall_ms);
-  worker.on('online', () => {
-    computeTimer = setInterval(() => {
-      const utilization = worker.performance.eventLoopUtilization();
-      if (utilization.active > message.limits.compute_ms) {
-        finish({
-          type: 'complete', has_value: false, logs: [],
-          error: { kind: 'timeout', message: 'compute budget exhausted' },
-        });
-      }
-    }, 25);
-  });
   worker.on('message', (event) => {
-    if (event?.type === 'complete') finish(event);
-    else if (event?.type === 'binding_call') send(event);
+    if (settled) return;
+    if (event?.type === 'ready') {
+      if (phase !== 'preparing') {
+        finish({ type: 'protocol_failure', message: 'duplicate or unexpected worker readiness' });
+        return;
+      }
+      phase = 'ready';
+      send({ type: 'ready' });
+    }
+    else if (event?.type === 'complete' && phase === 'running') finish(event);
+    else if (event?.type === 'binding_call' && phase === 'running') send(event);
+    else if (event?.type === 'worker_failure' || event?.type === 'protocol_failure') finish(event);
     else finish({ type: 'protocol_failure', message: 'invalid worker message' });
   });
   worker.on('error', (error) => finish({ type: 'worker_failure', message: error.message }));
   worker.on('exit', (code) => {
     if (!settled) finish({ type: 'worker_failure', message: 'worker exited ' + code });
   });
+});
+input.on('close', () => {
+  if (!settled) finish({ type: 'protocol_failure', message: 'Host stdin closed before program completion' });
 });
