@@ -26,7 +26,7 @@ import zipfile
 
 APP_ID = "{37BA446F-D181-493B-9703-23978B3C194A}_is1"
 R8_REVISION = "da1c20992f9d66d84ee179cf1c8b00d997729df1"
-R6_REVISION = "58498fbaf12c476a0d54fbc3b98848440bd01cf0"
+R6_REVISION = "7d8bbf4d44c2d04d1b582927af35ae97b0e5c3a6"
 
 
 def digest(path: Path) -> str:
