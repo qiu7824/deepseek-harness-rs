@@ -1,0 +1,122 @@
+name: r9 Intel Mac 生命周期诊断
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/lifecycle-regressions.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  intel-lifecycle:
+    runs-on: macos-15-intel
+    timeout-minutes: 65
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: v0.1.3-alpha.38-r9
+      - name: 核验不可变 r9 测试源码与诊断工作流身份
+        id: source
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          expected = '88690a2bc2b7c0df63695e9e8fb582a1f232bd19'
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          root = Path(os.environ['RUNNER_TEMP']) / 'lifecycle-regressions'
+          root.mkdir(parents=True, exist_ok=True)
+          identity = {
+              'harnessSourceSha': os.environ['GITHUB_SHA'],
+              'checkedSourceSha': actual,
+              'expectedSourceSha': expected,
+              'checkedTag': 'v0.1.3-alpha.38-r9',
+              'runner': 'macos-15-intel',
+          }
+          (root / 'source-identity.json').write_text(json.dumps(identity, indent=2) + '\n', encoding='utf-8')
+          if actual != expected:
+              print(f'::error title=r9 source identity::Expected {expected}, checked out {actual}', flush=True)
+              sys.exit(1)
+          print(f'::notice title=r9 source identity::Checked source {actual}; diagnostic harness {identity["harnessSourceSha"]}', flush=True)
+          PY
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        id: rust
+        with: { toolchain: 1.97.1 }
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          cache-on-failure: true
+      - name: 隔离并规范测试临时目录
+        id: temp
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'dsh-tests'
+          root.mkdir(parents=True, exist_ok=True)
+          root = root.resolve(strict=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              for key in ('TEMP', 'TMP', 'TMPDIR', 'DSH_TEST_TEMP_DIR'):
+                  stream.write(f'{key}={root}\n')
+          PY
+          echo "DSH_TEST_BASH=$BASH" >> "$GITHUB_ENV"
+      - name: 01 creator_context
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 35
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/01-creator_context.log" -- cargo test --locked -p dsh-agent --test creator_context
+      - name: 02 lifecycle_failures steering
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/02-steering.log" -- cargo test --locked -p dsh-agent-loop --test lifecycle_failures steering
+      - name: 03 model_switch_notice
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/03-model_switch_notice.log" -- cargo test --locked -p dsh-agent --test model_switch_notice
+      - name: 04 lifecycle_failures model_switch
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/04-model_switch.log" -- cargo test --locked -p dsh-agent-loop --test lifecycle_failures model_switch
+      - name: 05 lifecycle_failures compaction_recovery
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/05-compaction_recovery.log" -- cargo test --locked -p dsh-agent-loop --test lifecycle_failures compaction_recovery
+      - name: 06 lifecycle_failures system_prefix
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/06-system_prefix.log" -- cargo test --locked -p dsh-agent-loop --test lifecycle_failures system_prefix
+      - name: 07 cordis plugin_setup
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/07-plugin_setup.log" -- cargo test --locked -p cordis --test plugin_setup
+      - name: 08 dsh-cordis-loader group_ownership
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/08-group_ownership.log" -- cargo test --locked -p dsh-cordis-loader --test group_ownership
+      - name: 09 dsh-agent-presets standing_tests
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.temp.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: bash
+        run: python tools/run_release_regression.py --log "$RUNNER_TEMP/lifecycle-regressions/09-standing_tests.log" -- cargo test --locked -p dsh-agent-presets standing_tests --lib
+      - name: 保存逐命令生命周期诊断日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lifecycle-regressions-macos-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lifecycle-regressions/
+          if-no-files-found: error
