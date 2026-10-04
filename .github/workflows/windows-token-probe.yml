@@ -1,0 +1,22 @@
+name: Windows 令牌 API 定点诊断
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/windows-token-probe.yml
+      - tools/windows_token_probe.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  token_probe:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 原始 Windows API 与严格测试参数
+        shell: pwsh
+        run: ./tools/windows_token_probe.ps1
