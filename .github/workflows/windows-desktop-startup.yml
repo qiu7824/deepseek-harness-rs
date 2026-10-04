@@ -1,0 +1,58 @@
+name: Windows 安装版启动诊断
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/windows-desktop-startup.yml
+      - tools/verify_windows_desktop_startup.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 下载并核对已发布的 r8 安装器与 r6 Core
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'published-desktop-baseline'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $base = 'https://github.com/qiu7824/deepseek-harness-rs/releases/download'
+          $assets = @(
+            @('v0.1.3-alpha.38-r8', 'deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe', '88287b854ba2685110ba82891f81b987543264c74345b4da6a1fdf847f5db79f'),
+            @('v0.1.3-alpha.38-r8', 'deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip', 'f1b8cc35f131e059541db4ec220f4651386dfe999fe3b30a88ba47ac342729c2'),
+            @('v0.1.3-alpha.38-r6', 'deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip', 'e2d2211e6ff343e32ad4c6f92d23dbd2260b59c42a0c54d57d125a5f37302153')
+          )
+          foreach ($asset in $assets) {
+            $path = Join-Path $root $asset[1]
+            Invoke-WebRequest -Uri "$base/$($asset[0])/$($asset[1])" -OutFile $path
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $asset[2]) {
+              throw "Published baseline checksum mismatch: $($asset[1])"
+            }
+          }
+          Expand-Archive -LiteralPath (Join-Path $root $assets[2][1]) -DestinationPath (Join-Path $root 'r6-core')
+      - name: 真实 r8 生产安装器与 GUI 冷启动基线
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'published-desktop-baseline'
+          python tools/run_release_regression.py --log "$env:RUNNER_TEMP\desktop-baseline.log" -- python tools/verify_windows_desktop_startup.py --installer "$root\deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe" --archive "$root\deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip" --workdir "$env:RUNNER_TEMP\desktop-installed-baseline" --conflict-binary "$root\r6-core\deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core\deepseek-harness-rs.exe" --require-conflict-owner --baseline-r8
+          if ($LASTEXITCODE -ne 0) { throw 'Installed r8 baseline diagnosis failed; inspect the exact case evidence' }
+      - name: 保存安装器与真实启动诊断
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-installed-r8-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/desktop-baseline.log
+            ${{ runner.temp }}/desktop-installed-baseline/**/*.log
+            ${{ runner.temp }}/desktop-installed-baseline/**/*.json
+            ${{ runner.temp }}/desktop-installed-baseline/**/*.jsonl
+          if-no-files-found: warn
