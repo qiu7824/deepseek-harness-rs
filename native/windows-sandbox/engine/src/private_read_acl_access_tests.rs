@@ -685,6 +685,8 @@ mod navigation_behavior {
         read_write_file(&token_a, &file_a)?;
 
         sync("state-b", &account_b, std::slice::from_ref(&owned_b))?;
+        let initial_b = unsafe { root_stamp(&private, &[account_b.as_ptr()], group.as_ptr()) }?;
+        let initial_b_aces = boundary_ace_evidence(&private, &account_a, &account_b, &group)?;
         for token in [&token_a, &token_b] {
             navigation_without_listing(token, &[private.clone(), common.clone()])?;
         }
@@ -693,6 +695,31 @@ mod navigation_behavior {
         // A new slot's actual allow records remain part of the boundary
         // authority. Adopt that one-time change before testing warm reuse.
         sync("state-a", &account_a, std::slice::from_ref(&owned_a))?;
+        let after_a = unsafe { root_stamp(&private, &[account_b.as_ptr()], group.as_ptr()) }?;
+        // Establish both journals against the shared boundary exactly once.
+        // No convergence loop may hide an ACL that keeps invalidating a slot.
+        sync("state-b", &account_b, std::slice::from_ref(&owned_b))?;
+        for (state, account) in [("state-a", &account_a), ("state-b", &account_b)] {
+            let journal: State = serde_json::from_slice(&std::fs::read(
+                temp.path()
+                    .join(state)
+                    .join(".sandbox/private_read_acl_state.json"),
+            )?)?;
+            let stored = journal.migrated.get(&key(&private));
+            let current = unsafe { root_stamp(&private, &[account.as_ptr()], group.as_ptr()) }?;
+            if stored != Some(&current) {
+                let current_aces = boundary_ace_evidence(&private, &account_a, &account_b, &group)?;
+                let mut diagnostic = format!(
+                    "one-time shared boundary adoption must converge: state={state}; stored={stored:?}; current={current:?}; initialB={initial_b:?}; afterA={after_a:?}; initialBACEs=[{initial_b_aces}]; currentACEs=[{current_aces}]"
+                );
+                diagnostic.truncate(1900);
+                anyhow::bail!("{diagnostic}");
+            }
+            ensure!(
+                stored == Some(&current),
+                "shared boundary adoption changed {state}"
+            );
+        }
         let new_foreign = foreign.join("created-after-reconciliation.txt");
         std::fs::write(&new_foreign, b"private")?;
         for round in 0..2 {
