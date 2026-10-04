@@ -1,4 +1,4 @@
-name: Windows 令牌 API 定点诊断
+name: Windows 令牌与目录属性 API 定点诊断
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/windows-token-probe.yml
       - tools/windows_token_probe.ps1
+      - tools/windows_acl_probe.ps1
   workflow_dispatch:
 
 permissions:
@@ -20,3 +21,6 @@ jobs:
       - name: 原始 Windows API 与严格测试参数
         shell: pwsh
         run: ./tools/windows_token_probe.ps1
+      - name: 精确目录访问与 Win32 隐式权限对照
+        shell: pwsh
+        run: ./tools/windows_acl_probe.ps1
