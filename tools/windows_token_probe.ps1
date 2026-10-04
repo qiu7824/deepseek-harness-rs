@@ -213,7 +213,7 @@ public static class WindowsTokenProbe
             string[] strings = {
                 "S-1-5-21-678-901-234-1001",
                 "S-1-5-21-678-901-234-2001",
-                "S-1-15-3-1024-678-901-234-1001"
+                "S-1-5-21-432-765-987-3001"
             };
             for (int i = 0; i < strings.Length; i++)
             {
