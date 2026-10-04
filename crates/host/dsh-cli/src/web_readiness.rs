@@ -56,7 +56,7 @@ pub fn take_ready_file(
     Ok((rest, path, log))
 }
 
-/// Publish complete JSON without replacing an existing destination. Linking a
+/// Publish complete JSON without replacing an existing destination. Publishing a
 /// fully-written sibling makes appearance atomic and enforces no-overwrite.
 pub fn publish(path: &Path, url: &str, home: &Path) -> Result<(), String> {
     let (pid, instance_id) = dsh_host_apiproxy::host_process_identity();
@@ -87,33 +87,10 @@ fn publish_json(path: &Path, report: &serde_json::Value) -> std::io::Result<()> 
         file.write_all(&serde_json::to_vec(report)?)?;
         file.sync_all()?;
         drop(file);
-        publish_no_replace(&temp, path)
+        crate::web_readiness_publish::publish_no_replace(&temp, path)
     })();
     let _ = fs::remove_file(&temp);
     result
-}
-
-#[cfg(not(windows))]
-fn publish_no_replace(temp: &Path, path: &Path) -> std::io::Result<()> {
-    fs::hard_link(temp, path)
-}
-
-#[cfg(windows)]
-fn publish_no_replace(temp: &Path, path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    // Unlike std::fs::rename on Windows, flags zero does not replace a target.
-    // A same-volume move also supports FAT/exFAT, where hard links do not exist.
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn MoveFileExW(existing: *const u16, target: *const u16, flags: u32) -> i32;
-    }
-    let from: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

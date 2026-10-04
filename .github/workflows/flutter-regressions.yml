@@ -8,6 +8,7 @@ on:
       - tools/run_flutter_test_diagnostics.py
       - tools/publish_flutter_golden_evidence.py
       - crates/host/dsh-cli/src/web_stdio.rs
+      - crates/host/dsh-cli/src/web_readiness*.rs
       - apps/desktop_flutter/lib/**
       - apps/desktop_flutter/test/**
       - apps/desktop_flutter/pubspec.*
@@ -50,6 +51,13 @@ jobs:
         run: |
           rustc --edition=2024 --test crates/host/dsh-cli/src/web_stdio.rs -o "$RUNNER_TEMP/dsh-web-stdio-tests.exe"
           "$RUNNER_TEMP/dsh-web-stdio-tests.exe" --test-threads=1
+      - name: Windows 启动信息长路径与不覆盖发布回归
+        if: matrix.platform == 'windows'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          rustc --edition=2024 --test crates/host/dsh-cli/src/web_readiness_publish.rs -C link-arg=/MANIFEST:NO -o "$RUNNER_TEMP/dsh-web-readiness-tests.exe"
+          python tools/run_release_regression.py --log "$RUNNER_TEMP/web-readiness-regressions.log" -- "$RUNNER_TEMP/dsh-web-readiness-tests.exe" --test-threads=1 --nocapture
       - name: 隔离并规范测试临时目录
         shell: bash
         run: |
@@ -125,6 +133,7 @@ jobs:
             ${{ runner.temp }}/flutter-golden-machine.log
             ${{ runner.temp }}/dart-client-test.log
             ${{ runner.temp }}/flutter-desktop-regressions.log
+            ${{ runner.temp }}/web-readiness-regressions.log
           if-no-files-found: warn
   build:
     runs-on: macos-14

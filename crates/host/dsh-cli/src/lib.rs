@@ -11,6 +11,7 @@ pub mod profile_boot;
 pub mod run_profile;
 pub mod sdk_stdio;
 pub mod web_readiness;
+mod web_readiness_publish;
 pub mod web_stdio;
 
 pub use run_profile::{
