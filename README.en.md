@@ -6,7 +6,7 @@ DeepSeek Harness Rust is a Rust migration of the DeepSeek Harness Host. It serve
 
 > This project is a prerelease. Treat the compatibility matrix and each GitHub Release note as the authoritative status.
 
-Current release line: the latest published version is [`0.1.3-alpha.38-r10`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r10), including Windows installed-startup fixes. The current development revision is `0.1.3-alpha.38-r14`; its assets require all four platform build jobs, publication and actual Windows installed-startup verification to pass. See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md). r10 comes from source `7aa80853`; check `--build-info` and the packaged build manifests to confirm identity.
+Current release line: [`0.1.3-alpha.38-r14`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r14); published, downloaded in full and independently audited. This revision includes Windows installed-startup fixes and retains deadline classification, preset-disposal ownership and controlled-clock regressions. See the [alpha.38 release notes](release/notes/v0.1.3-alpha.38.md). r14 comes from source `64a13e25`; check `--build-info` and the packaged build manifests to confirm identity.
 
 Implementation and verification scope for file isolation, execution receipts, manually managed skill versions, and message recovery is recorded in the [reliability review](docs/hermes-agent-reliability-review-20260928.zh.md). Its alpha.37 test history includes task acceptance and sample validation mechanisms that were retired in alpha.38.
 
@@ -14,7 +14,7 @@ See the [v0.1.7-rc.2 evaluation](docs/upstream-v0.1.7-rc.2-evaluation.zh.md) and
 
 The [dsh-v0.2.1-alpha.1 source evaluation (Chinese)](docs/upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md) records coverage, protocol differences and adaptation plans. Experimental Claude Code Mods and upstream Web adaptation require further implementation. Dynamic ports, drafts and connection changes, safe Devin diagnostics and reminder permissions are covered in the [revision verification record (Chinese)](docs/windows-flutter-regressions-2026-10-04.zh.md). Real desktop fonts and the external Devin / Opus 5.5 service still require verification.
 
-r10 fixes readiness-publication failures with long Windows TEMP paths and retains actionable startup causes, log locations and scrubbed details. Four-platform publication, production-installed GUI/Host startup verification, and complete package and tagged-source download audits passed. r14 retains Loader ownership cleanup, deadline classification and portable port fixture fixes, and uses a controlled test clock for the message-rail live-append regression. r13 was not published after its formal Intel Flutter regression failed; formal new packages require separate four-platform and installed-startup acceptance. See the [startup revision record (Chinese)](docs/windows-startup-r9-2026-10-05.zh.md) for evidence and scope.
+r14 fixes readiness publication with long Windows TEMP paths and retains actionable startup causes, log locations and scrubbed details. It preserves portable port fixtures, internal-deadline classification and preset-disposal ownership fixes, with a controlled clock for the message-rail regression. All five platform-build and publication jobs in [formal run 37257541981](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37257541981) succeeded; the r14 production-installed Windows GUI/Host gate passed in 60 seconds for the complete gate; all 13 actual application packages, 14 public digests, eight portable packages and the complete source passed primary verification and independent audit. See the [startup revision record (Chinese)](docs/windows-startup-r9-2026-10-05.zh.md) for evidence and scope.
 
 The Rust edition maintains its own bounded conversation history, targeted navigation, native launcher and themes. Release numbers identify the Rust release line; they do not claim complete Node feature or on-disk format parity.
 
@@ -45,14 +45,14 @@ Desktop verification scope is recorded in the [platform matrix](docs/desktop-pla
 
 ## Downloads
 
-Published r10 complete Windows x86_64 packages:
+r14 complete Windows x86_64 packages: published and downloaded in full for verification.
 
 | Edition | Installer | Portable package |
 |---|---|---|
-| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r10/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r10/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
-| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r10/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r10/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
+| Flutter desktop | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r14/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r14/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) |
+| Web core | [Download EXE](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r14/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-setup.exe) | [Download ZIP](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r14/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-core-portable.zip) |
 
-Check **Assets** on the [alpha.38-r10 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r10) for Linux, macOS and SHA-256 checksums. Historical [r8](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8) assets remain available. Source ZIPs contain no compiled applications.
+Check **Assets** on the [alpha.38-r14 release page](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r14) for Linux, macOS and SHA-256 checksums. Historical [r10](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r10) and [r8](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8) assets remain available. The [complete r14 source ZIP](https://github.com/qiu7824/deepseek-harness-rs/archive/refs/tags/v0.1.3-alpha.38-r14.zip) corresponds to commit `64a13e25`; all 3184 exported paths and every byte were verified. Source ZIPs contain no compiled applications.
 
 Formal publication requires complete regressions, real Host startup, packaging and checksum verification to succeed on all four platforms. Confirm asset versions and source identity using the release page, packaged build manifests and `SHA256SUMS.txt`.
 

@@ -1,14 +1,34 @@
-# Windows Flutter 启动修订与 r14 开发记录
+# Windows Flutter 启动修订与 r14 发布记录
 
 记录日期：2026-10-05（Asia/Shanghai）。本记录针对 r8 安装版的 `Bad state: 本机服务在启动完成前退出（退出码 1）`，记录故障证据、源码修复、r9 正式发行失败以及 r10 正式发布、r11、r12、r13 正式失败和 r14 的验收范围。
 
-本记录使用的已公开故障基线为 [`v0.1.3-alpha.38-r8`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8)，源码提交 `da1c20992f9d66d84ee179cf1c8b00d997729df1`。本记录为 r14 开发修订更新；r12、r13 因各自真实正式门禁失败而未公开，固定标签保留原状。r14 最终正式包验证及公开下载结果以对应 GitHub Release 和维护工作区的标签核验产物为准，不回写或移动既有标签。此记录不表示已经取得用户机器上的完整服务错误。
+本记录使用的已公开故障基线为 [`v0.1.3-alpha.38-r8`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8)，源码提交 `da1c20992f9d66d84ee179cf1c8b00d997729df1`。本记录按 r14 固定源码 `64a13e259f69978f18e15d27c8a726fa65f2fd0f` 和标签对象 `93b2de0bc18410658b681a7d006d2b8b7be033d6` 更新。已公开发布，并完成实际下载核验及独立复核。r12、r13 因各自真实正式门禁失败而未公开，本次不修改旧标签，当前历史远端状态见下文。此记录不表示已经取得用户机器上的完整服务错误。
 
-## 当前可下载版本：r10
+## r14 正式验收与下载记录
 
-最新公开修订为 [r10](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r10)，源码 `7aa80853e946f596f2b466e2a0bff1a981282122`。[正式运行 37227596757](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37227596757)的四平台构建与发布共五个作业全部成功；其中 Windows“生产安装版 GUI 与 Host 冷启动回归”成功，耗时 63 秒。13 个应用包及校验文件已公开并完成全量下载；实际包/校验文件的 14 项公开摘要全部匹配，8 个便携包的完整压缩校验、逐文件构建清单及对应 Host 身份通过，源码 ZIP 的 3183 个导出路径及全部字节与固定提交的 attribute-aware Git archive 一致。主核验与独立复核均为 PASS。证据为维护工作区 `artifacts/v0.1.3-alpha.38-r10/validation/release-summary.zh.md`、`downloads/verification.json` 和 `validation/final-download-audit.json`。该范围包含真实生产安装器及安装后客户端的 CI 启动，以及独立的本地文件下载核验；本地下载审核没有执行安装器或访问用户电脑。
+固定标签为 [`v0.1.3-alpha.38-r14`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r14)，源码 `64a13e259f69978f18e15d27c8a726fa65f2fd0f`。[正式运行 37257541981](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37257541981)的四平台构建及发布五个作业全部成功；r14 实际生产安装后的 GUI/Host 门禁通过，整项耗时 60 秒。已完整下载 13 个应用包及校验文件，14 项实际包与校验文件公开摘要全部匹配；8 个便携包的完整压缩校验、逐文件清单和随附 Host 身份通过；完整源码 ZIP 的 3184 个导出路径及全部字节与固定提交的 attribute-aware Git archive 一致。主核验：PASS（`2026-10-05 04:45:31 UTC`，`downloads/verification.json`）；独立复核：PASS（`2026-10-05 04:47:36 UTC`，`validation/final-download-audit.json`）。
 
-README 的实际下载链接使用已公开 r10，包内 `--build-info` 与构建清单应核对该源码身份。当前开发修订为 r14，尚无新的公开下载资产；r12、r13 未公开，通过全部正式门禁后才能切换实际下载链接。此前 r8 故障基线及已完成下载审计继续保留如下。
+Windows [作业 111597743746](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37257541981/job/111597743746)第 41 步“Windows 生产安装版 GUI 与 Host 冷启动回归”实际成功，UTC `2026-10-05 04:37:18` 至 `04:38:18`。60 秒是完整多场景门禁耗时，不是单次应用启动延迟。该正式运行保留并通过 Windows 38 项、其他三平台各 34 项、发布 4 项必需门禁；这些是步骤数量，不是测试用例通过数量。成功 stdout、逐场景数量及账户权限 token 仍不可读。证据为 `validation/windows-production-gui-gate-result.json` 及 `monitoring/formal/release-state.json`。
+
+独立审计重新读取所有便携归档成员、核对清单及同平台随附 Core/Host 与独立 Core 的完整载荷身份。Intel macOS 提交标记使用严格的 69 字节 Mach-O `movabs`/store 指令格式重建完整 40 位提交，未放宽身份识别。完整源码另以 attribute-aware Git archive 逐路径和逐字节核对；没有执行下载的安装器。
+
+| 已下载文件 | 字节数 | 下载后 SHA-256（主核验及独立复核一致） |
+| --- | ---: | --- |
+| [Windows Flutter 安装版](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r14/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-setup.exe) | 75903907 | `d8cdfe538dac60356c97a030a8648c674b30b9c2cd18e152e4d4ec47a8cc4fb3` |
+| [Windows Flutter 便携版](https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.38-r14/deepseek-harness-rs-v0.1.3-alpha.38-windows-x86_64-flutter-portable.zip) | 114644429 | `5a2d3b5f6249c8be4034ef025b535f678ec7125c6e6106ea846967fff37bdc81` |
+| [r14 完整源码 ZIP](https://github.com/qiu7824/deepseek-harness-rs/archive/refs/tags/v0.1.3-alpha.38-r14.zip) | 21699713 | `26c6441554398339ac42cda31a466f1e35e4882b4be0d31af084b94ee8767bfb` |
+
+上述 Windows 安装后验证属于正式 CI；本地下载审计只核验实际文件和完整源码，不等于在用户机器执行安装器。Windows 标准账户和只读安装树、用户具体故障、真实字体和 Devin 外部服务保持独立验收边界。
+
+## 历史可下载版本：r10
+
+历史公开修订 [r10](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r10)，源码 `7aa80853e946f596f2b466e2a0bff1a981282122`。[正式运行 37227596757](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37227596757)的四平台构建与发布共五个作业全部成功；其中 Windows“生产安装版 GUI 与 Host 冷启动回归”成功，耗时 63 秒。13 个应用包及校验文件已公开并完成全量下载；实际包/校验文件的 14 项公开摘要全部匹配，8 个便携包的完整压缩校验、逐文件构建清单及对应 Host 身份通过，源码 ZIP 的 3183 个导出路径及全部字节与固定提交的 attribute-aware Git archive 一致。主核验与独立复核均为 PASS。证据为维护工作区 `artifacts/v0.1.3-alpha.38-r10/validation/release-summary.zh.md`、`downloads/verification.json` 和 `validation/final-download-audit.json`。该范围包含真实生产安装器及安装后客户端的 CI 启动，以及独立的本地文件下载核验；本地下载审核没有执行安装器或访问用户电脑。
+
+已公开并完成全量下载核验。README 的 r14 下载链接和包内 `--build-info`、构建清单须与本记录的固定源码一致。历史 r10、r8 资产及核验结果保留；r12、r13 未公开。此前故障基线与审计记录继续保留如下。
+
+## 历史标签远端状态
+
+本次工作不修改、移动、删除或重建旧标签。UTC `2026-10-05 03:01` 的公开 Git 广告以及 `03:04` 的独立匿名 HTTPS 查询未列出 r7、r9、r11、r12，其公开 tag tree 页面均返回 404；缺失原因和操作人未知。`historical-remote-ref-check.json`、`historical-independent-ls-remote.json` 和 `historical-public-tag-tree-check.json` 记录这些观察。历史固定提交、原标签对象及 CI 证据在本地保留，但不能据此声称所有历史远端标签当前仍存在。r14 的源码与标签对象另有正式发行和实际下载审计证明。
 
 ## r8 正式发行状态
 
@@ -94,7 +114,7 @@ r9 的 [Windows 完整 Flutter 门禁](https://github.com/qiu7824/deepseek-harne
 
 r11 只修订测试端口夹具：占用场景使用系统分配的真实监听端口，手动启动仍请求明确的非零端口，但从系统选择可用端口。所有进程归属、服务存活、草稿和数据断言保留；旧默认 58080 偏好/迁移数据检查保留；产品端口逻辑不变，超时不放宽。正式门禁的完整失败日志、CLI 就绪文件回归及其他原门禁继续保留。
 
-r11 标签固定源码 `6721e365306aca9167ac326ddcce7cc5b2c5c4f6`。其[正式 Windows 作业](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37231142240/job/111520841136)在“Host 与启动器回归”失败，命令退出码 101；`rejection_tests::elapsed_deadline_reaps_compute_and_binding_waits` 的断言实际为 `Abort`，预期 `Timeout`。发布作业跳过，r11 未公开；此原始失败保留，不忽略原测试。r9、已公开 r10 和 r11 标签保持各自源码。
+r11 标签固定源码 `6721e365306aca9167ac326ddcce7cc5b2c5c4f6`。其[正式 Windows 作业](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37231142240/job/111520841136)在“Host 与启动器回归”失败，命令退出码 101；`rejection_tests::elapsed_deadline_reaps_compute_and_binding_waits` 的断言实际为 `Abort`，预期 `Timeout`。发布作业跳过，r11 未公开；此原始失败保留，不忽略原测试。r9、r10 和 r11 的原源码身份由历史证据记录；当前远端标签可见性见下文。
 
 ## r12 内部执行期限分类修订
 
@@ -108,7 +128,7 @@ Linux 本地验证已取得实际结果：完整 `dsh-code-runtime-node` 库测�
 
 r12 固定源码 `5c7ab4cb2ff27e73771dfaf337f1027e82357543`，标签对象 `8de42b03bd0bc344188be4430a702100e8fe31ef`。[正式运行 37246975954 的 Intel 作业](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37246975954/job/111566668503)中，“Agent 与预设生命周期回归”实际失败，步骤耗时 276 秒。`index::standing_tests::failed_standard_initialization_is_evicted_and_can_mount_after_repair` 在 `crates/preset/agent-presets/src/standing_tests.rs:130:9` 触发 `disposed preset retained loader fiber ownership`；该命令实际为 2 passed、1 failed、0 ignored（0.06 秒），退出码 101。此处有具体失败断言，不把它改写为通用环境波动或本地成功。
 
-证据为维护工作区 `artifacts/v0.1.3-alpha.38-r12/monitoring/formal/failure-evidence/intel-lifecycle-annotations.json` 与同目录 `intel-lifecycle-public-job.html`。正式身份发现记录将作业绑定到上述标签、源码与工作流，公开作业页面给出失败注解。r12 不公开发布，标签和源码永久保留；此前 Linux Node 19 项测试通过仍是其独立本地证据，不能抵消正式生命周期失败。后续 `artifacts/v0.1.3-alpha.38-r12/validation/terminal-release-result.json` 已确认全部作业终态：Linux、Windows、macOS ARM 成功，Intel 失败，发布作业跳过；r12 整体未通过，未公开。
+证据为维护工作区 `artifacts/v0.1.3-alpha.38-r12/monitoring/formal/failure-evidence/intel-lifecycle-annotations.json` 与同目录 `intel-lifecycle-public-job.html`。正式身份发现记录将作业绑定到上述标签、源码与工作流，公开作业页面给出失败注解。r12 不公开发布，原标签对象、固定源码和 CI 证据在本地保留；当前远端状态见下文。此前 Linux Node 19 项测试通过仍是其独立本地证据，不能抵消正式生命周期失败。后续 `artifacts/v0.1.3-alpha.38-r12/validation/terminal-release-result.json` 已确认全部作业终态：Linux、Windows、macOS ARM 成功，Intel 失败，发布作业跳过；r12 整体未通过，未公开。
 
 r12 的[正式 Windows 作业](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37246975954/job/111566668477)中，“Host 与启动器回归”成功，UTC `2026-10-05 00:33:18` 至 `00:50:08`，耗时 1010 秒；实际生产安装后的 GUI/Host 门禁也成功，UTC `01:38:13` 至 `01:39:15`，整项耗时 62 秒。证据为同修订 `validation/windows-host-gate-result.json` 和 `windows-production-gui-gate-result.json`；成功 stdout 与测试数量不可读。这些历史 Windows 结果不能抵消 Intel 失败或代替新修订验收。
 
@@ -124,7 +144,7 @@ Linux 本地已取得实际回归结果：`cargo test --locked -p dsh-cordis-loa
 
 ## r13 正式 Intel Flutter 失败
 
-r13 固定源码 `f259d2d0c991395ea6feaceda40b618f4c03cc87`，标签对象 `0503b11c1ca48780b4014a21b0661a33d48989b6`。[正式运行 37248421487](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37248421487)的全部作业已终态：Linux、Windows、macOS ARM 成功，Intel 失败，发布作业跳过。r13 未公开，既有标签不移动，发布后 PENDING 文档补丁保留且不可应用。证据为 `artifacts/v0.1.3-alpha.38-r13/validation/terminal-release-result.json`。
+r13 固定源码 `f259d2d0c991395ea6feaceda40b618f4c03cc87`，标签对象 `0503b11c1ca48780b4014a21b0661a33d48989b6`。[正式运行 37248421487](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37248421487)的全部作业已终态：Linux、Windows、macOS ARM 成功，Intel 失败，发布作业跳过。r13 未公开，既有标签不移动，未验收的发布文档草稿保留且不可应用。证据为 `artifacts/v0.1.3-alpha.38-r13/validation/terminal-release-result.json`。
 
 [Intel 作业 111570882116](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37248421487/job/111570882116)第 36 步“Flutter 全部测试与失败诊断”耗时 779 秒，UTC `2026-10-05 02:31:49` 至 `02:44:48`，退出码 1。公开失败注解给出 `return latest supersedes an unfinished jump and resumes live appends` 在 `test/message_rail_test.dart:199:7` 失败，期望 `新的消息`，实际仍为以 `回复 1\n保留上下文。` 开头的旧回复。证据为同修订 `monitoring/formal/failure-evidence/intel-flutter-annotations.json` 及保留的公开页面；不可据有限失败尾部编造整套失败或通过数量。
 
@@ -136,11 +156,11 @@ r13 的[Windows 作业 111570882112](https://github.com/qiu7824/deepseek-harness
 
 r14 仅修订该消息轨用例为 `testWidgets`：先 `pump` 交付事件，再推进 71 毫秒验证旧投影仍保留、通知未增加，最后推进 1 毫秒到 72 毫秒边界，精确核对实时消息的 seq、kind、正文和一次通知。原未完成跳转被取消、迟到旧页不覆盖最新页、离开历史阅读和 `needsRefresh` 断言保留，在测试体 try/finally 内 dispose 并 pump，先于 Flutter 绑定的待完成定时器检查完成清理。生产端口、消息投影逻辑及刷新间隔不改。
 
-Flutter 诊断为 Windows、macOS Intel 和 ARM 增加完整 `message_rail_test.dart` 单文件门禁。正式 `release.yml` 的全部原必需门禁保持：Windows 38 项、Linux 与各 macOS 34 项、发布 4 项。本记录冻结时，新诊断和 r14 正式新包仍待实际结果，最终源码和运行身份尚未冻结，不预填 SHA、运行编号或 PASS。
+Flutter 诊断为 Windows、macOS Intel 和 ARM 增加完整 `message_rail_test.dart` 单文件门禁。正式 `release.yml` 的全部原必需门禁保持：Windows 38 项、Linux 与各 macOS 34 项、发布 4 项。诊断源码 `6dc6d9baed1b89cff18d151c00aca8113f4fcbe4` 的[Flutter 诊断运行 37257057579](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37257057579)中，Windows、macOS Intel、ARM 的消息轨完整单文件门禁均已实际成功；该诊断运行的四个作业均已终态成功；ARM 完整 Flutter 测试、静态分析及正式客户端构建分别耗时 459、36、267 秒。`artifacts/v0.1.3-alpha.38-r14/validation/diagnostic-source-equivalence.json` 证明上述 `message_rail_test.dart` 和诊断工作流在该诊断源码与固定 r14 源码之间逐字一致。该证明只覆盖列出的两个文件；单文件诊断成功不代替 r14 四平台正式发行和实际安装验收。r14 的正式运行、实际安装、公开下载证据分别记录于顶部，独立于这项诊断。
 
-四个平台构建作业、发布作业、实际 Windows 生产安装后 GUI/Host 启动验证必须全部通过，才允许公开；实际下载核验还须校对公开资产与固定标签源码。README 继续指向可下载的 r10。
+四个平台构建作业、发布作业、实际 Windows 生产安装后 GUI/Host 启动验证必须全部通过，才允许公开；实际下载核验还须校对公开资产与固定标签源码。r14 正式验收结果与实际下载范围见本记录顶部。
 
-## r14 开发时的验收记录
+## r14 验收范围
 
 | 验证 | 本记录状态 | 验收要求 |
 | --- | --- | --- |
@@ -148,15 +168,15 @@ Flutter 诊断为 Windows、macOS Intel 和 ARM 增加完整 `message_rail_test.
 | r8 生产安装后的长 TEMP 故障 | 已复现，验证器 `7c8dcd47`；作业整体 FAIL | 实际安装包与 GUI、就绪父目录 229 个 UTF-16 单元、原 Host 退出码 1、服务日志错误 3；修正验证器后的完整基线已通过 |
 | Flutter 启动失败诊断 | Windows 定点、ARM 完整测试、静态分析及正式客户端构建已通过，源码 `71b35fd5` | 日志未创建、日志不可打开、stdout/stderr 早期错误、大量输出、UTF-8 边界、管道继续被后代持有；保留原因且不挂起 |
 | Flutter 错误呈现 | Windows 定点、ARM 完整测试、静态分析及正式客户端构建已通过，源码 `71b35fd5` | 对象异常与持久字符串均显示可读原因；详情折叠、凭据脱敏；业务 JSON 识别和已存在服务错误保持正确 |
-| 生产 Flutter 安装器冷启动 | r10 已通过（63 秒）、r13 已通过（64 秒整项门禁）；r14 正式新包须验收 | 执行实际安装 EXE，运行安装目录客户端，验证 GUI、Host、数据根及随机实例身份；不改写生产安装脚本 |
-| 安装与升级边界 | 待完成 | 中文空格安装目录、长 TEMP、安装树只读；旧偏好与另一路径服务占用时保留旧进程和数据，释放自建占用后可重试 |
+| 生产 Flutter 安装器冷启动 | r10 已通过（63 秒）、r13 已通过（64 秒整项门禁）；r14 实际生产安装后的 GUI/Host 门禁通过，整项耗时 60 秒 | 执行实际安装 EXE，运行安装目录客户端，验证 GUI、Host、数据根及随机实例身份；不改写生产安装脚本 |
+| 安装与升级边界 | 正式生产安装门禁已通过；普通账户及只读安装树的逐场景实测仍未建立 | 中文空格安装目录、长 TEMP、安装树只读；旧偏好与另一路径服务占用时保留旧进程和数据，释放自建占用后可重试 |
 | Windows 用户权限范围 | 待确认 | 明确执行账户权限；管理员运行的结果不能标为普通用户实测 |
-| Node 内部期限及真实取消分类 | r12 Linux 本地 19 项库测试通过，负向控制识别旧错误；r14 须保留并独立验收 | 保留原失败断言、真实 Stop/运行时释放优先级和审批预算；不放宽时间界限 |
+| Node 内部期限及真实取消分类 | r12 Linux 本地 19 项库测试通过，负向控制识别旧错误；r14 正式范围见顶部运行证据 | 保留原失败断言、真实 Stop/运行时释放优先级和审批预算；不放宽时间界限 |
 | Loader 释放与重建归属 | r12 正式 Intel 原断言失败；r13 Linux 本地 Loader 4 项及原 standing 3 项通过，负向控制失败 | 确定性复现释放后归属清理，保留 reload 和原 standing 生命周期断言 |
-| 消息轨返回最新与实时追加 | r13 Intel 原用例失败；r14 受控时钟诊断待验 | 保留取消与旧页忽略、精确实时消息和 needsRefresh 断言，验证 72 毫秒边界；生产代码不变 |
-| 四平台构建、发布及安装启动验收 | r10 已完成；r12、r13 Intel 失败；r14 须独立完成 | 保留现有完整回归、真实 Host、组包及摘要门禁，增加实际安装后启动门禁 |
-| r14 公开下载 | 尚未公开；实际下载保留 r10 | 新标签固定源码，逐个下载实际公开资产并验证摘要和构建清单；源码与标签一致 |
+| 消息轨返回最新与实时追加 | r13 Intel 原用例失败；源码等价的三平台单文件诊断已通过；r14 正式范围见顶部 | 保留取消与旧页忽略、精确实时消息和 needsRefresh 断言，验证 72 毫秒边界；生产代码不变 |
+| 四平台构建、发布及安装启动验收 | r10 已完成；r12、r13 Intel 失败；[正式运行 37257541981](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37257541981)的四平台构建及发布五个作业全部成功 | 保留现有完整回归、真实 Host、组包及摘要门禁，增加实际安装后启动门禁 |
+| r14 公开下载 | 13 个实际应用包、14 项公开摘要、8 个便携包及完整源码的主核验与独立复核均通过 | 新标签固定源码，逐个下载实际公开资产并验证摘要和构建清单；源码与标签一致 |
 
-验证环境使用隔离数据根、偏好及临时目录，只清理验证器创建并核对身份的进程和文件。既有 r8 资产、用户数据、账号设置及未知服务保持原状。源码 README 区分已公开 r10 与开发修订 r14，实际下载链接只指已公开包；r12、r13 保留失败标签且不公开，r14 资产仅在其全部正式门禁通过后公开；最终公开下载核验应在对应发布说明正文和工作区证据补充，不移动或改写已发布标签。
+验证环境使用隔离数据根、偏好及临时目录，只清理验证器创建并核对身份的进程和文件。既有 r8 资产、用户数据、账号设置及未知服务保持原状。README 的实际下载版本须与 r14 正式公开及审计结果一致；历史 r10 资产保留，r12、r13 失败标签不公开。发布后的文档更新只提交到 main，不移动 r14 标签或更改已生成应用包。发布包和完整源码 ZIP 始终对应冻结提交 `64a13e259f69978f18e15d27c8a726fa65f2fd0f`；main 的后续文档提交仅补充验收事实。本次不修改旧标签。
 
 本次启动修订不改变 [dsh-v0.2.1-alpha.1 上游评估](upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)中的能力结论，也不建立 Devin / Opus 5.5 外部服务或真实字体问题已解决的证据。
