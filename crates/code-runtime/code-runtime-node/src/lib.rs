@@ -25,6 +25,8 @@ const RUNNER_SOURCE: &str = include_str!("../assets/runner.cjs");
 #[cfg(test)]
 mod approval_tests;
 #[cfg(test)]
+mod deadline_tests;
+#[cfg(test)]
 mod startup_tests;
 const STARTUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 type ExecutionClock = Arc<parking_lot::Mutex<Option<Arc<ApprovalClock>>>>;
@@ -408,11 +410,13 @@ impl CodeRuntime for NodeCodeRuntime {
                     },
                 ));
             }
+            // The child signal combines elapsed budget and caller cancellation.
+            // Caller Stop/disposal was handled above; an internal deadline can
+            // therefore surface as Abort when the subprocess closes stdout.
             if started
                 .lock()
                 .as_ref()
                 .is_some_and(|start| start.elapsed() >= std::time::Duration::from_millis(budget))
-                && !matches!(&result,Ok(result) if result.error.as_ref().is_some_and(|error|error.kind==CodeRunFailureKind::Abort))
             {
                 return Ok(failure(
                     CodeRunFailureKind::Timeout,
