@@ -112,6 +112,12 @@ jobs:
           (cd packages/dsh_client_dart && python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/dart-client-test.log" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/dart" test)
           cd apps/desktop_flutter
           python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-desktop-regressions.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test test/error_presentation_test.dart test/account_menu_test.dart test/typography_test.dart test/schedule_page_test.dart test/desktop_interaction_upgrade_test.dart test/workbench_error_recovery_test.dart test/tool_message_test.dart test/dynamic_host_startup_test.dart test/launcher_test.dart test/connection_draft_lifecycle_test.dart --machine
+      - name: 消息定位导航与实时追加回归
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          cd apps/desktop_flutter
+          python "$GITHUB_WORKSPACE/tools/run_release_regression.py" --log "$RUNNER_TEMP/flutter-message-rail-machine.log" -- python "$GITHUB_WORKSPACE/tools/run_flutter_test_diagnostics.py" -- "$DSH_TEST_BASH" "$RUNNER_TEMP/flutter-sdk/bin/flutter" test test/message_rail_test.dart --machine
       - name: 四个严格图标金图与失败诊断
         timeout-minutes: 10
         shell: bash
@@ -133,6 +139,7 @@ jobs:
             ${{ runner.temp }}/flutter-golden-machine.log
             ${{ runner.temp }}/dart-client-test.log
             ${{ runner.temp }}/flutter-desktop-regressions.log
+            ${{ runner.temp }}/flutter-message-rail-machine.log
             ${{ runner.temp }}/web-readiness-regressions.log
           if-no-files-found: warn
   build:

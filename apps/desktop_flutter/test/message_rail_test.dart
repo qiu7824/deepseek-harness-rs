@@ -154,52 +154,67 @@ void main() {
     },
   );
 
-  test(
+  testWidgets(
     'return latest supersedes an unfinished jump and resumes live appends',
-    () async {
+    (tester) async {
       final api = RailApi();
       final c = DesktopController(
         MemoryPreferences(),
         clientFactory: (_) => api,
       );
-      await c.connect('http://127.0.0.1');
-      await Future<void>.delayed(Duration.zero);
-      await c.select('s');
-      api.pending[10] = Completer();
-      final pending = c.loadHistory(after: 10, targetSeq: 10, force: true);
-      final abandoned = api.requests.last.scope!;
-      await c.returnLatest();
-      expect(abandoned.cancelled, isTrue);
-      api.pending[10]!.complete(railPage(10, after: true));
-      await pending;
-      expect(c.window.firstSeq, 900);
-      expect(c.readingHistory, isFalse);
-      api.channels.first.data.add(
-        HostFrame.fromJson({
-          'type': 'server-request',
-          'rpcId': 'fresh',
-          'payload': {
-            'type': 'session/event',
-            'sessionId': 's',
-            'event': {
-              'seq': 902,
-              'type': 'user/message',
-              'data': {
-                'source': {'kind': 'user'},
-                'content': [
-                  {'type': 'text', 'text': '新的消息'},
-                ],
+      try {
+        await c.connect('http://127.0.0.1');
+        await tester.pump();
+        await c.select('s');
+        api.pending[10] = Completer();
+        final pending = c.loadHistory(after: 10, targetSeq: 10, force: true);
+        final abandoned = api.requests.last.scope!;
+        await c.returnLatest();
+        expect(abandoned.cancelled, isTrue);
+        api.pending[10]!.complete(railPage(10, after: true));
+        await pending;
+        expect(c.window.firstSeq, 900);
+        expect(c.readingHistory, isFalse);
+        final previousTranscript = c.transcript;
+        final notifications = c.messageChanges.value;
+        api.channels.first.data.add(
+          HostFrame.fromJson({
+            'type': 'server-request',
+            'rpcId': 'fresh',
+            'payload': {
+              'type': 'session/event',
+              'sessionId': 's',
+              'event': {
+                'seq': 902,
+                'type': 'user/message',
+                'data': {
+                  'source': {'kind': 'user'},
+                  'content': [
+                    {'type': 'text', 'text': '新的消息'},
+                  ],
+                },
               },
             },
-          },
-        }),
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      expect(c.window.lastSeq, 902);
-      expect(c.transcript.last.text, '新的消息');
-      expect(c.window.needsRefresh, isFalse);
-      c.dispose();
-      await Future<void>.delayed(Duration.zero);
+          }),
+        );
+        // Deliver the asynchronous frame before advancing its 72 ms paint timer.
+        await tester.pump();
+        expect(c.window.lastSeq, 902);
+        expect(c.transcript, same(previousTranscript));
+        expect(c.messageChanges.value, notifications);
+        await tester.pump(const Duration(milliseconds: 71));
+        expect(c.transcript, same(previousTranscript));
+        expect(c.messageChanges.value, notifications);
+        await tester.pump(const Duration(milliseconds: 1));
+        expect(c.transcript.last.seq, 902);
+        expect(c.transcript.last.kind, 'user');
+        expect(c.transcript.last.text, '新的消息');
+        expect(c.messageChanges.value, notifications + 1);
+        expect(c.window.needsRefresh, isFalse);
+      } finally {
+        c.dispose();
+        await tester.pump();
+      }
     },
   );
   test('index contains only real users and projection budgets still apply', () {
