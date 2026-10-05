@@ -1,14 +1,14 @@
-# Windows Flutter 启动修订与 r12 开发记录
+# Windows Flutter 启动修订与 r13 开发记录
 
-记录日期：2026-10-05（Asia/Shanghai）。本记录针对 r8 安装版的 `Bad state: 本机服务在启动完成前退出（退出码 1）`，记录故障证据、源码修复、r9 正式发行失败以及 r10 正式发布、r11 失败和 r12 的验收范围。
+记录日期：2026-10-05（Asia/Shanghai）。本记录针对 r8 安装版的 `Bad state: 本机服务在启动完成前退出（退出码 1）`，记录故障证据、源码修复、r9 正式发行失败以及 r10 正式发布、r11、r12 正式失败和 r13 的验收范围。
 
-本记录使用的已公开故障基线为 [`v0.1.3-alpha.38-r8`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8)，源码提交 `da1c20992f9d66d84ee179cf1c8b00d997729df1`。本记录为 r12 开发修订更新；最终 r12 正式包验证及公开下载结果以对应 GitHub Release 和维护工作区的标签核验产物为准，不回写或移动已发布标签。此记录不表示已经取得用户机器上的完整服务错误。
+本记录使用的已公开故障基线为 [`v0.1.3-alpha.38-r8`](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r8)，源码提交 `da1c20992f9d66d84ee179cf1c8b00d997729df1`。本记录为 r13 开发修订更新；r12 因真实 Intel 生命周期门禁失败而未公开，固定标签保留原状。r13 最终正式包验证及公开下载结果以对应 GitHub Release 和维护工作区的标签核验产物为准，不回写或移动既有标签。此记录不表示已经取得用户机器上的完整服务错误。
 
 ## 当前可下载版本：r10
 
 最新公开修订为 [r10](https://github.com/qiu7824/deepseek-harness-rs/releases/tag/v0.1.3-alpha.38-r10)，源码 `7aa80853e946f596f2b466e2a0bff1a981282122`。[正式运行 37227596757](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37227596757)的四平台构建与发布共五个作业全部成功；其中 Windows“生产安装版 GUI 与 Host 冷启动回归”成功，耗时 63 秒。13 个应用包及校验文件已公开并完成全量下载；实际包/校验文件的 14 项公开摘要全部匹配，8 个便携包的完整压缩校验、逐文件构建清单及对应 Host 身份通过，源码 ZIP 的 3183 个导出路径及全部字节与固定提交的 attribute-aware Git archive 一致。主核验与独立复核均为 PASS。证据为维护工作区 `artifacts/v0.1.3-alpha.38-r10/validation/release-summary.zh.md`、`downloads/verification.json` 和 `validation/final-download-audit.json`。该范围包含真实生产安装器及安装后客户端的 CI 启动，以及独立的本地文件下载核验；本地下载审核没有执行安装器或访问用户电脑。
 
-README 的实际下载链接使用已公开 r10，包内 `--build-info` 与构建清单应核对该源码身份。r12 为开发修订，尚无新的公开下载资产；通过全部正式门禁后才能切换实际下载链接。此前 r8 故障基线及已完成下载审计继续保留如下。
+README 的实际下载链接使用已公开 r10，包内 `--build-info` 与构建清单应核对该源码身份。当前开发修订为 r13，尚无新的公开下载资产；r12 未公开，通过全部正式门禁后才能切换实际下载链接。此前 r8 故障基线及已完成下载审计继续保留如下。
 
 ## r8 正式发行状态
 
@@ -104,10 +104,24 @@ Linux 本地验证已取得实际结果：完整 `dsh-code-runtime-node` 库测�
 
 旧条件负向控制只运行 `internal_deadline_child_eof_is_timeout_and_reaps_pending_binding` 一个测试：实际退出码 101，断言左值 `Abort`、右值 `Timeout`，耗时 1.00 秒。该预期失败证明新夹具能确定性识别旧分类错误；随后恢复修复条件并完成上述全库成功运行。证据为 `artifacts/v0.1.3-alpha.38-r12/validation/node-negative-control.log`。这是 Linux 本地源码回归，不能代替 r12 四平台正式发行、实际 Windows 安装器或用户机器验收。
 
-r12 使用新不可变标签 `v0.1.3-alpha.38-r12`，源码与新包仍需完整验收。四个平台构建作业、发布作业、实际 Windows 生产安装后 GUI/Host 启动验证必须全部通过，才允许公开。最终源码 SHA、正式运行编号和下载核验由对应 Release 与工作区产物记录，本记录不预填。README 在 r12 实际公开前继续指向可下载的 r10。
+## r12 正式 Intel 生命周期失败
+
+r12 固定源码 `5c7ab4cb2ff27e73771dfaf337f1027e82357543`，标签对象 `8de42b03bd0bc344188be4430a702100e8fe31ef`。[正式运行 37246975954 的 Intel 作业](https://github.com/qiu7824/deepseek-harness-rs/actions/runs/37246975954/job/111566668503)中，“Agent 与预设生命周期回归”实际失败，步骤耗时 276 秒。`index::standing_tests::failed_standard_initialization_is_evicted_and_can_mount_after_repair` 在 `crates/preset/agent-presets/src/standing_tests.rs:130:9` 触发 `disposed preset retained loader fiber ownership`；该命令实际为 2 passed、1 failed、0 ignored（0.06 秒），退出码 101。此处有具体失败断言，不把它改写为通用环境波动或本地成功。
+
+证据为维护工作区 `artifacts/v0.1.3-alpha.38-r12/monitoring/formal/failure-evidence/intel-lifecycle-annotations.json` 与同目录 `intel-lifecycle-public-job.html`。正式身份发现记录将作业绑定到上述标签、源码与工作流，公开作业页面给出失败注解。r12 不公开发布，标签和源码永久保留；此前 Linux Node 19 项测试通过仍是其独立本地证据，不能抵消正式生命周期失败。本记录冻结时，其余平台仍由正式工作流继续验收，不预判其结论。
+
+## r13 Loader 归属清理修订
+
+新修订处理 Loader 内部及插件加载回调的异步归属清理竞态：回调构造没有异步等待，改为同步执行，避免预设释放之后还由调度中的清理任务短暂持有 Loader fiber 归属。补充确定性 Loader 回归，保留原 reload、失败后重建及生命周期断言，不忽略已失败的 standing 测试。Windows 启动修复、可移植端口夹具和 Node 期限分类修复继续保留。
+
+Linux 本地已取得实际回归结果：`cargo test --locked -p dsh-cordis-loader` 完整 crate 测试退出码 0，4 项集成测试全部通过、0 failed、0 ignored（0.01 秒，编译 1.29 秒），单元及文档测试各 0 项；`cargo test --locked -p dsh-agent-presets standing_tests --lib` 原 3 项 standing 测试全部通过、0 failed、0 ignored（0.04 秒，编译 17.54 秒），包括正式 Intel 失败的原测试。证据为 `artifacts/v0.1.3-alpha.38-r13/validation/loader-fixed-tests.log` 和 `standing-fixed-tests.log`。
+
+仅恢复 r12 原 `loader.rs` 的负向控制成功编译（7.87 秒），新测试 `reload_preserves_entry_ownership_and_disposal_releases_it_before_waiting_for_unload` 在真实 self-dispose 的首次轮询时失败，断言 `self-disposal retained ownership while waiting for unload`；实际为 0 passed、1 failed、0 ignored（0.00 秒），退出码 101。随后恢复修复代码，取得上述完整成功运行。证据为 `artifacts/v0.1.3-alpha.38-r13/validation/loader-negative-control.log`。该测试确认旧实现会被确定性捕获，保留 reload 行为和释放后的即时归属断言。
+
+上述结果限于 Linux 本地源码回归；本记录冻结时，r13 正式新包验收结果尚待取得，不预填最终源码 SHA、正式运行编号或正式成功结论。四个平台构建作业、发布作业、实际 Windows 生产安装后 GUI/Host 启动验证必须全部通过，才允许公开；实际下载核验还须校对公开资产与固定标签源码。README 继续指向可下载的 r10。
 
 
-## r12 开发时的验收记录
+## r13 开发时的验收记录
 
 | 验证 | 本记录状态 | 验收要求 |
 | --- | --- | --- |
@@ -115,13 +129,14 @@ r12 使用新不可变标签 `v0.1.3-alpha.38-r12`，源码与新包仍需完整
 | r8 生产安装后的长 TEMP 故障 | 已复现，验证器 `7c8dcd47`；作业整体 FAIL | 实际安装包与 GUI、就绪父目录 229 个 UTF-16 单元、原 Host 退出码 1、服务日志错误 3；修正验证器后的完整基线已通过 |
 | Flutter 启动失败诊断 | Windows 定点、ARM 完整测试、静态分析及正式客户端构建已通过，源码 `71b35fd5` | 日志未创建、日志不可打开、stdout/stderr 早期错误、大量输出、UTF-8 边界、管道继续被后代持有；保留原因且不挂起 |
 | Flutter 错误呈现 | Windows 定点、ARM 完整测试、静态分析及正式客户端构建已通过，源码 `71b35fd5` | 对象异常与持久字符串均显示可读原因；详情折叠、凭据脱敏；业务 JSON 识别和已存在服务错误保持正确 |
-| 生产 Flutter 安装器冷启动 | r10 正式生产安装验证已通过（63 秒）；r12 正式新包须验收 | 执行实际安装 EXE，运行安装目录客户端，验证 GUI、Host、数据根及随机实例身份；不改写生产安装脚本 |
+| 生产 Flutter 安装器冷启动 | r10 正式生产安装验证已通过（63 秒）；r13 正式新包须验收 | 执行实际安装 EXE，运行安装目录客户端，验证 GUI、Host、数据根及随机实例身份；不改写生产安装脚本 |
 | 安装与升级边界 | 待完成 | 中文空格安装目录、长 TEMP、安装树只读；旧偏好与另一路径服务占用时保留旧进程和数据，释放自建占用后可重试 |
 | Windows 用户权限范围 | 待确认 | 明确执行账户权限；管理员运行的结果不能标为普通用户实测 |
-| Node 内部期限及真实取消分类 | Linux 本地 19 项库测试通过，负向控制识别旧错误；r12 四平台待验 | 保留原失败断言、真实 Stop/运行时释放优先级和审批预算；不放宽时间界限 |
-| 四平台构建、发布及安装启动验收 | r10 已完成；r12 须独立完成 | 保留现有完整回归、真实 Host、组包及摘要门禁，增加实际安装后启动门禁 |
-| r12 公开下载 | 尚未公开；实际下载保留 r10 | 新标签固定源码，逐个下载实际公开资产并验证摘要和构建清单；源码与标签一致 |
+| Node 内部期限及真实取消分类 | r12 Linux 本地 19 项库测试通过，负向控制识别旧错误；r13 须保留并独立验收 | 保留原失败断言、真实 Stop/运行时释放优先级和审批预算；不放宽时间界限 |
+| Loader 释放与重建归属 | r12 正式 Intel 原断言失败；r13 Linux 本地 Loader 4 项及原 standing 3 项通过，负向控制失败 | 确定性复现释放后归属清理，保留 reload 和原 standing 生命周期断言 |
+| 四平台构建、发布及安装启动验收 | r10 已完成；r12 Intel 失败；r13 须独立完成 | 保留现有完整回归、真实 Host、组包及摘要门禁，增加实际安装后启动门禁 |
+| r13 公开下载 | 尚未公开；实际下载保留 r10 | 新标签固定源码，逐个下载实际公开资产并验证摘要和构建清单；源码与标签一致 |
 
-验证环境使用隔离数据根、偏好及临时目录，只清理验证器创建并核对身份的进程和文件。既有 r8 资产、用户数据、账号设置及未知服务保持原状。源码 README 区分已公开 r10 与开发修订 r12，实际下载链接只指已公开包；r12 资产仅在其全部正式门禁通过后公开；最终公开下载核验应在对应发布说明正文和工作区证据补充，不移动或改写已发布标签。
+验证环境使用隔离数据根、偏好及临时目录，只清理验证器创建并核对身份的进程和文件。既有 r8 资产、用户数据、账号设置及未知服务保持原状。源码 README 区分已公开 r10 与开发修订 r13，实际下载链接只指已公开包；r12 保留失败标签且不公开，r13 资产仅在其全部正式门禁通过后公开；最终公开下载核验应在对应发布说明正文和工作区证据补充，不移动或改写已发布标签。
 
 本次启动修订不改变 [dsh-v0.2.1-alpha.1 上游评估](upstream-dsh-v0.2.1-alpha.1-evaluation.zh.md)中的能力结论，也不建立 Devin / Opus 5.5 外部服务或真实字体问题已解决的证据。

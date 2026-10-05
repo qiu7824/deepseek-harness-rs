@@ -261,8 +261,11 @@ impl LoaderService {
             ctx.on(
                 "internal/plugin",
                 Arc::new(move |_ctx: &Context, args: Vec<ArcValue>| {
-                    let core = core.clone();
-                    Box::pin(async move {
+                    // emit() constructs listeners synchronously but schedules
+                    // their futures without joining them. Entry ownership must
+                    // be released here, before a parent finishes disposing its
+                    // children or another teardown observes a cleared fiber.
+                    let _ = (|| -> Option<()> {
                         let fiber_value = args.first()?;
                         let fiber_arc = cordis::downcast::<Arc<FiberCore>>(fiber_value)?;
                         let fiber: Arc<FiberCore> = (*fiber_arc).clone();
@@ -286,8 +289,9 @@ impl LoaderService {
                         core.untrack_fiber(&fiber);
                         let parent = entry.parent.lock().clone()?;
                         parent.tree.write();
-                        None
-                    })
+                        Some(())
+                    })();
+                    Box::pin(async { None })
                 }),
                 EventOptions::default().global(true),
             )
