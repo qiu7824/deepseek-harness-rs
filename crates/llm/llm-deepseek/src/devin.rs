@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 use sha2::Digest;
 use std::collections::{HashMap, HashSet};
 
+#[path = "devin_schema.rs"]
+mod schema;
+
 pub const API: &str = "devin-agent";
 pub const BASE_URL: &str = "https://server.codeium.com";
 pub const CATALOG_PATH: &str = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
@@ -379,7 +382,7 @@ pub(crate) fn chat_request(
                 .ok_or("Devin tool name missing")?,
         );
         tool.text(2, definition["description"].as_str().unwrap_or(""));
-        tool.text(3, &definition["parameters"].to_string());
+        tool.text(3, &schema::for_wire(&definition["parameters"]).to_string());
         request.bytes(10, &tool.0);
     }
     if request.0.len() > 64 * 1024 * 1024 {
