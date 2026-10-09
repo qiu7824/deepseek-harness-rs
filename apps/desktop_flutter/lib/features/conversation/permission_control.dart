@@ -2,6 +2,7 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 
 import '../../src/controller.dart';
+import '../../src/conversation.dart' show ComposerAction;
 import '../../design/primitives.dart';
 import '../../design/error.dart';
 
@@ -32,6 +33,7 @@ class _PermissionControlState extends State<PermissionControl> {
         session = c.selectedId,
         revision = c.selectionRevision;
     if (api == null || session == null || busy || !c.connected) return;
+    Tooltip.dismissAllToolTips();
     bool current() =>
         mounted &&
         c.client == api &&
@@ -182,12 +184,28 @@ class _PermissionControlState extends State<PermissionControl> {
                     mode: c.permissionChoices[value] ?? permissionName(value),
                     details: description.isEmpty ? '' : ' · $description',
                   ));
-      return DshTooltip(
-        message: label,
-        child: DshButton(
+      return KeyedSubtree(
+        key: const ValueKey('permission-mode-control'),
+        child: ComposerAction(
+          value == 'read-only'
+              ? DshIcons.eye.data
+              : value == 'danger-full-access' || value == 'full-access'
+              ? DshIcons.shieldAlert.data
+              : DshIcons.shieldCheck.data,
           key: anchor,
-          height: 36,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          color: value == 'danger-full-access' || value == 'full-access'
+              ? const Color(0xfff97316)
+              : null,
+          asset: value == 'full-access'
+              ? 'assets/icons/web-permission-danger-full-access.svg'
+              : [
+                  'read-only',
+                  'workspace-write',
+                  'danger-full-access',
+                ].contains(value)
+              ? 'assets/icons/web-permission-$value.svg'
+              : null,
+          label: label,
           onPressed:
               busy ||
                   !c.connected ||
@@ -195,30 +213,6 @@ class _PermissionControlState extends State<PermissionControl> {
                   c.permissionChoices.isEmpty
               ? null
               : choose,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DshGlyph(
-                value == 'read-only'
-                    ? DshIcons.eye.data
-                    : value == 'danger-full-access' || value == 'full-access'
-                    ? DshIcons.shieldAlert.data
-                    : DshIcons.shieldCheck.data,
-                size: 16,
-                color: value == 'danger-full-access' || value == 'full-access'
-                    ? DshColors(context).warning
-                    : DshColors(context).muted,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                c.permissionChoices[value] ?? permissionName(value),
-                key: const ValueKey('permission-mode-label'),
-                style: DshTypography.caption,
-              ),
-              const SizedBox(width: 3),
-              DshGlyph(DshIcons.chevronDown.data, size: 12),
-            ],
-          ),
         ),
       );
     },

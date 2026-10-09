@@ -272,6 +272,14 @@ ProductVisualController productVisualFixture(bool dark) {
     'toolsTokens': 3600,
     'messageTokens': 14000,
   }, 1);
+  controller.projectionWindow.apply('permissions', {
+    'currentValue': 'danger-full-access',
+    'options': [
+      {'value': 'workspace-write', 'name': '工作区内修改'},
+      {'value': 'read-only', 'name': '只读'},
+      {'value': 'danger-full-access', 'name': '完全访问'},
+    ],
+  }, 1);
   return controller;
 }
 
@@ -431,6 +439,17 @@ void main() {
             findsNothing,
           );
           expect(find.byKey(const Key('prompt-input')), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('permission-mode-control')),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(
+              of: find.byKey(const ValueKey('permission-mode-control')),
+              matching: find.byType(Text),
+            ),
+            findsNothing,
+          );
           expect(tester.takeException(), isNull);
           final modelTrigger = find.byKey(
             const ValueKey('model-picker-trigger'),

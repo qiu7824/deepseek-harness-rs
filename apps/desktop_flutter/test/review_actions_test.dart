@@ -114,7 +114,7 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
+      await tester.tap(find.byKey(const ValueKey('permission-mode-control')));
       await tester.pumpAndSettle();
       c.projectionWindow.apply('permissions', {
         'currentValue': 'danger-full-access',
@@ -206,7 +206,7 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
+      await tester.tap(find.byKey(const ValueKey('permission-mode-control')));
       await tester.pumpAndSettle();
       expect(find.byType(PopupMenuItem<String>), findsNWidgets(3));
       await tester.tap(
@@ -217,7 +217,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(source.calls, isEmpty);
-      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
+      await tester.tap(find.byKey(const ValueKey('permission-mode-control')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('只读'));
       await tester.pumpAndSettle();
@@ -228,9 +228,7 @@ void main() {
       expect(object(c.projections['permissions'])['currentValue'], 'read-only');
       expect(c.transcript.single.text, '正在阅读旧消息');
       expect(
-        tester
-            .widget<Text>(find.byKey(const ValueKey('permission-mode-label')))
-            .data,
+        tester.widget<ComposerAction>(find.byType(ComposerAction)).label,
         contains('只读'),
       );
       await tester.pumpWidget(const SizedBox());
@@ -256,7 +254,7 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
+      await tester.tap(find.byKey(const ValueKey('permission-mode-control')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('只读'));
       await tester.pumpAndSettle();

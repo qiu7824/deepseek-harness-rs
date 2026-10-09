@@ -5,6 +5,7 @@ import 'package:dsh_desktop/features/conversation/artifacts_view.dart';
 import 'package:dsh_desktop/features/conversation/artifact_changes_view.dart';
 import 'package:dsh_desktop/features/conversation/artifact_types.dart';
 import 'package:dsh_desktop/features/conversation/permission_control.dart';
+import 'package:dsh_desktop/src/conversation.dart' show ComposerAction;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -189,35 +190,61 @@ void main() {
       await api.close();
     },
   );
-  testWidgets(
-    'permission control exposes the product label instead of a preset identifier',
-    (tester) async {
-      final api = ReviewApi(), c = PermissionTestController(ReviewApi());
-      c.projectionWindow.apply('permissions', {
-        'currentValue': 'danger-full-access',
-        'options': [
-          {
-            'value': 'danger-full-access',
-            'name': 'permission.preset.danger-full-access',
-          },
-        ],
-      }, 1);
-      await tester.pumpWidget(
-        ShadApp(
-          home: Scaffold(
-            body: Center(child: PermissionControl(controller: c)),
+  for (final mode in const {
+    'danger-full-access': '完全访问',
+    'full-access': '完全访问',
+    'workspace-write': '工作区内修改',
+    'read-only': '只读',
+  }.entries) {
+    testWidgets(
+      'permission ${mode.key} stays icon-only with localized tooltip and menu',
+      (tester) async {
+        final api = ReviewApi(), c = PermissionTestController(ReviewApi());
+        c.projectionWindow.apply('permissions', {
+          'currentValue': mode.key,
+          'options': [
+            {'value': mode.key, 'name': 'permission.preset.${mode.key}'},
+          ],
+        }, 1);
+        await tester.pumpWidget(
+          ShadApp(
+            home: Scaffold(
+              body: Center(child: PermissionControl(controller: c)),
+            ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('完全访问'), findsOneWidget);
-      expect(find.textContaining('permission.preset'), findsNothing);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-      await c.api.close();
-      await api.close();
-    },
-  );
+        );
+        await tester.pumpAndSettle();
+        final control = find.byKey(const ValueKey('permission-mode-control'));
+        expect(
+          find.descendant(of: control, matching: find.byType(Text)),
+          findsNothing,
+        );
+        expect(tester.getSize(control).width, tester.getSize(control).height);
+        expect(
+          tester.widget<ComposerAction>(find.byType(ComposerAction)).label,
+          contains(mode.value),
+        );
+        expect(find.textContaining('permission.preset'), findsNothing);
+        tester.state<TooltipState>(find.byType(Tooltip)).ensureTooltipVisible();
+        await tester.pumpAndSettle();
+        expect(find.textContaining(mode.value), findsOneWidget);
+        expect(find.textContaining('permission.preset'), findsNothing);
+        await tester.tap(control);
+        await tester.pumpAndSettle();
+        expect(
+          find.descendant(
+            of: find.byType(PopupMenuItem<String>),
+            matching: find.text(mode.value),
+          ),
+          findsOneWidget,
+        );
+        await tester.pumpWidget(const SizedBox());
+        c.dispose();
+        await c.api.close();
+        await api.close();
+      },
+    );
+  }
   testWidgets(
     'folder names toggle in both directions with an intermediate collapse frame',
     (tester) async {
