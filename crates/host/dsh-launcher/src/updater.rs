@@ -4,17 +4,19 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
 const MAX_DOWNLOAD: u64 = 2 * 1024 * 1024 * 1024;
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Asset {
     pub name: String,
     pub browser_download_url: String,
     pub size: u64,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Release {
     pub tag_name: String,
     #[serde(default)]
     pub draft: bool,
+    #[serde(default)]
+    pub prerelease: bool,
     #[serde(default)]
     pub assets: Vec<Asset>,
 }
@@ -23,7 +25,7 @@ pub enum Distribution {
     Installer,
     Portable,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Installation {
     pub version: String,
     pub variant: String,
@@ -31,7 +33,7 @@ pub struct Installation {
     pub arch: String,
     pub distribution: Distribution,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Offer {
     pub release: Release,
     pub asset: Asset,
@@ -51,7 +53,7 @@ struct Mirrors {
     files: Vec<Mirror>,
 }
 
-fn agent(seconds: u64) -> ureq::Agent {
+pub(super) fn agent(seconds: u64) -> ureq::Agent {
     ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(seconds)))
@@ -100,10 +102,36 @@ pub fn installation(root: &Path) -> Result<Installation, String> {
         },
     })
 }
+/// Stable installations never cross into preview releases. Preview installs
+/// stay on their existing prerelease family, and can graduate to stable.
+fn eligible(release: &Release, current: &str) -> bool {
+    let (Some(candidate), Some(installed)) =
+        (parse_version(&release.tag_name), parse_version(current))
+    else {
+        return false;
+    };
+    if release.draft || !candidate.cmp_precedence(&installed).is_gt() {
+        return false;
+    }
+    if candidate.pre.is_empty() {
+        return !release.prerelease;
+    }
+    !installed.pre.is_empty()
+        && installed.pre.as_str().split('.').next() == candidate.pre.as_str().split('.').next()
+}
+
 pub fn select(releases: Vec<Release>, current: Installation) -> Result<Option<Offer>, String> {
+    if parse_version(&current.version).is_none() {
+        return Err("本地安装版本无效".into());
+    }
+    if !matches!(current.variant.as_str(), "core" | "free" | "flutter")
+        || !matches!(current.arch.as_str(), "x86_64" | "aarch64")
+    {
+        return Err("当前安装类型或架构没有受支持的更新包".into());
+    }
     let Some(release) = releases
         .into_iter()
-        .filter(|r| !r.draft && is_newer_version(&r.tag_name, &current.version))
+        .filter(|r| eligible(r, &current.version))
         .max_by_key(|r| parse_version(&r.tag_name))
     else {
         return Ok(None);
@@ -145,6 +173,9 @@ pub fn select(releases: Vec<Release>, current: Installation) -> Result<Option<Of
 }
 pub fn check(root: &Path) -> Result<Option<Offer>, String> {
     let current = installation(root)?;
+    check_installation(current)
+}
+pub(super) fn check_installation(current: Installation) -> Result<Option<Offer>, String> {
     let mut response = agent(15)
         .get(UPDATE_RELEASES_API)
         .header("User-Agent", "deepseek-harness-rs-updater")
@@ -158,7 +189,7 @@ pub fn check(root: &Path) -> Result<Option<Offer>, String> {
         .map_err(|e| e.to_string())?;
     select(releases, current)
 }
-fn asset_url(asset: &Asset, tag: &str) -> Result<(), String> {
+pub(super) fn asset_url(asset: &Asset, tag: &str) -> Result<(), String> {
     let url = url::Url::parse(&asset.browser_download_url).map_err(|_| "更新地址无效")?;
     let expected = format!(
         "/qiu7824/deepseek-harness-rs/releases/download/{tag}/{}",
@@ -170,6 +201,7 @@ fn asset_url(asset: &Asset, tag: &str) -> Result<(), String> {
         || url.password().is_some()
         || url.path() != expected
         || url.query().is_some()
+        || url.fragment().is_some()
     {
         return Err("更新资产不属于当前官方发布".into());
     }
@@ -195,7 +227,7 @@ fn checksum(text: &str, name: &str) -> Result<String, String> {
         Err("安装包缺少唯一的 SHA256 校验值".into())
     }
 }
-fn digest(path: &Path) -> Result<String, String> {
+pub(super) fn digest(path: &Path) -> Result<String, String> {
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut h = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
@@ -344,7 +376,10 @@ pub fn download(
     let expected = checksum(&sums, &offer.asset.name)?;
     fs::create_dir_all(cache).map_err(|e| e.to_string())?;
     let file = cache.join(&offer.asset.name);
-    if file.is_file() && digest(&file)? == expected {
+    if file.is_file()
+        && file.metadata().map_err(|e| e.to_string())?.len() == offer.asset.size
+        && digest(&file)? == expected
+    {
         return Ok(file);
     }
     let partial = cache.join(format!("{}.{}.part", offer.asset.name, now_unix_millis()));
@@ -396,7 +431,7 @@ pub fn download(
     result
 }
 
-fn safe_relative(path: &Path) -> bool {
+pub(super) fn safe_relative(path: &Path) -> bool {
     !path.as_os_str().is_empty()
         && path
             .components()
@@ -404,7 +439,7 @@ fn safe_relative(path: &Path) -> bool {
         && !path.to_string_lossy().contains(':')
         && !path.to_string_lossy().contains('\\')
 }
-fn extract(archive: &Path, target: &Path) -> Result<(), String> {
+pub(super) fn extract(archive: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir(target).map_err(|e| e.to_string())?;
     let mut total = 0u64;
     let mut count = 0usize;
@@ -419,7 +454,9 @@ fn extract(archive: &Path, target: &Path) -> Result<(), String> {
                 return Err("更新包包含不安全路径".into());
             }
             count += 1;
-            total += entry.size();
+            total = total
+                .checked_add(entry.size())
+                .ok_or("更新包展开大小超限")?;
             if count > 30000 || total > MAX_DOWNLOAD * 3 {
                 return Err("更新包展开大小超限".into());
             }
@@ -448,7 +485,9 @@ fn extract(archive: &Path, target: &Path) -> Result<(), String> {
                 return Err("更新包包含不安全路径或链接".into());
             }
             count += 1;
-            total += entry.size();
+            total = total
+                .checked_add(entry.size())
+                .ok_or("更新包展开大小超限")?;
             if count > 30000 || total > MAX_DOWNLOAD * 3 {
                 return Err("更新包展开大小超限".into());
             }
@@ -458,19 +497,19 @@ fn extract(archive: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 #[derive(Serialize, Deserialize)]
-struct ApplyPlan {
-    root: PathBuf,
-    staged: PathBuf,
-    backup: PathBuf,
-    parent_pid: u32,
-    parent_created: u64,
-    parent_exe: PathBuf,
-    archive: PathBuf,
-    sha256: String,
-    version: String,
-    variant: String,
+pub(super) struct ApplyPlan {
+    pub(super) root: PathBuf,
+    pub(super) staged: PathBuf,
+    pub(super) backup: PathBuf,
+    pub(super) parent_pid: u32,
+    pub(super) parent_created: u64,
+    pub(super) parent_exe: PathBuf,
+    pub(super) archive: PathBuf,
+    pub(super) sha256: String,
+    pub(super) version: String,
+    pub(super) variant: String,
 }
-fn files(root: &Path) -> Result<Vec<PathBuf>, String> {
+pub(super) fn files(root: &Path) -> Result<Vec<PathBuf>, String> {
     fn visit(root: &Path, dir: &Path, rows: &mut Vec<PathBuf>) -> Result<(), String> {
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
@@ -557,7 +596,7 @@ pub fn launch_install(offer: &Offer, file: &Path, root: &Path) -> Result<bool, S
     command.spawn().map_err(|e| e.to_string())?;
     Ok(true)
 }
-fn install_files(plan: &ApplyPlan) -> Result<(), String> {
+pub(super) fn install_files(plan: &ApplyPlan) -> Result<(), String> {
     let list = files(&plan.staged)?;
     let root = fs::canonicalize(&plan.root).map_err(|e| e.to_string())?;
     fs::create_dir(&plan.backup).map_err(|e| e.to_string())?;
@@ -749,7 +788,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     fn release() -> Release {
-        Release{tag_name:"v0.1.3-alpha.18".into(),draft:false,assets:["deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-core-setup.exe","deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-core-portable.zip","SHA256SUMS.txt"].iter().map(|n|Asset{name:n.to_string(),browser_download_url:format!("https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.18/{n}"),size:123}).collect()}
+        Release{tag_name:"v0.1.3-alpha.18".into(),draft:false,prerelease:true,assets:["deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-core-setup.exe","deepseek-harness-rs-v0.1.3-alpha.18-windows-x86_64-core-portable.zip","SHA256SUMS.txt"].iter().map(|n|Asset{name:n.to_string(),browser_download_url:format!("https://github.com/qiu7824/deepseek-harness-rs/releases/download/v0.1.3-alpha.18/{n}"),size:123}).collect()}
     }
     #[test]
     fn preserves_installer_portable_and_variant() {
@@ -785,6 +824,84 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    #[test]
+    fn stable_and_preview_channels_use_semver_and_do_not_cross() {
+        let make = |version: &str| {
+            let mut r = release();
+            r.tag_name = format!("v{version}");
+            r.prerelease = version.contains('-');
+            for asset in &mut r.assets {
+                asset.name = asset.name.replace("0.1.3-alpha.18", version);
+                asset.browser_download_url = asset
+                    .browser_download_url
+                    .replace("0.1.3-alpha.18", version);
+            }
+            r
+        };
+        let mut installed = current(Distribution::Portable);
+        installed.version = "0.1.3".into();
+        assert!(
+            select(vec![make("0.1.4-alpha.1")], installed.clone())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            select(vec![make("0.1.4-alpha.1"), make("0.1.4")], installed)
+                .unwrap()
+                .unwrap()
+                .release
+                .tag_name,
+            "v0.1.4"
+        );
+        assert!(
+            select(vec![make("0.1.3-beta.1")], current(Distribution::Portable))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            select(
+                vec![
+                    make("0.1.3-alpha.9"),
+                    make("0.1.3-alpha.100"),
+                    make("0.1.3-alpha.20")
+                ],
+                current(Distribution::Portable)
+            )
+            .unwrap()
+            .unwrap()
+            .release
+            .tag_name,
+            "v0.1.3-alpha.100"
+        );
+    }
+    #[test]
+    fn flutter_assets_preserve_platform_and_distribution() {
+        let mut r = release();
+        for asset in &mut r.assets {
+            asset.name = asset.name.replace("-core-", "-flutter-");
+        }
+        let mut installed = current(Distribution::Portable);
+        installed.variant = "flutter".into();
+        assert!(
+            select(vec![r.clone()], installed.clone())
+                .unwrap()
+                .unwrap()
+                .asset
+                .name
+                .ends_with("-flutter-portable.zip")
+        );
+        installed.distribution = Distribution::Installer;
+        assert!(
+            select(vec![r.clone()], installed.clone())
+                .unwrap()
+                .unwrap()
+                .asset
+                .name
+                .ends_with("-flutter-setup.exe")
+        );
+        installed.arch = "aarch64".into();
+        assert!(select(vec![r], installed).is_err());
     }
     #[test]
     fn checksum_and_paths_fail_closed() {

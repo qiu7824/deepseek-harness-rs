@@ -28,9 +28,10 @@ void main() {
         tokens.selected,
         tokens.bubble,
       ]) {
-        expect(_contrast(tokens.text, surface), greaterThanOrEqualTo(4.5));
-        expect(_contrast(tokens.muted, surface), greaterThanOrEqualTo(4.5));
-        expect(_contrast(tokens.focus, surface), greaterThanOrEqualTo(3));
+        final painted = Color.alphaBlend(surface, tokens.base);
+        expect(_contrast(tokens.text, painted), greaterThanOrEqualTo(4.5));
+        expect(_contrast(tokens.muted, painted), greaterThanOrEqualTo(4.5));
+        expect(_contrast(tokens.focus, painted), greaterThanOrEqualTo(3));
       }
       expect(
         _contrast(tokens.onAccent, tokens.accent),
@@ -61,8 +62,16 @@ void main() {
         expect(tokens.switchTrack, isNot(tokens.accent));
       }
       expect(
-        DshTokens.light.selected.computeLuminance(),
-        lessThan(DshTokens.light.hover.computeLuminance()),
+        Color.alphaBlend(
+          DshTokens.light.selected,
+          DshTokens.light.base,
+        ).computeLuminance(),
+        lessThan(
+          Color.alphaBlend(
+            DshTokens.light.hover,
+            DshTokens.light.base,
+          ).computeLuminance(),
+        ),
       );
     },
   );

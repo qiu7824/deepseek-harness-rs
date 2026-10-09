@@ -36,7 +36,7 @@ enum DshIcons {
     IconData(0xe007, fontFamily: 'DshVectorIcons'),
   ),
   calendarClock(
-    'assets/icons/calendarClock.svg',
+    'assets/icons/desktop-schedule.svg',
     IconData(0xe008, fontFamily: 'DshVectorIcons'),
   ),
   check(
@@ -80,7 +80,7 @@ enum DshIcons {
     IconData(0xe013, fontFamily: 'DshVectorIcons'),
   ),
   clock(
-    'assets/icons/clock.svg',
+    'assets/icons/desktop-clock.svg',
     IconData(0xe014, fontFamily: 'DshVectorIcons'),
   ),
   clock3(
@@ -118,11 +118,11 @@ enum DshIcons {
     IconData(0xe01e, fontFamily: 'DshVectorIcons'),
   ),
   files(
-    'assets/icons/files.svg',
+    'assets/icons/desktop-files.svg',
     IconData(0xe01f, fontFamily: 'DshVectorIcons'),
   ),
   folder(
-    'assets/icons/web-IconFolderClose16.svg',
+    'assets/icons/desktop-folder.svg',
     IconData(0xe020, fontFamily: 'DshVectorIcons'),
   ),
   folderCog(
@@ -166,7 +166,7 @@ enum DshIcons {
     IconData(0xe02a, fontFamily: 'DshVectorIcons'),
   ),
   layoutGrid(
-    'assets/icons/layoutGrid.svg',
+    'assets/icons/desktop-grid.svg',
     IconData(0xe02b, fontFamily: 'DshVectorIcons'),
   ),
   link(
@@ -174,7 +174,7 @@ enum DshIcons {
     IconData(0xe02c, fontFamily: 'DshVectorIcons'),
   ),
   listChecks(
-    'assets/icons/listChecks.svg',
+    'assets/icons/desktop-list-checks.svg',
     IconData(0xe02d, fontFamily: 'DshVectorIcons'),
   ),
   listFilter(
@@ -193,7 +193,10 @@ enum DshIcons {
     'assets/icons/messageCircle.svg',
     IconData(0xe031, fontFamily: 'DshVectorIcons'),
   ),
-  mic('assets/icons/mic.svg', IconData(0xe032, fontFamily: 'DshVectorIcons')),
+  mic(
+    'assets/icons/desktop-mic.svg',
+    IconData(0xe032, fontFamily: 'DshVectorIcons'),
+  ),
   minus(
     'assets/icons/minus.svg',
     IconData(0xe033, fontFamily: 'DshVectorIcons'),
@@ -211,7 +214,7 @@ enum DshIcons {
     IconData(0xe036, fontFamily: 'DshVectorIcons'),
   ),
   panelRight(
-    'assets/icons/panelRight.svg',
+    'assets/icons/desktop-panel-right.svg',
     IconData(0xe037, fontFamily: 'DshVectorIcons'),
   ),
   paperclip(
@@ -271,7 +274,7 @@ enum DshIcons {
     IconData(0xe045, fontFamily: 'DshVectorIcons'),
   ),
   shieldCheck(
-    'assets/icons/shieldCheck.svg',
+    'assets/icons/desktop-shield-check.svg',
     IconData(0xe046, fontFamily: 'DshVectorIcons'),
   ),
   slidersHorizontal(
@@ -295,7 +298,7 @@ enum DshIcons {
     IconData(0xe04b, fontFamily: 'DshVectorIcons'),
   ),
   terminal(
-    'assets/icons/terminal.svg',
+    'assets/icons/desktop-terminal.svg',
     IconData(0xe04c, fontFamily: 'DshVectorIcons'),
   ),
   thumbsDown(
@@ -407,8 +410,12 @@ enum DshIcons {
     IconData(0xe067, fontFamily: 'DshVectorIcons'),
   ),
   browser(
-    'assets/icons/browser.svg',
+    'assets/icons/desktop-browser.svg',
     IconData(0xe068, fontFamily: 'DshVectorIcons'),
+  ),
+  plugins(
+    'assets/icons/desktop-plugins.svg',
+    IconData(0xe069, fontFamily: 'DshVectorIcons'),
   );
 
   const DshIcons(this.asset, this.data);

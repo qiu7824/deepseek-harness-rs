@@ -161,6 +161,37 @@ pub(crate) async fn catalog(base: &str, token: &str) -> Result<Value, String> {
     devin::catalog_from_bytes(&unary_payload(&bytes)?)
 }
 
+pub(crate) async fn usage(base: &str, token: &str) -> Result<Value, String> {
+    let mut body = Encoder::default();
+    body.bytes(1, &devin::metadata(token, "", false));
+    let response = client()?
+        .post(endpoint(
+            base,
+            "/exa.seat_management_pb.SeatManagementService/GetUserStatus",
+        )?)
+        .header("content-type", "application/proto")
+        .header("connect-protocol-version", "1")
+        .body(body.0)
+        .timeout(Duration::from_secs(25))
+        .send()
+        .await
+        .map_err(|_| "Devin 额度服务连接失败".to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("[HTTP_{}] Devin 额度查询失败", status.as_u16()));
+    }
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if !content_type.starts_with("application/proto") {
+        return Err("Devin 额度服务返回不支持的数据格式".into());
+    }
+    let bytes = read_limited(response, MAX_FRAME).await?;
+    devin::usage_from_bytes(&unary_payload(&bytes)?)
+}
+
 async fn send(
     request: reqwest::RequestBuilder,
     sender: &tokio::sync::mpsc::Sender<StreamChunk>,

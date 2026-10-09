@@ -15,7 +15,7 @@ abstract final class DshConversationZh {
   static const context = '上下文';
   static const historyWindowLimit = '部分记录超过当前窗口的展示上限，完整内容仍保存在会话日志中。';
   static const welcomeTitle = '探索未至之境';
-  static const rustEdition = '预览版';
+  static const rustEdition = 'Rust 版';
   static const loadingHistory = '正在读取…';
   static const loadEarlier = '加载更早记录';
   static const jumpToBottom = '回到底部';

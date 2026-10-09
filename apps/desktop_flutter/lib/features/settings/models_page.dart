@@ -14,6 +14,8 @@ import '../../design/loading.dart';
 import '../../design/select.dart';
 import '../../design/motion.dart';
 import 'account_login.dart';
+import 'account_usage_panel.dart';
+import '../account_menu.dart' show accountUsageScope, accountNeedsLogin;
 import 'model_editor_widgets.dart';
 import 'task_models_page.dart';
 export 'task_models_page.dart' show TaskModelsPage;
@@ -1564,6 +1566,20 @@ class _ModelsPageState extends State<ModelsPage> {
                               ),
                           ],
                         ),
+                        if (account['signedIn'] == true)
+                          AccountUsageDisclosure(
+                            key: ValueKey(
+                              'account-usage-panel-${account['id']}',
+                            ),
+                            controller: widget.controller,
+                            api: api,
+                            provider: '${account['id']}',
+                            accountScope: accountUsageScope(account),
+                            visible: expandedAccounts.contains(
+                              '${account['id']}',
+                            ),
+                            needsLogin: accountNeedsLogin(account),
+                          ),
                         if (account['scope'] != 'subagent')
                           for (final saved in objects(account['accounts']))
                             ListTile(

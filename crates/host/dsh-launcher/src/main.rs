@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod desktop_update;
 mod updater;
 
 use std::fs;
@@ -42,7 +43,8 @@ use windows_sys::Win32::{
         RegCreateKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     },
     System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     },
     UI::WindowsAndMessaging::{FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow},
 };
@@ -321,8 +323,11 @@ fn now_unix_millis() -> u64 {
 
 fn same_executable(left: &Path, right: &Path) -> bool {
     if cfg!(windows) {
+        let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+        let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
         left.to_string_lossy()
-            .eq_ignore_ascii_case(&right.to_string_lossy())
+            .trim_start_matches(r"\\?\")
+            .eq_ignore_ascii_case(right.to_string_lossy().trim_start_matches(r"\\?\"))
     } else {
         left == right
     }
@@ -485,6 +490,16 @@ fn inspect_process_platform(pid: u32) -> io::Result<ProcessIdentity> {
         return Err(io::Error::last_os_error());
     }
     let result = (|| {
+        let mut exit_code = 0;
+        if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if exit_code != 259 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "process has exited",
+            ));
+        }
         let mut creation = FILETIME {
             dwLowDateTime: 0,
             dwHighDateTime: 0,
@@ -801,7 +816,7 @@ fn parse_version(value: &str) -> Option<semver::Version> {
 fn is_newer_version(candidate: &str, current: &str) -> bool {
     matches!(
         (parse_version(candidate), parse_version(current)),
-        (Some(candidate), Some(current)) if candidate > current
+        (Some(candidate), Some(current)) if candidate.cmp_precedence(&current).is_gt()
     )
 }
 
@@ -1893,6 +1908,21 @@ fn open_target(target: &str, copy: Copy) -> Result<(), String> {
 
 fn main() -> Result<(), zsui::ZsuiError> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.first().is_some_and(|a| a == "--desktop-update") {
+        desktop_update::cli(&arguments[1..]);
+        return Ok(());
+    }
+    if arguments
+        .first()
+        .is_some_and(|a| a == "--apply-desktop-update")
+    {
+        return desktop_update::apply(Path::new(
+            arguments
+                .get(1)
+                .ok_or_else(|| zsui::ZsuiError::host("update", "missing plan"))?,
+        ))
+        .map_err(|e| zsui::ZsuiError::host("update", e));
+    }
     if arguments.first().is_some_and(|a| a == "--apply-update") {
         return updater::apply(Path::new(
             arguments
@@ -2157,6 +2187,7 @@ mod tests {
         assert!(is_newer_version("v0.1.2", "0.1.2-alpha.2"));
         assert!(is_newer_version("v0.1.3", "0.1.2-alpha.2"));
         assert!(!is_newer_version("not-a-version", "0.1.2"));
+        assert!(!is_newer_version("v0.1.2+build.99", "0.1.2+build.1"));
     }
 
     #[test]

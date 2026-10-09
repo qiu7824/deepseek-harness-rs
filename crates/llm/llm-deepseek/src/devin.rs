@@ -56,6 +56,18 @@ pub async fn discover_models(base: &str, token: &str) -> Result<Value, String> {
     super::devin_transport::catalog(base, token).await
 }
 
+#[path = "devin_usage.rs"]
+mod account_usage;
+
+/// Reads the official account status without issuing a model request.
+pub async fn read_usage(base: &str, token: &str) -> Result<Value, String> {
+    super::devin_transport::usage(base, token).await
+}
+
+pub(crate) fn usage_from_bytes(bytes: &[u8]) -> Result<Value, String> {
+    account_usage::decode(bytes)
+}
+
 pub(crate) fn catalog_from_bytes(bytes: &[u8]) -> Result<Value, String> {
     let root = Message::parse(bytes)?;
     let mut models = Vec::new();

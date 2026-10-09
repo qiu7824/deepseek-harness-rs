@@ -357,6 +357,70 @@ async fn schedule_permanent_deletion_purges_stored_tasks_before_removing_the_log
 }
 
 #[tokio::test]
+async fn visible_session_deletion_requires_explicit_schedule_stop_without_archiving() {
+    let fixture = Fixture::new(None).await;
+    fixture.create().await;
+    let denied = fixture
+        .rpc(
+            "workspace.deleteSession",
+            json!({"sessionId":"cold-reminder-owner"}),
+        )
+        .await;
+    assert_eq!(denied["error"]["code"], "agent-busy", "{denied}");
+    assert_eq!(denied["error"]["details"]["reason"], "active-schedules");
+    assert!(
+        fixture
+            .api
+            .workspace_registry()
+            .unwrap()
+            .archived_session_ids()
+            .is_empty()
+    );
+    assert!(!fixture.schedule.catalog().await.unwrap().is_empty());
+    assert!(fixture.source.exists());
+    let removed = fixture
+        .rpc(
+            "workspace.deleteSession",
+            json!({"sessionId":"cold-reminder-owner","stopSchedules":true}),
+        )
+        .await;
+    assert_eq!(removed["ok"], true, "{removed}");
+    assert_eq!(removed["value"]["deleted"], true);
+    assert!(fixture.schedule.catalog().await.unwrap().is_empty());
+    assert!(
+        fixture
+            .api
+            .workspace_registry()
+            .unwrap()
+            .archived_session_ids()
+            .is_empty()
+    );
+    fixture.close(true).await;
+}
+
+#[tokio::test]
+async fn visible_session_deletion_without_tasks_removes_the_log_directly() {
+    let fixture = Fixture::new(None).await;
+    let removed = fixture
+        .rpc(
+            "workspace.deleteSession",
+            json!({"sessionId":"cold-reminder-owner"}),
+        )
+        .await;
+    assert_eq!(removed["ok"], true, "{removed}");
+    assert_eq!(removed["value"]["deleted"], true);
+    assert!(
+        fixture
+            .api
+            .workspace_registry()
+            .unwrap()
+            .archived_session_ids()
+            .is_empty()
+    );
+    fixture.close(true).await;
+}
+
+#[tokio::test]
 async fn schedule_management_shares_control_admission_and_rejects_subagent_ownership() {
     let fixture = Fixture::new(None).await;
     let controller = fixture.api.schedule_session_controller();

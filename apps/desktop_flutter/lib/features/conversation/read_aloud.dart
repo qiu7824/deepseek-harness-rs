@@ -11,7 +11,8 @@ class ReadAloudController extends ChangeNotifier {
   Timer? _timer;
   String? _text, _activeId;
   int _offset = 0, _serial = 0;
-  bool _polling = false, _disposed = false;
+  String? _pollingOwner;
+  bool _disposed = false;
 
   String? get activeId => _activeId;
   int get retainedTextUnits => _text?.length ?? 0;
@@ -69,10 +70,13 @@ class ReadAloudController extends ChangeNotifier {
   }
 
   Future<void> _poll(String owner) async {
-    if (_polling || _disposed || owner != generation || _activeId == null) {
+    if (_pollingOwner == owner ||
+        _disposed ||
+        owner != generation ||
+        _activeId == null) {
       return;
     }
-    _polling = true;
+    _pollingOwner = owner;
     try {
       final done = await channel.invokeMethod<bool>('status', {
         'generation': owner,
@@ -83,7 +87,7 @@ class ReadAloudController extends ChangeNotifier {
     } catch (_) {
       if (owner == generation) await stop();
     } finally {
-      _polling = false;
+      if (_pollingOwner == owner) _pollingOwner = null;
     }
   }
 
@@ -91,6 +95,7 @@ class ReadAloudController extends ChangeNotifier {
     final old = _activeId == null ? null : generation;
     _timer?.cancel();
     _timer = null;
+    _pollingOwner = null;
     _activeId = null;
     _text = null;
     _offset = 0;

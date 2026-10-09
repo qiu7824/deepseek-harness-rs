@@ -9,14 +9,27 @@ import 'package:flutter/services.dart';
 import '../../design/primitives.dart';
 import '../../design/error.dart';
 import '../../design/context_menu.dart';
-import '../workbench/workbench_panel.dart' show NativeFileViewer, previewUrl;
+import '../workbench/workbench_panel.dart'
+    show NativeFileViewer, GitPanel, previewUrl;
 import 'session_status.dart' show ProjectionTextEditor;
+import 'artifact_types.dart';
+import 'artifact_changes_view.dart';
 
 import 'package:dsh_desktop/design/typography.dart';
 import 'package:dsh_desktop/l10n/conversation_zh.dart';
 
 String artifactName(String path) => path.replaceAll('\\', '/').split('/').last;
 String artifactDisplayPath(String path) => displayPath(path);
+String artifactRecordTime(Object? value) {
+  if (value is! num || !value.isFinite || value <= 0 || value > 253402300799) {
+    return '';
+  }
+  final time = DateTime.fromMillisecondsSinceEpoch(value.toInt() * 1000)
+      .toLocal();
+  String pad(int number) => number.toString().padLeft(2, '0');
+  return '${pad(time.month)}-${pad(time.day)} ${pad(time.hour)}:${pad(time.minute)}';
+}
+
 String artifactBytes(Object? value) {
   final n = value is num ? value : 0;
   return n >= 1073741824
@@ -30,6 +43,7 @@ String artifactBytes(Object? value) {
 
 const artifactLabels = {
   'created': DshConversationZh.added,
+  'restored': '已恢复',
   'modified': DshConversationZh.modified,
   'presented': DshConversationZh.delivered,
   'deleted': DshConversationZh.removed,
@@ -41,6 +55,21 @@ const artifactLabels = {
   'quarantined': DshConversationZh.recoveryQueue,
   'reclaimed': DshConversationZh.reclaimed,
 };
+const artifactFileActions = {
+  'preview': DshConversationZh.preview,
+  'diff': '查看回合差异',
+  'copy': DshConversationZh.copyPath,
+  'reveal': DshConversationZh.revealInFileManager,
+  'open': DshConversationZh.openWithLocalTool,
+  'save': DshConversationZh.saveOriginalCopy,
+  'rename': DshConversationZh.rename,
+  'trash': DshConversationZh.moveToTrash,
+};
+bool artifactCanAct(Json row, String action) {
+  if (action == 'copy' || action == 'diff') return true;
+  if (row['change'] == 'deleted' || row['unavailable'] == true) return false;
+  return !['rename', 'trash'].contains(action) || row['etag'] is String;
+}
 
 /// One bounded request at a time, with screen/app visibility owning polling.
 abstract class _PollingState<T extends StatefulWidget> extends State<T>
@@ -48,7 +77,7 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
   DshClient get api;
   String get operation;
   Json get arguments;
-  final actions = RequestScope();
+  RequestScope actions = RequestScope();
   RequestScope? reader;
   Timer? poll;
   Json data = {};
@@ -61,6 +90,7 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
       visible = true;
   int generation = 0, failures = 0;
   bool get enabled => true;
+  Object get ownerScope => api;
   bool get active => mounted && visible && foreground && enabled;
   @override
   void initState() {
@@ -163,6 +193,7 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
     bool indicate = true,
   }) async {
     if (busy) return;
+    final owner = ownerScope;
     pause();
     setState(() {
       busy = true;
@@ -173,14 +204,14 @@ abstract class _PollingState<T extends StatefulWidget> extends State<T>
     try {
       await work();
     } catch (e) {
-      if (mounted) {
+      if (mounted && ownerScope == owner) {
         setState(() {
           error = e;
           mutationFailed = true;
         });
       }
     } finally {
-      if (mounted) {
+      if (mounted && ownerScope == owner) {
         setState(() {
           busy = false;
           working = false;
@@ -239,16 +270,99 @@ class ArtifactsView extends StatefulWidget {
 }
 
 class _ArtifactsViewState extends _PollingState<ArtifactsView> {
-  bool garbage = false;
+  bool garbage = false, workspaceRefresh = false, initialScanDone = false;
+  bool sectionChosen = false;
+  String section = 'all', category = 'all';
+  final search = TextEditingController();
+  @override
+  Object get ownerScope => (api, widget.session);
+  @override
+  void didUpdateWidget(ArtifactsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.api, widget.api) ||
+        oldWidget.session != widget.session) {
+      pause();
+      actions.cancel();
+      actions = RequestScope();
+      data = {};
+      error = null;
+      loading = true;
+      busy = false;
+      working = false;
+      mutationFailed = false;
+      workspaceRefresh = false;
+      initialScanDone = false;
+      garbage = false;
+      section = 'all';
+      sectionChosen = false;
+      category = 'all';
+      search.clear();
+      unawaited(load());
+    }
+  }
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Future<void> load() async {
+    await super.load();
+    if (active && !sectionChosen && data.containsKey('entries')) {
+      setState(() {
+        sectionChosen = true;
+        if (objects(data['entries'])
+            .any((row) => row['source'] == 'delivery')) {
+          section = 'delivered';
+        }
+      });
+    }
+    if (active &&
+        error == null &&
+        ((!initialScanDone && data['workspaceScanned'] == false) ||
+            data['refreshNeeded'] == true) &&
+        reader == null) {
+      initialScanDone = true;
+      await rescan();
+    }
+  }
+
+  Future<void> rescan() async {
+    if (!active || workspaceRefresh) return;
+    pause();
+    setState(() {
+      workspaceRefresh = true;
+      initialScanDone = true;
+    });
+    try {
+      await super.load();
+    } finally {
+      if (mounted) setState(() => workspaceRefresh = false);
+    }
+  }
+
   @override
   DshClient get api => widget.api;
   @override
   String get operation => 'list';
   @override
-  Json get arguments => {'sessionId': widget.session};
+  Json get arguments => {
+    'sessionId': widget.session,
+    'refresh': workspaceRefresh,
+  };
   @override
-  bool get enabled => !garbage;
-  Future<void> change(Json row, String action, {String? path}) async {
+  bool get enabled => !garbage && !['changes', 'git'].contains(section);
+  Future<void> change(
+    Json row,
+    String action, {
+    String? path,
+    Object? owner,
+  }) async {
+    if (owner != null && ownerScope != owner) {
+      throw StateError('账号或会话已变化，请重新打开文件操作');
+    }
     await api.request(
       '/__dsh-artifacts/file-action',
       body: {
@@ -262,10 +376,30 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
       mutation: true,
       maxBytes: 65536,
     );
+    initialScanDone = false;
   }
 
   Future<void> manage(Json row, String intent) async {
+    final owner = ownerScope;
     final path = '${row['path']}';
+    if (intent == 'diff') {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => Dialog(
+          child: SizedBox(
+            width: 1100,
+            height: MediaQuery.sizeOf(context).height * .82,
+            child: ArtifactChangesView(
+              api: api,
+              session: widget.session,
+              initialPath: path,
+              onClose: () => Navigator.pop(context),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     if (intent == 'rename') {
       await run(
         () => showDialog<void>(
@@ -276,7 +410,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
             maxLines: 1,
             width: 392,
             initial: path,
-            onSave: (text) => change(row, 'rename', path: text),
+            onSave: (text) => change(row, 'rename', path: text, owner: owner),
           ),
         ),
         indicate: false,
@@ -292,7 +426,9 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
       )) {
         return;
       }
-      if (mounted) await run(() => change(row, 'trash'));
+      if (mounted && ownerScope == owner) {
+        await run(() => change(row, 'trash', owner: owner));
+      }
       return;
     }
     await run(
@@ -313,7 +449,7 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
           final target = await getSaveLocation(
             suggestedName: artifactName(path),
           );
-          if (target == null || !mounted) return;
+          if (target == null || !mounted || ownerScope != owner) return;
           await api.downloadTo(
             previewUrl('file', widget.session, {'path': path}),
             File(target.path),
@@ -354,266 +490,289 @@ class _ArtifactsViewState extends _PollingState<ArtifactsView> {
         },
       );
     }
-    final rows = objects(data['entries']), colors = DshColors(context);
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 960),
-        child: Padding(
-          padding: EdgeInsets.all(
-            MediaQuery.sizeOf(context).width < 650 ? 10 : 18,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    final colors = DshColors(context);
+    final all = objects(data['entries']);
+    final query = search.text.trim().toLowerCase();
+    final rows = all.where((row) {
+      final path = '${row['path']}';
+      return (section != 'delivered' ||
+              row['source'] == 'delivery' ||
+              row['change'] == 'presented') &&
+          (category == 'all' || artifactCategory(path) == category) &&
+          (query.isEmpty || path.toLowerCase().contains(query));
+    }).toList();
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
             children: [
-              Container(
-                padding: const EdgeInsets.only(bottom: 12),
-                decoration: BoxDecoration(
-                  border: Border(bottom: BorderSide(color: colors.border)),
+              Expanded(child: Text('产物与改动', style: DshTypography.body)),
+              if (!['changes', 'git'].contains(section))
+                Text(
+                  DshConversationZh.fileCount(count: rows.length),
+                  style: DshTypography.caption,
                 ),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        DshConversationZh.artifacts,
-                        style: TextStyle(
-                          fontSize: DshTypography.sizeBody,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    Text(
-                      DshConversationZh.fileCount(count: rows.length),
-                      style: const TextStyle(fontSize: DshTypography.sizeBody),
-                    ),
-                    const SizedBox(width: 12),
-                    DshButton(
-                      outline: true,
-                      height: 33,
-                      onPressed: busy ? null : load,
-                      child: const Text(DshConversationZh.refresh),
-                    ),
-                  ],
+              if (!['changes', 'git'].contains(section))
+                DshIcon(
+                  DshIcons.refreshCw.data,
+                  label: '刷新工作区产物',
+                  onPressed: busy || workspaceRefresh ? null : rescan,
                 ),
-              ),
-              notices(),
-              if (data['truncated'] == true)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    DshConversationZh.artifactScanLimit,
-                    style: TextStyle(fontSize: DshTypography.sizeCaption),
-                  ),
-                ),
-              Flexible(
-                fit: FlexFit.loose,
-                child: SizedBox(
-                  height: (rows.isEmpty ? 128 : rows.length * 51 + 28)
-                      .toDouble(),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    child: loading
-                        ? const Center(
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : rows.isEmpty
-                        ? const DshEmpty(DshConversationZh.noArtifactChanges)
-                        : ListView.builder(
-                            itemExtent: 51,
-                            itemCount: rows.length,
-                            itemBuilder: (context, index) {
-                              final row = rows[index],
-                                  deleted = row['change'] == 'deleted',
-                                  path = '${row['path']}';
-                              return Container(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 8,
-                                ),
-                                decoration: BoxDecoration(
-                                  border: Border(
-                                    bottom: BorderSide(color: colors.border),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: InkWell(
-                                        onSecondaryTapDown: (event) async {
-                                          if (deleted || busy) return;
-                                          final action =
-                                              await nativeContextMenu(
-                                                context,
-                                                event.globalPosition,
-                                                {
-                                                  'preview':
-                                                      DshConversationZh.preview,
-                                                  'copy': DshConversationZh
-                                                      .copyPath,
-                                                  'reveal': DshConversationZh
-                                                      .revealInFileManager,
-                                                  'open': DshConversationZh
-                                                      .openWithLocalTool,
-                                                  'save': DshConversationZh
-                                                      .saveOriginalCopy,
-                                                  'rename':
-                                                      DshConversationZh.rename,
-                                                  'trash': DshConversationZh
-                                                      .moveToTrash,
-                                                },
-                                              );
-                                          if (mounted && action != null) {
-                                            await manage(row, action);
-                                          }
-                                        },
-                                        onTap: deleted || busy
-                                            ? null
-                                            : () => manage(row, 'preview'),
-                                        child: Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 10,
-                                            vertical: 6,
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Text(
-                                                artifactLabels[row['change']] ??
-                                                    '${row['change']}',
-                                                style: TextStyle(
-                                                  fontSize:
-                                                      DshTypography.sizeCaption,
-                                                  color:
-                                                      row['change'] == 'created'
-                                                      ? const Color(0xff22c55e)
-                                                      : row['change'] ==
-                                                            'modified'
-                                                      ? colors.blue
-                                                      : colors.muted,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              Expanded(
-                                                child: Text(
-                                                  displayPath(path),
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    fontSize:
-                                                        DshTypography.sizeBody,
-                                                    color: deleted
-                                                        ? colors.muted
-                                                        : colors.text,
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              Text(
-                                                artifactBytes(row['size']),
-                                                style: TextStyle(
-                                                  fontSize:
-                                                      DshTypography.sizeCaption,
-                                                  color: colors.muted,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    PopupMenuButton<String>(
-                                      tooltip: DshConversationZh.managePath(
-                                        path: path,
-                                      ),
-                                      enabled: !busy,
-                                      onSelected: (intent) =>
-                                          manage(row, intent),
-                                      padding: EdgeInsets.zero,
-                                      constraints: const BoxConstraints(
-                                        minWidth: 200,
-                                        maxWidth: 200,
-                                      ),
-                                      menuPadding: const EdgeInsets.all(6),
-                                      color: colors.base,
-                                      surfaceTintColor: Colors.transparent,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(9),
-                                        side: BorderSide(color: colors.border),
-                                      ),
-                                      itemBuilder: (_) => [
-                                        for (final item in const {
-                                          'preview': DshConversationZh.preview,
-                                          'copy': DshConversationZh.copyPath,
-                                          'reveal': DshConversationZh
-                                              .revealInFileManager,
-                                          'open': DshConversationZh
-                                              .openWithLocalTool,
-                                          'editor':
-                                              DshConversationZh.openInEditor,
-                                          'save': DshConversationZh
-                                              .saveOriginalCopy,
-                                          'rename': DshConversationZh.rename,
-                                          'trash':
-                                              DshConversationZh.moveToTrash,
-                                        }.entries)
-                                          PopupMenuItem(
-                                            height: 34,
-                                            value: item.key,
-                                            enabled: !deleted,
-                                            child: Text(
-                                              item.value,
-                                              style: const TextStyle(
-                                                fontSize:
-                                                    DshTypography.sizeBody,
-                                              ),
-                                            ),
-                                          ),
-                                      ],
-                                      child: Container(
-                                        width: 36,
-                                        height: 34,
-                                        decoration: BoxDecoration(
-                                          border: Border.all(
-                                            color: colors.border,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            7,
-                                          ),
-                                        ),
-                                        child: DshGlyph(
-                                          DshIcons.ellipsis.data,
-                                          size: 16,
-                                          color: colors.muted,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                ),
-              ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: DshButton(
-                    outline: true,
-                    height: 33,
-                    onPressed: busy
-                        ? null
-                        : () {
-                            pause();
-                            setState(() => garbage = true);
-                          },
-                    child: const Text(DshConversationZh.viewGeneratedTrash),
-                  ),
-                ),
-              ),
             ],
           ),
-        ),
+          Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: [
+              for (final entry in const {
+                'all': '全部产物',
+                'delivered': '已交付',
+                'changes': '回合改动',
+                'git': '工作区差异',
+              }.entries)
+                DshButton(
+                  key: ValueKey('artifact-section-${entry.key}'),
+                  height: 30,
+                  active: section == entry.key,
+                  fontSize: DshTypography.sizeCaption,
+                  onPressed: () {
+                    pause();
+                    setState(() {
+                      sectionChosen = true;
+                      section = entry.key;
+                    });
+                    if (!['changes', 'git'].contains(section)) {
+                      unawaited(load());
+                    }
+                  },
+                  child: Text(entry.value),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (section == 'changes')
+            Expanded(
+              child: ArtifactChangesView(api: api, session: widget.session),
+            )
+          else if (section == 'git')
+            Expanded(
+              child: GitPanel(api: api, session: widget.session),
+            )
+          else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: DshTokens.of(context).controlHeight(context),
+                    child: TextField(
+                      key: const ValueKey('artifact-search'),
+                      controller: search,
+                      style: DshTypography.body,
+                      decoration: const InputDecoration(
+                        hintText: '搜索文件名或路径',
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                      ),
+                      onChanged: (_) => setState(() {
+                        sectionChosen = true;
+                      }),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                PopupMenuButton<String>(
+                  tooltip: '筛选产物类型',
+                  onSelected: (value) => setState(() {
+                    sectionChosen = true;
+                    category = value;
+                  }),
+                  itemBuilder: (_) => [
+                    for (final e in artifactCategories.entries)
+                      PopupMenuItem(value: e.key, child: Text(e.value)),
+                  ],
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 8,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          artifactCategories[category]!,
+                          style: DshTypography.caption,
+                        ),
+                        const SizedBox(width: 4),
+                        DshGlyph(DshIcons.chevronDown.data, size: 12),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            notices(),
+            if (workspaceRefresh) const LinearProgressIndicator(minHeight: 1),
+            if (data['truncated'] == true)
+              Text(
+                DshConversationZh.artifactScanLimit,
+                style: DshTypography.caption,
+              ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: loading
+                  ? const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : rows.isEmpty
+                  ? DshEmpty(
+                      query.isNotEmpty || category != 'all'
+                          ? '没有匹配的产物'
+                          : section == 'delivered'
+                          ? '尚无已交付文件'
+                          : '尚无产物记录',
+                    )
+                  : ListView.separated(
+                      itemCount: rows.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (context, index) {
+                        final row = rows[index],
+                            path = '${rows[index]['path']}';
+                        final unavailable =
+                            row['change'] == 'deleted' ||
+                            row['unavailable'] == true;
+                        final type = artifactCategory(path);
+                        final owner = ownerScope;
+                        return Material(
+                          color: colors.layer,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            side: BorderSide(color: colors.border),
+                          ),
+                          child: GestureDetector(
+                            onSecondaryTapDown: busy
+                                ? null
+                                : (event) async {
+                                    final action = await nativeContextMenu(
+                                      context,
+                                      event.globalPosition,
+                                      {
+                                        for (final entry
+                                            in artifactFileActions.entries)
+                                          if (artifactCanAct(row, entry.key))
+                                            entry.key: entry.value,
+                                      },
+                                    );
+                                    if (mounted &&
+                                        ownerScope == owner &&
+                                        action != null) {
+                                      await manage(row, action);
+                                    }
+                                  },
+                            child: ListTile(
+                              key: ValueKey('artifact-file-$path'),
+                              dense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              leading: DshGlyph(
+                                artifactCategoryIcon(type),
+                                size: 20,
+                                color: colors.muted,
+                              ),
+                              title: Text(
+                                artifactName(path),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: DshTypography.body,
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    artifactDisplayPath(path),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: DshTypography.caption.copyWith(
+                                      color: colors.muted,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    [
+                                      artifactCategories[type]!,
+                                      row['unavailable'] == true
+                                          ? '暂不可读取'
+                                          : artifactLabels[row['change']] ??
+                                                '文件',
+                                      if (row['size'] != null)
+                                        artifactBytes(row['size']),
+                                      if (row['source'] == 'tool') '工具操作',
+                                      if (row['source'] == 'workspace') '工作区记录',
+                                      if (artifactRecordTime(row['updatedAt'])
+                                          .isNotEmpty)
+                                        artifactRecordTime(row['updatedAt']),
+                                    ].join(' · '),
+                                    style: DshTypography.caption.copyWith(
+                                      color: colors.muted,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              onTap: busy
+                                  ? null
+                                  : () => manage(
+                                      row,
+                                      unavailable ? 'diff' : 'preview',
+                                    ),
+                              trailing: PopupMenuButton<String>(
+                                tooltip: DshConversationZh.managePath(
+                                  path: path,
+                                ),
+                                onSelected: (value) {
+                                  if (ownerScope == owner) manage(row, value);
+                                },
+                                icon: DshGlyph(
+                                  DshIcons.ellipsis.data,
+                                  size: 16,
+                                ),
+                                itemBuilder: (_) => [
+                                  for (final action
+                                      in artifactFileActions.entries)
+                                    PopupMenuItem(
+                                      value: action.key,
+                                      enabled:
+                                          !busy &&
+                                          artifactCanAct(row, action.key),
+                                      child: Text(action.value),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: DshButton(
+                height: 30,
+                onPressed: busy
+                    ? null
+                    : () {
+                        pause();
+                        setState(() => garbage = true);
+                      },
+                child: Text('管理临时资源与回收站', style: DshTypography.caption),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

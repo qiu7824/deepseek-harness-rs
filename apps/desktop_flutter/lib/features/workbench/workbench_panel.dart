@@ -22,6 +22,7 @@ import 'plan_preview.dart';
 import 'line_index.dart';
 import 'reclaimable_preview.dart';
 import 'start_panel.dart';
+import '../conversation/artifacts_view.dart' show ArtifactsView;
 import '../../l10n/workbench_zh.dart';
 
 import 'package:dsh_desktop/design/typography.dart';
@@ -134,6 +135,7 @@ class WorkbenchPanelState extends State<WorkbenchPanel>
   static const labels = {
     'start': DshWorkbenchZh.start,
     'files': DshConversationZh.file,
+    'artifacts': '产物与改动',
     'git': 'Git',
     'terminal': DshConversationZh.terminal,
     'tasks': DshConversationZh.backgroundJobs,
@@ -301,6 +303,7 @@ class WorkbenchPanelState extends State<WorkbenchPanel>
         },
       ),
       'git' => GitPanel(key: key, api: api, session: session),
+      'artifacts' => ArtifactsView(key: key, api: api, session: session),
       'team' => SubagentPanel(key: key, api: api, parent: session),
       'tasks' => TaskPanel(key: key, controller: widget.controller),
       'computer-use' => ComputerUsePanel(

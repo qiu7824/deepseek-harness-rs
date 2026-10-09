@@ -99,6 +99,35 @@ struct SlowSandbox {
     prepared: Arc<AtomicBool>,
 }
 
+struct MigratingSandbox;
+impl SandboxProvider for MigratingSandbox {
+    fn confine(&self, argv: &[String], _: &SandboxPolicy) -> Result<dsh_sandbox::ConfinedArgv, dsh_sandbox::SandboxUnavailableError> {
+        let began = tokio::time::Instant::now();
+        let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        Ok(dsh_sandbox::ConfinedArgv {
+            argv: argv.to_vec(), enforcement: dsh_sandbox::SandboxEnforcement::Full,
+            denial_signatures: vec![], runner_failure_rules: vec![],
+            startup: Some(dsh_sandbox::SandboxStartup::new(move || Ok(began.elapsed() >= Duration::from_secs(180)), || Ok(false))
+                .with_phase(|| Ok("private_permissions".into()))
+                .with_progress(move || {
+                    let step = began.elapsed().as_secs() / 10;
+                    Ok(progress.swap(step, Ordering::SeqCst) != step)
+                })),
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn healthy_private_migration_can_exceed_two_minutes_before_probe_dispatch() {
+    let f = Fixture::new(SandboxMode::WorkspaceWrite);
+    f.service.ctx.register_service(Arc::new(MigratingSandbox) as Arc<dyn SandboxProvider>);
+    f.runtime.delay_ms.store(180_100, Ordering::SeqCst);
+    f.save().await;
+    let value = f.service.inspect("python", "launch", None, None, &f.cwd(), false, Arc::new(|| false)).await.unwrap();
+    assert_eq!(value["status"], "ready", "{value}");
+    assert_eq!(f.runtime.spawns.load(Ordering::SeqCst), 1);
+}
+
 struct CleanupSandbox;
 impl SandboxProvider for CleanupSandbox {
     fn confine(

@@ -26,8 +26,35 @@ const RUNNER_SOURCE: &str = include_str!("../assets/runner.cjs");
 mod approval_tests;
 #[cfg(test)]
 mod startup_tests;
-const STARTUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+const STARTUP_BUDGET: std::time::Duration = dsh_sandbox::startup::PREPARATION_TIMEOUT;
 type ExecutionClock = Arc<parking_lot::Mutex<Option<Arc<ApprovalClock>>>>;
+
+enum StartupPhase {
+    Preparation(tokio::time::Instant),
+    Sandbox(tokio::time::Instant, dsh_sandbox::SandboxStartup),
+    Runtime(tokio::time::Instant),
+}
+type StartupMonitor = Arc<parking_lot::Mutex<StartupPhase>>;
+
+async fn startup_deadline(monitor: &StartupMonitor) -> String {
+    let mut deadline = dsh_sandbox::startup::StartupDeadline::default();
+    loop {
+        {
+            let phase = monitor.lock();
+            match &*phase {
+                StartupPhase::Preparation(start) if start.elapsed() >= STARTUP_BUDGET =>
+                    return "[SANDBOX_SETUP_TIMEOUT] phase=environment_preparation; preparation deadline exceeded; model program not dispatched".into(),
+                StartupPhase::Sandbox(start, startup) => {
+                    if let Err(error) = deadline.check(startup, start.elapsed()) { return error; }
+                }
+                StartupPhase::Runtime(start) if start.elapsed() >= dsh_sandbox::startup::STARTUP_IDLE_TIMEOUT =>
+                    return "[SANDBOX_SETUP_TIMEOUT] phase=code_runtime_initialization; runtime handshake deadline exceeded; model program not dispatched".into(),
+                _ => {}
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+}
 
 async fn execution_budget(clock: Arc<ApprovalClock>, budget: std::time::Duration) {
     let mut pause = clock.subscribe_pause();
@@ -347,6 +374,7 @@ impl CodeRuntime for NodeCodeRuntime {
             let child_owner = Arc::new(parking_lot::Mutex::new(
                 None::<Arc<dyn dsh_subprocess::SubprocessHandle>>,
             ));
+            let startup_monitor = Arc::new(parking_lot::Mutex::new(StartupPhase::Preparation(tokio::time::Instant::now())));
             let run = run_one(
                 subprocess,
                 sandbox,
@@ -355,6 +383,7 @@ impl CodeRuntime for NodeCodeRuntime {
                 request,
                 child_owner.clone(),
                 started.clone(),
+                startup_monitor.clone(),
             );
             tokio::pin!(run);
             let cancelled = wait_for_cancellation(cancellation.clone(), lifecycle.clone());
@@ -362,7 +391,7 @@ impl CodeRuntime for NodeCodeRuntime {
             let startup = tokio::select! {
                 result=&mut run=>Some(result),
                 _=wait_for_dispatch(&started)=>None,
-                _=tokio::time::sleep(STARTUP_BUDGET)=>if started.lock().is_some(){None}else{Some(Ok(failure(CodeRunFailureKind::Startup,"[SANDBOX_SETUP_TIMEOUT] code runtime startup exceeded 120 seconds; model program not dispatched")))},
+                error=startup_deadline(&startup_monitor)=>if started.lock().is_some(){None}else{Some(Ok(failure(CodeRunFailureKind::Startup,&error)))},
                 _=&mut cancelled=>Some(Ok(failure(CodeRunFailureKind::Abort,if started.lock().is_some(){"aborted"}else{"aborted before program dispatch"}))),
             };
             let result = match startup {
@@ -437,6 +466,7 @@ async fn run_one(
     request: CodeRunRequest,
     child_owner: Arc<parking_lot::Mutex<Option<Arc<dyn dsh_subprocess::SubprocessHandle>>>>,
     started: ExecutionClock,
+    startup_monitor: StartupMonitor,
 ) -> Result<CodeRunResult, String> {
     if request.signal.as_ref().is_some_and(|signal| signal()) {
         return Ok(failure(CodeRunFailureKind::Abort, "aborted"));
@@ -541,6 +571,10 @@ async fn run_one(
     };
     let mut child_guard = ChildGuard::new(child.clone(), lifecycle.clone(), id);
     *child_owner.lock() = Some(child.clone());
+    *startup_monitor.lock() = match &startup {
+        Some(startup) => StartupPhase::Sandbox(tokio::time::Instant::now(), startup.clone()),
+        None => StartupPhase::Runtime(tokio::time::Instant::now()),
+    };
     if let Some(startup) = startup {
         loop {
             if startup.is_ready()? {
@@ -555,6 +589,7 @@ async fn run_one(
             }
         }
     }
+    *startup_monitor.lock() = StartupPhase::Runtime(tokio::time::Instant::now());
     let mut stdin = child
         .stdin()
         .ok_or_else(|| "code-runtime-node: child stdin was not piped".to_string())?;
@@ -581,6 +616,42 @@ async fn run_one(
             })
         })
         .collect::<Vec<_>>();
+    // Prepare only trusted runtime state. Node process startup, Worker imports
+    // and parser initialization precede the model program's dispatch boundary.
+    write_frame(
+        &mut stdin,
+        &json!({
+            "type": "prepare",
+            "namespaces": namespaces,
+            "limits": {
+                "compute_ms": config.compute_ms,
+                "max_wall_ms": config.max_wall_ms,
+                "max_output_bytes": config.max_output_bytes,
+                "max_old_generation_size_mb": config.max_old_generation_size_mb,
+            },
+        }),
+    )
+    .await?;
+    let mut ready = Vec::new();
+    let read = (&mut reader)
+        .take(4097)
+        .read_until(b'\n', &mut ready)
+        .await
+        .map_err(|error| format!("code-runtime-node: readiness read failed: {error}"))?;
+    if read == 0 {
+        return Err(format!(
+            "code-runtime-node: runner exited before Worker readiness; {}",
+            stderr_tail(&child)
+        ));
+    }
+    if ready.len() > 4096 || !ready.ends_with(b"\n") {
+        return Err("code-runtime-node: invalid Worker readiness frame".into());
+    }
+    let ready: Value = serde_json::from_slice(&ready)
+        .map_err(|error| format!("code-runtime-node: invalid Worker readiness: {error}"))?;
+    if ready != json!({"type": "ready"}) {
+        return Err(format!("code-runtime-node: Worker startup failed: {ready}"));
+    }
     if request.signal.as_ref().is_some_and(|signal| signal()) {
         return Ok(failure(
             CodeRunFailureKind::Abort,
@@ -599,13 +670,6 @@ async fn run_one(
         &json!({
             "type": "run",
             "program": request.program,
-            "namespaces": namespaces,
-            "limits": {
-                "compute_ms": config.compute_ms,
-                "max_wall_ms": config.max_wall_ms,
-                "max_output_bytes": config.max_output_bytes,
-                "max_old_generation_size_mb": config.max_old_generation_size_mb,
-            },
         }),
     )
     .await?;

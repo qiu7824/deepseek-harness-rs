@@ -692,13 +692,50 @@ List<TranscriptItem> projectTranscript(
             iconKind: 'system',
           );
       case 'command/done':
+        final command = '${commands[data['commandId']] ?? '命令'}';
+        final resultText = '${data['text'] ?? ''}';
+        final failed = data['kind'] == 'error';
+        final permission = command == 'permission';
+        final preset = permission && !failed
+            ? RegExp(r'^preset ([^\s]+)$').firstMatch(resultText)?.group(1)
+            : null;
+        if (preset != null) {
+          final label =
+              const {
+                'danger-full-access': '完全访问',
+                'full-access': '完全访问',
+            'workspace-write': '工作区内修改',
+                'read-only': '只读',
+                'auto': '自动审批',
+                'custom': '自定义权限',
+              }[preset] ??
+              '自定义权限（$preset）';
+          final previous = items.lastOrNull?.item;
+          final merge =
+              previous?.iconKind == 'permission' &&
+              previous?.status == 'complete' &&
+              previous?.title == '权限已切换';
+          final detail = '权限已切换为$label';
+          final history = merge ? '${previous!.text}\n$detail' : detail;
+          final count = merge ? history.split('\n').length : 1;
+          if (merge) items.removeLast();
+          add(
+            'context',
+            history,
+            title: '权限已切换',
+            summary: count > 1 ? '$label · $count 次变更' : label,
+            iconKind: 'permission',
+            status: 'complete',
+          );
+          break;
+        }
         add(
           'context',
-          '${data['text'] ?? ''}',
-          title: '${commands[data['commandId']] ?? '命令'}',
-          summary: '${data['text'] ?? ''}',
-          iconKind: 'command',
-          status: data['kind'] == 'error' ? 'failed' : 'complete',
+          resultText,
+          title: permission ? (failed ? '权限切换失败' : '权限设置') : command,
+          summary: permission ? '点击查看详情' : resultText,
+          iconKind: permission ? 'permission' : 'command',
+          status: failed ? 'failed' : 'complete',
         );
       case 'llm/retry':
         final id = '${data['turn']}:${data['retryId']}';

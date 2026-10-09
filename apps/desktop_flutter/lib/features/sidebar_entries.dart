@@ -1,8 +1,143 @@
 import 'package:flutter/material.dart';
 
 import '../design/primitives.dart';
+import '../design/motion.dart';
 
 import 'package:dsh_desktop/design/typography.dart';
+
+/// The Harness sidebar's raised, centered new-session action.
+class NewSessionButton extends StatefulWidget {
+  const NewSessionButton({
+    super.key,
+    this.buttonKey,
+    required this.tooltip,
+    this.shortcut,
+    this.onPressed,
+  });
+  final Key? buttonKey;
+  final String tooltip;
+  final String? shortcut;
+  final VoidCallback? onPressed;
+  @override
+  State<NewSessionButton> createState() => _NewSessionButtonState();
+}
+
+class _NewSessionButtonState extends State<NewSessionButton> {
+  bool hovered = false, focused = false;
+  @override
+  Widget build(BuildContext context) {
+    final colors = DshColors(context);
+    final height =
+        38.0 +
+        (MediaQuery.textScalerOf(context).scale(14) - 14).clamp(
+          0.0,
+          double.infinity,
+        );
+    return DshTooltip(
+      message: widget.tooltip,
+      child: Semantics(
+        button: true,
+        enabled: widget.onPressed != null,
+        label: '新建会话',
+        child: Material(
+          color: colors.dark ? const Color(0xff43454a) : colors.base,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(
+              color: colors.dark
+                  ? Colors.white.withValues(alpha: .16)
+                  : Colors.black.withValues(alpha: .12),
+              width: .5,
+            ),
+          ),
+          child: InkWell(
+            key: widget.buttonKey,
+            onTap: widget.onPressed,
+            onHover: (value) => setState(() => hovered = value),
+            onFocusChange: (value) => setState(() => focused = value),
+            borderRadius: BorderRadius.circular(12),
+            hoverColor: colors.dark
+                ? const Color(0xff353638)
+                : const Color(0xfff1f3f5),
+            child: Container(
+              height: height,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: LayoutBuilder(
+                builder: (context, box) => Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          DshGlyph(
+                            DshIcons.newSession.data,
+                            size: 14,
+                            color: colors.text,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              '新会话',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: DshTypography.body.copyWith(
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (widget.shortcut != null)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                        child: ExcludeSemantics(
+                          child: IgnorePointer(
+                            child: Center(
+                              child: AnimatedOpacity(
+                                duration: DshMotion.duration(
+                                  context,
+                                  DshMotion.quick,
+                                ),
+                                opacity:
+                                    (hovered || focused) &&
+                                        box.maxWidth >= 210 &&
+                                        MediaQuery.textScalerOf(context)
+                                                .scale(1) <
+                                            1.3
+                                    ? 1
+                                    : 0,
+                                child: SizedBox(
+                                  width: 70,
+                                  child: Text(
+                                    widget.shortcut!,
+                                    key: const ValueKey('sidebar-shortcut-new'),
+                                    textAlign: TextAlign.right,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: DshTypography.caption.copyWith(
+                                      color: colors.muted,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// One global entry in the sidebar row (定时任务, 知识库, 插件, …).
 class SidebarEntry {
@@ -70,30 +205,38 @@ class SidebarEntryRow extends StatelessWidget {
           label: entry.fullLabel,
           button: true,
           selected: entry.active,
-          child: DshButton(
-            key: entry.key,
-            height: 36,
-            width: double.infinity,
-            outline: true,
-            active: entry.active,
-            activeBorderColor: colors.blue,
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            icon: entry.icon,
-            onPressed: entry.onPressed,
-            child: showLabel
-                ? Flexible(
-                    child: Text(
-                      entry.label,
-                      maxLines: largeText ? null : 1,
-                      overflow: largeText
-                          ? TextOverflow.visible
-                          : TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: DshTypography.sizeAuxiliary,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: colors.layer,
+              borderRadius: BorderRadius.circular(
+                DshTokens.of(context).radiusControl,
+              ),
+            ),
+            child: DshButton(
+              key: entry.key,
+              outline: true,
+              height: 36,
+              width: double.infinity,
+              active: entry.active,
+              activeBackgroundColor: colors.selected,
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              icon: entry.icon,
+              onPressed: entry.onPressed,
+              child: showLabel
+                  ? Flexible(
+                      child: Text(
+                        entry.label,
+                        maxLines: largeText ? null : 1,
+                        overflow: largeText
+                            ? TextOverflow.visible
+                            : TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: DshTypography.sizeAuxiliary,
+                        ),
                       ),
-                    ),
-                  )
-                : const SizedBox.shrink(),
+                    )
+                  : const SizedBox.shrink(),
+            ),
           ),
         ),
       );

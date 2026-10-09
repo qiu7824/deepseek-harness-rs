@@ -156,7 +156,11 @@ void main() {
     await tester.tap(find.byKey(const Key('open-plugins')));
     await tester.pumpAndSettle();
     expect(find.byType(PluginPage), findsOneWidget);
-    expect(find.byKey(const Key('open-settings-direct')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('account-connection-menu')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('open-settings-direct')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -171,13 +175,16 @@ void main() {
       expect(find.byKey(const ValueKey('session-b-session')), findsOneWidget);
       await tester.tap(find.text('工作区 B'));
       await tester.pumpAndSettle();
-      expect(controller.workspaceId, 'b');
+      expect(controller.workspaceId, 'a');
       expect(find.byKey(const ValueKey('session-a-session')), findsOneWidget);
-      expect(find.byKey(const ValueKey('session-b-session')), findsOneWidget);
-      // Clicking an already selected title leaves its conversations visible.
+      expect(find.byKey(const ValueKey('session-b-session')), findsNothing);
+      // The title and disclosure both preserve the conversation target.
       await tester.tap(find.text('工作区 B'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('session-b-session')), findsOneWidget);
+      await tester.tap(find.text('工作区 B'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('session-b-session')), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );

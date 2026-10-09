@@ -6,6 +6,20 @@
 #include "flutter_window.h"
 #include "utils.h"
 
+namespace {
+class ComApartment {
+ public:
+  ComApartment()
+      : initialized_(SUCCEEDED(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {}
+  ~ComApartment() {
+    if (initialized_) ::CoUninitialize();
+  }
+
+ private:
+  bool initialized_;
+};
+}  // namespace
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   HANDLE singleton = ::CreateMutexW(
@@ -34,7 +48,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   // Initialize COM, so that it is available for use in the library and/or
   // plugins.
-  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  ComApartment com_apartment;
 
   flutter::DartProject project(L"data");
   project.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
@@ -58,6 +72,5 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::DispatchMessage(&msg);
   }
 
-  ::CoUninitialize();
   return EXIT_SUCCESS;
 }

@@ -351,9 +351,9 @@ fn windows_startup_signal() -> Result<(String, dsh_sandbox::SandboxStartup), Str
             .as_nanos(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    fn event(name: &str) -> Result<Arc<Event>, String> {
+    fn event(name: &str, manual: bool) -> Result<Arc<Event>, String> {
         let wide = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
+        let handle = unsafe { CreateEventW(std::ptr::null(), i32::from(manual), 0, wide.as_ptr()) };
         if handle.is_null() {
             return Err(format!(
                 "create sandbox startup event: {}",
@@ -372,18 +372,22 @@ fn windows_startup_signal() -> Result<(String, dsh_sandbox::SandboxStartup), Str
             )),
         }
     }
-    let ready = event(&name)?;
-    let timed_out = event(&format!("{name}-timeout"))?;
+    let ready = event(&name, true)?;
+    let timed_out = event(&format!("{name}-timeout"), true)?;
+    let progress = event(&format!("{name}-progress"), false)?;
     let phases = [
-        "ancestors",
-        "workspace_permissions",
+        "slot_admission",
+        "environment_preparation",
+        "acl_lock",
         "read_permissions",
         "runtime_permissions",
+        "workspace_permissions",
+        "private_permissions",
         "process_creation",
         "cleanup",
     ]
     .into_iter()
-    .map(|phase| Ok((phase, event(&format!("{name}-stage-{phase}"))?)))
+    .map(|phase| Ok((phase, event(&format!("{name}-stage-{phase}"), true)?)))
     .collect::<Result<Vec<_>, String>>()?;
     let signal = dsh_sandbox::SandboxStartup::new(move || poll(&ready), move || poll(&timed_out))
         .with_phase(move || {
@@ -393,7 +397,7 @@ fn windows_startup_signal() -> Result<(String, dsh_sandbox::SandboxStartup), Str
                 }
             }
             Ok("runner_initialization".into())
-        });
+        }).with_progress(move || poll(&progress));
     Ok((name, signal))
 }
 

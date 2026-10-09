@@ -68,6 +68,8 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     'planPreviewCacheEntries': planPreviews.items.length,
     'planPreviewCacheBytes': planPreviews.retainedBytes,
     'planPreviewCacheBudgetBytes': PlanPreviewStore.maxRetainedBytes,
+    'sessionSyncFailures': syncFailures.length,
+    'sessionSyncRetries': syncRetries.length,
   };
   void previewScopeChanged() {
     if (identical(previewClient, c.client) && previewSession == c.selectedId) {
@@ -172,7 +174,13 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       );
 
   void refreshShell() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    if (syncFailures.isNotEmpty || syncRetries.isNotEmpty) {
+      final retainedIds = c.sessions.map((session) => session.id).toSet();
+      syncFailures.removeWhere((id, _) => !retainedIds.contains(id));
+      syncRetries.removeWhere((id, _) => !retainedIds.contains(id));
+    }
+    setState(() {});
   }
 
   void restoreFocus(FocusNode? node) {
@@ -223,7 +231,9 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     try {
       await operation();
     } catch (error) {
-      if (mounted && identical(owner, c.client)) {
+      if (mounted &&
+          identical(owner, c.client) &&
+          c.sessions.any((session) => session.id == id)) {
         setState(() {
           syncFailures[id] = error;
           syncRetries[id] = operation;
@@ -676,7 +686,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
         id: 'new',
         group: DshZh.commandsGroup,
         title: DshZh.newSession,
-        icon: DshIcons.plus.data,
+        icon: DshIcons.newSession.data,
         shortcut: shortcutLabel(configuredShortcuts(c)['new']!),
         enabled: c.connected,
         onInvoke: startConversation,
@@ -854,25 +864,44 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           body: SafeArea(
             child: Row(
               children: [
-                if (wide && sideOpen) ...[
-                  SizedBox(
-                    width: sidebarWidth.clamp(220, 340),
-                    child: focusRegion(sidebarFocus, sidebar()),
-                  ),
-                  _divider(
-                    (dx) => setState(
-                      () => sidebarWidth = (sidebarWidth + dx).clamp(220, 340),
+                if (wide)
+                  AnimatedContainer(
+                    key: const ValueKey('animated-sidebar'),
+                    duration: DshMotion.duration(context, DshMotion.panel),
+                    curve: DshMotion.curve,
+                    width: sideOpen ? sidebarWidth.clamp(220, 340) + 1 : 56,
+                    child: ClipRect(
+                      child: OverflowBox(
+                        alignment: Alignment.centerLeft,
+                        minWidth: sideOpen
+                            ? sidebarWidth.clamp(220, 340) + 1
+                            : 56,
+                        maxWidth: sideOpen
+                            ? sidebarWidth.clamp(220, 340) + 1
+                            : 56,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: focusRegion(
+                                sidebarFocus,
+                                sideOpen ? sidebar() : collapsedSidebar(),
+                              ),
+                            ),
+                            if (sideOpen)
+                              _divider(
+                                (dx) => setState(
+                                  () => sidebarWidth = (sidebarWidth + dx)
+                                      .clamp(220, 340),
+                                ),
+                                onReset: () {
+                                  setState(() => sidebarWidth = 280);
+                                  saveLayout();
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
                     ),
-                    onReset: () {
-                      setState(() => sidebarWidth = 280);
-                      saveLayout();
-                    },
-                  ),
-                ],
-                if (wide && !sideOpen)
-                  SizedBox(
-                    width: 56,
-                    child: focusRegion(sidebarFocus, collapsedSidebar()),
                   ),
                 Expanded(
                   child: focusRegion(
@@ -966,6 +995,20 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
+                                      if (c.selectedId != null &&
+                                          c.menuSettings['artifacts'] != false)
+                                        DshIcon(
+                                          DshIcons.files.data,
+                                          key: const Key('open-artifacts'),
+                                          label: '查看产物与回合改动',
+                                          active:
+                                              dockOpen &&
+                                              dockTab == 'artifacts',
+                                          onPressed: () =>
+                                              dockOpen && dockTab == 'artifacts'
+                                              ? closeDock()
+                                              : openDock('artifacts'),
+                                        ),
                                       if (c.selectedId != null)
                                         headerMoreMenu(),
                                       const SizedBox(width: 8),
@@ -1031,23 +1074,38 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                     ),
                   ),
                 ),
-                if (canDock && dockOpen) ...[
-                  _divider(
-                    (dx) => setState(
-                      () =>
-                          dockWidth = (dockWidth.clamp(330, maxDockWidth) - dx)
-                              .clamp(330, maxDockWidth),
-                    ),
-                    onReset: () {
-                      setState(() => dockWidth = 470);
-                      saveLayout();
-                    },
+                if (canDock)
+                  AnimatedSize(
+                    key: const ValueKey('animated-workbench'),
+                    duration: DshMotion.duration(context, DshMotion.panel),
+                    curve: DshMotion.curve,
+                    alignment: Alignment.centerRight,
+                    child: !dockOpen
+                        ? const SizedBox(width: 0, height: double.infinity)
+                        : SizedBox(
+                            width: dockWidth.clamp(330, maxDockWidth) + 1,
+                            child: Row(
+                              children: [
+                                _divider(
+                                  (dx) => setState(
+                                    () => dockWidth =
+                                        (dockWidth.clamp(330, maxDockWidth) -
+                                                dx)
+                                            .clamp(330, maxDockWidth),
+                                  ),
+                                  onReset: () {
+                                    setState(() => dockWidth = 470);
+                                    saveLayout();
+                                  },
+                                ),
+                                SizedBox(
+                                  width: dockWidth.clamp(330, maxDockWidth),
+                                  child: workbenchPanel(),
+                                ),
+                              ],
+                            ),
+                          ),
                   ),
-                  SizedBox(
-                    width: dockWidth.clamp(330, maxDockWidth),
-                    child: workbenchPanel(),
-                  ),
-                ],
               ],
             ),
           ),
@@ -1210,8 +1268,6 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
   Widget accountEntries({bool compact = false}) => AccountConnectionMenu(
     controller: c,
     compact: compact,
-    onlyWhenAuthorized: true,
-    showSettingsAction: false,
     settingsShortcut: shortcutLabel(configuredShortcuts(c)['settings']!),
     onAccounts: () => unawaited(accountSettings()),
     onModels: () => unawaited(settings('models')),
@@ -1310,8 +1366,10 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           const SizedBox(height: 12),
           DshIcon(
             DshIcons.newSession.data,
+            key: const Key('new-task-compact'),
             label: shortcutHint('new', DshShellZh.newSession),
             size: 36,
+            glyphSize: 18,
             color: colors.text,
             onPressed: c.connected ? startConversation : null,
           ),
@@ -1338,7 +1396,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           ),
           const SizedBox(height: 12),
           DshIcon(
-            DshIcons.grid2x2.data,
+            DshIcons.plugins.data,
             key: const Key('open-plugins'),
             label: DshShellZh.plugins,
             size: 36,
@@ -1365,13 +1423,6 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
           ),
           const Spacer(),
           accountEntries(compact: true),
-          DshIcon(
-            DshIcons.settings.data,
-            key: const Key('open-settings-direct'),
-            label: shortcutHint('settings', DshShellZh.settings),
-            size: 36,
-            onPressed: () => settings(),
-          ),
           const SizedBox(height: 12),
         ],
       ),
@@ -1438,32 +1489,47 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
             title: '${workspace['title']}',
             path: '${workspace['path']}',
             expanded: groupExpandedForView(id),
-            // Highlight only where 新会话 will start.
+            // Highlight the workspace selected for a new conversation.
             active: c.workspaceId == id,
-            onPressed: () {
-              final previous = c.workspaceId;
-              // Default expansion follows the target; keep the old one as shown.
-              if (previous != null && previous != id) {
-                groupExpansion.putIfAbsent(previous, () => true);
-              }
-              c.targetWorkspace(id);
-              setGroupExpanded(id, true);
-            },
+            onPressed: () => toggleGroupExpansion(id),
             toggleKey: ValueKey('workspace-toggle-$id'),
             onToggle: () => toggleGroupExpansion(id),
             onMenu: (position) => workspaceMenu(workspace, position),
           ),
         ),
       );
-      if (groupExpandedForView(id)) {
-        for (final (index, entry) in entries.indexed) {
-          rows.add(
-            Padding(
-              padding: EdgeInsets.only(top: index == 0 ? 2 : 0),
-              child: sessionRow(entry),
-            ),
-          );
+      // Large groups remain individual lazy rows; their disclosure icon still animates.
+      if (entries.length > 50) {
+        if (groupExpandedForView(id)) {
+          for (final (index, entry) in entries.indexed) {
+            rows.add(
+              Padding(
+                padding: EdgeInsets.only(top: index == 0 ? 2 : 0),
+                child: sessionRow(entry),
+              ),
+            );
+          }
         }
+      } else {
+        rows.add(
+          AnimatedSize(
+            key: ValueKey('workspace-children-$id'),
+            duration: DshMotion.duration(context, DshMotion.panel),
+            curve: DshMotion.curve,
+            alignment: Alignment.topCenter,
+            child: groupExpandedForView(id)
+                ? Column(
+                    children: [
+                      for (final (index, entry) in entries.indexed)
+                        Padding(
+                          padding: EdgeInsets.only(top: index == 0 ? 2 : 0),
+                          child: sessionRow(entry),
+                        ),
+                    ],
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+        );
       }
     }
     final loose = visibleSessions
@@ -1521,13 +1587,11 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            child: sidebarNavigation(
-              key: const Key('new-task'),
-              icon: DshIcons.newSession.data,
-              title: DshShellZh.blankSession,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: NewSessionButton(
+              buttonKey: const Key('new-task'),
               tooltip: shortcutHint('new', DshShellZh.newSession),
-              trailing: shortcutBadge('new'),
+              shortcut: shortcutLabel(configuredShortcuts(c)['new']!),
               onPressed: c.connected ? startConversation : null,
             ),
           ),
@@ -1558,7 +1622,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
                 ),
                 SidebarEntry(
                   key: const Key('open-plugins'),
-                  icon: DshIcons.grid2x2.data,
+                  icon: DshIcons.plugins.data,
                   label: DshShellZh.plugins,
                   active: mainPanel == 'plugins',
                   onPressed: () => mainPanel == 'plugins'
@@ -1682,17 +1746,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                accountEntries(),
-                sidebarNavigation(
-                  key: const Key('open-settings-direct'),
-                  icon: DshIcons.settings.data,
-                  title: DshShellZh.settings,
-                  tooltip: shortcutHint('settings', DshShellZh.settings),
-                  trailing: shortcutBadge('settings'),
-                  onPressed: () => settings(),
-                ),
-              ],
+              children: [accountEntries()],
             ),
           ),
         ],
@@ -1802,11 +1856,81 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
             value: 'archive',
             child: Text(DshShellZh.archive),
           ),
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          key: ValueKey('delete-session-${session.id}'),
+          value: 'delete',
+          enabled:
+              !syncingSessions.contains(session.id) &&
+              !session.running &&
+              !(c.selectedId == session.id && (c.sending || c.commandRunning)),
+          child: DshTooltip(
+            message: session.running
+                ? DshShellZh.stopBeforeDelete
+                : DshShellZh.deleteSession,
+            child: Row(
+              children: [
+                DshGlyph(
+                  DshIcons.trash2.data,
+                  size: 16,
+                  color: DshColors(context).error,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  DshShellZh.deleteSession,
+                  style: TextStyle(color: DshColors(context).error),
+                ),
+              ],
+            ),
+          ),
+        ),
       ],
     );
     if (!mounted || connectionScope != ownerScope) return;
     if (action == 'copy-id') {
       await Clipboard.setData(ClipboardData(text: session.id));
+      return;
+    }
+    if (action == 'delete') {
+      final api = c.client;
+      if (api == null) return;
+      final confirmed = await confirmAction(
+        context,
+        DshShellZh.deleteSession,
+        DshShellZh.deleteSessionHint(title: session.displayTitle),
+        action: DshShellZh.deleteSession,
+      );
+      if (!confirmed || !mounted || connectionScope != ownerScope) return;
+      await syncSession(session.id, () async {
+        try {
+          await c.deleteSession(session.id, expectedClient: api);
+        } on DshException catch (error) {
+          if (error.code != 'agent-busy' ||
+              error.details['reason'] != 'active-schedules') {
+            rethrow;
+          }
+          if (!mounted || connectionScope != ownerScope) return;
+          final confirmed = await confirmAction(
+            context,
+            DshShellZh.deleteWithSchedulesTitle,
+            DshShellZh.deleteWithSchedulesHint,
+            action: DshShellZh.stopAndDelete,
+          );
+          if (!confirmed || !mounted || connectionScope != ownerScope) return;
+          await c.deleteSession(
+            session.id,
+            stopSchedules: true,
+            expectedClient: api,
+          );
+        }
+        if (mounted &&
+            connectionScope == ownerScope &&
+            !c.sessions.any((item) => item.id == session.id)) {
+          syncFailures.remove(session.id);
+          syncRetries.remove(session.id);
+          if (c.selectedId == null) closePanel();
+        }
+      });
       return;
     }
     if (action == 'rename') {
@@ -1909,6 +2033,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       context: context,
       position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
       items: [
+        const PopupMenuItem(value: 'new', child: Text('在此工作区新建会话')),
         const PopupMenuItem(
           value: 'rename',
           child: Text(DshShellZh.renameWorkspace),
@@ -1924,6 +2049,12 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
       ],
     );
     if (!mounted || connectionScope != ownerScope) return;
+    if (action == 'new') {
+      c.targetWorkspace('${workspace['workspaceId']}');
+      setGroupExpanded('${workspace['workspaceId']}', true);
+      startConversation();
+      return;
+    }
     if (action == 'delete') {
       final confirmed = await confirmAction(
         context,
@@ -2130,7 +2261,7 @@ class _WorkbenchState extends State<Workbench> implements ResourceDiagnostics {
     } else if (id.contains('context')) {
       conversationViewRequest.value = 'user-message-rail';
     } else if (id == 'dsh-artifacts') {
-      conversationViewRequest.value = 'artifacts';
+      openDock('artifacts');
     } else {
       conversationViewRequest.value = 'conversation';
       c.composerFocus.value++;

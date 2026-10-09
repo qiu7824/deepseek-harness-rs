@@ -190,7 +190,16 @@ async fn execute(
     code: &str,
     signal: dsh_tools::AbortPredicate,
 ) -> Arc<dsh_tools::ToolExecutionResult> {
-    f.tools.execute(ToolExecutionInput{call_id:"parent-program".into(),root_call_id:None,name:"run_code".into(),arguments:json!({"code":code,"description":"Test approved nested operation","timeoutMs":400}),agent:Some(f.owner.clone()),parent:None,signal}).await
+    execute_with_timeout(f, code, signal, 400).await
+}
+
+async fn execute_with_timeout(
+    f: &Fixture,
+    code: &str,
+    signal: dsh_tools::AbortPredicate,
+    timeout_ms: u64,
+) -> Arc<dsh_tools::ToolExecutionResult> {
+    f.tools.execute(ToolExecutionInput{call_id:"parent-program".into(),root_call_id:None,name:"run_code".into(),arguments:json!({"code":code,"description":"Test approved nested operation","timeoutMs":timeout_ms}),agent:Some(f.owner.clone()),parent:None,signal}).await
 }
 
 #[tokio::test]
@@ -276,12 +285,15 @@ async fn node_ptc_busy_loop_cannot_hide_behind_an_unawaited_approval() {
 
 #[tokio::test]
 async fn node_ptc_approval_keeps_its_own_expiry_and_can_be_caught_by_the_program() {
-    let f = fixture_with(1500, 700).await;
+    // Leave room for Node startup on shared runners while keeping the approval
+    // expiry longer than the parent budget, so an unpaused parent still fails.
+    let f = fixture_with(2500, 1400).await;
     let start = std::time::Instant::now();
-    let result = execute(
+    let result = execute_with_timeout(
         &f,
         "try { await tools.file_manage({}); } catch (e) { return e.message; }",
         Arc::new(|| false),
+        1000,
     )
     .await;
     f.runtime.dispose().await;
@@ -293,7 +305,7 @@ async fn node_ptc_approval_keeps_its_own_expiry_and_can_be_caught_by_the_program
             .contains("approval did not permit")
     );
     assert_eq!(f.effects.load(Ordering::SeqCst), 0);
-    assert!(start.elapsed() >= Duration::from_millis(700));
+    assert!(start.elapsed() >= Duration::from_millis(1400));
     assert_eq!(
         f.owner
             .session()

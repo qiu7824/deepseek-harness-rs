@@ -12,8 +12,14 @@ use codex_windows_sandbox::{
     WindowsSandboxProxySettingsMode, WindowsSandboxSessionRequest,
 };
 use std::{sync::Arc, time::Duration};
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;
 
 pub fn run(mut request: Request) -> Result<i32> {
+    contain_helper_tree()?;
+    codex_windows_sandbox::startup_progress::configure(request.ready_event.as_deref());
+    codex_windows_sandbox::startup_progress::stage("slot_admission");
     use crate::pool;
     if request.implementation == Implementation::Unelevated {
         ensure!(request.action==Action::Status||request.private_roots.is_empty(),"PRIVATE_READ_BOUNDARY_REQUIRES_ELEVATED: the current-user token backend cannot isolate product private roots; select and initialize the dedicated-account backend");
@@ -101,8 +107,36 @@ pub fn run(mut request: Request) -> Result<i32> {
     slot.home = pool::home(&request.home, &request.workspace, index);
     let home = slot.home.clone();
     let result = run_slot(slot);
+    codex_windows_sandbox::startup_progress::stage("cleanup");
     pool::settle(&home);
     result
+}
+
+/// The preparation path is also launched through tokio::process, which kills
+/// only its direct child on cancellation. Keep setup descendants in this job
+/// so an interrupted bridge cannot leave an ACL mutator holding the mutex.
+fn contain_helper_tree() -> Result<()> {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::{JobObjects::*, Threading::GetCurrentProcess},
+    };
+    static INSTALLED: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
+    INSTALLED.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job == 0 { return Err(format!("create preparation job: {}", std::io::Error::last_os_error())); }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), std::mem::size_of_val(&limits) as u32) == 0
+            || AssignProcessToJobObject(job, GetCurrentProcess()) == 0 {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(format!("contain preparation helpers: {error}"));
+        }
+        // Deliberately retain the non-inheritable handle for this process's
+        // lifetime. Closing it here would also terminate the current process.
+        Ok(())
+    }).clone().map_err(anyhow::Error::msg)
 }
 
 
@@ -163,6 +197,7 @@ fn run_unelevated(mut request: Request) -> Result<i32> {
 
 
 fn run_slot(mut request: Request) -> Result<i32> {
+    codex_windows_sandbox::startup_progress::stage("environment_preparation");
     if request.home.exists() {
         request.home = codex_windows_sandbox::canonicalize_path(&request.home);
     }

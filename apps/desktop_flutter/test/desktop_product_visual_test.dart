@@ -405,7 +405,6 @@ void main() {
           for (final view in [
             'conversation',
             'trajectory',
-            'artifacts',
             'code-graph',
             'context',
           ]) {
@@ -415,6 +414,18 @@ void main() {
             );
           }
           expect(find.text('项目任务'), findsNothing);
+          expect(find.byKey(const Key('open-artifacts')), findsOneWidget);
+          expect(
+            find.descendant(
+              of: find.byKey(const Key('open-artifacts')),
+              matching: find.byType(Text),
+            ),
+            findsNothing,
+          );
+          expect(
+            find.byKey(const ValueKey('conversation-view-artifacts')),
+            findsNothing,
+          );
           expect(
             find.byKey(const ValueKey('conversation-view-project-tasks')),
             findsNothing,
@@ -818,7 +829,9 @@ void main() {
             await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
             await tester.pumpAndSettle();
           }
-          final settings = find.byKey(const Key('open-settings-direct'));
+          final settings = find.byKey(
+            const ValueKey('account-connection-menu'),
+          );
           final schedule = find.byKey(const Key('open-schedule-direct'));
           expect(settings, findsOneWidget);
           expect(schedule, findsOneWidget);
@@ -827,16 +840,15 @@ void main() {
           final account = find.byKey(const ValueKey('account-connection-menu'));
           expect(account, findsOneWidget);
           final accountRect = tester.getRect(account);
-          final settingsRect = tester.getRect(settings);
           expect(accountRect.height, viewport.scale == 1 ? 36 : 58);
-          expect(accountRect.size, settingsRect.size);
-          expect(accountRect.left, settingsRect.left);
-          expect(find.text('账号'), findsOneWidget);
-          expect(accountRect.bottom, lessThanOrEqualTo(settingsRect.top));
+          expect(find.byKey(const Key('open-settings-direct')), findsNothing);
+          expect(find.text('设置与账号'), findsOneWidget);
           if (viewport.size.width < 900) {
             await exportProductFrame(tester, boundary, '$prefix-sidebar');
           }
           await tester.tap(settings);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('设置'));
           await tester.pumpAndSettle();
           expect(find.byType(SettingsShell), findsOneWidget);
           expect(
@@ -874,7 +886,7 @@ void main() {
           controller.subscriptionAccounts = [];
           controller.emit();
           await tester.pumpAndSettle();
-          expect(account, findsNothing);
+          expect(account, findsOneWidget);
           expect(settings, findsOneWidget);
           expect(schedule, findsOneWidget);
           expect(settings.hitTestable(), findsOneWidget);
@@ -933,6 +945,9 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
+          expect(find.text('Rust 版'), findsOneWidget);
+          expect(find.text('预览版'), findsNothing);
+          await exportProductFrame(tester, boundary, '$prefix-home');
           final readsBeforeStart = controller.api.readPaths.length;
           final methodsBeforeStart = controller.api.readMethods.length;
           await tester.tap(find.byKey(const Key('hero-open-workbench')));

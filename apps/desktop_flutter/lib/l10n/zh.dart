@@ -123,6 +123,13 @@ abstract final class DshShellZh {
   static const archiveWithSchedulesTitle = '停止提醒和定时任务并归档？';
   static const archiveWithSchedulesHint = '此会话仍有有效提醒。继续归档会停止这些提醒；取消后提醒保持原状。';
   static const stopAndArchive = '停止并归档';
+  static const deleteSession = '删除会话';
+  static const stopBeforeDelete = '请先停止会话执行，再删除会话。';
+  static String deleteSessionHint({required Object? title}) =>
+      '将永久删除“$title”的会话记录、关联产物和所属子会话。此操作无法撤销；工作区文件保留。';
+  static const deleteWithSchedulesTitle = '停止提醒和定时任务并删除会话？';
+  static const deleteWithSchedulesHint = '此会话仍有有效提醒。删除会话将停止这些提醒；取消后会话和提醒保持原状。';
+  static const stopAndDelete = '停止并删除';
   static const renameWorkspace = '重命名工作区';
   static const openInFileManager = '在文件管理器中打开';
   static const deleteWorkspace = '删除工作区';

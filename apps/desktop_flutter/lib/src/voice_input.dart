@@ -13,6 +13,7 @@ import '../design/primitives.dart';
 /// MethodChannel, so the desktop client never embeds a browser runtime.
 class VoiceInputController extends ChangeNotifier {
   static const _channel = MethodChannel('dsh/voice');
+  static const stopTimeout = Duration(seconds: 5);
   static int _next = 0;
   Timer? _timer, _limit;
   String? _generation;
@@ -24,6 +25,7 @@ class VoiceInputController extends ChangeNotifier {
   bool get supported => defaultTargetPlatform == TargetPlatform.windows;
   bool get listening => phase == 'listening';
   bool get active => phase != 'idle';
+  int get retainedTextUnits => latestText.length + _committed.length;
   void _emit() {
     if (!_disposed) notifyListeners();
   }
@@ -62,6 +64,7 @@ class VoiceInputController extends ChangeNotifier {
   }
 
   Future<void> _poll(String token) async {
+    if (_disposed || _generation != token) return;
     try {
       final events = await _channel.invokeListMethod<dynamic>('poll') ?? [];
       if (_disposed || _generation != token) return;
@@ -97,12 +100,16 @@ class VoiceInputController extends ChangeNotifier {
             error = DshRuntimeZh.voiceRecognizerUnavailable(
               detail: value['text'],
             );
-            phase = 'stopping';
+            unawaited(stop());
             changed = true;
           case 'stopped':
             phase = 'idle';
             _generation = null;
             _limit?.cancel();
+            _limit = null;
+            _timer?.cancel();
+            _timer = null;
+            _committed = '';
             changed = true;
         }
       }
@@ -120,6 +127,11 @@ class VoiceInputController extends ChangeNotifier {
     final token = _generation;
     phase = 'stopping';
     _limit?.cancel();
+    // Native shutdown may lose its final event during device or window
+    // teardown. Keep final-result polling bounded even when that event is lost.
+    _limit = Timer(stopTimeout, () {
+      if (!_disposed && _generation == token) cancel();
+    });
     _emit();
     try {
       await _channel.invokeMethod<void>('stop');
@@ -137,6 +149,9 @@ class VoiceInputController extends ChangeNotifier {
     phase = 'idle';
     _timer?.cancel();
     _limit?.cancel();
+    _timer = null;
+    _limit = null;
+    latestText = _committed = '';
     if (wasActive) {
       unawaited(_channel.invokeMethod<void>('stop').catchError((Object _) {}));
     }

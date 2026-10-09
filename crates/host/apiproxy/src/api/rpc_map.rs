@@ -108,6 +108,7 @@ pub const CLIENT_REQUEST_METHODS: &[&str] = &[
     "workspace.create",
     "workspace.delete",
     "workspace.deleteArchivedSession",
+    "workspace.deleteSession",
     "workspace.insertBefore",
     "workspace.insertSessionBefore",
     "workspace.list",

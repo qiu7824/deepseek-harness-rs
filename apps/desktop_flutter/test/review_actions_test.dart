@@ -99,6 +99,46 @@ class PermissionTestController extends TestController {
 }
 
 void main() {
+  testWidgets(
+    'permission selection uses the latest mode while its menu is open',
+    (tester) async {
+      final api = ReviewApi(), c = PermissionTestController(ReviewApi());
+      c.projectionWindow.apply('permissions', {
+        'currentValue': 'workspace-write',
+        'options': modes,
+      }, 1);
+      await tester.pumpWidget(
+        ShadApp(
+          home: Scaffold(
+            body: Center(child: PermissionControl(controller: c)),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
+      await tester.pumpAndSettle();
+      c.projectionWindow.apply('permissions', {
+        'currentValue': 'danger-full-access',
+        'options': modes,
+      }, 2);
+      c.projectionChanges.value++;
+      await tester.pump();
+      await tester.tap(
+        find.descendant(
+          of: find.byType(PopupMenuItem<String>),
+          matching: find.text('工作区内修改'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        object(c.api.calls.first.data['args'])['line'],
+        '/permission workspace-write',
+      );
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+      await c.api.close();
+      await api.close();
+    },
+  );
   testWidgets('images and artifact rows expose secondary-click menus', (
     tester,
   ) async {
@@ -166,13 +206,18 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.byType(ComposerAction));
+      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
       await tester.pumpAndSettle();
       expect(find.byType(PopupMenuItem<String>), findsNWidgets(3));
-      await tester.tap(find.text('工作区内修改'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(PopupMenuItem<String>),
+          matching: find.text('工作区内修改'),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(source.calls, isEmpty);
-      await tester.tap(find.byType(ComposerAction));
+      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('只读'));
       await tester.pumpAndSettle();
@@ -183,7 +228,9 @@ void main() {
       expect(object(c.projections['permissions'])['currentValue'], 'read-only');
       expect(c.transcript.single.text, '正在阅读旧消息');
       expect(
-        tester.widget<ComposerAction>(find.byType(ComposerAction)).label,
+        tester
+            .widget<Text>(find.byKey(const ValueKey('permission-mode-label')))
+            .data,
         contains('只读'),
       );
       await tester.pumpWidget(const SizedBox());
@@ -209,7 +256,7 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.byType(ComposerAction));
+      await tester.tap(find.byKey(const ValueKey('permission-mode-label')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('只读'));
       await tester.pumpAndSettle();

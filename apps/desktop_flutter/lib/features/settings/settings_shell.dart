@@ -14,20 +14,18 @@ import '../../design/primitives.dart';
 import '../../design/select.dart';
 import '../../design/shortcuts.dart';
 import '../../src/controller.dart';
+import '../../src/desktop_updates.dart';
 import 'models_page.dart';
 import 'resource_page.dart';
 import 'schedule_panel.dart';
+import 'update_panel.dart';
 
 import 'package:dsh_desktop/design/typography.dart';
 
 final settingsPages = <({String id, String title, IconData icon})>[
   (id: 'general', title: DshSettingsZh.general, icon: DshIcons.settings.data),
   (id: 'models', title: DshSettingsZh.models, icon: DshIcons.database.data),
-  (
-    id: 'plugins',
-    title: DshSettingsZh.plugins,
-    icon: DshIcons.slidersHorizontal.data,
-  ),
+  (id: 'plugins', title: DshSettingsZh.plugins, icon: DshIcons.plugins.data),
   (
     id: 'environment',
     title: DshSettingsZh.runtimeEnvironment,
@@ -67,6 +65,7 @@ final settingsPages = <({String id, String title, IconData icon})>[
     icon: DshIcons.listFilter.data,
   ),
   (id: 'trash', title: DshSettingsZh.trash, icon: DshIcons.trash2.data),
+  (id: 'updates', title: '更新', icon: DshIcons.download.data),
 ];
 
 class SettingsShell extends StatefulWidget {
@@ -76,11 +75,13 @@ class SettingsShell extends StatefulWidget {
     this.initialPage = 'general',
     this.initialModelTab = 'api',
     this.onOpenPlugin,
+    this.updates,
   });
   final DesktopController controller;
   final String initialPage;
   final String initialModelTab;
   final ValueChanged<Json>? onOpenPlugin;
+  final DesktopUpdateController? updates;
   @override
   State<SettingsShell> createState() => _SettingsShellState();
 }
@@ -428,7 +429,6 @@ class _SettingsShellState extends State<SettingsShell> {
                                                       'skills': 'assets/icons/web-nav-capabilities.svg',
                                                       'archive': 'assets/icons/web-nav-archived-sessions.svg',
                                                       'trash': 'assets/icons/web-nav-trash.svg',
-                                                      'plugins': 'assets/icons/web-IconPersonalizationOutline16.svg',
                                                       'discovery': 'assets/icons/web-IconSettingsOutline16.svg',
                                                       'menu': 'assets/icons/web-IconSettingsOutline16.svg',
                                                     }[item.id],
@@ -464,7 +464,7 @@ class _SettingsShellState extends State<SettingsShell> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    if (error != null)
+                                    if (error != null && page != 'updates')
                                       DshErrorView(
                                         error: error!,
                                         onRetry: saving || staleConnection
@@ -482,7 +482,7 @@ class _SettingsShellState extends State<SettingsShell> {
                                         ),
                                       ),
                                     Expanded(
-                                      child: loading
+                                      child: loading && page != 'updates'
                                           ? const Center(
                                               child: CircularProgressIndicator(
                                                 strokeWidth: 2,
@@ -554,6 +554,9 @@ class _SettingsShellState extends State<SettingsShell> {
   }
 
   Widget body() {
+    if (page == 'updates') {
+      return SettingsUpdatePanel(controller: c, updates: widget.updates);
+    }
     if (page == 'schedule') return SchedulePanel(controller: c);
     if (page == 'models') {
       return ModelsPage(

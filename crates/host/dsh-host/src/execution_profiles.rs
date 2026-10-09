@@ -837,7 +837,7 @@ impl ExecutionProfiles {
                 .get_typed::<Arc<dyn SandboxProvider>>("sandbox", false)
                 .ok_or(("unknown", "沙箱服务不可用".into()))?;
             tokio::select! {
-                result = tokio::time::timeout(Duration::from_secs(120), sandbox.prepare(policy)) => {
+                result = tokio::time::timeout(dsh_sandbox::startup::PREPARATION_TIMEOUT, sandbox.prepare(policy)) => {
                     result.map_err(|_| ("setup_timeout", "[SANDBOX_SETUP_TIMEOUT] runtime preparation timed out; probe not dispatched".into()))?
                         .map_err(|error| ("setup_failed", error))?;
                 }
@@ -916,6 +916,8 @@ impl ExecutionProfiles {
             .and_then(|confined| confined.startup.as_ref())
         {
             let ready = async {
+                let began = tokio::time::Instant::now();
+                let mut deadline = dsh_sandbox::startup::StartupDeadline::default();
                 loop {
                     if startup
                         .is_ready()
@@ -923,6 +925,7 @@ impl ExecutionProfiles {
                     {
                         return Ok(());
                     }
+                    deadline.check(startup, began.elapsed()).map_err(|error| ("setup_timeout", error))?;
                     tokio::select! {
                         result = child.done() => {
                             // The ready event and exit may become observable together.
@@ -935,8 +938,7 @@ impl ExecutionProfiles {
                     }
                 }
             };
-            tokio::time::timeout(Duration::from_secs(120), ready).await
-                .map_err(|_| ("setup_timeout", format!("[SANDBOX_SETUP_TIMEOUT] phase={}; runner readiness not confirmed; inspect startup evidence before retrying", startup.phase())))??;
+            ready.await?;
         }
         let outcome = tokio::select! {
             output = tokio::time::timeout(Duration::from_secs(if runner_budget {135} else {15}),child.done()) => output.map_err(|_| {

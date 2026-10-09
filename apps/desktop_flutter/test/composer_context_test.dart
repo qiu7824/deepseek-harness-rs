@@ -57,6 +57,62 @@ void main() {
   }
 
   testWidgets(
+    'a late command dialog result cannot overwrite another session draft',
+    (tester) async {
+      final setup = await mount(tester), c = setup.c, api = setup.api;
+      api.commandDescriptors = [
+        {'name': 'inspect', 'description': '检查'},
+      ];
+      await c.select('first');
+      await tester.pumpAndSettle();
+      final dynamic state = tester.state(find.byType(Conversation));
+      final Future<void> choosing = state.commandMenu();
+      await tester.pumpAndSettle();
+      c.preferences.drafts['second'] = 'second draft';
+      await c.select('second');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('/inspect  检查'));
+      await choosing;
+      await tester.pumpAndSettle();
+      expect(state.input.text, 'second draft');
+      expect(c.draft, 'second draft');
+      expect(tester.takeException(), isNull);
+      await setup.cleanup();
+    },
+  );
+
+  testWidgets(
+    'a late reference dialog result cannot overwrite a new workspace draft',
+    (tester) async {
+      final setup = await mount(tester), c = setup.c;
+      c.sessions = [
+        SessionSummary.fromJson({
+          'sessionId': 'reference',
+          'displayTitle': '引用会话',
+        }),
+      ];
+      c.workspaces.add({'workspaceId': 'other', 'path': 'E:/other'});
+      c.targetWorkspace('other');
+      c.setDraft('other workspace draft');
+      c.targetWorkspace('w');
+      await tester.pumpAndSettle();
+      final dynamic state = tester.state(find.byType(Conversation));
+      final Future<void> choosing = state.referenceMenu();
+      await tester.pumpAndSettle();
+      c.targetWorkspace('other');
+      await tester.pumpAndSettle();
+      final currentDraft = c.draft;
+      await tester.tap(find.text('引用会话'));
+      await choosing;
+      await tester.pumpAndSettle();
+      expect(state.input.text, currentDraft);
+      expect(c.draft, currentDraft);
+      expect(tester.takeException(), isNull);
+      await setup.cleanup();
+    },
+  );
+
+  testWidgets(
     'selecting an existing task never inherits a blank composer draft',
     (tester) async {
       final setup = await mount(tester), c = setup.c;

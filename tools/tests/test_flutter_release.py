@@ -28,7 +28,7 @@ class FlutterReleaseTests(unittest.TestCase):
         if platform == "macos":
             (client / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "DeepSeek Harness"}))
         host = package.binary_name(platform, "deepseek-harness-rs")
-        for name in [host, package.binary_name(platform, "dsh-remote-helper"), "web/dist/index.html", "runtime/node/" + package.binary_name(platform, "node")]:
+        for name in [host, package.binary_name(platform, "dsh-remote-helper"), package.binary_name(platform, "dsh-launcher"), "web/dist/index.html", "runtime/node/" + package.binary_name(platform, "node")]:
             path = core / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(("core:" + name).encode())
@@ -43,6 +43,7 @@ class FlutterReleaseTests(unittest.TestCase):
                 client, core = self.fixture(root, platform)
                 staged = root / "delivery"
                 meta = package.stage(client, core, staged, platform, "x86_64", "1.2.3", "revision")
+                self.assertEqual(meta["updaterProtocol"], 1)
                 host = staged / meta["hostRoot"]
                 for path in core.rglob("*"):
                     if path.is_file():
@@ -109,6 +110,15 @@ class FlutterReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "runner"):
                     package.stage(client, core, root / "delivery", "windows", "x86_64", "1.2.3", "revision")
                 self.assertFalse((root / "delivery").exists())
+
+    def test_missing_updater_fails_before_creating_delivery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client, core = self.fixture(root, "windows")
+            (core / "dsh-launcher.exe").unlink()
+            with self.assertRaisesRegex(ValueError, "dsh-launcher"):
+                package.stage(client, core, root / "delivery", "windows", "x86_64", "1.2.3", "revision")
+            self.assertFalse((root / "delivery").exists())
 
     def test_linux_desktop_integration_is_required_before_staging(self):
         for missing in package.LINUX_DESKTOP_FILES:

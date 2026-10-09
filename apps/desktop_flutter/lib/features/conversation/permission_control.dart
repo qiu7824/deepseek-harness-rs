@@ -2,7 +2,6 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter/material.dart';
 
 import '../../src/controller.dart';
-import '../../src/conversation.dart' show ComposerAction;
 import '../../design/primitives.dart';
 import '../../design/error.dart';
 
@@ -65,7 +64,8 @@ class _PermissionControlState extends State<PermissionControl> {
                 DshGlyph(
                   option.key == 'read-only'
                       ? DshIcons.eye.data
-                      : option.key == 'danger-full-access'
+                      : option.key == 'danger-full-access' ||
+                            option.key == 'full-access'
                       ? DshIcons.shieldAlert.data
                       : DshIcons.shieldCheck.data,
                   size: 16,
@@ -86,7 +86,8 @@ class _PermissionControlState extends State<PermissionControl> {
     if (!mounted ||
         !current() ||
         picked == null ||
-        picked == value ||
+        !c.permissionChoices.containsKey(picked) ||
+        picked == object(c.projections['permissions'])['currentValue'] ||
         !c.connected) {
       return;
     }
@@ -168,42 +169,57 @@ class _PermissionControlState extends State<PermissionControl> {
           .firstOrNull;
       final description = value == 'workspace-write'
           ? DshConversationZh.workspaceAccessHint
-          : value == 'danger-full-access'
+          : value == 'danger-full-access' || value == 'full-access'
           ? DshConversationZh.fullAccessHint
+          : value == 'read-only'
+          ? '只读取文件，不写入工作区'
           : '${option?['description'] ?? ''}';
-      return ComposerAction(
-        value == 'read-only'
-            ? DshIcons.eye.data
-            : value == 'danger-full-access'
-            ? DshIcons.shieldAlert.data
-            : DshIcons.shieldCheck.data,
-        key: anchor,
-        color: value == 'danger-full-access' || value == 'full-access'
-            ? const Color(0xfff97316)
-            : null,
-        asset:
-            [
-              'read-only',
-              'workspace-write',
-              'danger-full-access',
-            ].contains(value)
-            ? 'assets/icons/web-permission-$value.svg'
-            : null,
-        label: error != null
-            ? DshError.describe(error!).message
-            : (busy
-                  ? DshConversationZh.changingAccessMode
-                  : DshConversationZh.accessModeLabel(
-                      mode: c.permissionChoices[value] ?? permissionName(value),
-                      details: description.isEmpty ? '' : ' · $description',
-                    )),
-        onPressed:
-            busy ||
-                !c.connected ||
-                c.selectedId == null ||
-                c.permissionChoices.isEmpty
-            ? null
-            : choose,
+      final label = error != null
+          ? DshError.describe(error!).message
+          : (busy
+                ? DshConversationZh.changingAccessMode
+                : DshConversationZh.accessModeLabel(
+                    mode: c.permissionChoices[value] ?? permissionName(value),
+                    details: description.isEmpty ? '' : ' · $description',
+                  ));
+      return DshTooltip(
+        message: label,
+        child: DshButton(
+          key: anchor,
+          height: 36,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          onPressed:
+              busy ||
+                  !c.connected ||
+                  c.selectedId == null ||
+                  c.permissionChoices.isEmpty
+              ? null
+              : choose,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DshGlyph(
+                value == 'read-only'
+                    ? DshIcons.eye.data
+                    : value == 'danger-full-access' || value == 'full-access'
+                    ? DshIcons.shieldAlert.data
+                    : DshIcons.shieldCheck.data,
+                size: 16,
+                color: value == 'danger-full-access' || value == 'full-access'
+                    ? DshColors(context).warning
+                    : DshColors(context).muted,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                c.permissionChoices[value] ?? permissionName(value),
+                key: const ValueKey('permission-mode-label'),
+                style: DshTypography.caption,
+              ),
+              const SizedBox(width: 3),
+              DshGlyph(DshIcons.chevronDown.data, size: 12),
+            ],
+          ),
+        ),
       );
     },
   );

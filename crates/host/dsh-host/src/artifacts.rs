@@ -60,10 +60,58 @@ struct Index {
     baseline: BTreeMap<String, Stamp>,
     entries: BTreeMap<String, Artifact>,
     truncated: bool,
+    #[serde(default = "legacy_baseline_ready")]
+    baseline_ready: bool,
+    #[serde(default)]
+    next_event_seq: u64,
+    #[serde(skip)]
+    observed: BTreeMap<String, Stamp>,
+    #[serde(skip)]
+    missing: std::collections::BTreeSet<String>,
+    #[serde(skip)]
+    unavailable: std::collections::BTreeSet<String>,
+    #[serde(skip)]
+    refresh_needed: bool,
+    #[serde(skip)]
+    last_saved: Option<std::time::Instant>,
+    #[serde(skip)]
+    baseline_gate: Arc<parking_lot::Mutex<()>>,
+}
+fn legacy_baseline_ready() -> bool {
+    true
+}
+fn observe_file(index: &mut Index, root: &Path, relative: &str) {
+    index.observed.remove(relative);
+    index.missing.remove(relative);
+    index.unavailable.remove(relative);
+    let Some(safe) = super::web_preview::safe_relative(relative) else {
+        return;
+    };
+    let path = root.join(safe);
+    if checked_path(&path).is_err() {
+        index.unavailable.insert(relative.into());
+        return;
+    }
+    match fs::metadata(&path) {
+        Ok(_) => {
+            if let Ok(value) = stamp(&path) {
+                index.observed.insert(relative.into(), value);
+            } else {
+                index.unavailable.insert(relative.into());
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            index.missing.insert(relative.into());
+        }
+        Err(_) => {
+            index.unavailable.insert(relative.into());
+        }
+    }
 }
 pub(crate) struct Artifacts {
     root: PathBuf,
-    indexes: parking_lot::Mutex<BTreeMap<String, Index>>,
+    indexes: parking_lot::Mutex<BTreeMap<String, Arc<parking_lot::Mutex<Index>>>>,
+    file_operations: parking_lot::Mutex<()>,
 }
 
 fn scan(root: &Path) -> Result<(BTreeMap<String, Stamp>, bool), String> {
@@ -145,16 +193,16 @@ impl Artifacts {
         Arc::new(Self {
             root: data.join("artifact-index"),
             indexes: parking_lot::Mutex::new(BTreeMap::new()),
+            file_operations: parking_lot::Mutex::new(()),
         })
     }
-    fn load(
-        &self,
-        owner: &str,
-        root: &Path,
-        indexes: &mut BTreeMap<String, Index>,
-    ) -> Result<(), String> {
-        if indexes.contains_key(owner) {
-            return Ok(());
+    fn index(&self, owner: &str, root: &Path) -> Result<Arc<parking_lot::Mutex<Index>>, String> {
+        let cached = { self.indexes.lock().get(owner).cloned() };
+        if let Some(index) = cached {
+            if Path::new(&index.lock().root) != root {
+                return Err("任务工作目录已变化，产物索引需要迁移".into());
+            }
+            return Ok(index);
         }
         let file = self.root.join(format!("{}.json", digest(owner.as_bytes())));
         let index = if file.exists() {
@@ -164,168 +212,271 @@ impl Artifacts {
             }
             serde_json::from_slice::<Index>(&bytes).map_err(|e| e.to_string())?
         } else {
-            let (baseline, truncated) = scan(root)?;
             Index {
                 root: root.to_string_lossy().into_owned(),
-                baseline,
-                truncated,
                 ..Default::default()
             }
         };
         if Path::new(&index.root) != root {
             return Err("任务工作目录已变化，产物索引需要迁移".into());
         }
-        persist_json(
-            &self.root.join(format!("{}.json", digest(owner.as_bytes()))),
-            &index,
-        )?;
-        indexes.insert(owner.into(), index);
+        let index = Arc::new(parking_lot::Mutex::new(index));
+        let mut indexes = self.indexes.lock();
+        // Persisted indexes can be reloaded; keep only idle entries in the bounded cache.
+        if indexes.len() >= 32 {
+            let idle = indexes
+                .iter()
+                .find(|(_, v)| Arc::strong_count(v) == 1)
+                .map(|(k, _)| k.clone());
+            if let Some(idle) = idle {
+                indexes.remove(&idle);
+            }
+        }
+        Ok(indexes.entry(owner.into()).or_insert(index).clone())
+    }
+
+    fn baseline(&self, owner: &str, root: &Path) -> Result<(), String> {
+        let index = self.index(owner, root)?;
+        let gate = {
+            let state = index.lock();
+            if state.baseline_ready {
+                return Ok(());
+            }
+            state.baseline_gate.clone()
+        };
+        let _scan = gate.lock();
+        if index.lock().baseline_ready {
+            return Ok(());
+        }
+        let (files, truncated) = scan(root)?;
+        let mut index = index.lock();
+        if !index.baseline_ready {
+            index.baseline = files;
+            index.truncated = truncated;
+            index.baseline_ready = true;
+            persist_json(
+                &self.root.join(format!("{}.json", digest(owner.as_bytes()))),
+                &*index,
+            )?;
+        }
         Ok(())
     }
-    fn baseline(&self, owner: &str, root: &Path) -> Result<(), String> {
-        let mut indexes = self.indexes.lock();
-        self.load(owner, root, &mut indexes)
-    }
-    fn list(
+
+    fn list_mode(
         &self,
         owner: &str,
         root: &Path,
         session: Option<&dsh_session::Session>,
+        refresh: bool,
     ) -> Result<Value, String> {
-        let mut indexes = self.indexes.lock();
-        self.load(owner, root, &mut indexes)?;
-        let index = indexes.get_mut(owner).unwrap();
-        let (current, truncated) = scan(root)?;
-        index.truncated |= truncated;
-        for (path, stamp) in &current {
-            let change = match index.baseline.get(path) {
-                Some(before) if before == stamp => continue,
-                Some(_) => "modified",
-                None => "created",
-            };
-            index
-                .entries
-                .entry(path.clone())
-                .or_insert_with(|| Artifact {
-                    path: path.clone(),
-                    change: change.into(),
-                    source: "workspace".into(),
-                    updated_at: dsh_workspace_resources::now(),
-                });
-        }
-        if !truncated && !index.truncated {
-            for path in index
-                .baseline
-                .keys()
-                .filter(|path| !current.contains_key(*path))
-            {
-                index
-                    .entries
-                    .entry(path.clone())
-                    .or_insert_with(|| Artifact {
-                        path: path.clone(),
-                        change: "deleted".into(),
-                        source: "workspace".into(),
-                        updated_at: dsh_workspace_resources::now(),
-                    });
+        let index = self.index(owner, root)?;
+        // Slow traversal never holds the shared map or the per-session index lock.
+        let scan_seq = session.map(|s| s.seq().get());
+        let scanned = if refresh { Some(scan(root)?) } else { None };
+        let mut index = index.lock();
+        let mut changed = false;
+        let mut advanced = false;
+        if let Some((current, truncated)) = &scanned {
+            index.refresh_needed = false;
+            if !index.baseline_ready {
+                index.baseline = current.clone();
+                index.baseline_ready = true;
+            } else {
+                for (path, stamp) in current {
+                    let change = match index.baseline.get(path) {
+                        Some(before) if before == stamp => continue,
+                        Some(_) => "modified",
+                        None => "created",
+                    };
+                    index
+                        .entries
+                        .entry(path.clone())
+                        .or_insert_with(|| Artifact {
+                            path: path.clone(),
+                            change: change.into(),
+                            source: "workspace".into(),
+                            updated_at: dsh_workspace_resources::now(),
+                        });
+                }
+                if !truncated && !index.truncated {
+                    let deleted: Vec<_> = index
+                        .baseline
+                        .keys()
+                        .filter(|p| !current.contains_key(*p))
+                        .cloned()
+                        .collect();
+                    for path in deleted {
+                        index
+                            .entries
+                            .entry(path.clone())
+                            .or_insert_with(|| Artifact {
+                                path,
+                                change: "deleted".into(),
+                                source: "workspace".into(),
+                                updated_at: dsh_workspace_resources::now(),
+                            });
+                    }
+                }
             }
+            index.truncated |= *truncated;
+            index.observed = current.clone();
+            index.missing.clear();
+            index.unavailable.clear();
+            let unobserved: Vec<_> = index
+                .entries
+                .keys()
+                .filter(|p| !current.contains_key(*p))
+                .cloned()
+                .collect();
+            for path in unobserved {
+                observe_file(&mut index, root, &path);
+            }
+            changed = true;
         }
         if let Some(session) = session {
-            session.visit_events(0, None, |event| {
-                if event.type_ != "tool/result" {
-                    return Ok(true);
-                }
-                let Some(meta) = event.data.get("meta") else {
-                    return Ok(true);
-                };
-                let Some(path) = meta.get("path").and_then(Value::as_str) else {
-                    return Ok(true);
-                };
-                if meta.get("after").is_none() {
-                    return Ok(true);
-                }
-                let native = PathBuf::from(
-                    dsh_host_apiproxy::native_path_opener::display_native_path(path),
-                );
-                let native = if native.is_absolute() {
-                    native
-                } else {
-                    root.join(native)
-                };
-                let absolute = fs::canonicalize(&native).unwrap_or(native);
-                let Ok(relative) = absolute.strip_prefix(root) else {
-                    return Ok(true);
-                };
-                let relative = relative.to_string_lossy().replace('\\', "/");
-                index.entries.insert(
-                    relative.clone(),
-                    Artifact {
-                        path: relative,
-                        change: if meta.get("before").is_some_and(Value::is_null) {
-                            "created"
+            let end = session.seq().get();
+            if index.next_event_seq > end {
+                index.next_event_seq = 0;
+            }
+            let start = index.next_event_seq;
+            if start < end {
+                session.visit_events(start, Some(end), |event| {
+                    if event.type_ == "turn/end"
+                        && (!refresh || event.seq.get() >= scan_seq.unwrap_or(0))
+                    {
+                        index.refresh_needed = true;
+                    }
+                    let candidates: Vec<(&str, &str, &str)> = match event.type_.as_str() {
+                        "tool/result" => event
+                            .data
+                            .get("meta")
+                            .filter(|m| m.get("after").is_some())
+                            .and_then(|m| {
+                                m["path"].as_str().map(|p| {
+                                    (
+                                        p,
+                                        if m.get("before").is_some_and(Value::is_null) {
+                                            "created"
+                                        } else {
+                                            "modified"
+                                        },
+                                        "tool",
+                                    )
+                                })
+                            })
+                            .into_iter()
+                            .collect(),
+                        "deliverables/presented" => event.data["files"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|f| {
+                                f["path"].as_str().map(|p| (p, "presented", "delivery"))
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    for (path, change, source) in candidates {
+                        let native = PathBuf::from(
+                            dsh_host_apiproxy::native_path_opener::display_native_path(path),
+                        );
+                        let native = if native.is_absolute() {
+                            native
                         } else {
-                            "modified"
+                            root.join(native)
+                        };
+                        let absolute = fs::canonicalize(&native).unwrap_or(native);
+                        let Ok(relative) = absolute.strip_prefix(root) else {
+                            continue;
+                        };
+                        let relative = relative.to_string_lossy().replace('\\', "/");
+                        if super::web_preview::safe_relative(&relative).is_none() {
+                            continue;
                         }
-                        .into(),
-                        source: "tool".into(),
-                        updated_at: (event.time.max(0) as u64) / 1000,
-                    },
-                );
-                Ok(true)
-            })?;
-            session.visit_events(0, None, |event| {
-                if event.type_ != "deliverables/presented" {
-                    return Ok(true);
-                }
-                for file in event.data["files"].as_array().into_iter().flatten() {
-                    let Some(path) = file["path"].as_str() else {
-                        continue;
-                    };
-                    let native = PathBuf::from(
-                        dsh_host_apiproxy::native_path_opener::display_native_path(path),
-                    );
-                    let native = if native.is_absolute() {
-                        native
-                    } else {
-                        root.join(native)
-                    };
-                    let absolute = fs::canonicalize(&native).unwrap_or(native);
-                    let Ok(relative) = absolute.strip_prefix(root) else {
-                        continue;
-                    };
-                    let relative = relative.to_string_lossy().replace('\\', "/");
-                    index.entries.insert(
-                        relative.clone(),
-                        Artifact {
-                            path: relative,
-                            change: "presented".into(),
-                            source: "delivery".into(),
-                            updated_at: (event.time.max(0) as u64) / 1000,
-                        },
-                    );
-                }
-                Ok(true)
-            })?;
+                        observe_file(&mut index, root, &relative);
+                        if source == "tool"
+                            && index
+                                .entries
+                                .get(&relative)
+                                .is_some_and(|e| e.source == "delivery")
+                        {
+                            continue;
+                        }
+                        index.entries.insert(
+                            relative.clone(),
+                            Artifact {
+                                path: relative,
+                                change: change.into(),
+                                source: source.into(),
+                                updated_at: (event.time.max(0) as u64) / 1000,
+                            },
+                        );
+                        changed = true;
+                    }
+                    Ok(true)
+                })?;
+                index.next_event_seq = end;
+                advanced = true;
+            }
         }
-        let rows = index
+        let mut rows = index
             .entries
             .values()
-            .map(|entry| {
-                let mut value = serde_json::to_value(entry).unwrap();
-                if let Some(stamp) = current.get(&entry.path) {
-                    value["size"] = json!(stamp.size);
-                    value["etag"] = json!(etag(stamp));
-                } else {
+            .filter_map(|entry| {
+                super::web_preview::safe_relative(&entry.path)?;
+                let mut value = serde_json::to_value(entry).ok()?;
+                if index.unavailable.contains(&entry.path) {
+                    value["unavailable"] = json!(true);
+                } else if let Some(current) = index.observed.get(&entry.path) {
+                    value["size"] = json!(current.size);
+                    value["etag"] = json!(etag(current));
+                    if entry.change == "deleted" {
+                        value["change"] = json!("restored");
+                    }
+                } else if index.missing.contains(&entry.path) {
                     value["change"] = json!("deleted");
                 }
-                value
+                Some(value)
             })
             .collect::<Vec<_>>();
-        persist_json(
-            &self.root.join(format!("{}.json", digest(owner.as_bytes()))),
-            index,
-        )?;
-        Ok(json!({"entries":rows,"truncated":index.truncated}))
+        rows.sort_by(|a, b| {
+            let priority = |value: &Value| match value["source"].as_str() {
+                Some("delivery") => 0,
+                Some("tool") => 1,
+                _ => 2,
+            };
+            priority(a)
+                .cmp(&priority(b))
+                .then_with(|| b["updatedAt"].as_u64().cmp(&a["updatedAt"].as_u64()))
+                .then_with(|| a["path"].as_str().cmp(&b["path"].as_str()))
+        });
+        if changed
+            || advanced
+                && index
+                    .last_saved
+                    .is_none_or(|saved| saved.elapsed() >= std::time::Duration::from_secs(30))
+        {
+            persist_json(
+                &self.root.join(format!("{}.json", digest(owner.as_bytes()))),
+                &*index,
+            )?;
+            index.last_saved = Some(std::time::Instant::now());
+        }
+        let result = json!({"entries":rows,"truncated":index.truncated,"workspaceScanned":refresh,"refreshNeeded":index.refresh_needed});
+        drop(index);
+        let mut indexes = self.indexes.lock();
+        while indexes.len() > 32 {
+            let idle = indexes
+                .iter()
+                .find(|(_, v)| Arc::strong_count(v) == 1)
+                .map(|(k, _)| k.clone());
+            if let Some(idle) = idle {
+                indexes.remove(&idle);
+            } else {
+                break;
+            }
+        }
+        Ok(result)
     }
     pub fn install_tracking(self: &Arc<Self>, ctx: &Context) -> Result<(), String> {
         let service = self.clone();
@@ -391,7 +542,7 @@ impl Artifacts {
         signal: &dyn Fn() -> bool,
         mark_effects: &dyn Fn() -> Result<(), String>,
     ) -> Result<Value, String> {
-        let _transaction = self.indexes.lock();
+        let _transaction = self.file_operations.lock();
         if signal() {
             return Err("文件操作已取消".into());
         }
@@ -826,8 +977,9 @@ async fn handle(
     if operation == "list" {
         let session = sessions.get(&id);
         let owner = owner.to_string();
+        let refresh = args.get("refresh").and_then(Value::as_bool).unwrap_or(true);
         return match tokio::task::spawn_blocking(move || {
-            artifacts.list(&owner, &root, session.as_ref())
+            artifacts.list_mode(&owner, &root, session.as_ref(), refresh)
         })
         .await
         {
@@ -888,6 +1040,9 @@ pub(crate) fn register(
 #[cfg(test)]
 #[path = "cleanup_recovery_tests.rs"]
 mod cleanup_recovery_tests;
+#[cfg(test)]
+#[path = "artifact_index_tests.rs"]
+mod index_tests;
 #[cfg(test)]
 #[path = "artifacts_restore_tests.rs"]
 mod restore_tests;

@@ -53,7 +53,7 @@ void main() {
   );
 
   testWidgets(
-    'workspace has one hover-replaced icon and no permanent add button',
+    'workspace keeps a visible disclosure state alongside its folder icon',
     (tester) async {
       await tester.pumpWidget(
         ShadApp(
@@ -70,18 +70,22 @@ void main() {
         ),
       );
       expect(find.byTooltip(r'C:\项目'), findsOneWidget);
-      expect(find.byType(DshGlyph), findsOneWidget);
+      expect(find.byType(DshGlyph), findsNWidgets(2));
       expect(
-        tester.widget<DshGlyph>(find.byType(DshGlyph)).data,
-        DshIcons.folder.data,
+        tester.widget<DshGlyph>(find.byType(DshGlyph).first).data,
+        DshIcons.chevronRight.data,
       );
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await mouse.addPointer(location: const Offset(700, 500));
       await mouse.moveTo(tester.getCenter(find.byType(WorkspaceTreeRow)));
       await tester.pump();
       expect(
-        tester.widget<DshGlyph>(find.byType(DshGlyph)).data,
-        DshIcons.chevronDown.data,
+        tester.widget<DshGlyph>(find.byType(DshGlyph).first).data,
+        DshIcons.chevronRight.data,
+      );
+      expect(
+        tester.widget<AnimatedRotation>(find.byType(AnimatedRotation)).turns,
+        .25,
       );
       expect(find.byTooltip('在此工作区新建会话'), findsNothing);
       await mouse.removePointer();

@@ -76,6 +76,8 @@ use sandbox_users::sid_bytes_to_psid;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Payload {
+    #[serde(default)]
+    startup_event: Option<String>,
     version: u32,
     offline_username: String,
     online_username: String,
@@ -421,6 +423,7 @@ fn real_main() -> Result<()> {
         )));
     }
     codex_windows_sandbox::assert_state_namespace(&payload.codex_home)?;
+    codex_windows_sandbox::startup_progress::configure(payload.startup_event.as_deref());
     let sbx_dir = sandbox_dir(&payload.codex_home);
     std::fs::create_dir_all(&sbx_dir).map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -495,6 +498,7 @@ fn run_read_acl_only(payload: &Payload, log: &mut dyn Write) -> Result<()> {
 }
 
 fn apply_read_roots(payload: &Payload, log: &mut dyn Write) -> Result<()> {
+    codex_windows_sandbox::startup_progress::stage("read_permissions");
     log_line(log, "read-acl-only mode: applying read ACLs")?;
     let sandbox_group_sid = resolve_sandbox_users_group_sid()?;
     let sandbox_group_psid = sid_bytes_to_psid(&sandbox_group_sid)?;
@@ -728,6 +732,7 @@ fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) ->
 }
 
 fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    codex_windows_sandbox::startup_progress::stage("acl_lock");
     let _acl_guard=acquire_read_acl_mutex()?.context("private ACL update lease is unavailable")?;
     let refresh_only = payload.refresh_only;
     if !refresh_only {
@@ -789,6 +794,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
     apply_read_roots(payload, log)?;
 
     if refresh_only {
+        codex_windows_sandbox::startup_progress::stage("runtime_permissions");
         setup_runtime_bin::ensure_codex_app_runtime_paths_readable(
             sandbox_group_psid,
             &mut refresh_errors,
@@ -797,6 +803,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
     }
 
     let mut grant_tasks: Vec<(PathBuf, String)> = Vec::new();
+    codex_windows_sandbox::startup_progress::stage("workspace_permissions");
 
     let mut seen_deny_paths: HashSet<PathBuf> = HashSet::new();
     let mut seen_write_roots: HashSet<PathBuf> = HashSet::new();
@@ -954,7 +961,16 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
 
     let account_bytes=[resolve_sid(&payload.offline_username)?,resolve_sid(&payload.online_username)?];
     let account_psids=account_bytes.iter().map(|sid|sid_bytes_to_psid(sid)).collect::<Result<Vec<_>>>()?;
-    let private_result=unsafe{codex_windows_sandbox::sync_private_read_acls(&payload.codex_home,&payload.private_roots,&payload.read_roots,&payload.write_roots,&account_psids,sandbox_group_psid)};
+    codex_windows_sandbox::startup_progress::stage("private_permissions");
+    let mut last_log = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(2)).unwrap();
+    let private_result=unsafe{codex_windows_sandbox::sync_private_read_acls_with_progress(&payload.codex_home,&payload.private_roots,&payload.read_roots,&payload.write_roots,&account_psids,sandbox_group_psid, |progress| {
+        codex_windows_sandbox::startup_progress::progress();
+        if last_log.elapsed() >= std::time::Duration::from_secs(2) || progress.remaining == 0 {
+            log_line(log, &format!("private ACL migration: processed={} queued={} resumed={} path={}", progress.processed, progress.remaining, progress.resumed, progress.path.as_deref().unwrap_or(&payload.codex_home).display()))?;
+            last_log = std::time::Instant::now();
+        }
+        Ok(())
+    })};
     for sid in account_psids {unsafe{LocalFree(sid as HLOCAL);}}
     let protected=private_result.map_err(|error|anyhow::anyhow!("reconcile account private read access: {error:#}"))?;
     log_line(log,&format!("private read boundary reconciled {protected} objects"))?;

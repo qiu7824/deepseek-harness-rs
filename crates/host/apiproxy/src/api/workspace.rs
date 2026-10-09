@@ -140,6 +140,9 @@ pub struct WorkspaceArchiveSessionRequest {
 pub struct WorkspaceArchiveSessionResult {
     #[serde(default, skip_serializing_if = "is_false")]
     pub deleted: bool,
+    /// Exact root and owned descendants removed by permanent deletion.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_session_ids: Vec<String>,
     pub archived_session_ids: Vec<String>,
 }
 

@@ -269,7 +269,10 @@ void main() {
       expect(find.byType(PluginPage), findsOneWidget);
       expect(tester.getSize(find.byType(PluginPage)).width, greaterThan(800));
       expect(find.byKey(const Key('open-schedule-direct')), findsOneWidget);
-      expect(find.byKey(const Key('open-settings-direct')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('account-connection-menu')),
+        findsOneWidget,
+      );
       expect(api.methods, isNot(contains('session.prompt')));
       expect(tester.takeException(), isNull);
     },

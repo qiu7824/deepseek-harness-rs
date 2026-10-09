@@ -8,9 +8,14 @@
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
-FlutterWindow::~FlutterWindow() {}
+FlutterWindow::~FlutterWindow() {
+  // WM_QUIT can end the loop without first destroying the top-level window.
+  // Tear down explicitly before member destructors can re-enter its WndProc.
+  OnDestroy();
+}
 
 bool FlutterWindow::OnCreate() {
+  destroying_ = false;
   if (!Win32Window::OnCreate()) {
     return false;
   }
@@ -134,7 +139,7 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+    if (!destroying_) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -146,6 +151,12 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  if (destroying_) return;
+  destroying_ = true;
+  // Destroying the child view synchronously sends WM_PARENTNOTIFY and focus
+  // messages. Those messages must not reach a partially destroyed controller.
+  auto controller = std::move(flutter_controller_);
+  SetChildContent(nullptr);
   if (clipboard_channel_) clipboard_channel_->SetMethodCallHandler(nullptr);
   clipboard_channel_.reset();
   if (theme_channel_) theme_channel_->SetMethodCallHandler(nullptr);
@@ -156,9 +167,7 @@ void FlutterWindow::OnDestroy() {
   speech_speaker_.Shutdown();
   if (speech_channel_) speech_channel_->SetMethodCallHandler(nullptr);
   speech_channel_.reset();
-  if (flutter_controller_) {
-    flutter_controller_ = nullptr;
-  }
+  controller.reset();
 
   Win32Window::OnDestroy();
 }
@@ -168,7 +177,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
   // Give Flutter, including plugins, an opportunity to handle window messages.
-  if (flutter_controller_) {
+  if (!destroying_ && flutter_controller_) {
     std::optional<LRESULT> result =
         flutter_controller_->HandleTopLevelWindowProc(hwnd, message, wparam,
                                                       lparam);
@@ -179,7 +188,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   switch (message) {
     case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
+      if (!destroying_ && flutter_controller_ && flutter_controller_->engine()) {
+        flutter_controller_->engine()->ReloadSystemFonts();
+      }
       break;
   }
 

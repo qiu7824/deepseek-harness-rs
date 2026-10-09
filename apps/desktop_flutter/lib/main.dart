@@ -10,6 +10,7 @@ import 'src/controller.dart';
 import 'src/preferences.dart';
 import 'src/app.dart';
 import 'src/desktop_diagnostics.dart';
+import 'src/desktop_updates.dart';
 import 'src/window_theme.dart';
 import 'src/window_lifecycle.dart';
 
@@ -41,6 +42,9 @@ Future<void> main() async {
   );
   await WindowThemeBinding(controller).start();
   runApp(DesktopApp(controller: controller));
+  if (DesktopUpdateController.installationRoot() != null) {
+    unawaited(DesktopUpdateController.instance.check());
+  }
   await controller.initialize();
   await DesktopDiagnostics.start(
     controller,

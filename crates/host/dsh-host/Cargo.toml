@@ -167,4 +167,4 @@ dsh-agent-presets = { path = "../../preset/agent-presets" }
 dsh-scope = { path = "../../core/scope" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

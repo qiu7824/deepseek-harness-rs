@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsh_client/dsh_client.dart';
 import 'package:dsh_desktop/features/conversation/read_aloud.dart';
 import 'package:dsh_desktop/src/conversation.dart';
@@ -7,6 +9,45 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
 void main() {
+  testWidgets('an old status request cannot block new playback polling', (
+    tester,
+  ) async {
+    final pending = Completer<bool>();
+    String? oldGeneration;
+    final polled = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      ReadAloudController.channel,
+      (call) async {
+        final generation = (call.arguments as Map)['generation'] as String;
+        if (call.method == 'start') oldGeneration ??= generation;
+        if (call.method == 'status') {
+          polled.add(generation);
+          if (generation == oldGeneration) return pending.future;
+          return true;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        ReadAloudController.channel,
+        null,
+      ),
+    );
+    final controller = ReadAloudController();
+    await controller.toggle('old', '旧回复');
+    await tester.pump(const Duration(milliseconds: 350));
+    await controller.toggle('new', '新回复');
+    final newGeneration = controller.generation;
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(polled, contains(newGeneration));
+    expect(controller.activeId, isNull);
+    expect(controller.retainedTextUnits, 0);
+    pending.complete(true);
+    await tester.pump();
+    controller.dispose();
+  });
+
   testWidgets(
     'speech chunks preserve a surrogate pair and stop after the last chunk',
     (tester) async {

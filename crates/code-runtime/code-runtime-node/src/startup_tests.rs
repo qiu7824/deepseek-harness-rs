@@ -2,12 +2,175 @@ use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+// Modify only trusted bootstrap code inside real Node processes. No model
+// source is supplied until the production dispatch guard admits the program.
+struct BootstrapSubprocess {
+    inner: Arc<dsh_subprocess_local::LocalSubprocessRuntime>,
+    process_delay_ms: u64,
+    worker_busy_ms: u64,
+    exit_before_ready: bool,
+}
+impl SubprocessRuntime for BootstrapSubprocess {
+    fn resolve_executable(
+        &self,
+        command: &str,
+        env: Option<&[(String, String)]>,
+        signal: Option<dsh_subprocess::SubprocessAbort>,
+    ) -> futures::future::BoxFuture<'static, Result<String, String>> {
+        self.inner.resolve_executable(command, env, signal)
+    }
+    fn spawn(
+        &self,
+        mut spec: SubprocessSpawnSpec,
+    ) -> Result<Arc<dyn dsh_subprocess::SubprocessHandle>, String> {
+        let source = spec.argv.iter().position(|arg| arg == "--eval").unwrap() + 1;
+        if self.exit_before_ready {
+            spec.argv[source] = "process.exit(23);".into();
+        } else {
+            let marker = "const WORKER_SOURCE = String.raw`";
+            assert!(spec.argv[source].contains(marker));
+            spec.argv[source] = format!(
+                "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, {});\n{}",
+                self.process_delay_ms,
+                spec.argv[source].replacen(
+                    marker,
+                    &format!("{marker}const bootEnd = performance.now() + {}; while(performance.now() < bootEnd) {{}}\n", self.worker_busy_ms),
+                    1,
+                )
+            );
+        }
+        self.inner.spawn(spec)
+    }
+    fn spawn_terminal(
+        &self,
+        spec: dsh_subprocess::SubprocessTerminalSpawnSpec,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<Arc<dyn dsh_subprocess::SubprocessTerminalHandle>, String>,
+    > {
+        self.inner.spawn_terminal(spec)
+    }
+}
+fn bootstrap_fixture(
+    process_delay_ms: u64,
+    worker_busy_ms: u64,
+    exit_before_ready: bool,
+) -> (Context, Arc<NodeCodeRuntime>) {
+    let ctx = Context::root();
+    ctx.register_service(Arc::new(BootstrapSubprocess {
+        inner: dsh_subprocess_local::LocalSubprocessRuntime::new(),
+        process_delay_ms,
+        worker_busy_ms,
+        exit_before_ready,
+    }) as Arc<dyn SubprocessRuntime>);
+    let runtime = NodeCodeRuntime::install(&ctx, Config::default()).unwrap();
+    (ctx, runtime)
+}
+
+#[tokio::test]
+async fn real_node_and_worker_bootstrap_precede_wall_and_compute_budgets() {
+    let (_ctx, runtime) = bootstrap_fixture(800, 650, false);
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    let began = std::time::Instant::now();
+    let result = runtime
+        .run(request("return 42;", 200, dispatches.clone()))
+        .await
+        .unwrap();
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert_eq!(result.value, Some(json!(42)));
+    assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+    assert!(began.elapsed() >= Duration::from_millis(1450));
+    let result = runtime
+        .run(request("while(true) {}", 100, dispatches.clone()))
+        .await
+        .unwrap();
+    assert_eq!(result.error.unwrap().kind, CodeRunFailureKind::Timeout);
+    assert_eq!(dispatches.load(Ordering::SeqCst), 2);
+    runtime.dispose().await;
+    assert!(runtime.lifecycle.state.lock().active.is_empty());
+}
+
+#[tokio::test]
+async fn cancellation_during_real_node_bootstrap_never_dispatches() {
+    let (_ctx, runtime) = bootstrap_fixture(2000, 0, false);
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let flag = cancelled.clone();
+    let mut req = request("throw new Error('MUST_NOT_RUN')", 400, dispatches.clone());
+    req.signal = Some(Arc::new(move || flag.load(Ordering::SeqCst)));
+    let cancel = async {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        cancelled.store(true, Ordering::SeqCst);
+    };
+    let (result, _) = tokio::join!(runtime.run(req), cancel);
+    assert_eq!(
+        result.unwrap().error.unwrap().kind,
+        CodeRunFailureKind::Abort
+    );
+    assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    runtime.dispose().await;
+    assert!(runtime.lifecycle.state.lock().active.is_empty());
+}
+
+#[tokio::test]
+async fn real_node_eof_and_guard_denial_before_execution_do_not_dispatch() {
+    let (_ctx, runtime) = bootstrap_fixture(0, 0, true);
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    let result = runtime
+        .run(request(
+            "throw new Error('MUST_NOT_RUN')",
+            400,
+            dispatches.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(result.error.unwrap().kind, CodeRunFailureKind::Startup);
+    assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    runtime.dispose().await;
+    assert!(runtime.lifecycle.state.lock().active.is_empty());
+
+    let (_ctx, runtime) = bootstrap_fixture(0, 0, false);
+    let mut req = request("throw new Error('MUST_NOT_RUN')", 400, dispatches.clone());
+    req.on_dispatch = Some(Arc::new(|| Err("fixture guard denied".into())));
+    let result = runtime.run(req).await.unwrap();
+    let error = result.error.unwrap();
+    assert_eq!(error.kind, CodeRunFailureKind::Startup);
+    assert!(error.message.contains("fixture guard denied"));
+    assert!(!error.message.contains("MUST_NOT_RUN"));
+    assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    runtime.dispose().await;
+    assert!(runtime.lifecycle.state.lock().active.is_empty());
+}
+
 struct StartupSandbox {
     prepare_ms: u64,
     ready_ms: u64,
     never: bool,
     fail: bool,
     prepared: Arc<AtomicUsize>,
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_monitor_extends_only_runner_progress_and_resets_for_runtime_handshake() {
+    let began = tokio::time::Instant::now();
+    let previous = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let startup = dsh_sandbox::SandboxStartup::new(|| Ok(false), || Ok(false))
+        .with_phase(|| Ok("private_permissions".into()))
+        .with_progress(move || {
+            let step = began.elapsed().as_secs() / 10;
+            Ok(previous.swap(step, Ordering::SeqCst) != step)
+        });
+    let monitor = Arc::new(parking_lot::Mutex::new(StartupPhase::Sandbox(began, startup)));
+    let deadline = startup_deadline(&monitor);
+    tokio::pin!(deadline);
+    tokio::select! {
+        error = &mut deadline => panic!("healthy migration aborted: {error}"),
+        _ = tokio::time::sleep(Duration::from_secs(180)) => {}
+    }
+    *monitor.lock() = StartupPhase::Runtime(tokio::time::Instant::now());
+    let failure = deadline.await;
+    assert!(failure.contains("code_runtime_initialization"));
+    assert!(began.elapsed() >= Duration::from_secs(300));
 }
 impl SandboxProvider for StartupSandbox {
     fn prepare(

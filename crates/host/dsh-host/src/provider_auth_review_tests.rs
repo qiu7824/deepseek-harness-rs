@@ -64,6 +64,96 @@ fn tokens() -> Session {
 }
 
 #[tokio::test]
+async fn subscription_usage_requires_current_identity_without_changing_credentials() {
+    let (auth, root) = setup();
+    let session = tokens();
+    auth.credentials
+        .set(
+            &reference("devin"),
+            &serde_json::to_string(&session).unwrap(),
+        )
+        .await
+        .unwrap();
+    auth.credentials.drain().await;
+    let before = std::fs::read(auth.credentials.filename()).unwrap();
+    let response = auth
+        .handle(
+            "account-usage",
+            &json!({"provider":"devin","accountScope":"retired-account"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response["status"], "unavailable");
+    assert_eq!(response["clearSnapshot"], true);
+    assert_ne!(response["accountScope"], "retired-account");
+    assert!(response["windows"].as_array().unwrap().is_empty());
+    assert_eq!(before, std::fs::read(auth.credentials.filename()).unwrap());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn unsupported_or_unsigned_subscriptions_never_fetch_model_tokens() {
+    let (auth, root) = setup();
+    for provider in [
+        "qwen-oauth",
+        "minimax-oauth",
+        "minimax-cn-oauth",
+        "claude-code",
+    ] {
+        let response = auth
+            .handle(
+                "account-usage",
+                &json!({"provider":provider,"accountScope":"account"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response["status"], "unsupported");
+        assert!(response["windows"].as_array().unwrap().is_empty());
+    }
+    let response = auth
+        .handle(
+            "account-usage",
+            &json!({"provider":"devin","accountScope":"account"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response["status"], "needsLogin");
+    assert!(!root.join(".credentials.yaml").exists());
+    if root.exists() {
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn copilot_usage_uses_github_authorization_after_inference_token_expiry() {
+    let (auth, root) = setup();
+    let mut session = tokens();
+    session.expires_at = 0;
+    auth.credentials
+        .set(
+            &reference("copilot"),
+            &serde_json::to_string(&session).unwrap(),
+        )
+        .await
+        .unwrap();
+    auth.credentials.drain().await;
+    let before = std::fs::read(auth.credentials.filename()).unwrap();
+    // A retired scope stops before any network call, after credential eligibility.
+    let response = auth
+        .handle(
+            "account-usage",
+            &json!({"provider":"copilot","accountScope":"retired"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response["status"], "unavailable");
+    assert_eq!(response["clearSnapshot"], true);
+    assert_ne!(response["accountScope"], "retired");
+    assert_eq!(before, std::fs::read(auth.credentials.filename()).unwrap());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn cancellation_queued_before_commit_prevents_credential_write() {
     let (auth, root) = setup();
     let p = pending(&auth, "attempt");

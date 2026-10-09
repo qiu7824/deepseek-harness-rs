@@ -1,6 +1,6 @@
 abstract final class DshAccountMenuZh {
-  static const account = '账号';
-  static const title = '账号与连接';
+  static const account = '设置与账号';
+  static const title = '设置与账号';
   static const add = '添加模型服务';
   static const subscription = '订阅账号';
   static const manageAccounts = '管理订阅账号';

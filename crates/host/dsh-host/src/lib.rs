@@ -58,6 +58,7 @@ mod open_in_app;
 mod plugin_manager;
 mod productivity;
 mod provider_auth;
+mod subscription_usage;
 mod provider_auth_catalog;
 mod provider_compatibility;
 mod pruned_arguments;

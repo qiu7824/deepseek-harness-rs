@@ -601,6 +601,11 @@ impl WorkspaceRegistry {
             }
             .to_string());
         }
+        self.session_subagent_tree(root).await
+    }
+
+    /// Enumerate the owned descendants of an archived or visible session.
+    pub async fn session_subagent_tree(&self, root: &SessionId) -> Result<Vec<SessionId>, String> {
         let mut headers: HashMap<SessionId, SessionHeader> = self
             .host
             .persistence
@@ -625,6 +630,21 @@ impl WorkspaceRegistry {
         session_id: &SessionId,
         release_live: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
     ) -> Result<bool, String> {
+        self.delete_session_record(session_id, release_live, true)
+            .await
+    }
+
+    /// Permanently delete a cold session without first changing its archive state.
+    pub async fn delete_session(self: &Arc<Self>, session_id: &SessionId) -> Result<bool, String> {
+        self.delete_session_record(session_id, None, false).await
+    }
+
+    async fn delete_session_record(
+        self: &Arc<Self>,
+        session_id: &SessionId,
+        release_live: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
+        require_archive: bool,
+    ) -> Result<bool, String> {
         if let Some(live) = &self.host.live
             && live.get(session_id).is_some()
         {
@@ -642,7 +662,7 @@ impl WorkspaceRegistry {
             let registry = registry.clone();
             box_future(async move {
                 let state = registry.require_state();
-                if !state.archived_session_ids.contains(&session_id) {
+                if require_archive && !state.archived_session_ids.contains(&session_id) {
                     return Err(WorkspaceSessionNotArchivedError { session_id }.to_string());
                 }
                 let deleted = (registry.session_delete)(&session_id).await?;

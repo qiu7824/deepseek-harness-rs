@@ -30,7 +30,7 @@ class PluginInventoryRow extends StatelessWidget {
     'dsh-better-sidebar' => DshIcons.panelRight,
     'dsh-sidebar-workbench-suite' => DshIcons.layoutGrid,
     'dsh-voice-input' => DshIcons.mic,
-    _ => DshIcons.puzzle,
+    _ => DshIcons.plugins,
   };
 
   @override
@@ -50,11 +50,6 @@ class PluginInventoryRow extends StatelessWidget {
     final active = phase == 'active';
     final onTap = onConfigure ?? onOpen;
     final radius = BorderRadius.circular(12);
-    final tone = switch (canonical) {
-      'dsh-auto-review' || 'dsh-experimental-auto-review' => colors.success,
-      'dsh-time-context' || 'dsh-schedule' => colors.info,
-      _ => colors.muted,
-    };
     return Material(
       color: Colors.transparent,
       borderRadius: radius,
@@ -72,11 +67,14 @@ class PluginInventoryRow extends StatelessWidget {
                 width: 48,
                 height: 48,
                 decoration: BoxDecoration(
-                  color: tone.withValues(alpha: colors.dark ? .13 : .06),
+                  color: colors.layer,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: colors.border),
                 ),
-                child: DshGlyph(iconFor(canonical).data, size: 24, color: tone),
+                child: DshGlyph(
+                  iconFor(canonical).data,
+                  size: 22,
+                  color: colors.text,
+                ),
               ),
               const SizedBox(width: 16),
               Expanded(

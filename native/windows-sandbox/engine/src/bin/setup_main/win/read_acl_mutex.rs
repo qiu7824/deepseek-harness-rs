@@ -32,7 +32,9 @@ pub(super) fn acquire_read_acl_mutex() -> Result<Option<ReadAclMutexGuard>> {
             GetLastError()
         }));
     }
-    let status = unsafe { WaitForSingleObject(handle,60_000) };
+    // Large migrations hold the shared ACL lease. Match the Host's bounded
+    // preparation wait rather than failing another healthy startup at 60s.
+    let status = unsafe { WaitForSingleObject(handle,900_000) };
     if status != WAIT_OBJECT_0 && status != WAIT_ABANDONED {
         unsafe {
             CloseHandle(handle);

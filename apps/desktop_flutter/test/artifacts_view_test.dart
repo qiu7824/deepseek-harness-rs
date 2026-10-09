@@ -119,7 +119,13 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('重命名'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'renamed.md');
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      'renamed.md',
+    );
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
     final mutation = api.calls.lastWhere(

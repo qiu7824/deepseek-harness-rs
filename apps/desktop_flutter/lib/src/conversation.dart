@@ -134,6 +134,7 @@ class _ConversationState extends State<Conversation>
     'conversationViews': 1,
     'speechActive': readAloud.activeId == null ? 0 : 1,
     'speechTextUnits': readAloud.retainedTextUnits,
+    'dictationTextUnits': voice.retainedTextUnits,
     'pendingAttachmentBytes': attachments.fold<int>(
       0,
       (total, file) => total + file.data.length,
@@ -223,14 +224,18 @@ class _ConversationState extends State<Conversation>
 
   void requestFocus() {
     if (!mounted) return;
+    final owner = c;
     if (view != 'conversation') {
       setState(() => view = 'conversation');
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) focus.requestFocus();
-      });
-    } else {
-      focus.requestFocus();
     }
+    // Shell panels remove ExcludeFocus and remount the composer in this frame.
+    // Requesting focus before their rebuild is silently ignored by FocusNode.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(c, owner) && view == 'conversation') {
+        focus.requestFocus();
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
@@ -1020,8 +1025,6 @@ class _ConversationState extends State<Conversation>
                                 'conversation': DshConversationZh.conversation,
                                 if (c.menuSettings['trajectory'] != false)
                                   'trajectory': DshConversationZh.trajectory,
-                                if (c.menuSettings['artifacts'] != false)
-                                  'artifacts': DshConversationZh.artifacts,
                                 if (c.menuSettings['code-graph'] != false)
                                   'code-graph': DshConversationZh.codeGraph,
                                 if (c.menuSettings['context'] != false)
@@ -1965,13 +1968,20 @@ class _ConversationState extends State<Conversation>
   }
 
   Future<void> commandMenu() async {
-    final api = c.client, session = c.selectedId;
+    final owner = c, api = c.client, session = c.selectedId;
+    final selection = c.selectionRevision;
+    bool valid() =>
+        mounted &&
+        identical(c, owner) &&
+        c.client == api &&
+        c.selectedId == session &&
+        c.selectionRevision == selection;
     if (api == null || session == null) return;
-    await c.run(() async {
+    await owner.run(() async {
       final commands = await api.availableCommands(session);
-      if (c.client == api && c.selectedId == session) c.commands = commands;
+      if (valid()) c.commands = commands;
     });
-    if (!mounted || c.client != api || c.selectedId != session) return;
+    if (!mounted || !valid()) return;
     final selected = await showDialog<String>(
       context: context,
       builder: (context) => SimpleDialog(
@@ -1985,13 +1995,16 @@ class _ConversationState extends State<Conversation>
         ],
       ),
     );
-    if (selected != null) {
+    if (selected != null && valid()) {
       input.text = '/$selected ';
-      focus.requestFocus();
+      c.setDraft(input.text);
+      requestFocus();
     }
   }
 
   Future<void> referenceMenu() async {
+    final owner = c, api = c.client, selection = c.selectionRevision;
+    final draftScope = c.draftScopeKey;
     final id = await showDialog<String>(
       context: context,
       builder: (context) => SimpleDialog(
@@ -2005,7 +2018,12 @@ class _ConversationState extends State<Conversation>
         ],
       ),
     );
-    if (id != null) {
+    if (id != null &&
+        mounted &&
+        identical(c, owner) &&
+        c.client == api &&
+        c.selectionRevision == selection &&
+        c.draftScopeKey == draftScope) {
       final encoded = base64Url
           .encode(utf8.encode(jsonEncode(id)))
           .replaceAll('=', '');
@@ -2015,7 +2033,7 @@ class _ConversationState extends State<Conversation>
               .replaceAll(']', '\\]');
       input.text += '\n@[$label](dsh-session:$encoded)\n';
       c.setDraft(input.text);
-      focus.requestFocus();
+      requestFocus();
     }
   }
 
@@ -2321,6 +2339,8 @@ class MessageCard extends StatelessWidget {
           ? DshIcons.listChecks.data
           : ['read', 'edit', 'system', 'context'].contains(item.iconKind)
           ? DshIcons.fileText.data
+          : item.iconKind == 'permission'
+          ? DshIcons.shieldCheck.data
           : item.iconKind == 'command'
           ? DshIcons.squareTerminal.data
           : DshIcons.terminal.data;

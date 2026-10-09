@@ -367,9 +367,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('session-old-task')), findsOneWidget);
       expect(object(c.preferences.layout['groupExpansion'])['older'], isTrue);
-      // Choosing a Workspace makes it the target of 新会话 without collapsing
-      // the one that was expanded only because it was the previous target.
-      expect(c.workspaceId, 'older');
+      // Browsing another folder does not change the new-conversation target.
+      expect(c.workspaceId, 'current');
       expect(
         find.byKey(const ValueKey('session-current-task')),
         findsOneWidget,

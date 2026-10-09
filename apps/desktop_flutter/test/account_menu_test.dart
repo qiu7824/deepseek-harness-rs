@@ -14,7 +14,7 @@ import 'workbench_tabs_test.dart' as fixture;
 
 void main() {
   testWidgets(
-    'Settings remains direct and login details appear only after authorization',
+    'one account and Settings entry remains available before and after login',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1440, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -24,11 +24,15 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         find.byKey(const ValueKey('account-connection-menu')),
-        findsNothing,
+        findsOneWidget,
       );
-      expect(find.byKey(const Key('open-settings-direct')), findsOneWidget);
+      expect(find.byKey(const Key('open-settings-direct')), findsNothing);
       expect(find.byKey(const Key('open-schedule-direct')), findsOneWidget);
-      await tester.tap(find.byKey(const Key('open-settings-direct')));
+      await tester.tap(find.byKey(const ValueKey('account-connection-menu')));
+      await tester.pumpAndSettle();
+      expect(find.text('尚未授权订阅账号'), findsOneWidget);
+      expect(find.text('管理订阅账号'), findsOneWidget);
+      await tester.tap(find.text('设置'));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsShell), findsOneWidget);
       expect(find.text('管理订阅账号'), findsNothing);
@@ -46,8 +50,12 @@ void main() {
       ];
       c.emit();
       await tester.pumpAndSettle();
-      expect(find.text('账号'), findsOneWidget);
-      expect(find.byKey(const Key('open-settings-direct')), findsOneWidget);
+      expect(find.text('设置与账号'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('account-connection-menu')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('open-settings-direct')), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
@@ -103,7 +111,7 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        expect(find.byTooltip('账号与连接'), findsOneWidget);
+        expect(find.byTooltip('设置与账号'), findsOneWidget);
         await tester.tap(find.byKey(const ValueKey('account-connection-menu')));
         await tester.pumpAndSettle();
         expect(find.text('尚未授权订阅账号'), findsOneWidget);
@@ -154,7 +162,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('账号'), findsOneWidget);
+      expect(find.text('设置与账号'), findsOneWidget);
       expect(
         tester.widget<DshTooltip>(find.byType(DshTooltip)).message,
         contains('需重新登录'),
@@ -172,8 +180,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('de***@example.test'), findsNothing);
       expect(find.text('连接已变化，请重新打开菜单'), findsOneWidget);
-      await tester.tap(find.text('管理订阅账号'));
-      await tester.pumpAndSettle();
+      expect(find.text('管理订阅账号'), findsNothing);
       expect(calls, 0);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
@@ -182,7 +189,7 @@ void main() {
   for (final scale in [1.0, 2.0]) {
     for (final accountCase in ['single', 'multiple', 'login-required']) {
       testWidgets(
-        'account and Settings row heights match scale=$scale case=$accountCase',
+        'unified settings and account entry scales without duplicates scale=$scale case=$accountCase',
         (tester) async {
           await tester.binding.setSurfaceSize(const Size(1440, 900));
           tester.binding.platformDispatcher.textScaleFactorTestValue = scale;
@@ -218,19 +225,15 @@ void main() {
           await tester.pumpWidget(DesktopApp(controller: c));
           await tester.pumpAndSettle();
           final account = find.byKey(const ValueKey('account-connection-menu'));
-          final settings = find.byKey(const Key('open-settings-direct'));
           final accountRect = tester.getRect(account);
-          final settingsRect = tester.getRect(settings);
-          expect(accountRect.height, closeTo(settingsRect.height, .01));
           expect(accountRect.height, scale == 1 ? 36 : 58);
-          expect(accountRect.left, settingsRect.left);
-          expect(accountRect.width, settingsRect.width);
+          expect(find.byKey(const Key('open-settings-direct')), findsNothing);
           final rowText = tester.widget<Text>(
             find.descendant(of: account, matching: find.byType(Text)),
           );
           expect(rowText.maxLines, 1);
           expect(rowText.overflow, TextOverflow.ellipsis);
-          expect(rowText.data, '账号');
+          expect(rowText.data, '设置与账号');
           final tooltip = tester.widget<DshTooltip>(
             find.ancestor(of: account, matching: find.byType(DshTooltip)),
           );
@@ -263,11 +266,8 @@ void main() {
           );
           await tester.pumpAndSettle();
           final compactAccountRect = tester.getRect(account);
-          final compactSettingsRect = tester.getRect(settings);
-          expect(compactAccountRect.height, compactSettingsRect.height);
-          expect(compactAccountRect.width, compactSettingsRect.width);
           expect(compactAccountRect.size, const Size(36, 36));
-          expect(compactAccountRect.left, compactSettingsRect.left);
+          expect(find.byKey(const Key('open-settings-direct')), findsNothing);
           expect(tester.takeException(), isNull);
           await tester.pumpWidget(const SizedBox());
           c.dispose();

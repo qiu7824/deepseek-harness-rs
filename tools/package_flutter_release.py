@@ -69,6 +69,7 @@ def stage(client: Path, core: Path, destination: Path, platform: str, arch: str,
     }.items()):
         raise ValueError("desktop and core package identities differ")
     require(core, [package["host"], binary_name(platform, "dsh-remote-helper"),
+                   binary_name(platform, "dsh-launcher"),
                    "web/dist/index.html", "runtime/node/" + binary_name(platform, "node")])
     inventory(client)
     core_inventory = inventory(core)
@@ -113,7 +114,7 @@ def stage(client: Path, core: Path, destination: Path, platform: str, arch: str,
         if platform == "linux":
             executable = destination / "dsh_desktop"
             executable.chmod(executable.stat().st_mode | 0o111)
-    return {"schemaVersion": 1, "version": version, "platform": platform, "arch": arch,
+    return {"schemaVersion": 1, "updaterProtocol": 1, "version": version, "platform": platform, "arch": arch,
             "sourceRevision": revision, "flutterRevision": FLUTTER_REVISION,
             "entry": "DeepSeek Harness.app" if platform == "macos" else binary_name(platform, "dsh_desktop"),
             "hostRoot": host.relative_to(destination).as_posix(), "core": package}

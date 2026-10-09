@@ -237,6 +237,9 @@ void main() {
   final idleSeconds =
       int.tryParse(Platform.environment['DSH_SOAK_IDLE_SECONDS'] ?? '') ?? 60;
   final includePdf = Platform.environment['DSH_SOAK_PDF'] != '0';
+  final finalIdleSeconds =
+      int.tryParse(Platform.environment['DSH_SOAK_FINAL_IDLE_SECONDS'] ?? '') ??
+      0;
   final samples = <Map<String, Object>>[];
   final report = <String, Object?>{
     'schemaVersion': 1,
@@ -262,6 +265,7 @@ void main() {
       'rounds': 20,
       'warmupRounds': 5,
       'idleSecondsAfterClose': idleSeconds,
+      'finalIdleSeconds': finalIdleSeconds,
       'privateBytesMeasured': false,
       'realHost': false,
       'computerUseFiveMinutes': false,
@@ -306,6 +310,7 @@ void main() {
       reason: 'Set DSH_PERF_OUTPUT to the measurement report path.',
     );
     expect(idleSeconds, inInclusiveRange(0, 300));
+    expect(finalIdleSeconds, inInclusiveRange(0, 300));
     await save();
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     PaintingBinding.instance.imageCache.maximumSize = 128;
@@ -482,6 +487,11 @@ void main() {
       'release60SecondIdleEligible': kReleaseMode && idleSeconds >= 60,
       'metric': 'current RSS; Windows Private Bytes require separate process sampling',
     };
+    if (finalIdleSeconds > 0) {
+      await tester.pump(Duration(seconds: finalIdleSeconds));
+      await record(20, 'final-idle');
+      expect(monitor.snapshot()['owners'], isEmpty);
+    }
     expect(tester.takeException(), isNull);
     await save();
   }, timeout: const Timeout(Duration(minutes: 90)));

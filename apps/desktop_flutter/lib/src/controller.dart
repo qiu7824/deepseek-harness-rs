@@ -15,6 +15,8 @@ String permissionName(String value) =>
       'danger-full-access': DshRuntimeZh.fullAccess,
       'full-access': DshRuntimeZh.fullAccess,
       'read-only': DshRuntimeZh.readOnly,
+      'auto': '自动审批',
+      'custom': '自定义权限',
     }[value] ??
     value;
 
@@ -181,6 +183,9 @@ class DesktopController extends ChangeNotifier {
     'projectionBytes': projectionWindow.retainedBytes,
     'controllerSubscriptions': _subscriptions.length,
     'pendingInteractions': pending.length,
+    'sessionRevisionEntries': _sessionRevisions.length,
+    'sessionTitleEntries': _titleSequences.length,
+    'readingPositionEntries': readingPositions.length,
     'connected': connected,
     'readingHistory': readingHistory,
     'loadingHistory': loading,
@@ -510,6 +515,22 @@ class DesktopController extends ChangeNotifier {
       transcript.isEmpty &&
       !running;
   final _sessionRevisions = <String, int>{}, _titleSequences = <String, int>{};
+  int _sessionInventoryRevision = 0;
+
+  void _forgetSession(String id) {
+    _sessionInventoryRevision++;
+    _sessionRevisions.remove(id);
+    _titleSequences.remove(id);
+    readingPositions.remove(id);
+    preferences.drafts.remove(id);
+    pending.removeWhere((_, frame) => frame.sessionId == id);
+    answering.removeWhere((rpcId) => !pending.containsKey(rpcId));
+    sessions.removeWhere((row) => row.id == id);
+    archivedSessionIds.remove(id);
+    archivedSessions.removeWhere((row) => row['sessionId'] == id);
+    if (selectedId == id) newConversation();
+  }
+
   void _sessionChanged(String id) =>
       _sessionRevisions[id] = (_sessionRevisions[id] ?? 0) + 1;
   void _title(String id, Object? value, int seq) {
@@ -897,11 +918,18 @@ class DesktopController extends ChangeNotifier {
     }
     final task = () async {
       final revisions = Map<String, int>.of(_sessionRevisions);
+      final inventoryRevision = _sessionInventoryRevision;
       final responses = await Future.wait<Object>([
         api.sessions(),
         api.call('workspace.list'),
       ]);
       if (epoch != _epoch || _disposed) return;
+      // A list already in flight may still contain a session just deleted by
+      // another client. Fetch a new inventory before publishing that snapshot.
+      if (inventoryRevision != _sessionInventoryRevision) {
+        _scheduleList();
+        return;
+      }
       final result = responses[0] as List<SessionSummary>;
       final workspaces = responses[1] as Json;
       final archived = (workspaces['archivedSessionIds'] as List? ?? [])
@@ -925,6 +953,9 @@ class DesktopController extends ChangeNotifier {
         }
       }
       sessions = result;
+      final knownIds = result.map((row) => row.id).toSet();
+      _sessionRevisions.removeWhere((id, _) => !knownIds.contains(id));
+      _titleSequences.removeWhere((id, _) => !knownIds.contains(id));
       archivedSessionIds = archived;
       archivedSessions = result
           .where((s) => archived.contains(s.id))
@@ -1284,6 +1315,13 @@ class DesktopController extends ChangeNotifier {
     if (type == 'host/session-added' ||
         type == 'host/session-removed' ||
         type == 'host/workspace-changed') {
+      if (type == 'host/session-removed' && frame.sessionId != null) {
+        _forgetSession(frame.sessionId!);
+        unawaited(run(preferences.save));
+        emit();
+      } else {
+        _sessionInventoryRevision++;
+      }
       _scheduleList();
     }
     if (type == 'host/agent-error' && frame.sessionId == selectedId) {
@@ -1702,6 +1740,12 @@ class DesktopController extends ChangeNotifier {
     _clearCommandActivity();
     _startingConversation = null;
     _historyScope?.cancel();
+    _historyScope = null;
+    _paint?.cancel();
+    _paint = null;
+    _buffer.clear();
+    _bufferBytes = 0;
+    _overflow = false;
     _planScope?.cancel();
     _planChange = null;
     _selection++;
@@ -1852,6 +1896,41 @@ class DesktopController extends ChangeNotifier {
     if (_disposed || epoch != _epoch) return;
     if (!restore && selectedId == id) newConversation();
     await refreshSessions();
+  }
+
+  Future<void> deleteSession(
+    String id, {
+    bool stopSchedules = false,
+    DshClient? expectedClient,
+  }) async {
+    final api = _client, epoch = _epoch;
+    if (expectedClient != null && !identical(expectedClient, api)) {
+      throw StateError('服务连接已改变，请重新打开会话菜单。');
+    }
+    if (api == null || !connected || _disposed) {
+      throw StateError(DshRuntimeZh.connectService);
+    }
+    if (sessions.where((row) => row.id == id).firstOrNull?.running == true ||
+        (selectedId == id && (sending || commandRunning))) {
+      throw StateError('请先停止会话执行，再删除会话。');
+    }
+    final result = await api.call('workspace.deleteSession', {
+      'sessionId': id,
+      if (stopSchedules) 'stopSchedules': true,
+    }, true);
+    if (epoch != _epoch || _disposed) return;
+    if (result['deleted'] != true) throw StateError('会话未删除，请重试。');
+    final deletedIds =
+        (result['deletedSessionIds'] as List? ?? const [])
+            .whereType<String>()
+            .toSet()
+          ..add(id);
+    for (final deletedId in deletedIds) {
+      _forgetSession(deletedId);
+    }
+    emit();
+    await preferences.save();
+    if (epoch == _epoch && !_disposed) await refreshSessions();
   }
 
   /// Automatic compaction threshold for one `provider/model`; null restores

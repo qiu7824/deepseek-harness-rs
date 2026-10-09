@@ -4101,9 +4101,10 @@ impl ApiProxyService {
         }
     }
 
-    async fn workspace_delete_archived_session(
+    async fn workspace_delete_session(
         &self,
         request: RpcRequest<crate::api::workspace::WorkspaceArchiveSessionRequest>,
+        archived_only: bool,
     ) -> RpcResponse<serde_json::Value> {
         let Some(registry) = self.workspace_registry() else {
             return err(request.rpc_id, Self::workspace_absent());
@@ -4113,11 +4114,44 @@ impl ApiProxyService {
         let _root_admission = self.resolver.admission(&root).lock_owned().await;
         let _root_retirement = self.resolver.begin_retirement(&root);
         let outcome = async {
-            // Validate archival and lineage before interrupting any execution.
-            let _ = registry.archived_subagent_tree(&root).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
+            // Validate the complete tree before changing archive state or removing files.
+            let initial_targets = if archived_only {
+                registry.archived_subagent_tree(&root).await
+            } else {
+                registry.session_subagent_tree(&root).await
+            }.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
+            if !archived_only {
+                for id in &initial_targets {
+                    if self.agents().and_then(|agents| agents.get(id))
+                        .is_some_and(|agent| agent.status() == dsh_agent::AgentStatus::Running || agent.inbox().has_pending()) {
+                        return Err(RpcError::AgentBusy(RpcErrorBody {
+                            message: format!("Stop session '{id}' before permanently deleting it."),
+                            details: crate::api::rpc::ReasonDetails { reason: "running-session".into() },
+                        }));
+                    }
+                    if !request.payload.stop_schedules {
+                        let reminders = if let Some(schedule) = self.schedule_service() {
+                            !schedule.session_activity(id.as_str()).await.map_err(schedule_api::rpc_error)?.is_empty()
+                        } else { false };
+                        let scheduled = if let Some(tasks) = self.scheduled_task_service() {
+                            tasks.has_active_session(id.as_str()).map_err(|error| schedule_api::rpc_error(dsh_schedule::host_types::ScheduleError::new(error.code, error.message)))?
+                        } else { false };
+                        if reminders || scheduled {
+                            return Err(RpcError::AgentBusy(RpcErrorBody {
+                                message: "Stop this session's active scheduled tasks before permanently deleting it.".into(),
+                                details: crate::api::rpc::ReasonDetails { reason: "active-schedules".into() },
+                            }));
+                        }
+                    }
+                }
+            }
             self.retire_session_for_deletion(&root).await?;
             // Root retirement closes descendant admission and flushes late materializations.
-            let targets = registry.archived_subagent_tree(&root).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
+            let targets = if archived_only {
+                registry.archived_subagent_tree(&root).await
+            } else {
+                registry.session_subagent_tree(&root).await
+            }.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
             let mut admissions = Vec::new();
             let mut retirements = Vec::new();
             for id in targets.iter().filter(|id| *id != &root) {
@@ -4137,20 +4171,26 @@ impl ApiProxyService {
                 }
             }
             for id in targets.iter().rev() {
-                if id != &root {
+                if archived_only && id != &root {
                     registry.archive_session(id).await.map_err(|message| RpcError::Internal(RpcErrorBody { message, details: EmptyDetails {} }))?;
                 }
-                registry.delete_archived_session(id, None).await.map_err(|message| RpcError::Internal(RpcErrorBody {
-                    message: format!("workspace.deleteArchivedSession '{id}': {message}; deletion can be retried from '{root}'"), details: EmptyDetails {}
+                let deleted = if archived_only {
+                    registry.delete_archived_session(id, None).await
+                } else {
+                    registry.delete_session(id).await
+                };
+                deleted.map_err(|message| RpcError::Internal(RpcErrorBody {
+                    message: format!("workspace deletion '{id}': {message}; deletion can be retried from '{root}'"), details: EmptyDetails {}
                 }))?;
             }
-            Ok::<(), RpcError>(())
+            Ok::<Vec<dsh_session::SessionId>, RpcError>(targets)
         }.await;
         match outcome {
-            Ok(()) => ok(
+            Ok(deleted) => ok(
                 request.rpc_id,
                 crate::api::workspace::WorkspaceArchiveSessionResult {
                     deleted: true,
+                    deleted_session_ids: deleted.into_iter().map(|id| id.to_string()).collect(),
                     archived_session_ids: registry
                         .archived_session_ids()
                         .into_iter()
@@ -4360,6 +4400,7 @@ impl ApiProxyService {
                 request.rpc_id,
                 crate::api::workspace::WorkspaceArchiveSessionResult {
                     deleted: false,
+                    deleted_session_ids: Vec::new(),
                     archived_session_ids: registry
                         .archived_session_ids()
                         .into_iter()
@@ -9157,18 +9198,16 @@ impl ApiProxyCarrier for ApiProxyService {
                 self.workspace_archive_session(RpcRequest { rpc_id, payload }, true)
                     .await
             }
-            "workspace.deleteArchivedSession" => {
+            "workspace.deleteArchivedSession" | "workspace.deleteSession" => {
+                let archived_only = method == "workspace.deleteArchivedSession";
                 let payload: crate::api::workspace::WorkspaceArchiveSessionRequest =
                     match serde_json::from_value(request.payload) {
                         Ok(payload) => payload,
                         Err(error) => {
-                            return err(
-                                rpc_id,
-                                bad_request("workspace.deleteArchivedSession", error),
-                            );
+                            return err(rpc_id, bad_request(method, error));
                         }
                     };
-                self.workspace_delete_archived_session(RpcRequest { rpc_id, payload })
+                self.workspace_delete_session(RpcRequest { rpc_id, payload }, archived_only)
                     .await
             }
             "session.list" => {

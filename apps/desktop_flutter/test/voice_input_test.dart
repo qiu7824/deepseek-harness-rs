@@ -226,6 +226,47 @@ void main() {
   );
 
   testWidgets(
+    'missing native stopped event releases polling and retained draft text',
+    (tester) async {
+      final c = VoiceInputController();
+      await c.start('private draft');
+      events = [event('ready'), event('partial', '听写内容')];
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(c.retainedTextUnits, greaterThan(0));
+      await c.stop();
+      expect(c.phase, 'stopping');
+      await tester.pump(VoiceInputController.stopTimeout);
+      expect(c.active, isFalse);
+      expect(c.retainedTextUnits, 0);
+      final count = calls.length;
+      await tester.pump(const Duration(seconds: 3));
+      expect(calls.length, count);
+      c.dispose();
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets(
+    'native recognizer error without stopped event still releases polling',
+    (tester) async {
+      final c = VoiceInputController();
+      await c.start('draft');
+      events = [event('ready'), event('error', 'device-lost')];
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(c.phase, 'stopping');
+      expect(calls, contains('stop'));
+      await tester.pump(VoiceInputController.stopTimeout);
+      expect(c.phase, 'idle');
+      expect(c.error, contains('device-lost'));
+      final count = calls.length;
+      await tester.pump(const Duration(seconds: 3));
+      expect(calls.length, count);
+      c.dispose();
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets(
     'failure remains idle, retry ignores previous generation, disposal cancels an in-flight start',
     (tester) async {
       final c = VoiceInputController();

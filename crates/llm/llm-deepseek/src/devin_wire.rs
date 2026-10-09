@@ -71,9 +71,13 @@ impl<'a> Message<'a> {
     }
 
     pub(crate) fn number(&self, field: u32) -> Result<u64, String> {
+        Ok(self.optional_number(field)?.unwrap_or(0))
+    }
+
+    pub(crate) fn optional_number(&self, field: u32) -> Result<Option<u64>, String> {
         match self.fields.iter().rev().find(|(id, _)| *id == field) {
-            None => Ok(0),
-            Some((_, Value::Varint(value))) => Ok(*value),
+            None => Ok(None),
+            Some((_, Value::Varint(value))) => Ok(Some(*value)),
             _ => Err(format!("invalid numeric protobuf field {field}")),
         }
     }

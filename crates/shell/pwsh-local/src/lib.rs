@@ -442,6 +442,8 @@ impl ShellExecutor for LocalPwshExecutor {
                 .and_then(|confined| confined.startup.as_ref())
             {
                 let ready = async {
+                    let began = tokio::time::Instant::now();
+                    let mut deadline = dsh_sandbox::startup::StartupDeadline::default();
                     loop {
                         if startup
                             .is_ready()
@@ -449,6 +451,7 @@ impl ShellExecutor for LocalPwshExecutor {
                         {
                             return Ok(());
                         }
+                        deadline.check(startup, began.elapsed())?;
                         tokio::select! {
                             result = handle.done() => {
                                 if cause.load(std::sync::atomic::Ordering::SeqCst) == 1 {
@@ -467,8 +470,7 @@ impl ShellExecutor for LocalPwshExecutor {
                         }
                     }
                 };
-                let setup = tokio::time::timeout(std::time::Duration::from_secs(120), ready).await
-                    .unwrap_or_else(|_| Err(format!("[SANDBOX_SETUP_TIMEOUT] phase={}; Sandbox startup exceeded 120 seconds before readiness was confirmed. Inspect the execution state before retrying.", startup.phase())));
+                let setup = ready.await;
                 if let Err(error) = setup {
                     handle.terminate();
                     let _ = tokio::time::timeout(

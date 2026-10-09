@@ -1,0 +1,30 @@
+abstract final class DshAccountUsageZh {
+  static const title = '账号额度';
+  static const show = '查看额度';
+  static const hide = '收起额度';
+  static const refresh = '刷新额度';
+  static const loading = '正在读取额度';
+  static const unavailable = '不可获取';
+  static const unsupported = '此账号暂未提供额度查询';
+  static const needsLogin = '重新登录后可查询额度';
+  static const identityChanged = '账号或连接已变化，请重新打开账号';
+  static const claudeUsageHint = '在 Claude Code 中使用 /usage 查看账号额度';
+  static const refreshFailed = '暂时无法刷新，显示上次数据';
+  static const stale = '上次数据';
+  static const noWindows = '服务未提供可显示的额度';
+  static const window = '额度周期';
+  static const unknownUnit = '单位未提供';
+  static String plan(String value) => '套餐 · $value';
+  static String used(String value) => '已用 $value%';
+  static String remaining(String value) => '剩余 $value%';
+  static String usedAmount(String value) => '已用 $value';
+  static String remainingAmount(String value) => '剩余 $value';
+  static String limitAmount(String value) => '额度 $value';
+  static String reset(String value) => '重置 · $value';
+  static String periodEnd(String value) => '周期结束 · $value';
+  static String updated(String value) => '更新 · $value';
+  static String duration(String value) => '统计周期 · $value';
+  static String minutes(String value) => '$value 分钟';
+  static String hours(String value) => '$value 小时';
+  static String days(String value) => '$value 天';
+}

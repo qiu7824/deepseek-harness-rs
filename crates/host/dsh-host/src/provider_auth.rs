@@ -420,6 +420,7 @@ pub(crate) struct AccountAuth {
     request_identities:
         parking_lot::Mutex<HashMap<(String, String), dsh_llm::RequestAuthentication>>,
     account_usage: crate::codex_account::CodexAccountService,
+    subscription_usage: crate::subscription_usage::SubscriptionUsage,
     client: reqwest::Client,
     credentials: Arc<dsh_credentials_local::LocalCredentialProvider>,
     settings: Arc<dsh_settings::SettingsProvider>,
@@ -479,6 +480,7 @@ impl AccountAuth {
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .join("environments/codex-account"),
             ),
+            subscription_usage: crate::subscription_usage::SubscriptionUsage::new(),
             client,
             catalogs: crate::provider_auth_catalog::CatalogStore::new(
                 std::path::Path::new(credentials.filename())
@@ -1340,6 +1342,20 @@ impl AccountAuth {
         })
     }
     async fn handle(self: &Arc<Self>, action: &str, body: &Value) -> Result<Value, String> {
+        if action == "account-usage" {
+            if string(body, "provider")? != "openai-codex" {
+                return self.read_subscription_usage(body).await;
+            }
+            let scope = string(body, "accountScope")?;
+            // Reuse the verified official bridge and preserve its existing tool contract.
+            let result = Box::pin(self.handle("usage", body)).await;
+            return Ok(match result {
+                Ok(value) => {
+                    crate::subscription_usage::report_from_codex("openai-codex", &scope, &value)
+                }
+                Err(error) => crate::subscription_usage::codex_failure_report(&scope, &error),
+            });
+        }
         if matches!(
             action,
             "usage"
@@ -1552,6 +1568,76 @@ impl AccountAuth {
             "logout" => self.logout_account(body).await,
             _ => Err("未知账号操作".to_string()),
         }
+    }
+    async fn read_subscription_usage(&self, body: &Value) -> Result<Value, String> {
+        let id = string(body, "provider")?;
+        if id != "claude-code" {
+            provider(&id)?;
+        }
+        let expected_scope = string(body, "accountScope")?;
+        let force = body
+            .get("refresh")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !matches!(id.as_str(), "devin" | "copilot" | "xai-oauth" | "nous") {
+            return Ok(self
+                .subscription_usage
+                .read(&id, &expected_scope, "", None, force)
+                .await);
+        }
+        let session = {
+            let _guard = self.refresh.lock().await;
+            self.session(&id).await?
+        };
+        let available = |s: &Session| {
+            !s.invalid
+                && if id == "copilot" {
+                    s.refresh_token
+                        .as_ref()
+                        .is_some_and(|token| !token.trim().is_empty())
+                } else {
+                    s.expires_at > now() && !s.access_token.is_empty()
+                }
+        };
+        let Some(session) = session.filter(available) else {
+            return Ok(
+                json!({"provider":id,"accountScope":expected_scope,"status":"needsLogin",
+                "plan":null,"updatedAt":null,"windows":[],"message":"请重新登录后读取账号额度"}),
+            );
+        };
+        if session.account_scope != expected_scope {
+            return Ok(json!({"provider":id,"accountScope":session.account_scope,
+                "status":"unavailable","clearSnapshot":true,"plan":null,"updatedAt":null,
+                "windows":[],"message":"账号已切换，请重新读取当前账号额度"}));
+        }
+        let report = self
+            .subscription_usage
+            .read(
+                &id,
+                &expected_scope,
+                &session.access_token,
+                session.refresh_token.as_deref(),
+                force,
+            )
+            .await;
+        let current = {
+            let _guard = self.refresh.lock().await;
+            self.session(&id).await?
+        };
+        if current.as_ref().is_none_or(|s| {
+            !available(s)
+                || s.account_scope != expected_scope
+                || if id == "copilot" {
+                    s.refresh_token != session.refresh_token
+                } else {
+                    s.access_token != session.access_token
+                }
+        }) {
+            return Ok(json!({"provider":id,"accountScope":"",
+                "status":"unavailable","clearSnapshot":true,"plan":null,"updatedAt":null,
+                "windows":[],"message":"账号登录状态已变化，请重新读取当前账号额度"}));
+        }
+        Ok(report)
     }
     pub(crate) fn register(self: &Arc<Self>, server: &Arc<WebServer>) -> RouteDisposer {
         let auth = self.clone();
