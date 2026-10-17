@@ -65,14 +65,27 @@ pub(super) fn install_tool(ctx: &cordis::Context, home: PathBuf) -> Result<(), S
     let tools = ctx
         .get_typed::<Arc<ToolRuntime>>("tools", false)
         .ok_or("tools unavailable")?;
+    let context = ctx.clone();
     tools.register(ctx,ToolDefinition{
         name:"environment_initialize".into(),description:"Initialize the configured Windows sandbox for this session's workspace when SANDBOX_SETUP_REQUIRED is reported. Uses only the installed verified helper and the existing selected implementation/network policy. No arbitrary commands or outside workspace can be supplied. Windows may request administrator authorization for dedicated-account setup. After success retry environment_validate; do not ask the user to navigate settings for routine project initialization.".into(),
-        parameters:json!({"type":"object","properties":{},"additionalProperties":false}),output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,v|Ok(vec![dsh_llm::ContentBlock::Text{text:v.to_string()}])),presentation_meta:None},timeout_ms:Some(900000),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:None,present_result:None,
-        execute:Arc::new(move |_,run|{let home=home.clone();let agent=run.agent.clone();Box::pin(async move{
+        parameters:json!({"type":"object","properties":{},"additionalProperties":false}),output:ToolOutputDefinition{schema:json!({"type":"object"}),render:Arc::new(|_,v|Ok(vec![dsh_llm::ContentBlock::Text{text:v.to_string()}])),presentation_meta:None},timeout_ms:Some(dsh_sandbox::startup::ENVIRONMENT_INITIALIZATION_TIMEOUT_MS),is_concurrency_safe:Some(Arc::new(|_|false)),finalize_content:None,present_call:None,present_result:None,
+        execute:Arc::new(move |_,run|{let home=home.clone();let context=context.clone();let agent=run.agent.clone();let signal=run.signal.lock().clone();Box::pin(async move{
             let agent=agent.ok_or_else(||ToolBodyError::plain("Initialization requires a session"))?;
-            let workspace=agent.session().header().cwd.clone().ok_or_else(||ToolBodyError::plain("Workspace unavailable"))?;
-            let current=dsh_sandbox_local::windows_backend_configuration(&home).map_err(ToolBodyError::plain)?;
-            dsh_sandbox_local::windows_backend_manage(home,json!({"action":"setup","workspace":workspace,"implementation":current["implementation"],"network":current["network"],"expectedRevision":current["revision"]})).await.map_err(|e|ToolBodyError::coded(e,"SandboxSetupError","SANDBOX_SETUP_FAILED"))
+            let service=context.get_typed::<Arc<dsh_sandbox_policy::SandboxPolicyService>>("sandboxPolicy",false).ok_or_else(||ToolBodyError::plain("Sandbox policy unavailable"))?;
+            let policy=service.try_resolve(&dsh_sandbox_policy::SandboxPolicyRequest{session:Some(Arc::new(agent.session().clone())),mode:None}).map_err(ToolBodyError::plain)?;
+            let sandbox=context.get_typed::<Arc<dyn dsh_sandbox::SandboxProvider>>("sandbox",false).ok_or_else(||ToolBodyError::plain("Sandbox unavailable"))?;
+            sandbox.prepare_cancellable(&policy, Some(signal)).await.map_err(|error| {
+                let code=if error.contains("SANDBOX_SETUP_CANCELLED") {"CANCELLED"}
+                    else if error.contains("SANDBOX_SETUP_TIMEOUT") {"SANDBOX_SETUP_TIMEOUT"}
+                    else {"SANDBOX_SETUP_FAILED"};
+                ToolBodyError::coded(error,"SandboxSetupError",code)
+            })?;
+            let mut value=dsh_sandbox_local::windows_backend_configuration(&home).map_err(ToolBodyError::plain)?;
+            value["prepared"]=json!(true);
+            value["scope"]=json!("effective-session-policy");
+            value["sessionId"]=json!(policy.session_id);
+            value["permissionMode"]=json!(policy.mode.as_str());
+            Ok(value)
         })})
     })?;
     Ok(())

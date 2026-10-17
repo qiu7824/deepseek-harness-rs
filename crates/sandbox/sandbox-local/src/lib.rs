@@ -247,10 +247,15 @@ impl SandboxProvider for LocalSandboxProvider {
                 Ok(Some(native)) => {
                     let native = native.clone();
                     let home = self.native_home.clone();
-                    let workspace = policy.workspace_root.clone();
-                    let read_only = policy.mode == SandboxMode::ReadOnly;
+                    let policy = SandboxPolicy {
+                        workspace_root: policy.workspace_root.clone(),
+                        mode: if policy.mode == SandboxMode::ReadOnly { dsh_sandbox::ConfinedSandboxMode::ReadOnly } else { dsh_sandbox::ConfinedSandboxMode::WorkspaceWrite },
+                        read_only_roots: policy.read_only_roots.clone(),
+                        session_id: policy.session_id.clone(),
+                    };
+                    let runtime_roots = self.runtime_roots.clone();
                     return Box::pin(async move {
-                        native.prepare(&workspace, read_only).await?;
+                        native.prepare_policy(&policy, &runtime_roots).await?;
                         if let Some(home) = home
                             && native_backend::NativeBackend::load_from_home(&home)? != Some(native)
                         {

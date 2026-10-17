@@ -291,8 +291,10 @@ impl TerminalBackend for ShellTerminalBackend {
                     .map_err(TerminalBackendSpawnError::spawn)?;
             }
             if let Some(sandbox) = sandbox {
-                sandbox.prepare(&policy).await.map_err(|message| {
-                    let code = if message.starts_with("[SANDBOX_SETUP_TIMEOUT]") {
+                sandbox.prepare_cancellable(&policy, spec.signal.clone()).await.map_err(|message| {
+                    let code = if message.starts_with("[SANDBOX_SETUP_CANCELLED]") {
+                        TerminalErrorCode::Aborted
+                    } else if message.starts_with("[SANDBOX_SETUP_TIMEOUT]") {
                         TerminalErrorCode::SandboxSetupTimeout
                     } else {
                         TerminalErrorCode::SandboxSetupFailed

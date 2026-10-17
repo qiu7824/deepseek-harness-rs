@@ -89,10 +89,44 @@ async fn wait_for_cancellation(
     }
 }
 
+// The inner process sees a combined stop/deadline signal. Its Abort result
+// therefore does not identify the caller's intent; settle that race using
+// the original cancellation signal and the host-owned execution clock.
+fn settle_result(
+    result: Result<CodeRunResult, String>,
+    deadline_expired: Option<bool>,
+    caller_cancelled: bool,
+) -> Result<CodeRunResult, String> {
+    if caller_cancelled {
+        return Ok(failure(CodeRunFailureKind::Abort,
+            if deadline_expired.is_some() { "aborted" } else { "aborted before program dispatch" }));
+    }
+    if deadline_expired == Some(true) {
+        return Ok(failure(CodeRunFailureKind::Timeout, "elapsed PTC deadline reached"));
+    }
+    match result {
+        Err(error) if deadline_expired.is_none() => Ok(failure(CodeRunFailureKind::Startup, &error)),
+        result => result,
+    }
+}
+
 #[cfg(test)]
 mod rejection_tests {
     use super::*;
     use dsh_code_runtime::CodeBindingNamespace;
+
+    #[test]
+    fn deadline_abort_is_timeout_but_explicit_stop_keeps_precedence() {
+        let aborted = || Ok(failure(CodeRunFailureKind::Abort, "combined child signal"));
+        assert_eq!(settle_result(aborted(), Some(true), false).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Timeout);
+        assert_eq!(settle_result(aborted(), Some(true), true).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Abort);
+        assert_eq!(settle_result(Err("pipe closed".into()), None, true).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Abort);
+        assert_eq!(settle_result(Err("pipe closed".into()), None, false).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Startup);
+    }
 
     #[tokio::test]
     async fn elapsed_deadline_reaps_compute_and_binding_waits() {
@@ -427,33 +461,10 @@ impl CodeRuntime for NodeCodeRuntime {
             // A subprocess can report its termination before the cancellation
             // poller wakes. Preserve the caller's Stop instead of relabeling
             // that same termination as startup failure or elapsed timeout.
-            if cancellation.as_ref().is_some_and(|signal| signal()) || !lifecycle.accepting() {
-                return Ok(failure(
-                    CodeRunFailureKind::Abort,
-                    if started.lock().is_some() {
-                        "aborted"
-                    } else {
-                        "aborted before program dispatch"
-                    },
-                ));
-            }
-            if started
-                .lock()
-                .as_ref()
-                .is_some_and(|start| start.elapsed() >= std::time::Duration::from_millis(budget))
-                && !matches!(&result,Ok(result) if result.error.as_ref().is_some_and(|error|error.kind==CodeRunFailureKind::Abort))
-            {
-                return Ok(failure(
-                    CodeRunFailureKind::Timeout,
-                    "elapsed PTC deadline reached",
-                ));
-            }
-            match result {
-                Err(error) if started.lock().is_none() => {
-                    Ok(failure(CodeRunFailureKind::Startup, &error))
-                }
-                result => result,
-            }
+            let deadline_expired = started.lock().as_ref()
+                .map(|clock| clock.elapsed() >= std::time::Duration::from_millis(budget));
+            settle_result(result, deadline_expired,
+                cancellation.as_ref().is_some_and(|signal| signal()) || !lifecycle.accepting())
         })
     }
 }
@@ -505,20 +516,21 @@ async fn run_one(
         let provider = sandbox.ok_or_else(|| {
             "code-runtime-node: SANDBOX_UNAVAILABLE: OS sandbox service is required".to_string()
         })?;
-        provider
-            .prepare(&SandboxExecutionPolicy {
+        let prepared = provider
+            .prepare_cancellable(&SandboxExecutionPolicy {
                 mode: SandboxMode::ReadOnly,
                 workspace_root: runner_root.clone(),
                 read_only_roots: Vec::new(),
                 session_id: None,
-            })
-            .await?;
+            }, request.signal.clone())
+            .await;
         if request.signal.as_ref().is_some_and(|signal| signal()) {
             return Ok(failure(
                 CodeRunFailureKind::Abort,
                 "aborted before program dispatch",
             ));
         }
+        prepared?;
         let confined = provider
             .confine_with_startup(
                 &argv,

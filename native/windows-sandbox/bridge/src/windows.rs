@@ -25,7 +25,14 @@ pub fn run(mut request: Request) -> Result<i32> {
         ensure!(request.action==Action::Status||request.private_roots.is_empty(),"PRIVATE_READ_BOUNDARY_REQUIRES_ELEVATED: the current-user token backend cannot isolate product private roots; select and initialize the dedicated-account backend");
         return run_unelevated(request);
     }
-    let owned = pool::validate_owner(&request.home, request.action == Action::Setup)?;
+    if request.action == Action::Setup {
+        ensure!(!codex_windows_sandbox::setup_caller_is_restricted()?,
+            "SETUP_DENIED: a confined command cannot initialize sandbox identities");
+        // Serialize first-owner publication before any slot is admitted.
+        // Protection is applied once, not to ancestors of every active slot.
+        pool::initialize_owner(&request.home)?;
+    }
+    let owned = pool::validate_owner(&request.home, false)?;
     if request.action != Action::Status {
         request.private_roots.extend(pool::runtime_roots(&request.home,&request.workspace)?);
     }
@@ -36,7 +43,7 @@ pub fn run(mut request: Request) -> Result<i32> {
     };
     if request.action == Action::Status {
         let initialized = owned
-            && indices.clone().all(|index| {
+            && indices.clone().any(|index| {
                 let home = pool::home(
                     &request.home,
                     &request.workspace,
@@ -55,46 +62,6 @@ pub fn run(mut request: Request) -> Result<i32> {
         owned,
         "SETUP_REQUIRED: native account pool is not initialized"
     );
-    if request.action == Action::Setup {
-        ensure!(
-            !codex_windows_sandbox::setup_caller_is_restricted()?,
-            "SETUP_DENIED: a confined command cannot initialize sandbox identities"
-        );
-        let mut leases = Vec::new();
-        leases.extend(pool::acquire_other_projects(
-            &request.home,
-            &request.workspace,
-        )?);
-        for index in 0..pool::SIZE {
-            leases.push(
-                pool::acquire_retry(&request.home, &request.workspace, index)?.ok_or_else(|| {
-                    anyhow::anyhow!("NATIVE_SLOT_BUSY: another native command still owns the current workspace slot after the cleanup grace period")
-                })?,
-            );
-        }
-        pool::protect_owner(&request.home)?;
-        for index in 0..pool::SIZE {
-            let mut slot = request.clone();
-            slot.home = pool::home(&request.home, &request.workspace, index);
-            slot.read_only = index < pool::READ_SLOTS;
-            run_slot(slot)?;
-        }
-        println!(
-            "{}",
-            serde_json::json!({"backend":"windows-native","protocolVersion":1,"initialized":true,"poolSize":pool::SIZE,"home":request.home})
-        );
-        return Ok(0);
-    }
-    ensure!(
-        indices.clone().all(
-            |index| codex_windows_sandbox::sandbox_setup_is_complete(&pool::home(
-                &request.home,
-                &request.workspace,
-                index
-            ))
-        ),
-        "SETUP_REQUIRED: initialize this workspace before native execution"
-    );
     let started = std::time::Instant::now();
     let wait = Duration::from_millis(request.timeout_ms.unwrap_or(5_000).min(5_000));
     let (index, _lease) = pool::acquire_available(&request.home, &request.workspace, indices, wait)?;
@@ -106,9 +73,29 @@ pub fn run(mut request: Request) -> Result<i32> {
     }
     slot.home = pool::home(&request.home, &request.workspace, index);
     let home = slot.home.clone();
+    // Provision only the leased account. Other accounts are created when
+    // concurrency needs them, never as a prerequisite for the first command.
+    // The setup engine serializes ACL updates; private grants are account-
+    // scoped, so provisioning must not acquire unrelated execution leases.
+    if request.action != Action::Setup
+        && (!codex_windows_sandbox::sandbox_setup_is_complete(&home)
+            || (!request.network && offline_ready(&home).is_err()))
+    {
+        ensure!(!codex_windows_sandbox::setup_caller_is_restricted()?,
+            "SETUP_DENIED: a confined command cannot initialize sandbox identities");
+        let mut setup = slot.clone();
+        setup.action = Action::Setup;
+        run_slot(setup)?;
+    }
     let result = run_slot(slot);
     codex_windows_sandbox::startup_progress::stage("cleanup");
     pool::settle(&home);
+    if request.action == Action::Prepare && matches!(result, Ok(0)) {
+        println!("{}", serde_json::json!({"protocolVersion":1,"prepared":true,"scope":"effective-session-policy"}));
+    }
+    if request.action == Action::Setup && matches!(result, Ok(0)) {
+        println!("{}", serde_json::json!({"backend":"windows-native","protocolVersion":1,"initialized":true,"poolSize":pool::SIZE,"initializedSlot":index,"home":request.home}));
+    }
     result
 }
 
@@ -166,14 +153,14 @@ fn run_unelevated(mut request: Request) -> Result<i32> {
     }
     ensure!(!codex_windows_sandbox::setup_caller_is_restricted()?,"SETUP_DENIED: confined callers cannot initialize token state");
     if request.action==Action::Run && request.read_only {
-        crate::pool::initialize_token_owner(&shared_home)?;
-        crate::pool::initialize_token_owner(&token_home)?;
+        crate::pool::initialize_owner(&shared_home)?;
+        crate::pool::initialize_owner(&token_home)?;
         request.home=selected;
         return run_slot(request);
     }
     if request.action==Action::Setup {
-        crate::pool::initialize_token_owner(&shared_home)?;
-        crate::pool::initialize_token_owner(&token_home)?;
+        crate::pool::initialize_owner(&shared_home)?;
+        crate::pool::initialize_owner(&token_home)?;
         let lock_path=token_home.join("preparation.lock");
         let lock=std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(lock_path)?;
         fs2::FileExt::try_lock_exclusive(&lock).map_err(|_|anyhow::anyhow!("SETUP_BUSY: token permissions are already being prepared"))?;
@@ -191,6 +178,10 @@ fn run_unelevated(mut request: Request) -> Result<i32> {
         return Ok(0);
     }
     ensure!(crate::pool::validate_owner(&shared_home,false)? && token_prepared_marker(&selected,&request.workspace)?.is_file(),"SETUP_REQUIRED: initialize this project's token permissions before execution; no administrator approval is required");
+    if request.action == Action::Prepare {
+        println!("{}", serde_json::json!({"protocolVersion":1,"prepared":true,"scope":"effective-session-policy"}));
+        return Ok(0);
+    }
     request.home=selected;
     run_slot(request)
 }
@@ -298,6 +289,18 @@ fn run_slot(mut request: Request) -> Result<i32> {
     }
     if elevated {
         ensure!(codex_windows_sandbox::sandbox_setup_is_complete(&request.home), "[SETUP_REQUIRED] run explicit native sandbox setup before dispatch");
+    }
+    if request.action == Action::Prepare {
+        let permissions = ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(&policy, &workspace_roots)?;
+        // Use the exact refresh path used by process creation, under the same
+        // slot lease. A setup marker cannot substitute for these checks.
+        let denied_paths = denied.iter().map(|path| path.to_path_buf()).collect::<Vec<_>>();
+        codex_windows_sandbox::require_logon_sandbox_creds(
+            &permissions, &request.workspace, &env.values, &request.home,
+            Some(&env.reads), false, Some(&writes), &denied_paths, &[], false,
+            WindowsSandboxProxySettingsMode::Reconcile,
+        )?;
+        return Ok(0);
     }
     let cwd = request.workspace.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()

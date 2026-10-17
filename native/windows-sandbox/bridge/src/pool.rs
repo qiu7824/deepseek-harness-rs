@@ -9,7 +9,7 @@ pub const READ_SLOTS: usize = 2;
 pub const WRITE_SLOTS: usize = 4;
 pub const SIZE: usize = READ_SLOTS + WRITE_SLOTS;
 
-pub fn initialize_token_owner(root: &Path) -> Result<()> {
+pub fn initialize_owner(root: &Path) -> Result<()> {
     use sha2::{Digest, Sha256};
     let parent = root.parent().ok_or_else(||anyhow::anyhow!("state directory has no parent"))?;
     std::fs::create_dir_all(parent)?;
@@ -196,11 +196,6 @@ pub fn acquire(root: &Path, workspace: &Path, index: usize) -> Result<Option<Fil
     acquire_directory(&slot)
 }
 
-pub fn acquire_retry(root: &Path, workspace: &Path, index: usize) -> Result<Option<File>> {
-    let slot = home(root, workspace, index);
-    acquire_directory_retry(&slot)
-}
-
 fn acquire_directory(slot: &Path) -> Result<Option<File>> {
     std::fs::create_dir_all(&slot)?;
     let file = OpenOptions::new()
@@ -224,6 +219,7 @@ fn acquire_directory(slot: &Path) -> Result<Option<File>> {
 /// Setup can race the final cleanup of a previous runner. Give that runner a
 /// bounded grace period before reporting a slot as permanently busy; the old
 /// code failed immediately on the first transient Windows sharing violation.
+#[cfg(test)]
 fn acquire_directory_retry(slot: &Path) -> Result<Option<File>> {
     for attempt in 0..50 {
         match acquire_directory(slot)? {
@@ -244,11 +240,25 @@ pub fn acquire_available(
     indices: std::ops::Range<usize>,
     wait: std::time::Duration,
 ) -> Result<(usize, File)> {
+    acquire_available_with(root, workspace, indices, wait, |index| {
+        codex_windows_sandbox::sandbox_setup_is_complete(&home(root, workspace, index))
+    })
+}
+
+fn acquire_available_with(
+    root: &Path,
+    workspace: &Path,
+    indices: std::ops::Range<usize>,
+    wait: std::time::Duration,
+    ready: impl Fn(usize) -> bool,
+) -> Result<(usize, File)> {
     let started = std::time::Instant::now();
     loop {
         let mut occupied = 0;
         let mut failures = Vec::new();
-        for index in indices.clone() {
+        let mut candidates: Vec<_> = indices.clone().collect();
+        candidates.sort_by_key(|index| !ready(*index));
+        for index in candidates {
             match acquire(root, workspace, index) {
                 Ok(Some(lease)) => return Ok((index, lease)),
                 Ok(None) => occupied += 1,
@@ -264,32 +274,6 @@ pub fn acquire_available(
         }
         std::thread::sleep(remaining.min(std::time::Duration::from_millis(50)));
     }
-}
-
-pub fn acquire_other_projects(root: &Path, workspace: &Path) -> Result<Vec<File>> {
-    let current = home(root, workspace, READ_SLOTS)
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let mut leases = Vec::new();
-    let projects = root.join("projects");
-    if projects.exists() {
-        for entry in std::fs::read_dir(projects)? {
-            let project = entry?.path();
-            if project == current || !project.is_dir() {
-                continue;
-            }
-            for index in 0..WRITE_SLOTS {
-                let slot = project.join(index.to_string());
-                if slot.exists() {
-                    leases.push(acquire_directory_retry(&slot)?.ok_or_else(|| {
-                        anyhow::anyhow!("NATIVE_SLOT_BUSY: another native command still owns {} after the cleanup grace period", slot.display())
-                    })?);
-                }
-            }
-        }
-    }
-    Ok(leases)
 }
 
 pub fn settle(slot: &Path) {
@@ -322,6 +306,43 @@ mod tests {
             assert!(self.0.starts_with(parent) && self.0.file_name().unwrap().to_string_lossy().starts_with("dsh-native-slot-test-"));
             std::fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+    #[test]
+    fn simultaneous_first_setup_publishes_one_protected_owner() {
+        let f = Fixture::new();
+        std::thread::scope(|scope| {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let handles: Vec<_> = (0..4).map(|_| {
+                let root = &f.0;
+                let barrier = barrier.clone();
+                scope.spawn(move || { barrier.wait(); initialize_owner(root) })
+            }).collect();
+            for handle in handles { handle.join().unwrap().unwrap(); }
+        });
+        assert!(validate_owner(&f.0, false).unwrap());
+        let owner: serde_json::Value = serde_json::from_slice(&std::fs::read(f.0.join("dsh-native-pool.json")).unwrap()).unwrap();
+        assert_eq!(owner["protected"], true);
+    }
+    #[test]
+    fn admission_reuses_ready_slots_and_grows_only_when_they_are_occupied() {
+        let f = Fixture::new();
+        let workspace = f.0.join("冷启动 workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let ready = READ_SLOTS + 1;
+        let (first, lease) = acquire_available_with(&f.0, &workspace, READ_SLOTS..SIZE,
+            std::time::Duration::ZERO, |index| index == ready).unwrap();
+        assert_eq!(first, ready);
+        assert!(!home(&f.0, &workspace, READ_SLOTS).exists(), "unused slots stay unprovisioned");
+        let (second, second_lease) = acquire_available_with(&f.0, &workspace, READ_SLOTS..SIZE,
+            std::time::Duration::ZERO, |index| index == ready).unwrap();
+        assert_eq!(second, READ_SLOTS);
+        assert!(acquire(&f.0, &workspace, ready).unwrap().is_none());
+        assert!(!home(&f.0, &workspace, SIZE - 1).exists());
+        drop(second_lease);
+        drop(lease);
+        let (again, _) = acquire_available_with(&f.0, &workspace, READ_SLOTS..SIZE,
+            std::time::Duration::ZERO, |index| index == ready).unwrap();
+        assert_eq!(again, ready);
     }
     #[test]
     fn lock_contention_is_busy_then_reusable_without_deleting_the_lock() {

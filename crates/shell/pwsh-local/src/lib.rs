@@ -360,7 +360,7 @@ impl ShellExecutor for LocalPwshExecutor {
                 return Err("[SHELL_ABORTED] PowerShell command cancelled before startup".into());
             }
             if let (Some(sandbox), Some(policy)) = (&sandbox, &spec.sandbox_policy) {
-                sandbox.prepare(policy).await?;
+                sandbox.prepare_cancellable(policy, spec.signal.clone()).await?;
             }
             if spec.signal.as_ref().is_some_and(|signal| signal()) {
                 return Err("[SHELL_ABORTED] PowerShell command cancelled before startup".into());

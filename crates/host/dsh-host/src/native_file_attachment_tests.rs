@@ -49,7 +49,7 @@ async fn execute(
         )
         .unwrap();
     let output = tokio::time::timeout(
-        Duration::from_secs(120),
+        dsh_sandbox::startup::STARTUP_MAX_TIMEOUT + Duration::from_secs(30),
         tokio::process::Command::new(&confined.argv[0])
             .args(&confined.argv[1..])
             .current_dir(&policy.workspace_root)
@@ -122,6 +122,16 @@ async fn admitted_docx_and_forty_attachments_keep_python_launch_and_exact_read_s
         },
     );
     let sessions = dsh_session::SessionStore::install(&ctx);
+    // Exercise the real persistence implementation, not synthetic lock files:
+    // both sessions remain resident throughout permission preparation.
+    let persistence_root = home.join("sessions");
+    let _persistence = dsh_session_persistence_jsonl::JsonlSessionPersistence::install(
+        &ctx,
+        dsh_session_persistence_jsonl::JsonlConfig {
+            root: persistence_root.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    ).unwrap();
     let metadata = Some(dsh_session::CreateSessionOptions {
         meta: Some(dsh_session::CreateSessionMeta {
             cwd: Some(workspace.clone()),
@@ -145,6 +155,22 @@ async fn admitted_docx_and_forty_attachments_keep_python_launch_and_exact_read_s
         )
         .await
         .unwrap();
+    // create() already admits both sessions into this context's residency.
+    sessions.flush(&owner).await.unwrap();
+    sessions.flush(&other).await.unwrap();
+    let assert_writer_owned = |session: &dsh_session::Session| {
+        use std::os::windows::fs::OpenOptionsExt;
+        let path = dsh_session_persistence_jsonl::log_path(
+            &persistence_root.to_string_lossy(), session.header().cwd.as_deref(),
+            session.id(), dsh_session_persistence_jsonl::JsonlCompression::Zstd,
+        );
+        let contender = std::fs::OpenOptions::new().read(true).write(true).share_mode(3)
+            .open(path.parent().unwrap().join(".session-writer.lock")).unwrap();
+        assert!(matches!(contender.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "real session residency must retain its exclusive writer lease");
+    };
+    assert_writer_owned(&owner);
+    assert_writer_owned(&other);
     let policy = dsh_sandbox_policy::SandboxPolicyService::install(
         &ctx,
         dsh_sandbox_policy::Config {
@@ -166,7 +192,8 @@ async fn admitted_docx_and_forty_attachments_keep_python_launch_and_exact_read_s
     let foreign = admit(files.as_ref(), &other, 999).await;
     let mut own = vec![];
     let mut reports = vec![];
-    const READ_CHECK: &str = r#"import json,sys,pathlib,zipfile
+    const READ_CHECK: &str = r#"import json,sys,pathlib,zipfile,time
+started=time.monotonic()
 paths=json.loads(sys.argv[1]); foreign=pathlib.Path(sys.argv[2]); denied=0
 for value in paths:
  p=pathlib.Path(value)
@@ -180,7 +207,8 @@ try:
 except PermissionError: foreign_denied=True
 assert denied==len(paths), (denied,len(paths))
 assert foreign_denied
-print(json.dumps({'readCount':len(paths),'writesDenied':denied,'foreignDenied':foreign_denied}))
+time.sleep(float(sys.argv[3]) if len(sys.argv)>3 else 0)
+print(json.dumps({'readCount':len(paths),'writesDenied':denied,'foreignDenied':foreign_denied,'started':started,'ended':time.monotonic()}))
 "#;
     for count in [1, 40] {
         while own.len() < count {
@@ -237,7 +265,7 @@ print(json.dumps({'readCount':len(paths),'writesDenied':denied,'foreignDenied':f
         &python,
         READ_CHECK,
         vec![
-            serde_json::to_string(&vec![foreign]).unwrap(),
+            serde_json::to_string(&vec![foreign.clone()]).unwrap(),
             own[0].to_string_lossy().into_owned(),
         ],
     )
@@ -245,11 +273,43 @@ print(json.dumps({'readCount':len(paths),'writesDenied':denied,'foreignDenied':f
     let report: Value = serde_json::from_str(checked.trim()).unwrap();
     assert_eq!(report["readCount"], 1);
     reports.push(report);
-    let report = json!({"passed":true,"python":python,"helper":binary,"workspace":workspace,"singleAndFortyAttachmentLaunches":true,"cases":reports});
+    let owner_policy = policy.try_resolve(&dsh_sandbox_policy::SandboxPolicyRequest {
+        session: Some(Arc::new(owner.clone())), mode: None,
+    }).unwrap();
+    let other_policy = selected;
+    for round in 0..2 {
+        let a = execute(provider.as_ref(), &owner_policy, &python, READ_CHECK,
+            vec![serde_json::to_string(&own).unwrap(), foreign.to_string_lossy().into_owned(), "8".into()]);
+        let b = execute(provider.as_ref(), &other_policy, &python, READ_CHECK,
+            vec![serde_json::to_string(&vec![foreign.clone()]).unwrap(), own[0].to_string_lossy().into_owned(), "8".into()]);
+        let writes = async {
+            for index in 0..20 {
+                for session in [&owner, &other] {
+                    session.append("feedback/record", json!({"text":format!("concurrent persistence {round}/{index}")}), None).unwrap();
+                    sessions.flush(session).await.unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        let (a,b,()) = tokio::join!(a,b,writes);
+        let mut windows = vec![];
+        for result in [a,b] {
+            let value: Value = serde_json::from_str(result.trim()).unwrap();
+            assert_eq!(value["foreignDenied"], true);
+            windows.push((value["started"].as_f64().unwrap(),value["ended"].as_f64().unwrap()));
+            reports.push(value);
+        }
+        assert!(windows[0].0.max(windows[1].0) < windows[0].1.min(windows[1].1),
+            "both sandboxed processes must really overlap, not merely be queued concurrently: {windows:?}");
+        assert_writer_owned(&owner);
+        assert_writer_owned(&other);
+    }
+    let report = json!({"passed":true,"python":python,"helper":binary,"workspace":workspace,"singleAndFortyAttachmentLaunches":true,"residentSessionWriterLocks":true,"concurrentSessionsAndPersistence":true,"cases":reports});
     std::fs::write(
         root.join("report.json"),
         serde_json::to_vec_pretty(&report).unwrap(),
     )
     .unwrap();
     println!("{}", json!({"fixture":root,"result":report}));
+    for dispose in ctx.fiber.disposables.clear() { dispose().await; }
 }

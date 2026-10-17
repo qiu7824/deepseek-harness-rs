@@ -836,13 +836,12 @@ impl ExecutionProfiles {
                 .ctx
                 .get_typed::<Arc<dyn SandboxProvider>>("sandbox", false)
                 .ok_or(("unknown", "沙箱服务不可用".into()))?;
-            tokio::select! {
-                result = tokio::time::timeout(dsh_sandbox::startup::PREPARATION_TIMEOUT, sandbox.prepare(policy)) => {
-                    result.map_err(|_| ("setup_timeout", "[SANDBOX_SETUP_TIMEOUT] runtime preparation timed out; probe not dispatched".into()))?
-                        .map_err(|error| ("setup_failed", error))?;
-                }
-                _ = cancelled(signal.clone()) => return Err(("cancelled", "环境准备已取消；探测未启动".into())),
-            }
+            sandbox.prepare_cancellable(policy, Some(signal.clone())).await.map_err(|error| {
+                let status = if error.contains("SANDBOX_SETUP_CANCELLED") { "cancelled" }
+                    else if error.contains("SANDBOX_SETUP_TIMEOUT") { "setup_timeout" }
+                    else { "setup_failed" };
+                (status, error)
+            })?;
             let confined = sandbox
                 .confine_with_startup(
                     &argv,
@@ -1170,9 +1169,9 @@ impl ExecutionProfiles {
     ) -> Result<(), String> {
         let service = self.clone();
         tools.register(ctx, ToolDefinition {
-            name: "environment_validate".into(), description: "Validate selected shell, interpreter or a fixed capability inside the current execution policy. This is separate from environment_probe host facts. Request only needed capabilities, reuse cached facts; use refresh after a relevant failure. Python dependency imports use the selected isolated interpreter; cv2 feature checks an in-memory codec. WPS supports locate only. Never changes permissions or installs software.".into(),
+            name: "environment_validate".into(), description: "Validate selected shell, interpreter or a fixed capability inside the current execution policy. This is separate from environment_probe host facts. Request only needed capabilities, reuse cached facts; use refresh after a relevant failure. Python dependency imports use the selected isolated interpreter; cv2 feature checks an in-memory codec. WPS supports locate only. Prepares the selected session sandbox policy before launch; never widens that policy or installs software.".into(),
             parameters: json!({"type":"object","properties":{"name":{"type":"string","enum":["shell","python","node","git","rg","pwsh","ffmpeg","wps","rustc","cargo"]},"level":{"type":"string","enum":["locate","launch","dependency","feature"]},"module":{"type":"string","enum":MODULES},"refresh":{"type":"boolean"}},"required":["name"],"additionalProperties":false}),
-            output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text {text:value.to_string()}])), presentation_meta: None }, timeout_ms: Some(400000), is_concurrency_safe: Some(Arc::new(|_|true)),
+            output: ToolOutputDefinition { schema: json!({"type":"object"}), render: Arc::new(|_,value|Ok(vec![dsh_llm::ContentBlock::Text {text:value.to_string()}])), presentation_meta: None }, timeout_ms: Some(dsh_sandbox::startup::ENVIRONMENT_VALIDATION_TIMEOUT_MS), is_concurrency_safe: Some(Arc::new(|_|true)),
             execute: Arc::new(move |args,exec| { let service=service.clone(); let args=args.clone(); let signal=exec.signal.lock().clone(); let agent=exec.agent.clone(); Box::pin(async move {
                 let session=agent.as_ref().map(|a|a.session().header().id.as_str());
                 let cwd=agent.as_ref().and_then(|a|a.session().header().cwd.clone()).ok_or_else(||ToolBodyError::coded("当前会话未选择工作区，无法验证执行环境。","EnvironmentError","ENVIRONMENT_NOT_READY"))?;

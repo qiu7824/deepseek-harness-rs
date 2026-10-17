@@ -336,6 +336,17 @@ pub trait SandboxProvider: Send + Sync + 'static {
         Box::pin(async { Ok(()) })
     }
 
+    /// All interactive execution entries use one bounded, cancellable
+    /// preparation lifecycle. Dropping preparation releases its native job
+    /// and initialization gate before any requested command is dispatched.
+    fn prepare_cancellable(
+        &self,
+        policy: &SandboxExecutionPolicy,
+        signal: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+        Box::pin(crate::startup::prepare_future(self.prepare(policy), signal))
+    }
+
     /// Wrap `argv` so it executes confined under `policy` on this host; the
     /// caller spawns the returned argv in place of its own.
     ///
