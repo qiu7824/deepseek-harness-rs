@@ -63,6 +63,8 @@ mod private_read_acl;
 #[cfg(any(target_os = "windows", test))]
 mod private_read_plan;
 #[cfg(target_os = "windows")]
+pub mod startup_progress;
+#[cfg(target_os = "windows")]
 mod desktop;
 #[cfg(target_os = "windows")]
 mod dpapi;
@@ -180,6 +182,8 @@ pub use deny_read_resolver::resolve_windows_deny_read_paths;
 pub use deny_read_state::sync_persistent_deny_read_acls;
 #[cfg(target_os = "windows")]
 pub use private_read_acl::sync_private_read_acls;
+#[cfg(windows)]
+pub use private_read_acl::{PrivateAclProgress, sync_private_read_acls_with_progress};
 #[cfg(target_os = "windows")]
 pub use desktop::LaunchDesktop;
 #[cfg(target_os = "windows")]

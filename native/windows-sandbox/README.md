@@ -15,7 +15,7 @@ silently runs a command without confinement or switches implementation.
 Use **Settings → Windows sandbox** to select the implementation and network
 policy, and initialize each writable project. Elevated setup requests Windows
 administrator authorization when necessary. Subsequent commands run from an
-ordinary host account. Unelevated project permission preparation requires no account provisioning or administrator approval. Both modes require explicit project initialization; large-tree ACL preparation is kept outside command startup budgets.
+ordinary host account. Unelevated project permission preparation requires no account provisioning or administrator approval. The Host prepares the selected project automatically before execution; explicit setup is also available.
 
 ```powershell
 deepseek-harness-rs.exe sandbox status
@@ -54,7 +54,14 @@ state requires explicit initialization before reuse.
 The bridge accepts `--implementation elevated|unelevated`, `--native-home`,
 `--workspace`, `--mode read-only|workspace-write`, `--network enabled|restricted`,
 optional read/runtime/temp roots, timeout and terminal flags, and literal argv
-after `--`. `--status` checks readiness; `--setup` initializes the selected mode.
+after `--`. `--status` reports whether at least one account in the selected mode
+is provisioned; it does not promise that a slot is currently free. `--setup`
+initializes one leased account in that mode. `--prepare` acquires an execution slot and applies the complete
+session policy through the same ACL refresh path used by process creation,
+without dispatching a command. The Host shares one scope encoder across all
+three preparation actions and command execution, including exact attachment,
+runtime, private-container and session-owned temporary roots. Initialization
+returns `prepared: true` only after effective-policy preparation succeeds.
 Timeouts return 124, setup or transport failures return 125 with authenticated
 startup evidence, and ordinary commands retain their exit codes. Child output
 cannot impersonate startup failure merely by printing a runner marker.
@@ -69,10 +76,25 @@ to Node and the installed JavaScript entry point; arguments never pass through
 
 ## Isolation and lifecycle
 
-Elevated execution reserves two read-only slots and four writable slots per
-initialized workspace. Writable identities are not reused for other projects or
-read-only execution. Leases, process creation identity and quarantine protect
-reuse. Setup requires affected native executions to be idle.
+Elevated execution supports two shared read-only slots and four writable slots
+per workspace. Admission prefers provisioned accounts and initializes an unused
+account only when no provisioned account is free. First use does not initialize
+the entire pool. Writable identities are not reused for other projects or
+read-only execution. Setup and execution hold the selected account's lease;
+ACL updates retain their shared mutex without taking unrelated execution leases.
+Policy preparation must succeed before dispatch. Leases, process creation
+identity and quarantine protect reuse.
+
+Cargo artifacts can have several names for the same file. Private ACL
+reconciliation enumerates every hard-link name, checks its file identity and
+private boundary, and requires identical effective permissions for every name.
+Outside aliases, mixed read/write grants, reparse ancestors and changing link
+inventories fail before ACL changes. This preserves exact-file grants because
+[hard links share one security descriptor](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createhardlinkw).
+When NTFS name enumeration is unavailable, a bounded search inside the private
+boundary must account for every link using the kernel's file ID and link count.
+The search starts with sibling files; existing names are pinned against removal
+while inventories are checked. An incomplete inventory never authorizes a change.
 
 Offline rules have stable account-specific identifiers and cover IPv4/IPv6
 socket allocation, connection and receive authorization. Runtime checks reject

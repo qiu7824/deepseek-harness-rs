@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub enum Action {
     Run,
     Setup,
+    Prepare,
     Status,
 }
 
@@ -71,6 +72,10 @@ impl Request {
                 "--status" => {
                     ensure!(request.action == Action::Run, "conflicting action");
                     request.action = Action::Status;
+                }
+                "--prepare" => {
+                    ensure!(request.action == Action::Run, "conflicting action");
+                    request.action = Action::Prepare;
                 }
                 "--tty" => request.tty = true,
                 _ => {

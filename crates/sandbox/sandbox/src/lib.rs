@@ -5,6 +5,7 @@ pub mod escalation;
 pub mod index;
 pub mod invariant;
 pub mod roots;
+pub mod startup;
 
 pub use escalation::{
     ESCALATION_TARGETS, EscalationApproval, EscalationApproveRequest, EscalationApprover,

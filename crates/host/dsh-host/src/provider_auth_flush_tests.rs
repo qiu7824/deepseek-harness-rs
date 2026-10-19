@@ -31,7 +31,7 @@ async fn logout_flush_failure_is_explicit_and_never_activates_the_remaining_acco
     dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
     dsh_tools::ToolRuntime::install(&ctx, Default::default()).unwrap();
     let sessions = dsh_session::SessionStore::install(&ctx);
-    dsh_session_persistence_jsonl::JsonlSessionPersistence::install(
+    let persistence = dsh_session_persistence_jsonl::JsonlSessionPersistence::install(
         &ctx,
         dsh_session_persistence_jsonl::JsonlConfig {
             root: root.join("sessions").to_string_lossy().into(),
@@ -57,13 +57,14 @@ async fn logout_flush_failure_is_explicit_and_never_activates_the_remaining_acco
     )
     .unwrap();
     let session = sessions
-        .create(
-            &ctx,
+        .prepare(
             Some(dsh_session::session_id("logout-flush-failure")),
             None,
         )
-        .await
         .unwrap();
+    let session_id = session.id().clone();
+    let detach_session = sessions.enter(&session).unwrap();
+    sessions.announce(&session).await.unwrap();
     let agent = dsh_agent_loop::ReactLoopAgent::new(
         &ctx,
         session.id().clone(),
@@ -75,7 +76,7 @@ async fn logout_flush_failure_is_explicit_and_never_activates_the_remaining_acco
         session,
     )
     .unwrap();
-    agents.enter(agent.clone(), None).unwrap();
+    let detach_agent = agents.enter(agent.clone(), None).unwrap();
     let message = |text: &str| {
         dsh_llm::create_user_message(
             vec![dsh_llm::ContentBlock::Text { text: text.into() }],
@@ -139,6 +140,11 @@ async fn logout_flush_failure_is_explicit_and_never_activates_the_remaining_acco
     assert_eq!(agent.inbox().next_turn().len(), 1);
     assert_eq!(agent.status(), dsh_agent::AgentStatus::Idle);
     fault().await;
+    detach_agent().await;
+    detach_session().await;
+    // Await durable retirement instead of racing its Windows writer lease.
+    dsh_session_persistence::SessionPersistenceApi::delete(persistence.as_ref(), &session_id)
+        .await.unwrap();
     auth.credentials.drain().await;
     for dispose in ctx.fiber.disposables.clear() {
         dispose().await;

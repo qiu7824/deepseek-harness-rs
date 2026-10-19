@@ -319,6 +319,7 @@ fn run_setup_refresh_inner(
     let offline_proxy_settings =
         offline_proxy_settings_for_request(&request, offline_proxy_settings_override);
     let payload = ElevationPayload {
+        startup_event: crate::startup_progress::event_name(),
         version: SETUP_VERSION,
         offline_username: account_names(request.codex_home).0,
         online_username: account_names(request.codex_home).1,
@@ -649,6 +650,7 @@ pub(crate) fn effective_write_roots_for_permissions(
 
 #[derive(Serialize)]
 struct ElevationPayload {
+    startup_event: Option<String>,
     version: u32,
     offline_username: String,
     online_username: String,
@@ -1038,6 +1040,7 @@ fn run_elevated_setup_inner(
     let offline_proxy_settings =
         offline_proxy_settings_for_request(&request, offline_proxy_settings_override);
     let payload = ElevationPayload {
+        startup_event: crate::startup_progress::event_name(),
         version: SETUP_VERSION,
         offline_username: account_names(request.codex_home).0,
         online_username: account_names(request.codex_home).1,
@@ -1088,6 +1091,7 @@ pub fn run_elevated_provisioning_setup(
         ));
     }
     let payload = ElevationPayload {
+        startup_event: crate::startup_progress::event_name(),
         version: SETUP_VERSION,
         offline_username: account_names(codex_home).0,
         online_username: account_names(codex_home).1,

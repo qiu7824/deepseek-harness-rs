@@ -492,6 +492,7 @@ mod navigation_behavior {
                     false,
                     false,
                     key(ancestor) == key(boundary),
+                    None,
                 )?;
             }
         }

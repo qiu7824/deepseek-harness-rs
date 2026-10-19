@@ -28,8 +28,35 @@ mod approval_tests;
 mod deadline_tests;
 #[cfg(test)]
 mod startup_tests;
-const STARTUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+const STARTUP_BUDGET: std::time::Duration = dsh_sandbox::startup::PREPARATION_TIMEOUT;
 type ExecutionClock = Arc<parking_lot::Mutex<Option<Arc<ApprovalClock>>>>;
+
+enum StartupPhase {
+    Preparation(tokio::time::Instant),
+    Sandbox(tokio::time::Instant, dsh_sandbox::SandboxStartup),
+    Runtime(tokio::time::Instant),
+}
+type StartupMonitor = Arc<parking_lot::Mutex<StartupPhase>>;
+
+async fn startup_deadline(monitor: &StartupMonitor) -> String {
+    let mut deadline = dsh_sandbox::startup::StartupDeadline::default();
+    loop {
+        {
+            let phase = monitor.lock();
+            match &*phase {
+                StartupPhase::Preparation(start) if start.elapsed() >= STARTUP_BUDGET =>
+                    return "[SANDBOX_SETUP_TIMEOUT] phase=environment_preparation; preparation deadline exceeded; model program not dispatched".into(),
+                StartupPhase::Sandbox(start, startup) => {
+                    if let Err(error) = deadline.check(startup, start.elapsed()) { return error; }
+                }
+                StartupPhase::Runtime(start) if start.elapsed() >= dsh_sandbox::startup::STARTUP_IDLE_TIMEOUT =>
+                    return "[SANDBOX_SETUP_TIMEOUT] phase=code_runtime_initialization; runtime handshake deadline exceeded; model program not dispatched".into(),
+                _ => {}
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+}
 
 async fn execution_budget(clock: Arc<ApprovalClock>, budget: std::time::Duration) {
     let mut pause = clock.subscribe_pause();
@@ -64,10 +91,44 @@ async fn wait_for_cancellation(
     }
 }
 
+// The inner process sees a combined stop/deadline signal. Its Abort result
+// therefore does not identify the caller's intent; settle that race using
+// the original cancellation signal and the host-owned execution clock.
+fn settle_result(
+    result: Result<CodeRunResult, String>,
+    deadline_expired: Option<bool>,
+    caller_cancelled: bool,
+) -> Result<CodeRunResult, String> {
+    if caller_cancelled {
+        return Ok(failure(CodeRunFailureKind::Abort,
+            if deadline_expired.is_some() { "aborted" } else { "aborted before program dispatch" }));
+    }
+    if deadline_expired == Some(true) {
+        return Ok(failure(CodeRunFailureKind::Timeout, "elapsed PTC deadline reached"));
+    }
+    match result {
+        Err(error) if deadline_expired.is_none() => Ok(failure(CodeRunFailureKind::Startup, &error)),
+        result => result,
+    }
+}
+
 #[cfg(test)]
 mod rejection_tests {
     use super::*;
     use dsh_code_runtime::CodeBindingNamespace;
+
+    #[test]
+    fn deadline_abort_is_timeout_but_explicit_stop_keeps_precedence() {
+        let aborted = || Ok(failure(CodeRunFailureKind::Abort, "combined child signal"));
+        assert_eq!(settle_result(aborted(), Some(true), false).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Timeout);
+        assert_eq!(settle_result(aborted(), Some(true), true).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Abort);
+        assert_eq!(settle_result(Err("pipe closed".into()), None, true).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Abort);
+        assert_eq!(settle_result(Err("pipe closed".into()), None, false).unwrap().error.unwrap().kind,
+            CodeRunFailureKind::Startup);
+    }
 
     #[tokio::test]
     async fn elapsed_deadline_reaps_compute_and_binding_waits() {
@@ -349,6 +410,7 @@ impl CodeRuntime for NodeCodeRuntime {
             let child_owner = Arc::new(parking_lot::Mutex::new(
                 None::<Arc<dyn dsh_subprocess::SubprocessHandle>>,
             ));
+            let startup_monitor = Arc::new(parking_lot::Mutex::new(StartupPhase::Preparation(tokio::time::Instant::now())));
             let run = run_one(
                 subprocess,
                 sandbox,
@@ -357,6 +419,7 @@ impl CodeRuntime for NodeCodeRuntime {
                 request,
                 child_owner.clone(),
                 started.clone(),
+                startup_monitor.clone(),
             );
             tokio::pin!(run);
             let cancelled = wait_for_cancellation(cancellation.clone(), lifecycle.clone());
@@ -364,7 +427,7 @@ impl CodeRuntime for NodeCodeRuntime {
             let startup = tokio::select! {
                 result=&mut run=>Some(result),
                 _=wait_for_dispatch(&started)=>None,
-                _=tokio::time::sleep(STARTUP_BUDGET)=>if started.lock().is_some(){None}else{Some(Ok(failure(CodeRunFailureKind::Startup,"[SANDBOX_SETUP_TIMEOUT] code runtime startup exceeded 120 seconds; model program not dispatched")))},
+                error=startup_deadline(&startup_monitor)=>if started.lock().is_some(){None}else{Some(Ok(failure(CodeRunFailureKind::Startup,&error)))},
                 _=&mut cancelled=>Some(Ok(failure(CodeRunFailureKind::Abort,if started.lock().is_some(){"aborted"}else{"aborted before program dispatch"}))),
             };
             let result = match startup {
@@ -400,35 +463,10 @@ impl CodeRuntime for NodeCodeRuntime {
             // A subprocess can report its termination before the cancellation
             // poller wakes. Preserve the caller's Stop instead of relabeling
             // that same termination as startup failure or elapsed timeout.
-            if cancellation.as_ref().is_some_and(|signal| signal()) || !lifecycle.accepting() {
-                return Ok(failure(
-                    CodeRunFailureKind::Abort,
-                    if started.lock().is_some() {
-                        "aborted"
-                    } else {
-                        "aborted before program dispatch"
-                    },
-                ));
-            }
-            // The child signal combines elapsed budget and caller cancellation.
-            // Caller Stop/disposal was handled above; an internal deadline can
-            // therefore surface as Abort when the subprocess closes stdout.
-            if started
-                .lock()
-                .as_ref()
-                .is_some_and(|start| start.elapsed() >= std::time::Duration::from_millis(budget))
-            {
-                return Ok(failure(
-                    CodeRunFailureKind::Timeout,
-                    "elapsed PTC deadline reached",
-                ));
-            }
-            match result {
-                Err(error) if started.lock().is_none() => {
-                    Ok(failure(CodeRunFailureKind::Startup, &error))
-                }
-                result => result,
-            }
+            let deadline_expired = started.lock().as_ref()
+                .map(|clock| clock.elapsed() >= std::time::Duration::from_millis(budget));
+            settle_result(result, deadline_expired,
+                cancellation.as_ref().is_some_and(|signal| signal()) || !lifecycle.accepting())
         })
     }
 }
@@ -441,6 +479,7 @@ async fn run_one(
     request: CodeRunRequest,
     child_owner: Arc<parking_lot::Mutex<Option<Arc<dyn dsh_subprocess::SubprocessHandle>>>>,
     started: ExecutionClock,
+    startup_monitor: StartupMonitor,
 ) -> Result<CodeRunResult, String> {
     if request.signal.as_ref().is_some_and(|signal| signal()) {
         return Ok(failure(CodeRunFailureKind::Abort, "aborted"));
@@ -479,20 +518,21 @@ async fn run_one(
         let provider = sandbox.ok_or_else(|| {
             "code-runtime-node: SANDBOX_UNAVAILABLE: OS sandbox service is required".to_string()
         })?;
-        provider
-            .prepare(&SandboxExecutionPolicy {
+        let prepared = provider
+            .prepare_cancellable(&SandboxExecutionPolicy {
                 mode: SandboxMode::ReadOnly,
                 workspace_root: runner_root.clone(),
                 read_only_roots: Vec::new(),
                 session_id: None,
-            })
-            .await?;
+            }, request.signal.clone())
+            .await;
         if request.signal.as_ref().is_some_and(|signal| signal()) {
             return Ok(failure(
                 CodeRunFailureKind::Abort,
                 "aborted before program dispatch",
             ));
         }
+        prepared?;
         let confined = provider
             .confine_with_startup(
                 &argv,
@@ -545,6 +585,10 @@ async fn run_one(
     };
     let mut child_guard = ChildGuard::new(child.clone(), lifecycle.clone(), id);
     *child_owner.lock() = Some(child.clone());
+    *startup_monitor.lock() = match &startup {
+        Some(startup) => StartupPhase::Sandbox(tokio::time::Instant::now(), startup.clone()),
+        None => StartupPhase::Runtime(tokio::time::Instant::now()),
+    };
     if let Some(startup) = startup {
         loop {
             if startup.is_ready()? {
@@ -559,6 +603,7 @@ async fn run_one(
             }
         }
     }
+    *startup_monitor.lock() = StartupPhase::Runtime(tokio::time::Instant::now());
     let mut stdin = child
         .stdin()
         .ok_or_else(|| "code-runtime-node: child stdin was not piped".to_string())?;

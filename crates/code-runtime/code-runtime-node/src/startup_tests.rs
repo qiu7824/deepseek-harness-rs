@@ -149,6 +149,29 @@ struct StartupSandbox {
     fail: bool,
     prepared: Arc<AtomicUsize>,
 }
+
+#[tokio::test(start_paused = true)]
+async fn startup_monitor_extends_only_runner_progress_and_resets_for_runtime_handshake() {
+    let began = tokio::time::Instant::now();
+    let previous = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let startup = dsh_sandbox::SandboxStartup::new(|| Ok(false), || Ok(false))
+        .with_phase(|| Ok("private_permissions".into()))
+        .with_progress(move || {
+            let step = began.elapsed().as_secs() / 10;
+            Ok(previous.swap(step, Ordering::SeqCst) != step)
+        });
+    let monitor = Arc::new(parking_lot::Mutex::new(StartupPhase::Sandbox(began, startup)));
+    let deadline = startup_deadline(&monitor);
+    tokio::pin!(deadline);
+    tokio::select! {
+        error = &mut deadline => panic!("healthy migration aborted: {error}"),
+        _ = tokio::time::sleep(Duration::from_secs(180)) => {}
+    }
+    *monitor.lock() = StartupPhase::Runtime(tokio::time::Instant::now());
+    let failure = deadline.await;
+    assert!(failure.contains("code_runtime_initialization"));
+    assert!(began.elapsed() >= Duration::from_secs(300));
+}
 impl SandboxProvider for StartupSandbox {
     fn prepare(
         &self,

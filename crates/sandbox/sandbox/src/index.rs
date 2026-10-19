@@ -149,6 +149,7 @@ pub struct SandboxStartup {
     ready: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
     timed_out: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
     phase: Arc<dyn Fn() -> Result<String, String> + Send + Sync>,
+    progress: Arc<dyn Fn() -> Result<bool, String> + Send + Sync>,
 }
 
 impl SandboxStartup {
@@ -160,6 +161,7 @@ impl SandboxStartup {
             ready: Arc::new(ready),
             timed_out: Arc::new(timed_out),
             phase: Arc::new(|| Ok("runner_initialization".into())),
+            progress: Arc::new(|| Ok(false)),
         }
     }
     pub fn is_ready(&self) -> Result<bool, String> {
@@ -174,6 +176,15 @@ impl SandboxStartup {
     }
     pub fn phase(&self) -> String {
         (self.phase)().unwrap_or_else(|_| "phase_unavailable".into())
+    }
+    pub fn with_progress(mut self, progress: impl Fn() -> Result<bool, String> + Send + Sync + 'static) -> Self {
+        self.progress = Arc::new(progress);
+        self
+    }
+    /// Consumes a runner-owned progress notification. A single startup waiter
+    /// owns this stream; do not derive progress from stdout or elapsed time.
+    pub fn take_progress(&self) -> Result<bool, String> {
+        (self.progress)()
     }
     pub fn timed_out(&self) -> Result<bool, String> {
         (self.timed_out)()
@@ -323,6 +334,17 @@ pub trait SandboxProvider: Send + Sync + 'static {
         _policy: &SandboxExecutionPolicy,
     ) -> futures::future::BoxFuture<'static, Result<(), String>> {
         Box::pin(async { Ok(()) })
+    }
+
+    /// All interactive execution entries use one bounded, cancellable
+    /// preparation lifecycle. Dropping preparation releases its native job
+    /// and initialization gate before any requested command is dispatched.
+    fn prepare_cancellable(
+        &self,
+        policy: &SandboxExecutionPolicy,
+        signal: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+        Box::pin(crate::startup::prepare_future(self.prepare(policy), signal))
     }
 
     /// Wrap `argv` so it executes confined under `policy` on this host; the

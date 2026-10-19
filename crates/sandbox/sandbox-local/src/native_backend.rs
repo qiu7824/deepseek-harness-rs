@@ -27,6 +27,10 @@ fn digest_file(path: &Path) -> std::io::Result<String> {
 #[derive(Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct NativeBackend {
+    // Bound by the trusted loader, never accepted from a saved configuration.
+    // CLI setup has no resource-provider registry but must protect this home.
+    #[serde(skip)]
+    product_home: Option<PathBuf>,
     #[serde(default)]
     pub workspaces: Vec<PathBuf>,
     pub version: u32,
@@ -50,6 +54,15 @@ fn enabled() -> String {
 }
 
 static INITIALIZATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn workspace_policy(workspace: &str, read_only: bool) -> SandboxPolicy {
+    SandboxPolicy {
+        workspace_root: workspace.into(),
+        mode: if read_only { dsh_sandbox::ConfinedSandboxMode::ReadOnly } else { dsh_sandbox::ConfinedSandboxMode::WorkspaceWrite },
+        read_only_roots: vec![],
+        session_id: None,
+    }
+}
 
 async fn prepare_with<P, PF, S, SF>(mut probe: P, mut setup: S) -> Result<(), String>
 where
@@ -148,6 +161,11 @@ pub async fn windows_backend_manage(
                     "[SANDBOX_SETUP_FAILED] setup completed without a ready workspace".into(),
                 );
             }
+            // Provisioning markers alone do not prove the current private
+            // roots and runtime grants are ready for an actual command.
+            config.prepare_effective_scope(&config.scope_arguments(
+                &workspace_policy(&workspace.to_string_lossy(), false), &[],
+            )).await?;
         }
         Some("configure") => {}
         _ => return Err("Unknown Windows sandbox operation".into()),
@@ -207,8 +225,9 @@ impl NativeBackend {
         if data.len() > 16 * 1024 {
             return Err("[SANDBOX_SETUP_FAILED] backend selection exceeds size limit".into());
         }
-        let config: Self = serde_json::from_slice(&data)
+        let mut config: Self = serde_json::from_slice(&data)
             .map_err(|e| format!("[SANDBOX_SETUP_FAILED] invalid native backend selection: {e}"))?;
+        config.product_home = Some(root.to_path_buf());
         // Legacy workspace lists remain parseable, but Windows execution now
         // consistently uses the selected native implementation for every project.
         config.validate_configuration()?;
@@ -268,6 +287,7 @@ impl NativeBackend {
             })
         };
         Ok(Self {
+            product_home: Some(home.to_path_buf()),
             version: 1,
             backend: "windows-native".into(),
             implementation: elevated(),
@@ -383,26 +403,43 @@ impl NativeBackend {
     }
 
     pub async fn prepare(&self, workspace: &str, read_only: bool) -> Result<(), String> {
+        self.prepare_policy(&workspace_policy(workspace, read_only), &[]).await
+    }
+
+    pub async fn prepare_policy(&self, policy: &SandboxPolicy, runtime_roots: &[PathBuf]) -> Result<(), String> {
+        let workspace = &policy.workspace_root;
         self.verify()?;
         if !Path::new(workspace).is_absolute() || !Path::new(workspace).is_dir() {
             return Err("[SANDBOX_SETUP_FAILED] workspace must be an existing absolute directory; requested command not dispatched".into());
         }
         self.validate_scope(workspace)?;
+        // Snapshot the entire scope once. Provisioning, validation and execution
+        // use the same argument encoder, including session-owned resources.
+        let arguments = self.scope_arguments(policy, runtime_roots);
         prepare_with(
-            || self.probe(workspace, read_only),
-            || self.initialize(workspace, read_only),
+            || self.probe_scope(&arguments),
+            || self.initialize_scope(&arguments),
         )
-        .await
+        .await?;
+        self.prepare_effective_scope(&arguments).await
     }
 
     async fn probe(&self, workspace: &str, read_only: bool) -> Result<bool, String> {
-        readiness(&self.helper("--status", workspace, read_only, 30).await?)
+        self.probe_scope(&self.scope_arguments(&workspace_policy(workspace, read_only), &[])).await
+    }
+
+    async fn probe_scope(&self, arguments: &[String]) -> Result<bool, String> {
+        readiness(&self.helper("--status", arguments, 30).await?)
     }
 
     async fn initialize(&self, workspace: &str, read_only: bool) -> Result<(), String> {
         self.verify()?;
         self.validate_scope(workspace)?;
-        let output = self.helper("--setup", workspace, read_only, 900).await?;
+        self.initialize_scope(&self.scope_arguments(&workspace_policy(workspace, read_only), &[])).await
+    }
+
+    async fn initialize_scope(&self, arguments: &[String]) -> Result<(), String> {
+        let output = self.helper("--setup", arguments, 900).await?;
         if !output.status.success() {
             return Err(format!(
                 "[SANDBOX_SETUP_FAILED] automatic workspace initialization failed: {}; requested command not dispatched",
@@ -415,34 +452,30 @@ impl NativeBackend {
         Ok(())
     }
 
+    async fn prepare_effective_scope(&self, arguments: &[String]) -> Result<(), String> {
+        let output = self.helper("--prepare", arguments, 900).await?;
+        if !output.status.success() {
+            return Err(format!("[SANDBOX_SETUP_FAILED] effective session policy preparation failed: {}; requested command not dispatched",
+                String::from_utf8_lossy(&output.stderr).chars().take(4000).collect::<String>()));
+        }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("[SANDBOX_SETUP_FAILED] invalid policy preparation response: {error}"))?;
+        if value["protocolVersion"] != 1 || value["prepared"] != true {
+            return Err("[SANDBOX_SETUP_FAILED] helper did not confirm effective policy preparation; requested command not dispatched".into());
+        }
+        Ok(())
+    }
+
     async fn helper(
         &self,
         action: &str,
-        workspace: &str,
-        read_only: bool,
+        arguments: &[String],
         timeout_seconds: u64,
     ) -> Result<std::process::Output, String> {
         let mut command = tokio::process::Command::new(&self.runner);
         command
-            .args([
-                action,
-                "--implementation",
-                &self.implementation,
-                "--network",
-                &self.network,
-                "--native-home",
-            ])
-            .arg(&self.state_directory)
-            .args([
-                "--workspace",
-                workspace,
-                "--mode",
-                if read_only {
-                    "read-only"
-                } else {
-                    "workspace-write"
-                },
-            ])
+            .arg(action)
+            .args(arguments)
             .creation_flags(0x08000000)
             .kill_on_drop(true);
         tokio::time::timeout(std::time::Duration::from_secs(timeout_seconds), command.output()).await
@@ -456,8 +489,15 @@ impl NativeBackend {
         policy: &SandboxPolicy,
         runtime_roots: &[PathBuf],
     ) -> ConfinedArgv {
+        let mut wrapped = vec![self.runner.to_string_lossy().into_owned()];
+        wrapped.extend(self.scope_arguments(policy, runtime_roots));
+        wrapped.push("--".into());
+        wrapped.extend_from_slice(argv);
+        self.confined_arguments(wrapped)
+    }
+
+    fn scope_arguments(&self, policy: &SandboxPolicy, runtime_roots: &[PathBuf]) -> Vec<String> {
         let mut wrapped = vec![
-            self.runner.to_string_lossy().into_owned(),
             "--implementation".into(),
             self.implementation.clone(),
             "--network".into(),
@@ -472,7 +512,13 @@ impl NativeBackend {
         if let Some(session) = &policy.session_id {
             wrapped.extend(["--session-id".into(), session.as_str().into()]);
         }
-        for root in dsh_sandbox::roots::private_roots() {
+        let mut private_roots = dsh_sandbox::roots::private_roots();
+        if let Some(home) = &self.product_home {
+            private_roots.push(home.to_string_lossy().into_owned());
+        }
+        private_roots.sort();
+        private_roots.dedup();
+        for root in private_roots {
             wrapped.extend(["--private-root".into(), root]);
         }
         for root in &policy.read_only_roots {
@@ -491,8 +537,10 @@ impl NativeBackend {
             };
             wrapped.extend([flag.into(), root]);
         }
-        wrapped.push("--".into());
-        wrapped.extend_from_slice(argv);
+        wrapped
+    }
+
+    fn confined_arguments(&self, wrapped: Vec<String>) -> ConfinedArgv {
         ConfinedArgv {
             argv: wrapped,
             enforcement: SandboxEnforcement::Full,

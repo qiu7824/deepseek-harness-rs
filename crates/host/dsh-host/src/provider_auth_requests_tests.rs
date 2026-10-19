@@ -69,7 +69,7 @@ async fn logout_saved_a_stops_only_a_on_the_same_model_route_and_leaves_b_and_ap
     dsh_system_prompt::SystemPrompt::install(&ctx, Default::default()).unwrap();
     dsh_tools::ToolRuntime::install(&ctx, Default::default()).unwrap();
     let sessions = dsh_session::SessionStore::install(&ctx);
-    dsh_session_persistence_jsonl::JsonlSessionPersistence::install(
+    let persistence = dsh_session_persistence_jsonl::JsonlSessionPersistence::install(
         &ctx,
         dsh_session_persistence_jsonl::JsonlConfig {
             root: root.join("sessions").to_string_lossy().into(),
@@ -96,6 +96,8 @@ async fn logout_saved_a_stops_only_a_on_the_same_model_route_and_leaves_b_and_ap
     )
     .unwrap();
     let mut running = Vec::new();
+    let mut agent_detaches = Vec::new();
+    let mut session_detaches = Vec::new();
     for (index, authentication) in [
         authentication_a.clone(),
         authentication_b,
@@ -106,13 +108,14 @@ async fn logout_saved_a_stops_only_a_on_the_same_model_route_and_leaves_b_and_ap
     {
         *selected.lock() = authentication;
         let session = sessions
-            .create(
-                &ctx,
+            .prepare(
                 Some(dsh_session::session_id(format!("logout-owner-{index}"))),
                 None,
             )
-            .await
             .unwrap();
+        let detach = sessions.enter(&session).unwrap();
+        sessions.announce(&session).await.unwrap();
+        session_detaches.push((session.id().clone(), detach));
         let agent = dsh_agent_loop::ReactLoopAgent::new(
             &ctx,
             session.id().clone(),
@@ -124,7 +127,7 @@ async fn logout_saved_a_stops_only_a_on_the_same_model_route_and_leaves_b_and_ap
             session,
         )
         .unwrap();
-        agents.enter(agent.clone(), None).unwrap();
+        agent_detaches.push(agents.enter(agent.clone(), None).unwrap());
         agent.followup(dsh_llm::create_user_message(
             vec![dsh_llm::ContentBlock::Text {
                 text: "synthetic task".into(),
@@ -159,6 +162,16 @@ async fn logout_saved_a_stops_only_a_on_the_same_model_route_and_leaves_b_and_ap
     for agent in running {
         agent.cancel(dsh_agent::AgentCancelCause::User, None);
         agent.when_idle().await;
+    }
+    for detach in agent_detaches {
+        detach().await;
+    }
+    // Session disposal schedules retirement. Use the persistence barrier to
+    // await that retirement before removing the Windows writer-lock files.
+    for (id, detach) in session_detaches {
+        detach().await;
+        dsh_session_persistence::SessionPersistenceApi::delete(persistence.as_ref(), &id)
+            .await.unwrap();
     }
     auth.credentials.drain().await;
     for dispose in ctx.fiber.disposables.clear() {

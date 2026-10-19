@@ -17,6 +17,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
     Storage::FileSystem::*,
+    System::SystemServices::MAXIMUM_ALLOWED,
 };
 
 #[derive(Default, Deserialize, Serialize)]
@@ -31,11 +32,43 @@ struct State {
     #[serde(default)]
     grants: Vec<PathBuf>,
     #[serde(default)]
+    journal: Option<MigrationJournal>,
+    #[serde(default)]
     navigation_ancestors: Vec<PathBuf>,
+    #[serde(default)]
+    committed_policy: String,
 }
 
 const MIGRATION_VERSION: u32 = 3;
 const NAVIGATION_ACCESS: u32 = FILE_READ_ATTRIBUTES | FILE_TRAVERSE;
+const JOURNAL_VERSION: u32 = 2;
+const CHECKPOINT_OBJECTS: usize = 256;
+
+#[derive(Clone, Deserialize, Serialize)]
+struct PendingObject {
+    path: PathBuf,
+    root: PathBuf,
+    recursive: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct MigrationJournal {
+    version: u32,
+    #[serde(default)]
+    authority: String,
+    policy: String,
+    boundaries: BTreeMap<String, RootStamp>,
+    remaining: Vec<PendingObject>,
+    processed: u64,
+}
+
+#[derive(Debug)]
+pub struct PrivateAclProgress {
+    pub processed: u64,
+    pub remaining: usize,
+    pub resumed: bool,
+    pub path: Option<PathBuf>,
+}
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct RootStamp {
     volume: u32,
@@ -85,9 +118,12 @@ fn key(path: &Path) -> String {
 fn within(path: &Path, root: &Path) -> bool {
     let path = key(path);
     let root = key(root);
+    within_key(&path, &root)
+}
+fn within_key(path: &str, root: &str) -> bool {
     path == root
         || path
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .is_some_and(|tail| tail.starts_with('\\'))
 }
 fn canonical_existing(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
@@ -99,7 +135,6 @@ fn canonical_existing(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
         })
         .collect()
 }
-
 fn navigation_paths(grants: &[PathBuf], private_roots: &[PathBuf]) -> BTreeMap<String, PathBuf> {
     let keys = navigation_ancestor_keys(
         &grants.iter().map(|path| key(path)).collect::<Vec<_>>(),
@@ -175,6 +210,33 @@ pub unsafe fn sync_private_read_acls(
     account_sids: &[*mut c_void],
     group_sid: *mut c_void,
 ) -> Result<usize> {
+    unsafe {
+        sync_private_read_acls_with_progress(
+            home,
+            private_roots,
+            reads,
+            writes,
+            account_sids,
+            group_sid,
+            |_| Ok(()),
+        )
+    }
+}
+
+/// Checkpoints are durable before progress is reported. The runner must not
+/// dispatch a command until this function succeeds, including after recovery.
+///
+/// # Safety
+/// The same account and lease requirements as `sync_private_read_acls` apply.
+pub unsafe fn sync_private_read_acls_with_progress(
+    home: &Path,
+    private_roots: &[PathBuf],
+    reads: &[PathBuf],
+    writes: &[PathBuf],
+    account_sids: &[*mut c_void],
+    group_sid: *mut c_void,
+    mut progress: impl FnMut(&PrivateAclProgress) -> Result<()>,
+) -> Result<usize> {
     let state_path = home.join(".sandbox/private_read_acl_state.json");
     let mut state: State = match std::fs::read(&state_path) {
         Ok(bytes) => serde_json::from_slice(&bytes).context("parse private read ACL state")?,
@@ -213,33 +275,109 @@ pub unsafe fn sync_private_read_acls(
         .collect();
     current_grants.sort_by_key(|path| key(path));
     current_grants.dedup_by(|a, b| key(a) == key(b));
-    let root_keys = state.roots.iter().map(|path| key(path)).collect::<Vec<_>>();
-    let read_keys = reads.iter().map(|path| key(path)).collect::<Vec<_>>();
-    let write_keys = writes.iter().map(|path| key(path)).collect::<Vec<_>>();
     let navigation = navigation_paths(&current_grants, &state.roots);
     let navigation_keys = navigation.keys().cloned().collect::<BTreeSet<_>>();
-    let mut navigation_changes = state.navigation_ancestors.clone();
-    navigation_changes.extend(navigation_paths(&state.grants, &state.roots).into_values());
-    navigation_changes.extend(navigation.values().cloned());
-    let mut changes = state.grants.clone();
-    changes.extend(current_grants.clone());
-    let mut migrations = Vec::new();
-    for root in &state.roots {
-        if !root.exists() {
-            state.migrated.remove(&key(root));
-            continue;
-        }
-        let stamp = unsafe { root_stamp(root, account_sids, group_sid) }?;
-        if state.version != MIGRATION_VERSION
-            || state.pending
-            || state.migrated.get(&key(root)) != Some(&stamp)
-        {
-            migrations.push(root.clone());
-        }
+    let stamps = unsafe { boundary_stamps(&state.roots, account_sids, group_sid) }?;
+    let authority = unsafe { policy_fingerprint(&state.roots, &[], &[], account_sids, group_sid) };
+    // Public interpreter paths do not change private permissions. Switching
+    // Python/PowerShell must not discard a valid migration cursor.
+    let private_grants = |paths: &[PathBuf]| {
+        paths
+            .iter()
+            .filter(|path| {
+                boundary_for(path, &state.roots).is_some_and(|root| key(path) != key(root))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let policy = unsafe {
+        policy_fingerprint(
+            &state.roots,
+            &private_grants(&reads),
+            &private_grants(&writes),
+            account_sids,
+            group_sid,
+        )
+    };
+    // A successful, unchanged private policy already protects descendants by
+    // inheritance. Do not rescan live session files and runtime caches merely
+    // because another command uses the same grants. Legacy states take one
+    // normal reconciliation before gaining this fast path.
+    if !state.pending
+        && state.version == MIGRATION_VERSION
+        && state.committed_policy == policy
+        && state.migrated == stamps
+    {
+        progress(&PrivateAclProgress { processed: 0, remaining: 0, resumed: false, path: None })?;
+        return Ok(0);
     }
-    changes.extend(migrations);
-    // Journal every attempted grant before changing ACLs. A crash forces a
-    // complete migration, so even a partially granted subtree is never lost.
+    let mut navigation_changes = navigation_paths(&state.grants, &state.roots);
+    navigation_changes.extend(
+        state
+            .navigation_ancestors
+            .iter()
+            .map(|path| (key(path), path.clone())),
+    );
+    navigation_changes.extend(navigation.clone());
+    let mut changed_grants = state.grants.clone();
+    changed_grants.extend(current_grants.clone());
+    let resumed = state.pending
+        && state.journal.as_ref().is_some_and(|journal| {
+            journal.version == JOURNAL_VERSION
+                && journal.authority == authority
+                && journal.boundaries == stamps
+        });
+    let mut journal = if resumed {
+        let mut journal = state.journal.take().expect("validated journal");
+        if journal.policy != policy {
+            // Revoke every attempted old exception and apply new attachments
+            // or scratch grants while retaining completed default-deny work.
+            journal
+                .remaining
+                .extend(plan_work(changed_grants, navigation_changes, &state.roots)?);
+            journal.policy = policy.clone();
+        }
+        journal
+    } else {
+        let mut changes = changed_grants;
+        for root in &state.roots {
+            let root_key = key(root);
+            let Some(stamp) = stamps.get(&root_key) else {
+                continue;
+            };
+            // A legacy/incompatible journal cannot prove which grants were
+            // changed. Fail closed by reconciling all remembered boundaries.
+            if state.version != MIGRATION_VERSION
+                || state.pending
+                || state.migrated.get(&root_key) != Some(stamp)
+            {
+                changes.push(root.clone());
+            }
+        }
+        let remaining = plan_work(changes, navigation_changes, &state.roots)?;
+        MigrationJournal {
+            version: JOURNAL_VERSION,
+            authority,
+            policy: policy.clone(),
+            boundaries: stamps,
+            remaining,
+            processed: 0,
+        }
+    };
+    for task in &journal.remaining {
+        ensure!(
+            task.path.is_absolute()
+                && within(&task.path, &task.root)
+                && boundary_for(&task.root, &state.roots).is_some()
+                && !task
+                    .path
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir)),
+            "invalid private ACL checkpoint path"
+        );
+    }
+    // Retain every attempted grant until all revocations and grants complete.
+    // Rebased policies retain the cursor and all revocation obligations.
     state.grants.extend(current_grants.clone());
     state.grants.sort_by_key(|path| key(path));
     state.grants.dedup_by(|a, b| key(a) == key(b));
@@ -249,91 +387,182 @@ pub unsafe fn sync_private_read_acls(
     state.navigation_ancestors.sort_by_key(|path| key(path));
     state.navigation_ancestors.dedup_by(|a, b| key(a) == key(b));
     state.pending = true;
+    state.journal = Some(journal.clone());
     store_state(&state_path, &state)?;
-    let mut seen = BTreeSet::new();
+    progress(&PrivateAclProgress {
+        processed: journal.processed,
+        remaining: journal.remaining.len(),
+        resumed,
+        path: None,
+    })?;
+    // Normalize policy paths once, rather than allocating and lowercasing all
+    // forty-plus boundaries for every file in a large runtime cache.
+    let mut boundaries: Vec<_> = state.roots.iter().map(|root| key(root)).collect();
+    boundaries.sort_by_key(|root| std::cmp::Reverse(root.len()));
+    let read_keys: Vec<_> = reads.iter().map(|path| key(path)).collect();
+    let write_keys: Vec<_> = writes.iter().map(|path| key(path)).collect();
     let mut count = 0;
-    for root in minimal_roots(changes) {
-        if !root.exists() {
-            continue;
-        }
-        let mut pending = vec![root.clone()];
-        while let Some(path) = pending.pop() {
-            if !seen.insert(key(&path)) {
-                continue;
+    let mut since_checkpoint = 0;
+    let mut checkpointed_at = std::time::Instant::now();
+    while let Some(task) = journal.remaining.last().cloned() {
+        let mut children = Vec::new();
+        // A disappeared temporary file needs no grant or revocation. Other
+        // metadata errors must not be mistaken for absence.
+        match std::fs::symlink_metadata(&task.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect private object {}", task.path.display()));
             }
-            count += 1;
-            let boundary = boundary_for(&path, &state.roots)
-                .context("private grant escaped its registered boundary")?;
-            let access = private_access(
-                &key(&path),
-                &root_keys,
-                &read_keys,
-                &write_keys,
-                &navigation_keys,
-            );
-            let directory = unsafe {
-                reconcile_object(
-                    &path,
-                    &root,
-                    account_sids,
-                    group_sid,
-                    matches!(access, PrivateAccess::Read | PrivateAccess::Write),
-                    access == PrivateAccess::Write,
-                    access == PrivateAccess::Navigate,
-                    key(&path) == key(boundary),
-                )
-            }?;
-            if directory {
-                for entry in std::fs::read_dir(&path)
-                    .with_context(|| format!("enumerate private root {}", path.display()))?
-                {
-                    pending.push(entry?.path());
+            Ok(_) => {
+                let path_key = key(&task.path);
+                let boundary = boundaries
+                    .iter()
+                    .find(|root| within_key(&path_key, root))
+                    .context("private grant escaped its registered boundary")?;
+                let access = private_access(
+                    &path_key,
+                    &boundaries,
+                    &read_keys,
+                    &write_keys,
+                    &navigation_keys,
+                );
+                let same_link_policy = |alias: &Path| {
+                    let alias = key(alias);
+                    boundaries.iter().find(|root| within_key(&alias, root)) == Some(boundary)
+                        && private_access(&alias, &boundaries, &read_keys, &write_keys,
+                            &navigation_keys) == access
+                };
+                let directory = unsafe {
+                    reconcile_object(
+                        &task.path,
+                        &task.root,
+                        account_sids,
+                        group_sid,
+                        matches!(access, PrivateAccess::Read | PrivateAccess::Write),
+                        access == PrivateAccess::Write,
+                        access == PrivateAccess::Navigate,
+                        &path_key == boundary,
+                        Some(HardLinkPolicy { root: Path::new(boundary), allows: &same_link_policy }),
+                    )
+                }?;
+                if directory && task.recursive {
+                    for entry in std::fs::read_dir(&task.path).with_context(|| {
+                        format!("enumerate private root {}", task.path.display())
+                    })? {
+                        children.push(entry?.path());
+                    }
+                    children.sort();
                 }
+                count += 1;
+                journal.processed += 1;
             }
         }
-    }
-    // Strict ancestors are point updates, not new recursive migration roots.
-    // Visit revoked grants' old ancestors as well, including version-2 state.
-    for path in navigation_changes {
-        if !path.exists() || !seen.insert(key(&path)) {
-            continue;
-        }
-        let boundary = boundary_for(&path, &state.roots)
-            .context("private navigation escaped its registered boundary")?;
-        let access = private_access(
-            &key(&path),
-            &root_keys,
-            &read_keys,
-            &write_keys,
-            &navigation_keys,
-        );
-        unsafe {
-            reconcile_object(
-                &path,
-                boundary,
-                account_sids,
-                group_sid,
-                matches!(access, PrivateAccess::Read | PrivateAccess::Write),
-                access == PrivateAccess::Write,
-                access == PrivateAccess::Navigate,
-                key(&path) == key(boundary),
-            )?;
-        }
-        count += 1;
-    }
-    for root in &state.roots {
-        if root.exists() {
-            state.migrated.insert(key(root), unsafe {
-                root_stamp(root, account_sids, group_sid)
-            }?);
+        // Commit the cursor only after the object and its child enumeration
+        // succeeded. A crash can replay a bounded batch, never skip an object.
+        journal.remaining.pop();
+        since_checkpoint += 1;
+        journal
+            .remaining
+            .extend(children.into_iter().rev().map(|path| PendingObject {
+                path,
+                root: task.root.clone(),
+                recursive: true,
+            }));
+        if since_checkpoint >= CHECKPOINT_OBJECTS
+            || checkpointed_at.elapsed() >= std::time::Duration::from_secs(2)
+            || journal.remaining.is_empty()
+        {
+            journal.boundaries = unsafe { boundary_stamps(&state.roots, account_sids, group_sid) }?;
+            state.journal = Some(journal.clone());
+            store_state(&state_path, &state)?;
+            progress(&PrivateAclProgress {
+                processed: journal.processed,
+                remaining: journal.remaining.len(),
+                resumed,
+                path: Some(task.path),
+            })?;
+            checkpointed_at = std::time::Instant::now();
+            since_checkpoint = 0;
         }
     }
+    state.migrated = unsafe { boundary_stamps(&state.roots, account_sids, group_sid) }?;
     state.grants = current_grants;
     state.navigation_ancestors = navigation.into_values().collect();
     state.version = MIGRATION_VERSION;
     state.pending = false;
+    state.journal = None;
+    state.committed_policy = policy;
     store_state(&state_path, &state)?;
     Ok(count)
+}
+
+fn plan_work(
+    changes: Vec<PathBuf>,
+    points: BTreeMap<String, PathBuf>,
+    roots: &[PathBuf],
+) -> Result<Vec<PendingObject>> {
+    let recursive_roots = minimal_roots(changes);
+    let mut remaining: Vec<_> = points
+        .into_values()
+        .filter(|path| !recursive_roots.iter().any(|root| within(path, root)))
+        .map(|path| {
+            Ok(PendingObject {
+                root: boundary_for(&path, roots)
+                    .context("private navigation escaped its registered boundary")?
+                    .clone(),
+                path,
+                recursive: false,
+            })
+        })
+        .collect::<Result<_>>()?;
+    remaining.extend(recursive_roots.into_iter().rev().map(|path| PendingObject {
+        root: path.clone(),
+        path,
+        recursive: true,
+    }));
+    Ok(remaining)
+}
+
+unsafe fn boundary_stamps(
+    roots: &[PathBuf],
+    accounts: &[*mut c_void],
+    group: *mut c_void,
+) -> Result<BTreeMap<String, RootStamp>> {
+    let mut stamps = BTreeMap::new();
+    for root in roots {
+        match std::fs::symlink_metadata(root) {
+            Ok(_) => {
+                stamps.insert(key(root), unsafe { root_stamp(root, accounts, group) }?);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(stamps)
+}
+
+unsafe fn policy_fingerprint(
+    roots: &[PathBuf],
+    reads: &[PathBuf],
+    writes: &[PathBuf],
+    accounts: &[*mut c_void],
+    group: *mut c_void,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(MIGRATION_VERSION.to_le_bytes());
+    for paths in [roots, reads, writes] {
+        let mut keys: Vec<_> = paths.iter().map(|path| key(path)).collect();
+        keys.sort();
+        keys.dedup();
+        digest.update(serde_json::to_vec(&keys).expect("string paths serialize"));
+    }
+    for sid in accounts.iter().copied().chain(std::iter::once(group)) {
+        digest.update(unsafe {
+            std::slice::from_raw_parts(sid.cast::<u8>(), GetLengthSid(sid) as usize)
+        });
+    }
+    format!("{:x}", digest.finalize())
 }
 
 struct Handle(HANDLE);
@@ -357,10 +586,9 @@ impl Drop for Local {
 
 // A directory timestamp cannot prove that its ACL is still authoritative.
 // Bind the migration to the actual filesystem object, owner, protected DACL
-// flag and complete allow ACEs plus this slot/group's deny ACEs. Ignore other
-// slots' denial reductions and normalize only equivalent contiguous managed
-// blocks. New/removed allows, scopes, or movement across other ACEs still
-// invalidate a completed migration.
+// flag and complete allow ACEs plus this slot/group's deny ACEs. Other slots
+// only add their own deny ACEs at these containers; those unrelated reductions
+// do not invalidate a completed migration for this slot.
 unsafe fn root_stamp(
     path: &Path,
     accounts: &[*mut c_void],
@@ -521,6 +749,183 @@ unsafe fn has_navigation_signature(dacl: *mut ACL, sid: *mut c_void) -> Result<b
     Ok(self_denied && children_denied)
 }
 
+fn same_file(left: &BY_HANDLE_FILE_INFORMATION, right: &BY_HANDLE_FILE_INFORMATION) -> bool {
+    left.dwVolumeSerialNumber == right.dwVolumeSerialNumber
+        && left.nFileIndexHigh == right.nFileIndexHigh
+        && left.nFileIndexLow == right.nFileIndexLow
+        && left.ftCreationTime.dwHighDateTime == right.ftCreationTime.dwHighDateTime
+        && left.ftCreationTime.dwLowDateTime == right.ftCreationTime.dwLowDateTime
+}
+
+#[derive(Clone, Copy)]
+struct HardLinkPolicy<'a> {
+    root: &'a Path,
+    allows: &'a dyn Fn(&Path) -> bool,
+}
+
+type LinkInventory = BTreeMap<String, (PathBuf, Handle)>;
+
+unsafe fn pin_private_alias(alias: &Path, info: &BY_HANDLE_FILE_INFORMATION, policy: HardLinkPolicy<'_>) -> Result<Handle> {
+    ensure!(within(alias, policy.root), "PRIVATE_HARD_LINK: alias outside private boundary: {}", alias.display());
+    validate_private_root(alias.parent().context("PRIVATE_HARD_LINK: alias has no parent")?)?;
+    let wide = crate::winutil::to_wide_file_path(alias)?;
+    let pin = Handle(unsafe { CreateFileW(wide.as_ptr(), DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, 0) });
+    ensure!(pin.0 != INVALID_HANDLE_VALUE, "PRIVATE_HARD_LINK_BUSY: cannot pin {} (Win32 {})",
+        alias.display(), unsafe { GetLastError() });
+    let mut actual: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    ensure!(unsafe { GetFileInformationByHandle(pin.0, &mut actual) } != 0
+        && same_file(info, &actual) && actual.nNumberOfLinks == info.nNumberOfLinks
+        && actual.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) == 0,
+        "PRIVATE_HARD_LINK_CHANGED: object changed while pinning {}", alias.display());
+    Ok(pin)
+}
+
+unsafe fn inspect_private_alias(
+    alias: &Path, info: &BY_HANDLE_FILE_INFORMATION, policy: HardLinkPolicy<'_>,
+) -> Result<()> {
+    ensure!(within(alias, policy.root) && (policy.allows)(alias),
+        "PRIVATE_HARD_LINK: alias is outside the private boundary or has different permissions: {}",
+        alias.display());
+    validate_private_root(alias.parent().context("PRIVATE_HARD_LINK: alias has no parent")?)?;
+    let wide = crate::winutil::to_wide_file_path(alias)?;
+    let opened = Handle(unsafe { CreateFileW(wide.as_ptr(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(),
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0) });
+    ensure!(opened.0 != INVALID_HANDLE_VALUE, "PRIVATE_HARD_LINK_CHANGED: cannot inspect {}", alias.display());
+    let mut actual: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    ensure!(unsafe { GetFileInformationByHandle(opened.0, &mut actual) } != 0
+        && same_file(info, &actual) && actual.nNumberOfLinks == info.nNumberOfLinks
+        && actual.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) == 0,
+        "PRIVATE_HARD_LINK_CHANGED: alias identity changed: {}", alias.display());
+    Ok(())
+}
+
+/// Some NTFS directories reject FileHardLinkInformation while ordinary
+/// identity queries work. Count every matching file ID inside the registered
+/// boundary instead; finding fewer names than the kernel link count is never
+/// accepted. Start with siblings so Cargo's two-name artifacts remain cheap.
+unsafe fn private_link_names_by_identity(
+    path: &Path, info: &BY_HANDLE_FILE_INFORMATION, policy: HardLinkPolicy<'_>,
+) -> Result<LinkInventory> {
+    let mut names = BTreeMap::new();
+    let mut visited = BTreeSet::new();
+    let mut scanned = 0usize;
+    let mut scope = path.parent().context("PRIVATE_HARD_LINK: no parent")?.to_path_buf();
+    while within(&scope, policy.root) {
+        let mut pending = vec![scope.clone()];
+        while let Some(directory) = pending.pop() {
+            if !visited.insert(key(&directory)) { continue; }
+            let metadata = std::fs::symlink_metadata(&directory)?;
+            ensure!(metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+                "PRIVATE_HARD_LINK: directory alias in inventory: {}", directory.display());
+            for entry in std::fs::read_dir(&directory)? {
+                let entry = entry?;
+                scanned += 1;
+                ensure!(scanned <= 1_000_000, "PRIVATE_HARD_LINK: bounded alias inventory exhausted for {}", path.display());
+                if scanned % 256 == 0 { crate::startup_progress::progress(); }
+                let alias = entry.path();
+                let metadata = std::fs::symlink_metadata(&alias)?;
+                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 { continue; }
+                if metadata.is_dir() { pending.push(alias); continue; }
+                let wide = crate::winutil::to_wide_file_path(&alias)?;
+                let opened = Handle(unsafe { CreateFileW(wide.as_ptr(), FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(),
+                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0) });
+                ensure!(opened.0 != INVALID_HANDLE_VALUE, "PRIVATE_HARD_LINK: incomplete inventory at {}", alias.display());
+                let mut actual: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+                ensure!(unsafe { GetFileInformationByHandle(opened.0, &mut actual) } != 0,
+                    "PRIVATE_HARD_LINK: cannot read inventory identity: {}", alias.display());
+                if !same_file(info, &actual) { continue; }
+                let alias_key = key(&alias);
+                if names.contains_key(&alias_key) { continue; }
+                let pin = unsafe { pin_private_alias(&alias, info, policy) }?;
+                names.insert(alias_key, (alias, pin));
+                if names.len() == info.nNumberOfLinks as usize {
+                    for (alias, _) in names.values() { unsafe { inspect_private_alias(alias, info, policy) }?; }
+                    return Ok(names);
+                }
+            }
+        }
+        if key(&scope) == key(policy.root) { break; }
+        scope = scope.parent().context("PRIVATE_HARD_LINK: inventory escaped boundary")?.to_path_buf();
+    }
+    anyhow::bail!("PRIVATE_HARD_LINK: only {} of {} names are inside the private boundary for {}",
+        names.len(), info.nNumberOfLinks, path.display())
+}
+
+/// A shared inode may be reconciled only when every name has the same private
+/// boundary and effective access. In particular, an exact-file grant must not
+/// grant its unadmitted sibling name, and no outside object's ACL may change.
+unsafe fn validate_private_hard_links(
+    path: &Path,
+    file: HANDLE,
+    info: &BY_HANDLE_FILE_INFORMATION,
+    policy: Option<HardLinkPolicy<'_>>,
+) -> Result<LinkInventory> {
+    let policy = policy.context("PRIVATE_HARD_LINK: missing alias policy")?;
+    let volume = match path.components().next() {
+        Some(std::path::Component::Prefix(prefix)) => match prefix.kind() {
+            std::path::Prefix::Disk(drive) | std::path::Prefix::VerbatimDisk(drive) =>
+                PathBuf::from(format!("\\\\?\\{}:\\", char::from(drive))),
+            _ => anyhow::bail!("PRIVATE_HARD_LINK: unsupported volume for {}", path.display()),
+        },
+        _ => anyhow::bail!("PRIVATE_HARD_LINK: missing volume for {}", path.display()),
+    };
+    ensure!(info.nNumberOfLinks <= 1024, "PRIVATE_HARD_LINK: excessive aliases for {}", path.display());
+    struct Search(HANDLE);
+    impl Drop for Search {
+        fn drop(&mut self) { unsafe { FindClose(self.0); } }
+    }
+    let wide = crate::winutil::to_wide_file_path(path)?;
+    let mut buffer = vec![0u16; 32768];
+    let mut length = buffer.len() as u32;
+    let search = Search(unsafe { FindFirstFileNameW(wide.as_ptr(), 0, &mut length, buffer.as_mut_ptr()) });
+    if search.0 == INVALID_HANDLE_VALUE {
+        let error = unsafe { GetLastError() };
+        ensure!(error == ERROR_NOT_SUPPORTED,
+            "PRIVATE_HARD_LINK: enumerate {} failed (Win32 {error})", path.display());
+        let names = unsafe { private_link_names_by_identity(path, info, policy) }?;
+        let mut after: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        for (alias, _) in names.values() { unsafe { inspect_private_alias(alias, info, policy) }?; }
+        ensure!(names.contains_key(&key(path)) && unsafe { GetFileInformationByHandle(file, &mut after) } != 0
+            && same_file(info, &after) && after.nNumberOfLinks == info.nNumberOfLinks,
+            "PRIVATE_HARD_LINK_CHANGED: alias inventory changed for {}", path.display());
+        return Ok(names);
+    }
+    let mut names = BTreeMap::new();
+    loop {
+        let end = buffer.iter().position(|ch| *ch == 0)
+            .context("PRIVATE_HARD_LINK: unterminated alias")?;
+        let name = String::from_utf16(&buffer[..end])?;
+        let relative = name.strip_prefix('\\').context("PRIVATE_HARD_LINK: non-volume alias")?;
+        ensure!(!relative.is_empty() && !Path::new(relative).components().any(|part|
+            matches!(part, std::path::Component::Prefix(_) | std::path::Component::RootDir
+                | std::path::Component::ParentDir)), "PRIVATE_HARD_LINK: invalid alias");
+        let alias = volume.join(relative);
+        let alias_key = key(&alias);
+        ensure!(!names.contains_key(&alias_key), "PRIVATE_HARD_LINK_CHANGED: duplicate alias");
+        let pin = unsafe { pin_private_alias(&alias, info, policy) }?;
+        names.insert(alias_key, (alias, pin));
+        ensure!(names.len() <= info.nNumberOfLinks as usize, "PRIVATE_HARD_LINK_CHANGED: alias count increased");
+        buffer.fill(0);
+        length = buffer.len() as u32;
+        if unsafe { FindNextFileNameW(search.0, &mut length, buffer.as_mut_ptr()) } == 0 {
+            let error = unsafe { GetLastError() };
+            ensure!(error == ERROR_HANDLE_EOF, "PRIVATE_HARD_LINK: enumeration failed (Win32 {error})");
+            break;
+        }
+    }
+    let mut after: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    for (alias, _) in names.values() { unsafe { inspect_private_alias(alias, info, policy) }?; }
+    ensure!(names.len() == info.nNumberOfLinks as usize && names.contains_key(&key(path))
+        && unsafe { GetFileInformationByHandle(file, &mut after) } != 0
+        && same_file(info, &after) && after.nNumberOfLinks == info.nNumberOfLinks,
+        "PRIVATE_HARD_LINK_CHANGED: alias inventory changed for {}", path.display());
+    Ok(names)
+}
+
 unsafe fn reconcile_object(
     path: &Path,
     root: &Path,
@@ -530,12 +935,18 @@ unsafe fn reconcile_object(
     write: bool,
     navigation: bool,
     boundary: bool,
+    hard_link_policy: Option<HardLinkPolicy<'_>>,
 ) -> Result<bool> {
     let wide = crate::winutil::to_wide_file_path(path)?;
+    let expected_directory = std::fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0;
     let handle = Handle(unsafe {
         CreateFileW(
             wide.as_ptr(),
-            READ_CONTROL | WRITE_DAC,
+            // Directories require MAXIMUM_ALLOWED to suppress automatic
+            // propagation. Files have no descendants: request only metadata
+            // and DACL rights, compatible with live files whose owners deny
+            // sharing data/delete access (writer leases, databases, logs).
+            if expected_directory { MAXIMUM_ALLOWED } else { READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES },
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
@@ -559,11 +970,8 @@ unsafe fn reconcile_object(
     // target or use that target as an authority to change external ACLs.
     let reparse = info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
     let directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+    ensure!(directory == expected_directory, "PRIVATE_PATH_CHANGED: object type changed before ACL reconciliation");
     let navigation = navigation && directory && !reparse;
-    ensure!(
-        directory || info.nNumberOfLinks == 1,
-        "PRIVATE_HARD_LINK: refusing to change ACLs through a multiply-linked file"
-    );
     let mut final_path = vec![0u16; 32768];
     let length = unsafe {
         GetFinalPathNameByHandleW(
@@ -582,6 +990,11 @@ unsafe fn reconcile_object(
         within(&final_path, root) && key(&final_path) == key(path),
         "PRIVATE_PATH_CHANGED: private object escaped its authorized tree"
     );
+    // Pin every name, not just the original one: Windows can rename a sibling
+    // hard link while another name for the same file has delete sharing closed.
+    let hard_links = if !directory && info.nNumberOfLinks > 1 {
+        Some(unsafe { validate_private_hard_links(path, handle.0, &info, hard_link_policy) }?)
+    } else { None };
     let mut dacl = std::ptr::null_mut();
     let mut descriptor = std::ptr::null_mut();
     let status = unsafe {
@@ -788,6 +1201,37 @@ unsafe fn reconcile_object(
             });
         }
     }
+    if !boundary {
+        let inherited_denial = kept.iter().any(|ace| unsafe {
+            let header = &*(ace.as_ptr().cast::<ACE_HEADER>());
+            if header.AceType != 1 || u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0 {
+                return false;
+            }
+            let denied = &*(ace.as_ptr().cast::<ACCESS_DENIED_ACE>());
+            let sid = std::ptr::addr_of!(denied.SidStart).cast_mut().cast();
+            let mask = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+            EqualSid(sid, group) != 0 && denied.Mask & mask == mask
+        });
+        if !inherited_denial {
+            entries.push(EXPLICIT_ACCESS_W {
+                grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+                grfAccessMode: DENY_ACCESS,
+                grfInheritance: INHERITED_ACE
+                    | if directory {
+                        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+                    } else {
+                        0
+                    },
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: std::ptr::null_mut(),
+                    MultipleTrusteeOperation: 0,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: group.cast(),
+                },
+            });
+        }
+    }
     // Keep self-only and inherit-only ACEs distinct. SetEntriesInAclW may
     // combine same-SID entries; construct a canonical DACL without that merge.
     let bytes = std::mem::size_of::<ACL>()
@@ -845,10 +1289,9 @@ unsafe fn reconcile_object(
         );
         Ok(())
     };
-    for entry in entries
-        .iter()
-        .filter(|entry| entry.grfAccessMode == DENY_ACCESS)
-    {
+    for entry in entries.iter().filter(|entry| {
+        entry.grfAccessMode == DENY_ACCESS && entry.grfInheritance & INHERITED_ACE == 0
+    }) {
         add_entry(entry)?;
     }
     for ace in kept
@@ -863,11 +1306,63 @@ unsafe fn reconcile_object(
     {
         add_entry(entry)?;
     }
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.grfInheritance & INHERITED_ACE != 0)
+    {
+        add_entry(entry)?;
+    }
     for ace in kept
         .iter()
         .filter(|ace| u32::from(ace[1]) & INHERITED_ACE != 0)
     {
         add_kept(ace)?;
+    }
+    let mut control = 0;
+    let mut revision = 0;
+    ensure!(
+        unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } != 0,
+        "read private DACL control failed"
+    );
+    let unchanged = unsafe {
+        let used_bytes = |acl: *const ACL| -> Result<usize> {
+            let mut info: ACL_SIZE_INFORMATION = std::mem::zeroed();
+            ensure!(
+                GetAclInformation(
+                    acl,
+                    (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                    std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation
+                ) != 0,
+                "read private ACL size failed"
+            );
+            Ok(info.AclBytesInUse as usize)
+        };
+        let old = std::slice::from_raw_parts(dacl.cast::<u8>(), used_bytes(dacl)?);
+        let new = std::slice::from_raw_parts(replacement.cast::<u8>(), used_bytes(replacement)?);
+        // AclSize includes spare allocation capacity, not permission content.
+        old.len() == new.len()
+            && old[4..] == new[4..]
+            && old[0] == new[0]
+            && (!boundary || control & SE_DACL_PROTECTED != 0)
+    };
+    if unchanged {
+        return Ok(directory && !reparse);
+    }
+    if !directory {
+        let mut current: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        ensure!(unsafe { GetFileInformationByHandle(handle.0, &mut current) } != 0,
+            "inspect private file before ACL update failed: {}", path.display());
+        ensure!(same_file(&info, &current) && current.nNumberOfLinks == info.nNumberOfLinks,
+            "PRIVATE_HARD_LINK_CHANGED: file identity or link count changed: {}", path.display());
+        if let Some(names) = &hard_links {
+            let policy = hard_link_policy.context("PRIVATE_HARD_LINK: missing alias policy")?;
+            for (alias, _) in names.values() { unsafe { inspect_private_alias(alias, &current, policy) }?; }
+            let mut after: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            ensure!(unsafe { GetFileInformationByHandle(handle.0, &mut after) } != 0
+                && same_file(&current, &after) && after.nNumberOfLinks == current.nNumberOfLinks,
+                "PRIVATE_HARD_LINK_CHANGED: alias count changed before ACL update: {}", path.display());
+        }
     }
     // Root protection preserves its current host ACL while preventing a broad
     // sandbox group grant on an outside parent from being inherited again.
@@ -899,7 +1394,466 @@ unsafe fn reconcile_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_writer_leases_and_exclusive_data_handles_allow_security_reconciliation() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        let home = temp.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let lease_path = root.join(".session-writer.lock");
+        let database = root.join("live.sqlite");
+        let attachment = root.join("attachment.txt");
+        std::fs::write(&attachment, "attachment")?;
+        let lease = std::fs::OpenOptions::new().read(true).write(true).create_new(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(&lease_path)?;
+        lease.try_lock()?;
+        let exclusive = std::fs::OpenOptions::new().read(true).write(true).create_new(true)
+            .share_mode(0).open(&database)?;
+        let account = LocalSid::from_string("S-1-5-21-654-987-321-2101")?;
+        let group = LocalSid::from_string("S-1-5-21-654-987-321-2102")?;
+        let sync = |reads: &[PathBuf], writes: &[PathBuf]| unsafe {
+            sync_private_read_acls(&home, std::slice::from_ref(&root), reads, writes,
+                &[account.as_ptr()], group.as_ptr())
+        };
+        assert!(sync(std::slice::from_ref(&attachment), &[])? >= 4);
+        assert_eq!(sync(std::slice::from_ref(&attachment), &[])?, 0);
+        assert!(!effective_access(&lease_path, account.as_ptr(), group.as_ptr(), FILE_READ_DATA)?);
+        assert!(effective_access(&attachment, account.as_ptr(), group.as_ptr(), FILE_READ_DATA)?);
+        assert!(!effective_access(&attachment, account.as_ptr(), group.as_ptr(), FILE_WRITE_DATA)?);
+        sync(&[], std::slice::from_ref(&attachment))?;
+        assert!(effective_access(&attachment, account.as_ptr(), group.as_ptr(), FILE_WRITE_DATA)?);
+        sync(&[], &[])?;
+        assert!(!effective_access(&attachment, account.as_ptr(), group.as_ptr(), FILE_READ_DATA)?);
+        // The original resident writer remains the only admitted writer.
+        let contender = std::fs::OpenOptions::new().read(true).write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(&lease_path)?;
+        assert!(matches!(contender.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        drop(contender);
+        drop(exclusive);
+        drop(lease);
+        assert_eq!(std::fs::read_to_string(&attachment)?, "attachment");
+        Ok(())
+    }
     use crate::token::LocalSid;
+
+    fn effective_access(
+        path: &Path,
+        account: *mut c_void,
+        group: *mut c_void,
+        desired: u32,
+    ) -> Result<bool> {
+        unsafe {
+            let mut manager = 0;
+            ensure!(
+                AuthzInitializeResourceManager(
+                    AUTHZ_RM_FLAG_NO_AUDIT,
+                    None,
+                    None,
+                    None,
+                    std::ptr::null(),
+                    &mut manager
+                ) != 0,
+                "Authz resource manager: {}",
+                GetLastError()
+            );
+            struct Manager(isize);
+            impl Drop for Manager {
+                fn drop(&mut self) {
+                    unsafe {
+                        AuthzFreeResourceManager(self.0);
+                    }
+                }
+            }
+            let _manager = Manager(manager);
+            let mut context = 0;
+            ensure!(
+                AuthzInitializeContextFromSid(
+                    AUTHZ_SKIP_TOKEN_GROUPS,
+                    account,
+                    manager,
+                    std::ptr::null(),
+                    std::mem::zeroed(),
+                    std::ptr::null(),
+                    &mut context
+                ) != 0,
+                "Authz context: {}",
+                GetLastError()
+            );
+            struct Client(isize);
+            impl Drop for Client {
+                fn drop(&mut self) {
+                    unsafe {
+                        AuthzFreeContext(self.0);
+                    }
+                }
+            }
+            let _context = Client(context);
+            let sid = SID_AND_ATTRIBUTES {
+                Sid: group,
+                Attributes: windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED as u32,
+            };
+            let mut grouped = 0;
+            ensure!(
+                AuthzAddSidsToContext(context, &sid, 1, std::ptr::null(), 0, &mut grouped) != 0,
+                "Authz group: {}",
+                GetLastError()
+            );
+            let _grouped = Client(grouped);
+            let mut descriptor = std::ptr::null_mut();
+            ensure!(
+                GetNamedSecurityInfoW(
+                    crate::winutil::to_wide_file_path(path)?.as_ptr(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION
+                        | GROUP_SECURITY_INFORMATION
+                        | DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut descriptor
+                ) == ERROR_SUCCESS,
+                "read authorization descriptor"
+            );
+            let _descriptor = Local(descriptor);
+            let request = AUTHZ_ACCESS_REQUEST {
+                DesiredAccess: desired,
+                ..std::mem::zeroed()
+            };
+            let (mut granted, mut error, mut sacl) = (0, 0, 0);
+            let mut reply = AUTHZ_ACCESS_REPLY {
+                ResultListLength: 1,
+                GrantedAccessMask: &mut granted,
+                Error: &mut error,
+                SaclEvaluationResults: &mut sacl,
+                ..std::mem::zeroed()
+            };
+            ensure!(
+                AuthzAccessCheck(
+                    0,
+                    grouped,
+                    &request,
+                    0,
+                    descriptor,
+                    std::ptr::null(),
+                    0,
+                    &mut reply,
+                    std::ptr::null_mut()
+                ) != 0,
+                "Authz check: {}",
+                GetLastError()
+            );
+            Ok(error == ERROR_SUCCESS && granted & desired == desired)
+        }
+    }
+
+    #[test]
+    fn interrupted_migration_resumes_and_policy_changes_revoke_partial_grants() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        let home = temp.path().join("state");
+        let own = root.join("owned");
+        std::fs::create_dir_all(&own)?;
+        for index in 0..600 {
+            std::fs::write(own.join(format!("{index:04}.txt")), "fixture")?;
+        }
+        let account = LocalSid::from_string("S-1-5-21-654-987-321-2001")?;
+        let other = LocalSid::from_string("S-1-5-21-654-987-321-2002")?;
+        let group = LocalSid::from_string("S-1-5-21-654-987-321-2003")?;
+        let interrupted = unsafe {
+            sync_private_read_acls_with_progress(
+                &home,
+                std::slice::from_ref(&root),
+                std::slice::from_ref(&own),
+                &[],
+                &[account.as_ptr()],
+                group.as_ptr(),
+                |progress| {
+                    ensure!(
+                        progress.processed < CHECKPOINT_OBJECTS as u64,
+                        "injected interruption"
+                    );
+                    Ok(())
+                },
+            )
+        }
+        .unwrap_err();
+        assert!(interrupted.to_string().contains("injected interruption"));
+        let state_path = home.join(".sandbox/private_read_acl_state.json");
+        let state: State = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+        assert!(state.pending && !state.journal.as_ref().unwrap().remaining.is_empty());
+        let public_tool = temp.path().join("another-interpreter.exe");
+        std::fs::write(&public_tool, "public fixture")?;
+        let mut resumed = false;
+        let count = unsafe {
+            sync_private_read_acls_with_progress(
+                &home,
+                std::slice::from_ref(&root),
+                &[own.clone(), public_tool],
+                &[],
+                &[account.as_ptr()],
+                group.as_ptr(),
+                |progress| {
+                    resumed |= progress.resumed;
+                    Ok(())
+                },
+            )
+        }?;
+        assert!(resumed);
+        assert!(
+            count < 600,
+            "completed checkpoint work must not be repeated"
+        );
+        let first = own.join("0000.txt");
+        let last = own.join("0599.txt");
+        assert!(effective_access(
+            &first,
+            account.as_ptr(),
+            group.as_ptr(),
+            FILE_READ_DATA
+        )?);
+        assert!(effective_access(
+            &last,
+            account.as_ptr(),
+            group.as_ptr(),
+            FILE_READ_DATA
+        )?);
+        assert!(!effective_access(
+            &first,
+            other.as_ptr(),
+            group.as_ptr(),
+            FILE_READ_DATA
+        )?);
+        assert!(!effective_access(
+            &first,
+            account.as_ptr(),
+            group.as_ptr(),
+            FILE_WRITE_DATA
+        )?);
+
+        // Interrupt a new pass that grants write access, then switch to a
+        // session with no grant. Recovery must rebase and revoke the old grants.
+        let interrupted = unsafe {
+            sync_private_read_acls_with_progress(
+                &home,
+                std::slice::from_ref(&root),
+                &[],
+                std::slice::from_ref(&own),
+                &[account.as_ptr()],
+                group.as_ptr(),
+                |progress| {
+                    ensure!(
+                        progress.processed < CHECKPOINT_OBJECTS as u64,
+                        "injected interruption"
+                    );
+                    Ok(())
+                },
+            )
+        };
+        assert!(interrupted.is_err());
+        let mut resumed = false;
+        unsafe {
+            sync_private_read_acls_with_progress(
+                &home,
+                std::slice::from_ref(&root),
+                &[],
+                &[],
+                &[account.as_ptr()],
+                group.as_ptr(),
+                |progress| {
+                    resumed |= progress.resumed;
+                    Ok(())
+                },
+            )
+        }?;
+        assert!(
+            resumed,
+            "changed grants must preserve completed boundary migration work"
+        );
+        for file in [&first, &last] {
+            assert!(!effective_access(
+                file,
+                account.as_ptr(),
+                group.as_ptr(),
+                FILE_READ_DATA
+            )?);
+            assert!(!effective_access(
+                file,
+                account.as_ptr(),
+                group.as_ptr(),
+                FILE_WRITE_DATA
+            )?);
+            assert_eq!(std::fs::read_to_string(file)?, "fixture");
+        }
+        let state: State = serde_json::from_slice(&std::fs::read(state_path)?)?;
+        assert!(!state.pending && state.journal.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn disappeared_checkpoint_entries_do_not_force_one_journal_write_per_file() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        let own = root.join("owned");
+        let home = temp.path().join("state");
+        std::fs::create_dir_all(&own)?;
+        for index in 0..800 {
+            std::fs::write(own.join(format!("{index:04}.txt")), "fixture")?;
+        }
+        let account = LocalSid::from_string("S-1-5-21-654-987-321-5001")?;
+        let group = LocalSid::from_string("S-1-5-21-654-987-321-5002")?;
+        let interrupted = unsafe {
+            sync_private_read_acls_with_progress(
+                &home,
+                std::slice::from_ref(&root),
+                std::slice::from_ref(&own),
+                &[],
+                &[account.as_ptr()],
+                group.as_ptr(),
+                |progress| {
+                    ensure!(
+                        progress.processed < CHECKPOINT_OBJECTS as u64,
+                        "injected interruption"
+                    );
+                    Ok(())
+                },
+            )
+        };
+        assert!(interrupted.is_err());
+        for index in 0..800 {
+            std::fs::remove_file(own.join(format!("{index:04}.txt")))?;
+        }
+        let mut checkpoints = 0;
+        let count = unsafe {
+            sync_private_read_acls_with_progress(
+                &home,
+                &[root],
+                &[own],
+                &[],
+                &[account.as_ptr()],
+                group.as_ptr(),
+                |progress| {
+                    assert!(progress.resumed);
+                    checkpoints += 1;
+                    Ok(())
+                },
+            )
+        }?;
+        assert_eq!(count, 0);
+        assert!(
+            checkpoints <= 5,
+            "deleted files must be retired in batches: {checkpoints}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn updating_a_directory_does_not_propagate_to_unvisited_descendants() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        std::fs::create_dir(&root)?;
+        let file = root.join("child.txt");
+        std::fs::write(&file, "fixture")?;
+        let account = LocalSid::from_string("S-1-5-21-654-987-321-3001")?;
+        let group = LocalSid::from_string("S-1-5-21-654-987-321-3002")?;
+        unsafe {
+            let before = root_stamp(&root, &[account.as_ptr()], group.as_ptr())?;
+            reconcile_object(
+                &root,
+                &root,
+                &[account.as_ptr()],
+                group.as_ptr(),
+                false,
+                false,
+                false,
+                true,
+                None,
+            )?;
+            assert_ne!(
+                root_stamp(&root, &[account.as_ptr()], group.as_ptr())?,
+                before
+            );
+            let (acl, descriptor) = crate::acl::fetch_dacl_handle(&file)?;
+            let _guard = Local(descriptor);
+            assert!(
+                !crate::acl::dacl_has_read_deny_for_sid(acl, account.as_ptr()),
+                "directory write must not walk unchecked descendants"
+            );
+            reconcile_object(
+                &file,
+                &root,
+                &[account.as_ptr()],
+                group.as_ptr(),
+                false,
+                false,
+                false,
+                false,
+                None,
+            )?;
+        }
+        assert!(!effective_access(
+            &file,
+            account.as_ptr(),
+            group.as_ptr(),
+            FILE_READ_DATA
+        )?);
+        assert_eq!(std::fs::read_to_string(file)?, "fixture");
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "large filesystem regression benchmark"]
+    fn large_private_tree_migration_benchmark() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        let home = temp.path().join("state");
+        for batch in 0..90 {
+            let directory = root.join(format!("batch-{batch:03}"));
+            std::fs::create_dir_all(&directory)?;
+            for file in 0..1000 {
+                std::fs::write(directory.join(format!("{file:04}.txt")), "fixture")?;
+            }
+        }
+        // Match a populated multi-project pool, including a nested boundary.
+        let mut roots = vec![root.clone(), root.join("batch-000")];
+        for index in 0..46 {
+            let runtime = temp.path().join(format!("runtime-{index:02}"));
+            std::fs::create_dir(&runtime)?;
+            roots.push(runtime);
+        }
+        let account = LocalSid::from_string("S-1-5-21-654-987-321-4001")?;
+        let group = LocalSid::from_string("S-1-5-21-654-987-321-4002")?;
+        let began = std::time::Instant::now();
+        let mut checkpoints = 0;
+        let cold = unsafe {
+            sync_private_read_acls_with_progress(
+                &home,
+                &roots,
+                &[],
+                &[],
+                &[account.as_ptr()],
+                group.as_ptr(),
+                |_| {
+                    checkpoints += 1;
+                    Ok(())
+                },
+            )
+        }?;
+        eprintln!(
+            "cold: objects={cold} checkpoints={checkpoints} elapsed={:?}",
+            began.elapsed()
+        );
+        assert_eq!(cold, 90137);
+        assert!(checkpoints > 100);
+        let began = std::time::Instant::now();
+        let warm = unsafe {
+            sync_private_read_acls(&home, &roots, &[], &[], &[account.as_ptr()], group.as_ptr())
+        }?;
+        eprintln!("warm: objects={warm} elapsed={:?}", began.elapsed());
+        assert_eq!(warm, 0);
+        Ok(())
+    }
 
     #[test]
     fn boundary_keys_match_extended_drive_and_unc_spellings() {
@@ -1141,8 +2095,8 @@ mod tests {
         }
         assert_eq!(
             sync()?,
-            3,
-            "warm execution visits its current grant, not eighty unrelated files"
+            0,
+            "an unchanged warm policy does not revisit grant descendants"
         );
         let other = LocalSid::from_string("S-1-5-21-22-33-44-1003")?;
         let own_stamp = unsafe { root_stamp(&root, &[account.as_ptr()], group.as_ptr()) }?;
@@ -1163,7 +2117,7 @@ mod tests {
         );
         assert_eq!(
             sync()?,
-            3,
+            0,
             "another slot's additional denials cannot cause repeated whole-tree migrations"
         );
         unsafe {
@@ -1259,6 +2213,140 @@ mod tests {
                 .iter()
                 .all(|(kind, _)| *kind != 0)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn identity_inventory_counts_all_names_and_rejects_an_unseen_outside_link() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        std::fs::create_dir_all(root.join("one"))?;
+        std::fs::create_dir_all(root.join("two"))?;
+        let first = root.join("one/first.txt");
+        let second = root.join("two/second.txt");
+        std::fs::write(&first, "fixture")?;
+        std::fs::hard_link(&first, &second)?;
+        let wide = crate::winutil::to_wide_file_path(&first)?;
+        let file = Handle(unsafe { CreateFileW(wide.as_ptr(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(),
+            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0) });
+        ensure!(file.0 != INVALID_HANDLE_VALUE);
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        ensure!(unsafe { GetFileInformationByHandle(file.0, &mut info) } != 0);
+        let all = |_: &Path| true;
+        let policy = HardLinkPolicy { root: &root, allows: &all };
+        let names = unsafe { private_link_names_by_identity(&first, &info, policy) }?;
+        assert_eq!(names.keys().cloned().collect::<BTreeSet<_>>(), BTreeSet::from([key(&first), key(&second)]));
+        drop(names);
+        let exact = |alias: &Path| key(alias) == key(&first);
+        assert!(unsafe { private_link_names_by_identity(&first, &info,
+            HardLinkPolicy { root: &root, allows: &exact }) }.is_err());
+        std::fs::hard_link(&first, temp.path().join("outside.txt"))?;
+        ensure!(unsafe { GetFileInformationByHandle(file.0, &mut info) } != 0);
+        let error = unsafe { private_link_names_by_identity(&first, &info, policy) }
+            .err().context("an unaccounted outside alias was accepted")?;
+        assert!(error.to_string().contains("only 2 of 3"));
+        Ok(())
+    }
+
+    #[test]
+    fn hardlink_reconciliation_pins_existing_names_against_rename_and_delete() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        std::fs::create_dir(&root)?;
+        let first = root.join("one.txt");
+        let second = root.join("two.txt");
+        std::fs::write(&first, "fixture")?;
+        std::fs::hard_link(&first, &second)?;
+        let account = LocalSid::from_string("S-1-5-21-111-222-333-1301")?;
+        let group = LocalSid::from_string("S-1-5-21-111-222-333-1302")?;
+        let called = std::sync::atomic::AtomicBool::new(false);
+        let check = |_: &Path| {
+            if !called.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                assert_eq!(std::fs::rename(&second, root.join("moved.txt")).unwrap_err().raw_os_error(), Some(32));
+                assert_eq!(std::fs::remove_file(&second).unwrap_err().raw_os_error(), Some(32));
+                assert!(std::fs::rename(&root, temp.path().join("moved-parent")).is_err());
+            }
+            true
+        };
+        unsafe { reconcile_object(&first, &root, &[account.as_ptr()], group.as_ptr(),
+            false, false, false, false, Some(HardLinkPolicy { root: &root, allows: &check })) }?;
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(first.exists() && second.exists());
+        assert!(!effective_access(&first, account.as_ptr(), group.as_ptr(), FILE_READ_DATA)?);
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_style_private_hardlinks_require_one_effective_policy_and_support_revocation() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        let build = root.join("target/debug/build/构建 空格");
+        let home = temp.path().join("state");
+        std::fs::create_dir_all(&build)?;
+        let first = build.join("build_script.exe");
+        let second = build.join("build-script-build.exe");
+        std::fs::write(&first, "cargo artifact")?;
+        std::fs::hard_link(&first, &second)?;
+        let account = LocalSid::from_string("S-1-5-21-111-222-333-1101")?;
+        let group = LocalSid::from_string("S-1-5-21-111-222-333-1102")?;
+        let sync = |reads: &[PathBuf], writes: &[PathBuf]| unsafe {
+            sync_private_read_acls(&home, std::slice::from_ref(&root), reads, writes,
+                &[account.as_ptr()], group.as_ptr())
+        };
+        sync(&[], &[])?;
+        for path in [&first, &second] {
+            assert!(!effective_access(path, account.as_ptr(), group.as_ptr(), FILE_READ_DATA)?);
+        }
+        let before = direct_permissions(&first, account.as_ptr());
+        let rejected = sync(std::slice::from_ref(&first), &[]).unwrap_err();
+        assert!(rejected.to_string().contains("PRIVATE_HARD_LINK"));
+        assert_eq!(direct_permissions(&first, account.as_ptr()), before);
+        // Resume the interrupted migration with an admitted directory, so both
+        // names receive identical read-only rights instead of widening a file grant.
+        sync(std::slice::from_ref(&build), &[])?;
+        for path in [&first, &second] {
+            assert!(effective_access(path, account.as_ptr(), group.as_ptr(), FILE_READ_DATA)?);
+            assert!(!effective_access(path, account.as_ptr(), group.as_ptr(), FILE_WRITE_DATA)?);
+        }
+        sync(&[], std::slice::from_ref(&build))?;
+        for path in [&first, &second] {
+            assert!(effective_access(path, account.as_ptr(), group.as_ptr(), FILE_WRITE_DATA)?);
+        }
+        sync(&[], &[])?;
+        assert_eq!(sync(&[], &[])?, 0);
+        for path in [&first, &second] {
+            assert!(!effective_access(path, account.as_ptr(), group.as_ptr(), FILE_READ_DATA)?);
+            assert_eq!(std::fs::read_to_string(path)?, "cargo artifact");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_hardlink_added_during_inventory_never_changes_the_shared_acl() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("private");
+        std::fs::create_dir(&root)?;
+        let file = root.join("first.txt");
+        let sibling = root.join("second.txt");
+        let outside = temp.path().join("outside.txt");
+        std::fs::write(&file, "fixture")?;
+        std::fs::hard_link(&file, &sibling)?;
+        let account = LocalSid::from_string("S-1-5-21-111-222-333-1201")?;
+        let group = LocalSid::from_string("S-1-5-21-111-222-333-1202")?;
+        let before = direct_permissions(&file, account.as_ptr());
+        let once = std::sync::atomic::AtomicBool::new(false);
+        let policy = |_: &Path| {
+            if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                std::fs::hard_link(&file, &outside).unwrap();
+            }
+            true
+        };
+        let error = unsafe { reconcile_object(&file, &root, &[account.as_ptr()], group.as_ptr(),
+            true, true, false, false, Some(HardLinkPolicy { root: &root, allows: &policy })) }.unwrap_err();
+        assert!(error.to_string().contains("PRIVATE_HARD_LINK"));
+        assert_eq!(direct_permissions(&outside, account.as_ptr()), before);
+        assert_eq!(std::fs::read_to_string(&outside)?, "fixture");
         Ok(())
     }
 

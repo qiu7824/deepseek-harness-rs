@@ -22,6 +22,9 @@ fn executor_context(spec: &dsh_shell::ShellExecSpec) -> serde_json::Value {
 }
 
 fn shell_runtime_failure(message: String) -> ToolBodyError {
+    if message.starts_with("[SANDBOX_SETUP_CANCELLED]") {
+        return ToolBodyError::coded(message, "AbortError", "SHELL_ABORTED");
+    }
     for code in ["SANDBOX_BUSY", "SANDBOX_QUARANTINED"] {
         if message.starts_with(&format!("[{code}]")) {
             return ToolBodyError::coded(message, "ShellRuntimeError", code).with_receipt(serde_json::json!({
@@ -660,7 +663,7 @@ impl ToolPwshService {
                             authorize_execution_directory(&mut request,owner.as_ref(),approval.as_ref(),&call_id).await?;
                             validate_profile(&request, profiles.as_ref(), "shell", request.shell_path.clone(), Some("powershell".into())).await?;
                             if let (Some(sandbox), Some(policy)) = (&sandbox, &request.sandbox_policy) {
-                                sandbox.prepare(policy).await.map_err(shell_runtime_failure)?;
+                                sandbox.prepare_cancellable(policy, request.signal.clone()).await.map_err(shell_runtime_failure)?;
                             }
                             let spec = shell.resolve(request);
                             bind_context(executor_context(&spec)).map_err(ToolBodyError::plain)?;
@@ -710,7 +713,7 @@ impl ToolPwshService {
                         validate_profile(&request, profiles.as_ref(), "shell", request.shell_path.clone(), Some("powershell".into())).await?;
                         let retry_context = serde_json::json!({"command":request.command,"workdir":request.workdir,"context":request.execution_context_id,"policy":request.sandbox_policy.as_ref().map(|p|format!("{:?}",p))});
                         let context_id = request.execution_context_id.clone();
-                        if let (Some(sandbox),Some(policy))=(&sandbox,&request.sandbox_policy){sandbox.prepare(policy).await.map_err(shell_runtime_failure)?;}
+                        if let (Some(sandbox),Some(policy))=(&sandbox,&request.sandbox_policy){sandbox.prepare_cancellable(policy, request.signal.clone()).await.map_err(shell_runtime_failure)?;}
                         mark_effects().map_err(|error| ToolBodyError::coded(error, "ExecutionContextError", "EXECUTION_CONTEXT_CHANGED"))?;
                         let spec=shell.resolve(request);
                         bind_context(executor_context(&spec)).map_err(ToolBodyError::plain)?;

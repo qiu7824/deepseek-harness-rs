@@ -293,7 +293,7 @@ pub(super) fn install(
                     }
                     if args["run_in_background"] == true {
                         request.native_argv = Some(commands.remove(0));
-                        if let (Some(sandbox),Some(policy)) = (&sandbox, &request.sandbox_policy) { sandbox.prepare(policy).await.map_err(super::shell_runtime_failure)?; }
+                        if let (Some(sandbox),Some(policy)) = (&sandbox, &request.sandbox_policy) { sandbox.prepare_cancellable(policy, request.signal.clone()).await.map_err(super::shell_runtime_failure)?; }
                         let spec = shell.resolve(request);
                         bind_context(super::executor_context(&spec)).map_err(ToolBodyError::plain)?;
                         mark_effects().map_err(|error| ToolBodyError::coded(error, "ExecutionContextError", "EXECUTION_CONTEXT_CHANGED"))?;
@@ -303,7 +303,7 @@ pub(super) fn install(
                         return Ok(json!({"kind":"background","jobId":id.as_str(),"completion":"running","executionId":call_id}));
                     }
                     let total = commands.len();
-                    if let (Some(sandbox),Some(policy))=(&sandbox,&request.sandbox_policy){sandbox.prepare(policy).await.map_err(super::shell_runtime_failure)?;}
+                    if let (Some(sandbox),Some(policy))=(&sandbox,&request.sandbox_policy){sandbox.prepare_cancellable(policy, request.signal.clone()).await.map_err(super::shell_runtime_failure)?;}
                     let mut results = Vec::new();
                     for (index, command) in commands.into_iter().enumerate() {
                         if signal() { return Err(ToolBodyError::coded(format!("Execution cancelled before step {}; no further steps dispatched. Previous results: {}", index+1, Value::Array(results)), "AbortError", "SHELL_ABORTED")); }

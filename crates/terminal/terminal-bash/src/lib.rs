@@ -291,8 +291,10 @@ impl TerminalBackend for ShellTerminalBackend {
                     .map_err(TerminalBackendSpawnError::spawn)?;
             }
             if let Some(sandbox) = sandbox {
-                sandbox.prepare(&policy).await.map_err(|message| {
-                    let code = if message.starts_with("[SANDBOX_SETUP_TIMEOUT]") {
+                sandbox.prepare_cancellable(&policy, spec.signal.clone()).await.map_err(|message| {
+                    let code = if message.starts_with("[SANDBOX_SETUP_CANCELLED]") {
+                        TerminalErrorCode::Aborted
+                    } else if message.starts_with("[SANDBOX_SETUP_TIMEOUT]") {
                         TerminalErrorCode::SandboxSetupTimeout
                     } else {
                         TerminalErrorCode::SandboxSetupFailed
@@ -564,7 +566,8 @@ impl LocalPtySession {
         cancellation: Option<dsh_subprocess::SubprocessAbort>,
     ) -> Result<(), TerminalBackendSpawnError> {
         if let Some(startup) = startup {
-            let deadline = Instant::now() + Duration::from_secs(120);
+            let began = Instant::now();
+            let mut deadline = dsh_sandbox::startup::StartupDeadline::default();
             loop {
                 if cancellation.as_ref().is_some_and(|signal| signal()) {
                     return Err(TerminalBackendSpawnError::coded(
@@ -597,12 +600,9 @@ impl LocalPtySession {
                         code,
                     ));
                 }
-                if Instant::now() >= deadline {
+                if let Err(error) = deadline.check(&startup, began.elapsed()) {
                     return Err(TerminalBackendSpawnError::coded(
-                        format!(
-                            "Sandbox startup exceeded 120 seconds before command readiness was confirmed; phase={}",
-                            startup.phase()
-                        ),
+                        error,
                         TerminalErrorCode::SandboxSetupTimeout,
                     ));
                 }

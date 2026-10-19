@@ -12,8 +12,9 @@ dsh-session = { path = "../../core/session" }
 dsh-invariants = { path = "../../util/invariants" }
 async-trait = { workspace = true }
 futures = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
 parking_lot = { workspace = true }
