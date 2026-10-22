@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 use sha2::Digest;
 use std::collections::{HashMap, HashSet};
 
+#[path = "devin_schema.rs"]
+mod schema;
+
 pub const API: &str = "devin-agent";
 pub const BASE_URL: &str = "https://server.codeium.com";
 pub const CATALOG_PATH: &str = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
@@ -379,11 +382,9 @@ pub(crate) fn chat_request(
                 .ok_or("Devin tool name missing")?,
         );
         tool.text(2, definition["description"].as_str().unwrap_or(""));
-        // Devin forwards tools to Claude and other providers that reject a
-        // combinator at the schema root; local validation keeps the original.
         tool.text(
             3,
-            &super::tool_schema::object_root(&definition["parameters"]).to_string(),
+            &schema::for_wire(&definition["parameters"]).to_string(),
         );
         request.bytes(10, &tool.0);
     }

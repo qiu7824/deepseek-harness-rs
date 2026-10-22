@@ -106,7 +106,7 @@ fn native_request_preserves_system_tools_results_and_inline_images() {
 }
 
 #[test]
-fn native_transport_folds_root_branches_and_responses_keep_them() {
+fn native_and_responses_transports_preserve_object_root_action_requirements() {
     let parameters = json!({
         "type":"object","properties":{"action":{"type":"string"},"id":{"type":"string"}},
         "required":["action"],"additionalProperties":false,
@@ -118,27 +118,20 @@ fn native_transport_folds_root_branches_and_responses_keep_them() {
     let chat = json!({"model":"swe-2","messages":[{"role":"user","content":"inspect"}],"tools":[{
         "type":"function","function":{"name":"workspace_scratch","description":"Manage scratch files","parameters":parameters}
     }]});
+    let original_chat = chat.clone();
     let bytes = devin::chat_request(&chat, "token", "jwt", "cascade").unwrap();
     let message = Message::parse(&bytes).unwrap();
     let tools = message.repeated(10).unwrap();
     assert_eq!(tools.len(), 1);
     let tool = Message::parse(tools[0]).unwrap();
-    // Claude behind Devin rejects a root oneOf; the request carries one object
-    // that still names every action and the combinations it allows.
-    let sent = serde_json::from_str::<Value>(tool.text(3).unwrap()).unwrap();
-    assert!(sent.get("oneOf").is_none());
-    assert_eq!(sent["type"], "object");
-    assert_eq!(sent["required"], json!(["action"]));
-    assert_eq!(
-        sent["properties"]["action"]["enum"],
-        json!(["list", "read"])
-    );
-    assert!(
-        sent["description"]
-            .as_str()
-            .unwrap()
-            .contains("action=read requires id")
-    );
+    let native_schema = serde_json::from_str::<Value>(tool.text(3).unwrap()).unwrap();
+    assert!(native_schema.get("oneOf").is_none());
+    assert_eq!(native_schema["not"]["not"]["oneOf"], parameters["oneOf"]);
+    let mut restored = native_schema;
+    restored.as_object_mut().unwrap().remove("not");
+    restored["oneOf"] = parameters["oneOf"].clone();
+    assert_eq!(restored, parameters);
+    assert_eq!(chat, original_chat);
     let responses = crate::responses::request_from_chat(&chat).unwrap();
     assert_eq!(responses["tools"][0]["parameters"], parameters);
     assert_eq!(responses["tools"][0]["parameters"]["type"], "object");
